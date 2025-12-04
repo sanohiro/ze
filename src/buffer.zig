@@ -88,6 +88,33 @@ pub const PieceIterator = struct {
         return std.unicode.utf8Decode(bytes[0..len]) catch return error.InvalidUtf8;
     }
 
+    // 指定位置にシーク（O(pieces)で効率的）
+    pub fn seek(self: *PieceIterator, target_pos: usize) void {
+        if (target_pos == 0) {
+            self.piece_idx = 0;
+            self.piece_offset = 0;
+            self.global_pos = 0;
+            return;
+        }
+
+        var pos: usize = 0;
+        for (self.buffer.pieces.items, 0..) |piece, idx| {
+            if (pos + piece.length > target_pos) {
+                // この piece 内に target_pos がある
+                self.piece_idx = idx;
+                self.piece_offset = target_pos - pos;
+                self.global_pos = target_pos;
+                return;
+            }
+            pos += piece.length;
+        }
+
+        // target_pos が EOF を超える場合は EOF に移動
+        self.piece_idx = self.buffer.pieces.items.len;
+        self.piece_offset = 0;
+        self.global_pos = self.buffer.len();
+    }
+
     // イテレータの状態を保存
     fn saveState(self: *const PieceIterator) PieceIterator {
         return PieceIterator{

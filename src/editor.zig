@@ -111,18 +111,13 @@ pub const Editor = struct {
     }
 
     // バッファから指定範囲のテキストを取得（削除前に使用）
-    // PieceIteratorを使ってO(N)で取得（従来のcharAtループはO(N²)）
+    // PieceIterator.seekを使ってO(pieces + len)で効率的に取得
     fn extractText(self: *Editor, pos: usize, len: usize) ![]u8 {
         var result = try self.allocator.alloc(u8, len);
         errdefer self.allocator.free(result);
 
         var iter = PieceIterator.init(&self.buffer);
-
-        // posまでスキップ
-        var skip_count: usize = 0;
-        while (skip_count < pos) : (skip_count += 1) {
-            _ = iter.next() orelse return result[0..0];
-        }
+        iter.seek(pos); // O(pieces)で直接ジャンプ
 
         // len分読み取る
         var i: usize = 0;
@@ -138,12 +133,36 @@ pub const Editor = struct {
         return self.view.top_line + self.view.cursor_y;
     }
 
-    // 編集操作を記録（差分ベース）
+    // Undoスタックの最大エントリ数
+    const MAX_UNDO_ENTRIES = 1000;
+
+    // 編集操作を記録（差分ベース、連続挿入はマージ）
     fn recordInsert(self: *Editor, pos: usize, text: []const u8) !void {
+        // 連続挿入のコアレッシング: 直前の操作が連続する挿入ならマージ
+        if (self.undo_stack.items.len > 0) {
+            const last = &self.undo_stack.items[self.undo_stack.items.len - 1];
+            if (last.op == .insert) {
+                const last_ins = last.op.insert;
+                // 直前の挿入の直後に続く挿入ならマージ
+                if (last_ins.pos + last_ins.text.len == pos) {
+                    const new_text = try std.mem.concat(self.allocator, u8, &[_][]const u8{ last_ins.text, text });
+                    self.allocator.free(last_ins.text);
+                    last.op.insert.text = new_text;
+                    return;
+                }
+            }
+        }
+
         const text_copy = try self.allocator.dupe(u8, text);
         try self.undo_stack.append(self.allocator, .{
             .op = .{ .insert = .{ .pos = pos, .text = text_copy } },
         });
+
+        // Undoスタックが上限を超えたら古いエントリを削除
+        if (self.undo_stack.items.len > MAX_UNDO_ENTRIES) {
+            const old_entry = self.undo_stack.orderedRemove(0);
+            old_entry.deinit(self.allocator);
+        }
 
         // Redoスタックをクリア
         for (self.redo_stack.items) |entry| {
@@ -157,6 +176,12 @@ pub const Editor = struct {
         try self.undo_stack.append(self.allocator, .{
             .op = .{ .delete = .{ .pos = pos, .text = text_copy } },
         });
+
+        // Undoスタックが上限を超えたら古いエントリを削除
+        if (self.undo_stack.items.len > MAX_UNDO_ENTRIES) {
+            const old_entry = self.undo_stack.orderedRemove(0);
+            old_entry.deinit(self.allocator);
+        }
 
         // Redoスタックをクリア
         for (self.redo_stack.items) |entry| {
@@ -306,12 +331,13 @@ pub const Editor = struct {
 
         // バッファ変更を先に実行（失敗した場合はundoログに記録しない）
         try self.buffer.insert(pos, ch);
+        errdefer self.buffer.delete(pos, 1) catch {}; // recordInsert失敗時にロールバック
         try self.recordInsert(pos, &[_]u8{ch});
         self.modified = true;
 
         if (ch == '\n') {
             // 改行: 現在行以降すべてdirty
-            self.view.markDirty(current_line, std.math.maxInt(usize));
+            self.view.markDirty(current_line, null); // EOF まで再描画
 
             // 次の行の先頭に移動
             const max_screen_line = self.terminal.height - 2; // ステータスバー分を引く
@@ -343,12 +369,13 @@ pub const Editor = struct {
 
         // バッファ変更を先に実行
         try self.buffer.insertSlice(pos, buf[0..len]);
+        errdefer self.buffer.delete(pos, len) catch {}; // recordInsert失敗時にロールバック
         try self.recordInsert(pos, buf[0..len]);
         self.modified = true;
 
         if (codepoint == '\n') {
             // 改行: 現在行以降すべてdirty
-            self.view.markDirty(current_line, std.math.maxInt(usize));
+            self.view.markDirty(current_line, null);
 
             // 次の行の先頭に移動
             const max_screen_line = self.terminal.height - 2; // ステータスバー分を引く
@@ -385,12 +412,13 @@ pub const Editor = struct {
             errdefer self.allocator.free(deleted);
 
             try self.buffer.delete(pos, 1);
+            errdefer self.buffer.insertSlice(pos, deleted) catch {}; // recordDelete失敗時にロールバック
             try self.recordDelete(pos, deleted);
 
             self.modified = true;
             // 改行削除の場合は末尾まで再描画
             if (std.mem.indexOf(u8, deleted, "\n") != null) {
-                self.view.markDirty(current_line, std.math.maxInt(usize));
+                self.view.markDirty(current_line, null);
             } else {
                 self.view.markDirty(current_line, current_line);
             }
@@ -403,12 +431,13 @@ pub const Editor = struct {
             errdefer self.allocator.free(deleted);
 
             try self.buffer.delete(pos, gc.byte_len);
+            errdefer self.buffer.insertSlice(pos, deleted) catch {}; // recordDelete失敗時にロールバック
             try self.recordDelete(pos, deleted);
 
             self.modified = true;
             // 改行削除の場合は末尾まで再描画
             if (std.mem.indexOf(u8, deleted, "\n") != null) {
-                self.view.markDirty(current_line, std.math.maxInt(usize));
+                self.view.markDirty(current_line, null);
             } else {
                 self.view.markDirty(current_line, current_line);
             }
@@ -445,12 +474,13 @@ pub const Editor = struct {
         errdefer self.allocator.free(deleted);
 
         try self.buffer.delete(char_start, char_len);
+        errdefer self.buffer.insertSlice(char_start, deleted) catch {}; // recordDelete失敗時にロールバック
         try self.recordDelete(char_start, deleted);
 
         self.modified = true;
         // 改行削除の場合は末尾まで再描画
         if (std.mem.indexOf(u8, deleted, "\n") != null) {
-            self.view.markDirty(current_line, std.math.maxInt(usize));
+            self.view.markDirty(current_line, null);
         } else {
             self.view.markDirty(current_line, current_line);
         }
@@ -485,12 +515,13 @@ pub const Editor = struct {
             errdefer self.allocator.free(deleted);
 
             try self.buffer.delete(pos, count);
+            errdefer self.buffer.insertSlice(pos, deleted) catch {}; // recordDelete失敗時にロールバック
             try self.recordDelete(pos, deleted);
 
             self.modified = true;
             // 改行削除の場合は末尾まで再描画
             if (std.mem.indexOf(u8, deleted, "\n") != null) {
-                self.view.markDirty(current_line, std.math.maxInt(usize));
+                self.view.markDirty(current_line, null);
             } else {
                 self.view.markDirty(current_line, current_line);
             }
@@ -582,12 +613,13 @@ pub const Editor = struct {
             errdefer self.allocator.free(deleted);
 
             try self.buffer.delete(pos, count);
+            errdefer self.buffer.insertSlice(pos, deleted) catch {}; // recordDelete失敗時にロールバック
             try self.recordDelete(pos, deleted);
 
             self.modified = true;
             // 改行削除の場合は末尾まで再描画
             if (std.mem.indexOf(u8, deleted, "\n") != null) {
-                self.view.markDirty(current_line, std.math.maxInt(usize));
+                self.view.markDirty(current_line, null);
             } else {
                 self.view.markDirty(current_line, current_line);
             }

@@ -28,17 +28,23 @@ pub const View = struct {
         };
     }
 
-    pub fn markDirty(self: *View, start_line: usize, end_line: usize) void {
+    pub fn markDirty(self: *View, start_line: usize, end_line: ?usize) void {
         if (self.dirty_start) |ds| {
             self.dirty_start = @min(ds, start_line);
         } else {
             self.dirty_start = start_line;
         }
 
-        if (self.dirty_end) |de| {
-            self.dirty_end = @max(de, end_line);
+        // end_line が null なら EOF まで
+        if (end_line) |e| {
+            if (self.dirty_end) |de| {
+                self.dirty_end = @max(de, e);
+            } else {
+                self.dirty_end = e;
+            }
         } else {
-            self.dirty_end = end_line;
+            // null が渡されたら dirty_end も null (EOF まで)
+            self.dirty_end = null;
         }
     }
 
@@ -117,14 +123,17 @@ pub const View = struct {
             self.clearDirty();
         } else if (self.dirty_start) |start| {
             // 差分描画: dirty範囲のみ再描画
-            const end = @min(
-                self.dirty_end orelse start,
-                self.top_line + max_lines
-            );
+            // dirty_end が null なら EOF まで、そうでなければその値を使う
+            const end_line = self.dirty_end orelse (self.top_line + max_lines);
+            const end = @min(end_line, self.top_line + max_lines);
 
             if (start < self.top_line + max_lines and end >= self.top_line) {
                 const render_start = if (start > self.top_line) start - self.top_line else 0;
-                const render_end = @min(end - self.top_line + 1, max_lines);
+                // end >= self.top_line が保証されているので安全
+                const render_end = @min(
+                    if (end >= self.top_line) end - self.top_line + 1 else 0,
+                    max_lines
+                );
 
                 var line_iter = LineIterator.init(self.buffer);
 
