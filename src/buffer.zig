@@ -205,6 +205,12 @@ pub const LineIndex = struct {
         // 空バッファの場合は line_starts = [0] （1行とカウント）
         try self.line_starts.append(self.allocator, 0);
 
+        // バッファが空の場合はスキャン不要
+        if (buffer.total_len == 0) {
+            self.valid = true;
+            return;
+        }
+
         // 各改行の次の位置を記録
         var iter = PieceIterator.init(buffer);
         while (iter.next()) |ch| {
