@@ -44,7 +44,7 @@ pub const Editor = struct {
 
     pub fn init(allocator: std.mem.Allocator) !Editor {
         var buffer = try Buffer.init(allocator);
-        const view = View.init(&buffer);
+        const view = View.init(allocator, &buffer);
         const terminal = try Terminal.init(allocator);
 
         return Editor{

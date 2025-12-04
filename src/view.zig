@@ -17,8 +17,11 @@ pub const View = struct {
     line_buffer: std.ArrayList(u8),
     // エラーメッセージ表示用
     error_msg: ?[]const u8,
+    // セルレベル差分描画用: 前フレームの画面状態
+    prev_screen: std.ArrayList(std.ArrayList(u8)),
+    allocator: std.mem.Allocator,
 
-    pub fn init(buffer: *Buffer) View {
+    pub fn init(allocator: std.mem.Allocator, buffer: *Buffer) View {
         return View{
             .buffer = buffer,
             .top_line = 0,
@@ -29,11 +32,18 @@ pub const View = struct {
             .needs_full_redraw = true,
             .line_buffer = .{},
             .error_msg = null,
+            .prev_screen = .{},
+            .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *View, allocator: std.mem.Allocator) void {
         self.line_buffer.deinit(allocator);
+        // 前フレームバッファのクリーンアップ
+        for (self.prev_screen.items) |*line| {
+            line.deinit(self.allocator);
+        }
+        self.prev_screen.deinit(self.allocator);
     }
 
     // エラーメッセージを設定
@@ -70,6 +80,12 @@ pub const View = struct {
         self.needs_full_redraw = true;
         self.dirty_start = null;
         self.dirty_end = null;
+
+        // 前フレームバッファをクリア（全画面再描画なので差分計算不要）
+        for (self.prev_screen.items) |*line| {
+            line.deinit(self.allocator);
+        }
+        self.prev_screen.clearRetainingCapacity();
     }
 
     pub fn clearDirty(self: *View) void {
@@ -78,11 +94,8 @@ pub const View = struct {
         self.needs_full_redraw = false;
     }
 
-    // イテレータを再利用して行を描画（seek()なしで前進のみ）
-    fn renderLineWithIter(_: *View, term: *Terminal, screen_row: usize, iter: *PieceIterator, line_buffer: *std.ArrayList(u8)) !void {
-        try term.moveCursor(screen_row, 0);
-        try term.write(config.ANSI.CLEAR_LINE); // 行末までクリア
-
+    // イテレータを再利用して行を描画（セルレベル差分描画版）
+    fn renderLineWithIter(self: *View, term: *Terminal, screen_row: usize, iter: *PieceIterator, line_buffer: *std.ArrayList(u8)) !void {
         // 再利用バッファをクリア
         line_buffer.clearRetainingCapacity();
 
@@ -92,12 +105,12 @@ pub const View = struct {
             try line_buffer.append(term.allocator, ch);
         }
 
-        // grapheme-aware rendering
+        // grapheme-aware rendering: 画面幅に収まる範囲を計算
         var byte_idx: usize = 0;
         var col: usize = 0;
         while (byte_idx < line_buffer.items.len and col < term.width) {
             const ch = line_buffer.items[byte_idx];
-            if (ch < 0b10000000) {
+            if (ch < config.UTF8.CONTINUATION_MASK) {
                 // ASCII
                 byte_idx += 1;
                 col += 1;
@@ -115,14 +128,114 @@ pub const View = struct {
                 col += width;
             }
         }
-        try term.write(line_buffer.items[0..byte_idx]);
+
+        const new_line = line_buffer.items[0..byte_idx];
+
+        // 前フレームと比較してセルレベル差分描画
+        if (screen_row < self.prev_screen.items.len) {
+            const old_line = self.prev_screen.items[screen_row].items;
+
+            // 差分を検出
+            const min_len = @min(old_line.len, new_line.len);
+            var diff_start: ?usize = null;
+            var diff_end: usize = 0;
+
+            // 前方から差分を探す
+            for (0..min_len) |i| {
+                if (old_line[i] != new_line[i]) {
+                    if (diff_start == null) diff_start = i;
+                    diff_end = i + 1;
+                }
+            }
+
+            // 長さが違う場合は後ろも差分
+            if (old_line.len != new_line.len) {
+                if (diff_start == null) diff_start = min_len;
+                diff_end = @max(old_line.len, new_line.len);
+            }
+
+            if (diff_start) |start| {
+                // バイト位置から画面カラム位置を計算
+                var screen_col: usize = 0;
+                var b: usize = 0;
+                while (b < start) {
+                    const c = new_line[b];
+                    if (c < config.UTF8.CONTINUATION_MASK) {
+                        b += 1;
+                        screen_col += 1;
+                    } else {
+                        const len = std.unicode.utf8ByteSequenceLength(c) catch 1;
+                        if (b + len <= new_line.len) {
+                            const cp = std.unicode.utf8Decode(new_line[b..b + len]) catch {
+                                b += 1;
+                                screen_col += 1;
+                                continue;
+                            };
+                            screen_col += Buffer.charWidth(cp);
+                            b += len;
+                        } else {
+                            b += 1;
+                            screen_col += 1;
+                        }
+                    }
+                }
+
+                // 差分部分のみ描画
+                try term.moveCursor(screen_row, screen_col);
+                try term.write(new_line[start..]);
+
+                // 古い行の方が長い場合は残りをクリア
+                if (old_line.len > new_line.len) {
+                    try term.write(config.ANSI.CLEAR_LINE);
+                }
+            }
+        } else {
+            // 新しい行：全体を描画
+            try term.moveCursor(screen_row, 0);
+            try term.write(config.ANSI.CLEAR_LINE);
+            try term.write(new_line);
+        }
+
+        // 前フレームバッファを更新
+        if (screen_row < self.prev_screen.items.len) {
+            self.prev_screen.items[screen_row].clearRetainingCapacity();
+            try self.prev_screen.items[screen_row].appendSlice(self.allocator, new_line);
+        } else {
+            // 新しい行を追加
+            var new_prev_line = std.ArrayList(u8){};
+            try new_prev_line.appendSlice(self.allocator, new_line);
+            try self.prev_screen.append(self.allocator, new_prev_line);
+        }
     }
 
-    // 空行（~）を描画
-    fn renderEmptyLine(_: *View, term: *Terminal, screen_row: usize) !void {
-        try term.moveCursor(screen_row, 0);
-        try term.write(config.ANSI.CLEAR_LINE);
-        try term.write("~");
+    // 空行（~）を描画（セルレベル差分版）
+    fn renderEmptyLine(self: *View, term: *Terminal, screen_row: usize) !void {
+        const empty_line = "~";
+
+        // 前フレームと比較
+        if (screen_row < self.prev_screen.items.len) {
+            const old_line = self.prev_screen.items[screen_row].items;
+            if (old_line.len != 1 or old_line[0] != '~') {
+                // 変更あり：描画
+                try term.moveCursor(screen_row, 0);
+                try term.write(config.ANSI.CLEAR_LINE);
+                try term.write(empty_line);
+
+                // 前フレームバッファ更新
+                self.prev_screen.items[screen_row].clearRetainingCapacity();
+                try self.prev_screen.items[screen_row].appendSlice(self.allocator, empty_line);
+            }
+        } else {
+            // 新しい行：描画
+            try term.moveCursor(screen_row, 0);
+            try term.write(config.ANSI.CLEAR_LINE);
+            try term.write(empty_line);
+
+            // 前フレームバッファ追加
+            var new_prev_line = std.ArrayList(u8){};
+            try new_prev_line.appendSlice(self.allocator, empty_line);
+            try self.prev_screen.append(self.allocator, new_prev_line);
+        }
     }
 
     pub fn render(self: *View, term: *Terminal) !void {
