@@ -115,13 +115,4 @@ pub const Terminal = struct {
         try stdout.writeAll(self.buf.items);
         self.buf.clearRetainingCapacity();
     }
-
-    pub fn readKey(self: *Terminal) !?u8 {
-        _ = self;
-        const stdin: std.fs.File = .{ .handle = posix.STDIN_FILENO };
-        var buf: [1]u8 = undefined;
-        const n = try stdin.read(&buf);
-        if (n == 0) return null;
-        return buf[0];
-    }
 };

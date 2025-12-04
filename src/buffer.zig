@@ -115,8 +115,8 @@ pub const PieceIterator = struct {
         self.global_pos = self.buffer.len();
     }
 
-    // イテレータの状態を保存
-    fn saveState(self: *const PieceIterator) PieceIterator {
+    // イテレータの状態を保存（nextGraphemeCluster内部でのみ使用）
+    inline fn saveState(self: *const PieceIterator) PieceIterator {
         return PieceIterator{
             .buffer = self.buffer,
             .piece_idx = self.piece_idx,
@@ -125,8 +125,8 @@ pub const PieceIterator = struct {
         };
     }
 
-    // イテレータの状態を復元
-    fn restoreState(self: *PieceIterator, saved: PieceIterator) void {
+    // イテレータの状態を復元（nextGraphemeCluster内部でのみ使用）
+    inline fn restoreState(self: *PieceIterator, saved: PieceIterator) void {
         self.piece_idx = saved.piece_idx;
         self.piece_offset = saved.piece_offset;
         self.global_pos = saved.global_pos;
@@ -303,23 +303,6 @@ pub const Buffer = struct {
         return self.total_len;
     }
 
-    pub fn charAt(self: *const Buffer, pos: usize) ?u8 {
-        var current_pos: usize = 0;
-
-        for (self.pieces.items) |piece| {
-            if (pos < current_pos + piece.length) {
-                const offset = pos - current_pos;
-                return switch (piece.source) {
-                    .original => self.original[piece.start + offset],
-                    .add => self.add_buffer.items[piece.start + offset],
-                };
-            }
-            current_pos += piece.length;
-        }
-
-        return null;
-    }
-
     fn findPieceAt(self: *const Buffer, pos: usize) ?struct { piece_idx: usize, offset: usize } {
         var current_pos: usize = 0;
 
@@ -338,7 +321,7 @@ pub const Buffer = struct {
 
     pub fn insert(self: *Buffer, pos: usize, ch: u8) !void {
         try self.insertSlice(pos, &[_]u8{ch});
-        self.line_index.invalidate();
+        // insertSlice内でinvalidateされるのでここでは不要
     }
 
     pub fn insertSlice(self: *Buffer, pos: usize, text: []const u8) !void {
@@ -359,6 +342,7 @@ pub const Buffer = struct {
         if (pos == 0) {
             try self.pieces.insert(self.allocator, 0, new_piece);
             self.total_len += text.len;
+            self.line_index.invalidate();
             return;
         }
 
@@ -366,6 +350,7 @@ pub const Buffer = struct {
         if (pos >= self.total_len) {
             try self.pieces.append(self.allocator, new_piece);
             self.total_len += text.len;
+            self.line_index.invalidate();
             return;
         }
 
@@ -373,6 +358,7 @@ pub const Buffer = struct {
         const location = self.findPieceAt(pos) orelse {
             try self.pieces.append(self.allocator, new_piece);
             self.total_len += text.len;
+            self.line_index.invalidate();
             return;
         };
 
@@ -382,12 +368,14 @@ pub const Buffer = struct {
         if (location.offset == 0) {
             try self.pieces.insert(self.allocator, location.piece_idx, new_piece);
             self.total_len += text.len;
+            self.line_index.invalidate();
             return;
         }
 
         if (location.offset == piece.length) {
             try self.pieces.insert(self.allocator, location.piece_idx + 1, new_piece);
             self.total_len += text.len;
+            self.line_index.invalidate();
             return;
         }
 
@@ -587,5 +575,8 @@ pub const Buffer = struct {
         for (self.pieces.items) |piece| {
             self.total_len += piece.length;
         }
+
+        // Undo/Redo後は行キャッシュを無効化
+        self.line_index.invalidate();
     }
 };

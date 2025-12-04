@@ -304,11 +304,11 @@ pub const Editor = struct {
         self.restoreCursorPos(saved_cursor);
     }
 
-    // カーソルをバイト位置に復元（簡易実装）
-    fn restoreCursorPos(self: *Editor, target_pos: usize) void {
+    // バイト位置からカーソル座標を計算して設定（grapheme cluster考慮）
+    fn setCursorToPos(self: *Editor, target_pos: usize) void {
         const clamped_pos = @min(target_pos, self.buffer.len());
 
-        // 行番号を計算
+        // 行番号とオフセットを計算
         var iter = PieceIterator.init(&self.buffer);
         var line: usize = 0;
         var line_start: usize = 0;
@@ -321,7 +321,7 @@ pub const Editor = struct {
             }
         }
 
-        // 画面内の行位置とカーソルX位置を計算
+        // 画面内の行位置を計算
         const max_screen_lines = self.terminal.height - 1;
         if (line < max_screen_lines) {
             self.view.top_line = 0;
@@ -331,8 +331,31 @@ pub const Editor = struct {
             self.view.cursor_y = line - self.view.top_line;
         }
 
-        // カーソルX位置を計算（簡易: バイトオフセット）
-        self.view.cursor_x = @min(clamped_pos - line_start, 80); // 仮の上限
+        // カーソルX位置を計算（grapheme cluster幅考慮）
+        iter = PieceIterator.init(&self.buffer);
+        iter.seek(line_start);
+
+        var col: usize = 0;
+        while (iter.global_pos < clamped_pos) {
+            const cluster = iter.nextGraphemeCluster() catch {
+                _ = iter.next();
+                col += 1;
+                continue;
+            };
+            if (cluster) |gc| {
+                if (gc.base == '\n') break;
+                col += gc.width;
+            } else {
+                break;
+            }
+        }
+
+        self.view.cursor_x = col;
+    }
+
+    // エイリアス: restoreCursorPosはsetCursorToPosと同じ
+    fn restoreCursorPos(self: *Editor, target_pos: usize) void {
+        self.setCursorToPos(target_pos);
     }
 
     fn processKey(self: *Editor, key: input.Key) !void {
@@ -628,11 +651,8 @@ pub const Editor = struct {
 
         const new_pos = iter.global_pos;
 
-        // カーソルを移動
-        const diff = new_pos - pos;
-        for (0..diff) |_| {
-            self.view.moveCursorRight(&self.terminal);
-        }
+        // カーソル位置を直接計算して設定
+        self.setCursorToPos(new_pos);
     }
 
     fn backwardWord(self: *Editor) !void {
@@ -663,13 +683,8 @@ pub const Editor = struct {
         // そうでなければ、直前の単語の開始位置へ
         new_pos = last_word_start;
 
-        // カーソルを移動
-        if (new_pos < pos) {
-            const diff = pos - new_pos;
-            for (0..diff) |_| {
-                self.view.moveCursorLeft();
-            }
-        }
+        // カーソル位置を直接計算して設定
+        self.setCursorToPos(new_pos);
     }
 
     fn deleteWord(self: *Editor) !void {
