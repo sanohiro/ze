@@ -5,6 +5,7 @@ const PieceIterator = @import("buffer.zig").PieceIterator;
 const View = @import("view.zig").View;
 const Terminal = @import("terminal.zig").Terminal;
 const input = @import("input.zig");
+const config = @import("config.zig");
 
 // 差分ログベースのUndo/Redo
 const EditOp = union(enum) {
@@ -142,7 +143,7 @@ pub const Editor = struct {
     }
 
     // Undoスタックの最大エントリ数
-    const MAX_UNDO_ENTRIES = 1000;
+    const MAX_UNDO_ENTRIES = config.Editor.MAX_UNDO_ENTRIES;
 
     // 編集操作を記録（差分ベース、連続挿入はマージ）
     fn recordInsert(self: *Editor, pos: usize, text: []const u8) !void {

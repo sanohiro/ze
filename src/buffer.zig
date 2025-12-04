@@ -1,5 +1,6 @@
 const std = @import("std");
 const unicode = @import("unicode.zig");
+const config = @import("config.zig");
 
 pub const PieceSource = enum {
     original,
@@ -65,7 +66,7 @@ pub const PieceIterator = struct {
         const first_byte = self.next() orelse return null;
 
         // ASCIIの場合は1バイト
-        if (first_byte < 0b10000000) {
+        if (first_byte < config.UTF8.CONTINUATION_MASK) {
             return @as(u21, first_byte);
         }
 

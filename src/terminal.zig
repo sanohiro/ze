@@ -1,6 +1,7 @@
 const std = @import("std");
 const posix = std.posix;
 const io = std.io;
+const config = @import("config.zig");
 
 pub const Terminal = struct {
     original_termios: posix.termios,
@@ -15,8 +16,8 @@ pub const Terminal = struct {
 
         var self = Terminal{
             .original_termios = original,
-            .width = 80,
-            .height = 24,
+            .width = config.Terminal.DEFAULT_WIDTH,
+            .height = config.Terminal.DEFAULT_HEIGHT,
             .buf = std.ArrayList(u8){},
             .allocator = allocator,
         };
@@ -88,20 +89,20 @@ pub const Terminal = struct {
     }
 
     pub fn clear(self: *Terminal) !void {
-        try self.buf.appendSlice(self.allocator, "\x1b[2J");
-        try self.buf.appendSlice(self.allocator, "\x1b[H");
+        try self.buf.appendSlice(self.allocator, config.ANSI.CLEAR_SCREEN);
+        try self.buf.appendSlice(self.allocator, config.ANSI.CURSOR_HOME);
     }
 
     pub fn hideCursor(self: *Terminal) !void {
-        try self.buf.appendSlice(self.allocator, "\x1b[?25l");
+        try self.buf.appendSlice(self.allocator, config.ANSI.HIDE_CURSOR);
     }
 
     pub fn showCursor(self: *Terminal) !void {
-        try self.buf.appendSlice(self.allocator, "\x1b[?25h");
+        try self.buf.appendSlice(self.allocator, config.ANSI.SHOW_CURSOR);
     }
 
     pub fn moveCursor(self: *Terminal, row: usize, col: usize) !void {
-        var buf: [32]u8 = undefined;
+        var buf: [config.Terminal.CURSOR_BUF_SIZE]u8 = undefined;
         const str = try std.fmt.bufPrint(&buf, "\x1b[{d};{d}H", .{ row + 1, col + 1 });
         try self.buf.appendSlice(self.allocator, str);
     }

@@ -1,4 +1,5 @@
 const std = @import("std");
+const config = @import("config.zig");
 
 pub const Key = union(enum) {
     char: u8,
@@ -22,7 +23,7 @@ pub const Key = union(enum) {
 };
 
 pub fn readKey(stdin: std.fs.File) !?Key {
-    var buf: [8]u8 = undefined;
+    var buf: [config.Input.BUF_SIZE]u8 = undefined;
     const n = try stdin.read(buf[0..1]);
     if (n == 0) return null;
 
@@ -31,7 +32,7 @@ pub fn readKey(stdin: std.fs.File) !?Key {
     // 特殊キーを先にチェック（Ctrlキーと重複するため）
     switch (ch) {
         '\r', '\n' => return Key.enter,  // 13 (\r) と 10 (\n)
-        8, 127 => return Key.backspace,  // 8 (Ctrl+H) と 127 (Delete)
+        8, config.Input.DEL => return Key.backspace,  // 8 (Ctrl+H) と 127 (Delete)
         '\t' => return Key.tab,  // 9
         else => {},
     }
@@ -42,7 +43,7 @@ pub fn readKey(stdin: std.fs.File) !?Key {
     }
 
     // ESC シーケンス
-    if (ch == 27) {
+    if (ch == config.Input.ESC) {
         // さらに読み込んでエスケープシーケンスを判定
         const n2 = try stdin.read(buf[1..3]);
         if (n2 == 0) {
@@ -91,7 +92,7 @@ pub fn readKey(stdin: std.fs.File) !?Key {
     }
 
     // UTF-8マルチバイト文字の処理
-    if (ch >= 0b10000000) {
+    if (ch >= config.UTF8.CONTINUATION_MASK) {
         const len = std.unicode.utf8ByteSequenceLength(ch) catch {
             // 無効なUTF-8は無視
             return Key{ .char = ch };

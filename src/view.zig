@@ -2,6 +2,7 @@ const std = @import("std");
 const Buffer = @import("buffer.zig").Buffer;
 const PieceIterator = @import("buffer.zig").PieceIterator;
 const Terminal = @import("terminal.zig").Terminal;
+const config = @import("config.zig");
 
 pub const View = struct {
     buffer: *Buffer,
@@ -67,7 +68,7 @@ pub const View = struct {
     // イテレータを再利用して行を描画（seek()なしで前進のみ）
     fn renderLineWithIter(_: *View, term: *Terminal, screen_row: usize, iter: *PieceIterator, line_buffer: *std.ArrayList(u8)) !void {
         try term.moveCursor(screen_row, 0);
-        try term.write("\x1b[K"); // 行末までクリア
+        try term.write(config.ANSI.CLEAR_LINE); // 行末までクリア
 
         // 再利用バッファをクリア
         line_buffer.clearRetainingCapacity();
@@ -107,7 +108,7 @@ pub const View = struct {
     // 空行（~）を描画
     fn renderEmptyLine(_: *View, term: *Terminal, screen_row: usize) !void {
         try term.moveCursor(screen_row, 0);
-        try term.write("\x1b[K");
+        try term.write(config.ANSI.CLEAR_LINE);
         try term.write("~");
     }
 
@@ -123,7 +124,7 @@ pub const View = struct {
 
         // 全画面再描画が必要な場合
         if (self.needs_full_redraw) {
-            try term.write("\x1b[H"); // ホーム位置
+            try term.write(config.ANSI.CURSOR_HOME); // ホーム位置
 
             // top_lineの開始位置を取得してイテレータを初期化
             const start_pos = self.buffer.line_index.getLineStart(self.top_line) orelse self.buffer.len();
@@ -187,7 +188,7 @@ pub const View = struct {
     fn renderStatusBar(self: *View, term: *Terminal) !void {
         try term.moveCursor(term.height - 1, 0);
 
-        var status_buf: [256]u8 = undefined;
+        var status_buf: [config.Editor.STATUS_BUF_SIZE]u8 = undefined;
         const lines = self.buffer.lineCount();
         const status = try std.fmt.bufPrint(
             &status_buf,
@@ -196,7 +197,7 @@ pub const View = struct {
         );
 
         // ステータスバーを反転表示
-        try term.write("\x1b[7m");
+        try term.write(config.ANSI.INVERT);
         try term.write(status);
 
         // 残りの部分を空白で埋める（underflow防止）
@@ -204,7 +205,7 @@ pub const View = struct {
         for (0..padding) |_| {
             try term.write(" ");
         }
-        try term.write("\x1b[m");
+        try term.write(config.ANSI.RESET);
     }
 
     pub fn getCursorBufferPos(self: *const View) usize {
