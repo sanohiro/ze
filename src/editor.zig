@@ -111,12 +111,25 @@ pub const Editor = struct {
     }
 
     // バッファから指定範囲のテキストを取得（削除前に使用）
+    // PieceIteratorを使ってO(N)で取得（従来のcharAtループはO(N²)）
     fn extractText(self: *Editor, pos: usize, len: usize) ![]u8 {
         var result = try self.allocator.alloc(u8, len);
+        errdefer self.allocator.free(result);
+
+        var iter = PieceIterator.init(&self.buffer);
+
+        // posまでスキップ
+        var skip_count: usize = 0;
+        while (skip_count < pos) : (skip_count += 1) {
+            _ = iter.next() orelse return result[0..0];
+        }
+
+        // len分読み取る
         var i: usize = 0;
         while (i < len) : (i += 1) {
-            result[i] = self.buffer.charAt(pos + i) orelse break;
+            result[i] = iter.next() orelse break;
         }
+
         return result[0..i];
     }
 
@@ -177,7 +190,16 @@ pub const Editor = struct {
                 });
             },
         }
+
         self.modified = true;
+
+        // 画面全体を再描画
+        self.view.markFullRedraw();
+
+        // カーソル位置をリセット（簡易版: ホーム位置）
+        self.view.top_line = 0;
+        self.view.cursor_x = 0;
+        self.view.cursor_y = 0;
     }
 
     fn redo(self: *Editor) !void {
@@ -205,7 +227,16 @@ pub const Editor = struct {
                 });
             },
         }
+
         self.modified = true;
+
+        // 画面全体を再描画
+        self.view.markFullRedraw();
+
+        // カーソル位置をリセット（簡易版: ホーム位置）
+        self.view.top_line = 0;
+        self.view.cursor_x = 0;
+        self.view.cursor_y = 0;
     }
 
     fn processKey(self: *Editor, key: input.Key) !void {
@@ -272,8 +303,10 @@ pub const Editor = struct {
     fn insertChar(self: *Editor, ch: u8) !void {
         const current_line = self.getCurrentLine();
         const pos = self.view.getCursorBufferPos();
-        try self.recordInsert(pos, &[_]u8{ch});
+
+        // バッファ変更を先に実行（失敗した場合はundoログに記録しない）
         try self.buffer.insert(pos, ch);
+        try self.recordInsert(pos, &[_]u8{ch});
         self.modified = true;
 
         if (ch == '\n') {
@@ -307,8 +340,10 @@ pub const Editor = struct {
         const len = std.unicode.utf8Encode(codepoint, &buf) catch return error.InvalidUtf8;
 
         const pos = self.view.getCursorBufferPos();
-        try self.recordInsert(pos, buf[0..len]);
+
+        // バッファ変更を先に実行
         try self.buffer.insertSlice(pos, buf[0..len]);
+        try self.recordInsert(pos, buf[0..len]);
         self.modified = true;
 
         if (codepoint == '\n') {
@@ -347,9 +382,12 @@ pub const Editor = struct {
 
         const cluster = iter.nextGraphemeCluster() catch {
             const deleted = try self.extractText(pos, 1);
-            defer self.allocator.free(deleted);
-            try self.recordDelete(pos, deleted);
+            errdefer self.allocator.free(deleted);
+
             try self.buffer.delete(pos, 1);
+            try self.recordDelete(pos, deleted);
+            self.allocator.free(deleted);
+
             self.modified = true;
             self.view.markDirty(current_line, current_line);
             return;
@@ -357,9 +395,12 @@ pub const Editor = struct {
 
         if (cluster) |gc| {
             const deleted = try self.extractText(pos, gc.byte_len);
-            defer self.allocator.free(deleted);
-            try self.recordDelete(pos, deleted);
+            errdefer self.allocator.free(deleted);
+
             try self.buffer.delete(pos, gc.byte_len);
+            try self.recordDelete(pos, deleted);
+            self.allocator.free(deleted);
+
             self.modified = true;
             self.view.markDirty(current_line, current_line);
         }
@@ -391,9 +432,12 @@ pub const Editor = struct {
         }
 
         const deleted = try self.extractText(char_start, char_len);
-        defer self.allocator.free(deleted);
-        try self.recordDelete(char_start, deleted);
+        errdefer self.allocator.free(deleted);
+
         try self.buffer.delete(char_start, char_len);
+        try self.recordDelete(char_start, deleted);
+        self.allocator.free(deleted);
+
         self.modified = true;
         self.view.markDirty(current_line, current_line);
 
@@ -423,9 +467,12 @@ pub const Editor = struct {
         const count = end_pos - pos;
         if (count > 0) {
             const deleted = try self.extractText(pos, count);
-            defer self.allocator.free(deleted);
-            try self.recordDelete(pos, deleted);
+            errdefer self.allocator.free(deleted);
+
             try self.buffer.delete(pos, count);
+            try self.recordDelete(pos, deleted);
+            self.allocator.free(deleted);
+
             self.modified = true;
             self.view.markDirty(current_line, current_line);
         }
@@ -512,9 +559,12 @@ pub const Editor = struct {
         const count = end_pos - pos;
         if (count > 0) {
             const deleted = try self.extractText(pos, count);
-            defer self.allocator.free(deleted);
-            try self.recordDelete(pos, deleted);
+            errdefer self.allocator.free(deleted);
+
             try self.buffer.delete(pos, count);
+            try self.recordDelete(pos, deleted);
+            self.allocator.free(deleted);
+
             self.modified = true;
             self.view.markDirty(current_line, current_line);
         }

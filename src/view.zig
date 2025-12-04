@@ -93,11 +93,6 @@ pub const View = struct {
     pub fn render(self: *View, term: *Terminal) !void {
         try term.hideCursor();
 
-        // 行キャッシュが無効なら再構築
-        if (!self.buffer.line_cache.valid) {
-            try self.buffer.line_cache.rebuild(self.buffer);
-        }
-
         const max_lines = term.height - 1;
 
         // 全画面再描画が必要な場合
