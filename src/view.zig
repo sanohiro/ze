@@ -293,6 +293,7 @@ pub const View = struct {
                 // 画面最上部で、さらに上にスクロール可能
                 self.top_line -= 1;
                 self.moveToLineEnd();
+                self.markFullRedraw(); // スクロールで全画面再描画
             }
         }
     }
@@ -321,6 +322,7 @@ pub const View = struct {
                 } else if (self.top_line + self.cursor_y + 1 < self.buffer.lineCount()) {
                     self.top_line += 1;
                     self.cursor_x = 0;
+                    self.markFullRedraw(); // スクロールで全画面再描画
                 }
             } else {
                 // grapheme clusterの幅分進める
@@ -334,6 +336,7 @@ pub const View = struct {
             self.cursor_y -= 1;
         } else if (self.top_line > 0) {
             self.top_line -= 1;
+            self.markFullRedraw(); // スクロールで全画面再描画
         } else {
             return;
         }
@@ -350,6 +353,7 @@ pub const View = struct {
             self.cursor_y += 1;
         } else if (self.top_line + self.cursor_y + 1 < self.buffer.lineCount()) {
             self.top_line += 1;
+            self.markFullRedraw(); // スクロールで全画面再描画
         } else {
             return;
         }

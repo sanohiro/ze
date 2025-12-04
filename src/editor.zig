@@ -386,10 +386,15 @@ pub const Editor = struct {
 
             try self.buffer.delete(pos, 1);
             try self.recordDelete(pos, deleted);
-            self.allocator.free(deleted);
 
             self.modified = true;
-            self.view.markDirty(current_line, current_line);
+            // 改行削除の場合は末尾まで再描画
+            if (std.mem.indexOf(u8, deleted, "\n") != null) {
+                self.view.markDirty(current_line, std.math.maxInt(usize));
+            } else {
+                self.view.markDirty(current_line, current_line);
+            }
+            self.allocator.free(deleted);
             return;
         };
 
@@ -399,10 +404,15 @@ pub const Editor = struct {
 
             try self.buffer.delete(pos, gc.byte_len);
             try self.recordDelete(pos, deleted);
-            self.allocator.free(deleted);
 
             self.modified = true;
-            self.view.markDirty(current_line, current_line);
+            // 改行削除の場合は末尾まで再描画
+            if (std.mem.indexOf(u8, deleted, "\n") != null) {
+                self.view.markDirty(current_line, std.math.maxInt(usize));
+            } else {
+                self.view.markDirty(current_line, current_line);
+            }
+            self.allocator.free(deleted);
         }
     }
 
@@ -436,10 +446,15 @@ pub const Editor = struct {
 
         try self.buffer.delete(char_start, char_len);
         try self.recordDelete(char_start, deleted);
-        self.allocator.free(deleted);
 
         self.modified = true;
-        self.view.markDirty(current_line, current_line);
+        // 改行削除の場合は末尾まで再描画
+        if (std.mem.indexOf(u8, deleted, "\n") != null) {
+            self.view.markDirty(current_line, std.math.maxInt(usize));
+        } else {
+            self.view.markDirty(current_line, current_line);
+        }
+        self.allocator.free(deleted);
 
         if (self.view.cursor_x >= char_width) {
             self.view.cursor_x -= char_width;
@@ -471,10 +486,15 @@ pub const Editor = struct {
 
             try self.buffer.delete(pos, count);
             try self.recordDelete(pos, deleted);
-            self.allocator.free(deleted);
 
             self.modified = true;
-            self.view.markDirty(current_line, current_line);
+            // 改行削除の場合は末尾まで再描画
+            if (std.mem.indexOf(u8, deleted, "\n") != null) {
+                self.view.markDirty(current_line, std.math.maxInt(usize));
+            } else {
+                self.view.markDirty(current_line, current_line);
+            }
+            self.allocator.free(deleted);
         }
     }
 
@@ -563,10 +583,15 @@ pub const Editor = struct {
 
             try self.buffer.delete(pos, count);
             try self.recordDelete(pos, deleted);
-            self.allocator.free(deleted);
 
             self.modified = true;
-            self.view.markDirty(current_line, current_line);
+            // 改行削除の場合は末尾まで再描画
+            if (std.mem.indexOf(u8, deleted, "\n") != null) {
+                self.view.markDirty(current_line, std.math.maxInt(usize));
+            } else {
+                self.view.markDirty(current_line, current_line);
+            }
+            self.allocator.free(deleted);
         }
     }
 };
