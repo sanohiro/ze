@@ -36,6 +36,8 @@ const EditorMode = enum {
     prefix_x, // C-xプレフィックス待ち
     quit_confirm, // 終了確認中（y/n/cを待つ）
     filename_input, // ファイル名入力中
+    isearch_forward, // インクリメンタルサーチ（前方）
+    isearch_backward, // インクリメンタルサーチ（後方）
 };
 
 pub const Editor = struct {
@@ -47,11 +49,12 @@ pub const Editor = struct {
     filename: ?[]const u8,
     modified: bool,
     mode: EditorMode, // エディタのモード
-    input_buffer: std.ArrayList(u8), // ミニバッファ入力用
+    input_buffer: std.ArrayList(u8), // ミニバッファ入力用（検索文字列、ファイル名入力等）
     quit_after_save: bool, // ファイル名入力後に終了するか
     prompt_buffer: ?[]const u8, // allocPrintで作成したプロンプト文字列
     mark_pos: ?usize, // 範囲選択のマーク位置（null=未設定）
     kill_ring: ?[]const u8, // コピー/カットバッファ
+    search_start_pos: ?usize, // 検索開始時のカーソル位置（C-gでここに戻る）
     undo_stack: std.ArrayList(UndoEntry),
     redo_stack: std.ArrayList(UndoEntry),
 
@@ -70,6 +73,7 @@ pub const Editor = struct {
             .prompt_buffer = null,
             .mark_pos = null,
             .kill_ring = null,
+            .search_start_pos = null,
             .undo_stack = std.ArrayList(UndoEntry).initCapacity(allocator, 0) catch unreachable,
             .redo_stack = std.ArrayList(UndoEntry).initCapacity(allocator, 0) catch unreachable,
         };
@@ -508,6 +512,86 @@ pub const Editor = struct {
                 }
                 return;
             },
+            .isearch_forward, .isearch_backward => {
+                // インクリメンタルサーチモード
+                const is_forward = (self.mode == .isearch_forward);
+                switch (key) {
+                    .char => |c| {
+                        // 検索文字列に文字を追加
+                        try self.input_buffer.append(self.allocator, c);
+                        // プロンプトを更新して検索実行
+                        const prefix = if (is_forward) "I-search: " else "I-search backward: ";
+                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ prefix, self.input_buffer.items }) catch null;
+                        if (self.prompt_buffer) |prompt| {
+                            self.view.setError(prompt);
+                        }
+                        // 検索実行（現在位置から）
+                        if (self.input_buffer.items.len > 0) {
+                            try self.performSearch(is_forward, false);
+                        }
+                    },
+                    .ctrl => |c| {
+                        switch (c) {
+                            'g' => {
+                                // C-g: 検索キャンセル、元の位置に戻る
+                                if (self.search_start_pos) |start_pos| {
+                                    self.setCursorToPos(start_pos);
+                                }
+                                self.mode = .normal;
+                                self.input_buffer.clearRetainingCapacity();
+                                self.view.clearError();
+                            },
+                            's' => {
+                                // C-s: 次の一致を検索（前方）
+                                if (self.input_buffer.items.len > 0) {
+                                    try self.performSearch(true, true);
+                                }
+                            },
+                            'r' => {
+                                // C-r: 前の一致を検索（後方）
+                                if (self.input_buffer.items.len > 0) {
+                                    try self.performSearch(false, true);
+                                }
+                            },
+                            else => {},
+                        }
+                    },
+                    .backspace => {
+                        // バックスペース：検索文字列の最後の文字を削除
+                        if (self.input_buffer.items.len > 0) {
+                            _ = self.input_buffer.pop();
+                            const prefix = if (is_forward) "I-search: " else "I-search backward: ";
+                            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ prefix, self.input_buffer.items }) catch null;
+                            if (self.prompt_buffer) |prompt| {
+                                self.view.setError(prompt);
+                            } else {
+                                self.view.clearError();
+                            }
+                            // 検索文字列が残っていれば再検索
+                            if (self.input_buffer.items.len > 0) {
+                                // 開始位置から再検索
+                                if (self.search_start_pos) |start_pos| {
+                                    self.setCursorToPos(start_pos);
+                                }
+                                try self.performSearch(is_forward, false);
+                            } else {
+                                // 検索文字列が空になったら開始位置に戻る
+                                if (self.search_start_pos) |start_pos| {
+                                    self.setCursorToPos(start_pos);
+                                }
+                            }
+                        }
+                    },
+                    .enter => {
+                        // Enter: 検索確定（現在位置で確定）
+                        self.mode = .normal;
+                        self.input_buffer.clearRetainingCapacity();
+                        self.view.clearError();
+                    },
+                    else => {},
+                }
+                return;
+            },
             .prefix_x => {
                 // C-xプレフィックスモード：次のCtrlキーを待つ
                 self.mode = .normal; // デフォルトでnormalに戻る
@@ -634,7 +718,21 @@ pub const Editor = struct {
                     'y' => try self.yank(), // C-y ペースト
                     'g' => self.view.clearError(), // C-g キャンセル
                     'u' => try self.undo(), // C-u Undo
-                    'r' => try self.redo(), // C-r Redo
+                    31, '/' => try self.redo(), // C-/ または C-_ Redo
+                    's' => {
+                        // C-s インクリメンタルサーチ（前方）
+                        self.mode = .isearch_forward;
+                        self.search_start_pos = self.view.getCursorBufferPos();
+                        self.input_buffer.clearRetainingCapacity();
+                        self.view.setError("I-search: ");
+                    },
+                    'r' => {
+                        // C-r インクリメンタルサーチ（後方）
+                        self.mode = .isearch_backward;
+                        self.search_start_pos = self.view.getCursorBufferPos();
+                        self.input_buffer.clearRetainingCapacity();
+                        self.view.setError("I-search backward: ");
+                    },
                     else => {},
                 }
             },
@@ -828,24 +926,49 @@ pub const Editor = struct {
         const deleted = try self.extractText(char_start, char_len);
         errdefer self.allocator.free(deleted);
 
+        // 改行削除の場合、削除後のカーソル位置を計算
+        const is_newline = std.mem.indexOf(u8, deleted, "\n") != null;
+
         try self.buffer.delete(char_start, char_len);
         errdefer self.buffer.insertSlice(char_start, deleted) catch unreachable; // rollback失敗は致命的
         try self.recordDelete(char_start, deleted, pos); // 編集前のカーソル位置を記録
 
         self.modified = true;
         // 改行削除の場合は末尾まで再描画
-        if (std.mem.indexOf(u8, deleted, "\n") != null) {
+        if (is_newline) {
             self.view.markDirty(current_line, null);
         } else {
             self.view.markDirty(current_line, current_line);
         }
         self.allocator.free(deleted);
 
+        // カーソル移動
         if (self.view.cursor_x >= char_width) {
             self.view.cursor_x -= char_width;
         } else if (self.view.cursor_y > 0) {
             self.view.cursor_y -= 1;
-            self.view.moveToLineEnd();
+            if (is_newline) {
+                // 改行削除の場合、削除位置（char_start）が新しいカーソル位置
+                // そこまでの行内の表示幅を計算
+                const new_line = self.getCurrentLine();
+                if (self.buffer.getLineStart(self.view.top_line + new_line)) |line_start| {
+                    var x: usize = 0;
+                    var width_iter = PieceIterator.init(&self.buffer);
+                    width_iter.seek(line_start);
+                    while (width_iter.global_pos < char_start) {
+                        const cluster = width_iter.nextGraphemeCluster() catch break;
+                        if (cluster) |gc| {
+                            if (gc.base == '\n') break;
+                            x += gc.width;
+                        } else {
+                            break;
+                        }
+                    }
+                    self.view.cursor_x = x;
+                }
+            } else {
+                self.view.moveToLineEnd();
+            }
         }
     }
 
@@ -1130,5 +1253,57 @@ pub const Editor = struct {
         }
 
         self.view.setError("Yanked text");
+    }
+
+    // インクリメンタルサーチ実行
+    // forward: true=前方検索、false=後方検索
+    // skip_current: true=現在位置をスキップして次を検索、false=現在位置から検索
+    fn performSearch(self: *Editor, forward: bool, skip_current: bool) !void {
+        const search_str = self.input_buffer.items;
+        if (search_str.len == 0) return;
+
+        // バッファの全内容を取得
+        const content = try self.extractText(0, self.buffer.total_len);
+        defer self.allocator.free(content);
+
+        const start_pos = self.view.getCursorBufferPos();
+        const search_from = if (skip_current and start_pos < content.len) start_pos + 1 else start_pos;
+
+        if (forward) {
+            // 前方検索
+            if (search_from < content.len) {
+                if (std.mem.indexOf(u8, content[search_from..], search_str)) |offset| {
+                    const found_pos = search_from + offset;
+                    self.setCursorToPos(found_pos);
+                    return;
+                }
+            }
+            // 見つからなかったら先頭から検索（ラップアラウンド）
+            if (start_pos > 0) {
+                if (std.mem.indexOf(u8, content[0..start_pos], search_str)) |offset| {
+                    self.setCursorToPos(offset);
+                    return;
+                }
+            }
+            // それでも見つからない
+            self.view.setError("Failing I-search");
+        } else {
+            // 後方検索
+            if (search_from > 0) {
+                if (std.mem.lastIndexOf(u8, content[0..search_from], search_str)) |offset| {
+                    self.setCursorToPos(offset);
+                    return;
+                }
+            }
+            // 見つからなかったら末尾から検索（ラップアラウンド）
+            if (start_pos < content.len) {
+                if (std.mem.lastIndexOf(u8, content[start_pos..], search_str)) |offset| {
+                    self.setCursorToPos(start_pos + offset);
+                    return;
+                }
+            }
+            // それでも見つからない
+            self.view.setError("Failing I-search backward");
+        }
     }
 };

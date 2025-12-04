@@ -161,12 +161,39 @@ pub fn main() !void {
             }
         }
 
-        // 子プロセスの終了を待つ
-        std.debug.print("\nWaiting for child process to exit...\n", .{});
-        const wait_result = posix.waitpid(pid, 0);
-        std.debug.print("Child exited with status: {}\n", .{wait_result.status});
+        // 子プロセスの終了を待つ（タイムアウト付き）
+        std.debug.print("\nWaiting for child process to exit (timeout: 3s)...\n", .{});
 
-        std.debug.print("\n=== Test completed ===\n", .{});
+        var timeout_count: u32 = 0;
+        const max_timeout = 30; // 30 * 100ms = 3秒
+        while (timeout_count < max_timeout) : (timeout_count += 1) {
+            const wait_result = posix.waitpid(pid, posix.W.NOHANG);
+            if (wait_result.pid != 0) {
+                std.debug.print("Child exited with status: {}\n", .{wait_result.status});
+                std.debug.print("\n=== Test completed ===\n", .{});
+                return;
+            }
+            std.Thread.sleep(100 * std.time.ns_per_ms);
+        }
+
+        // タイムアウト：子プロセスを強制終了
+        std.debug.print("Timeout! Killing child process...\n", .{});
+        posix.kill(pid, posix.SIG.TERM) catch |err| {
+            std.debug.print("Failed to send SIGTERM: {}\n", .{err});
+        };
+        std.Thread.sleep(500 * std.time.ns_per_ms);
+
+        // それでも終了しない場合はKILL
+        const wait_result = posix.waitpid(pid, posix.W.NOHANG);
+        if (wait_result.pid == 0) {
+            std.debug.print("Child still alive, sending SIGKILL...\n", .{});
+            posix.kill(pid, posix.SIG.KILL) catch |err| {
+                std.debug.print("Failed to send SIGKILL: {}\n", .{err});
+            };
+            _ = posix.waitpid(pid, 0);
+        }
+
+        std.debug.print("\n=== Test completed (with timeout) ===\n", .{});
     }
 }
 

@@ -191,7 +191,7 @@ pub const View = struct {
             if (diff_start) |start_raw| {
                 // UTF-8文字境界に調整（継続バイトの途中から始まらないように）
                 var start = start_raw;
-                while (start > 0 and new_line[start] >= 0x80 and new_line[start] < 0xC0) {
+                while (start > 0 and start < new_line.len and new_line[start] >= 0x80 and new_line[start] < 0xC0) {
                     // 継続バイト（0x80-0xBF）の場合は前に戻る
                     start -= 1;
                 }
@@ -582,7 +582,8 @@ pub const View = struct {
     }
 
     pub fn moveCursorDown(self: *View, term: *Terminal) void {
-        if (self.cursor_y < term.height - 2 and self.top_line + self.cursor_y + 1 < self.buffer.lineCount()) {
+        const max_cursor_y = if (term.height >= 2) term.height - 2 else 0;
+        if (self.cursor_y < max_cursor_y and self.top_line + self.cursor_y + 1 < self.buffer.lineCount()) {
             self.cursor_y += 1;
         } else if (self.top_line + self.cursor_y + 1 < self.buffer.lineCount()) {
             self.top_line += 1;

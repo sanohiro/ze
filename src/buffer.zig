@@ -536,10 +536,10 @@ pub const Buffer = struct {
         }
 
         // 後ろから削除（インデックスがずれないように）
-        var j = pieces_to_remove.items.len;
-        while (j > 0) {
-            j -= 1;
-            _ = self.pieces.orderedRemove(pieces_to_remove.items[j]);
+        // インデックスを降順にソートしてから削除
+        std.mem.sort(usize, pieces_to_remove.items, {}, comptime std.sort.desc(usize));
+        for (pieces_to_remove.items) |idx| {
+            _ = self.pieces.orderedRemove(idx);
         }
         self.line_index.invalidate();
     }
