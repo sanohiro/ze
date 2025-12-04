@@ -20,6 +20,7 @@ const EditOp = union(enum) {
 
 const UndoEntry = struct {
     op: EditOp,
+    cursor_pos: usize, // 操作前のカーソルバイト位置
 
     fn deinit(self: *const UndoEntry, allocator: std.mem.Allocator) void {
         switch (self.op) {
@@ -138,6 +139,8 @@ pub const Editor = struct {
 
     // 編集操作を記録（差分ベース、連続挿入はマージ）
     fn recordInsert(self: *Editor, pos: usize, text: []const u8) !void {
+        const cursor_pos = self.view.getCursorBufferPos();
+
         // 連続挿入のコアレッシング: 直前の操作が連続する挿入ならマージ
         if (self.undo_stack.items.len > 0) {
             const last = &self.undo_stack.items[self.undo_stack.items.len - 1];
@@ -149,6 +152,7 @@ pub const Editor = struct {
                     errdefer self.allocator.free(new_text); // concat成功後の保護
                     self.allocator.free(last_ins.text);
                     last.op.insert.text = new_text;
+                    // cursor_posは最初の操作のものを保持
                     return;
                 }
             }
@@ -157,6 +161,7 @@ pub const Editor = struct {
         const text_copy = try self.allocator.dupe(u8, text);
         try self.undo_stack.append(self.allocator, .{
             .op = .{ .insert = .{ .pos = pos, .text = text_copy } },
+            .cursor_pos = cursor_pos,
         });
 
         // Undoスタックが上限を超えたら古いエントリを削除
@@ -173,6 +178,8 @@ pub const Editor = struct {
     }
 
     fn recordDelete(self: *Editor, pos: usize, text: []const u8) !void {
+        const cursor_pos = self.view.getCursorBufferPos();
+
         // 連続削除のコアレッシング: 直前の操作が連続する削除ならマージ
         if (self.undo_stack.items.len > 0) {
             const last = &self.undo_stack.items[self.undo_stack.items.len - 1];
@@ -185,6 +192,7 @@ pub const Editor = struct {
                     self.allocator.free(last_del.text);
                     last.op.delete.text = new_text;
                     last.op.delete.pos = pos;
+                    // cursor_posは最初の操作のものを保持
                     return;
                 }
                 // Delete: 削除位置が同じ（連続してpos位置で削除）
@@ -193,6 +201,7 @@ pub const Editor = struct {
                     errdefer self.allocator.free(new_text);
                     self.allocator.free(last_del.text);
                     last.op.delete.text = new_text;
+                    // cursor_posは最初の操作のものを保持
                     return;
                 }
             }
@@ -201,6 +210,7 @@ pub const Editor = struct {
         const text_copy = try self.allocator.dupe(u8, text);
         try self.undo_stack.append(self.allocator, .{
             .op = .{ .delete = .{ .pos = pos, .text = text_copy } },
+            .cursor_pos = cursor_pos,
         });
 
         // Undoスタックが上限を超えたら古いエントリを削除
@@ -222,6 +232,8 @@ pub const Editor = struct {
         const entry = self.undo_stack.pop() orelse return;
         defer entry.deinit(self.allocator);
 
+        const saved_cursor = entry.cursor_pos;
+
         // 逆操作を実行してredoスタックに保存
         switch (entry.op) {
             .insert => |ins| {
@@ -230,6 +242,7 @@ pub const Editor = struct {
                 const text_copy = try self.allocator.dupe(u8, ins.text);
                 try self.redo_stack.append(self.allocator, .{
                     .op = .{ .insert = .{ .pos = ins.pos, .text = text_copy } },
+                    .cursor_pos = self.view.getCursorBufferPos(),
                 });
             },
             .delete => |del| {
@@ -238,6 +251,7 @@ pub const Editor = struct {
                 const text_copy = try self.allocator.dupe(u8, del.text);
                 try self.redo_stack.append(self.allocator, .{
                     .op = .{ .delete = .{ .pos = del.pos, .text = text_copy } },
+                    .cursor_pos = self.view.getCursorBufferPos(),
                 });
             },
         }
@@ -247,10 +261,8 @@ pub const Editor = struct {
         // 画面全体を再描画
         self.view.markFullRedraw();
 
-        // カーソル位置をリセット（簡易版: ホーム位置）
-        self.view.top_line = 0;
-        self.view.cursor_x = 0;
-        self.view.cursor_y = 0;
+        // カーソル位置を復元（保存された位置へ）
+        self.restoreCursorPos(saved_cursor);
     }
 
     fn redo(self: *Editor) !void {
@@ -258,6 +270,8 @@ pub const Editor = struct {
 
         const entry = self.redo_stack.pop() orelse return;
         defer entry.deinit(self.allocator);
+
+        const saved_cursor = entry.cursor_pos;
 
         // 逆操作を実行してundoスタックに保存
         switch (entry.op) {
@@ -267,6 +281,7 @@ pub const Editor = struct {
                 const text_copy = try self.allocator.dupe(u8, ins.text);
                 try self.undo_stack.append(self.allocator, .{
                     .op = .{ .insert = .{ .pos = ins.pos, .text = text_copy } },
+                    .cursor_pos = self.view.getCursorBufferPos(),
                 });
             },
             .delete => |del| {
@@ -275,6 +290,7 @@ pub const Editor = struct {
                 const text_copy = try self.allocator.dupe(u8, del.text);
                 try self.undo_stack.append(self.allocator, .{
                     .op = .{ .delete = .{ .pos = del.pos, .text = text_copy } },
+                    .cursor_pos = self.view.getCursorBufferPos(),
                 });
             },
         }
@@ -284,10 +300,39 @@ pub const Editor = struct {
         // 画面全体を再描画
         self.view.markFullRedraw();
 
-        // カーソル位置をリセット（簡易版: ホーム位置）
-        self.view.top_line = 0;
-        self.view.cursor_x = 0;
-        self.view.cursor_y = 0;
+        // カーソル位置を復元（保存された位置へ）
+        self.restoreCursorPos(saved_cursor);
+    }
+
+    // カーソルをバイト位置に復元（簡易実装）
+    fn restoreCursorPos(self: *Editor, target_pos: usize) void {
+        const clamped_pos = @min(target_pos, self.buffer.len());
+
+        // 行番号を計算
+        var iter = PieceIterator.init(&self.buffer);
+        var line: usize = 0;
+        var line_start: usize = 0;
+
+        while (iter.global_pos < clamped_pos) {
+            const ch = iter.next() orelse break;
+            if (ch == '\n') {
+                line += 1;
+                line_start = iter.global_pos;
+            }
+        }
+
+        // 画面内の行位置とカーソルX位置を計算
+        const max_screen_lines = self.terminal.height - 1;
+        if (line < max_screen_lines) {
+            self.view.top_line = 0;
+            self.view.cursor_y = line;
+        } else {
+            self.view.top_line = line - max_screen_lines / 2; // 中央に表示
+            self.view.cursor_y = line - self.view.top_line;
+        }
+
+        // カーソルX位置を計算（簡易: バイトオフセット）
+        self.view.cursor_x = @min(clamped_pos - line_start, 80); // 仮の上限
     }
 
     fn processKey(self: *Editor, key: input.Key) !void {
@@ -523,16 +568,19 @@ pub const Editor = struct {
     fn killLine(self: *Editor) !void {
         const current_line = self.getCurrentLine();
         const pos = self.view.getCursorBufferPos();
-        var end_pos = pos;
 
-        // 行末まで削除
-        while (end_pos < self.buffer.len()) {
-            const ch = self.buffer.charAt(end_pos).?;
+        // PieceIteratorで行末を探す
+        var iter = PieceIterator.init(&self.buffer);
+        iter.seek(pos);
+
+        var end_pos = pos;
+        while (iter.next()) |ch| {
             if (ch == '\n') {
-                end_pos += 1;
+                end_pos = iter.global_pos;
                 break;
             }
-            end_pos += 1;
+        } else {
+            end_pos = self.buffer.len();
         }
 
         const count = end_pos - pos;
@@ -557,21 +605,28 @@ pub const Editor = struct {
 
     fn forwardWord(self: *Editor) !void {
         const pos = self.view.getCursorBufferPos();
-        var new_pos = pos;
+
+        // PieceIteratorで単語終端を探す
+        var iter = PieceIterator.init(&self.buffer);
+        iter.seek(pos);
 
         // 空白をスキップ
-        while (new_pos < self.buffer.len()) {
-            const ch = self.buffer.charAt(new_pos).?;
-            if (!std.ascii.isWhitespace(ch)) break;
-            new_pos += 1;
+        while (iter.next()) |ch| {
+            if (!std.ascii.isWhitespace(ch)) {
+                // 1文字戻る（non-whitespaceの先頭に）
+                if (iter.global_pos > 0) {
+                    iter.global_pos -= 1;
+                }
+                break;
+            }
         }
 
         // 単語をスキップ
-        while (new_pos < self.buffer.len()) {
-            const ch = self.buffer.charAt(new_pos).?;
+        while (iter.next()) |ch| {
             if (std.ascii.isWhitespace(ch)) break;
-            new_pos += 1;
         }
+
+        const new_pos = iter.global_pos;
 
         // カーソルを移動
         const diff = new_pos - pos;
@@ -584,31 +639,36 @@ pub const Editor = struct {
         const pos = self.view.getCursorBufferPos();
         if (pos == 0) return;
 
-        var new_pos = pos - 1;
+        // バッファ全体をイテレートして単語境界を記録
+        var iter = PieceIterator.init(&self.buffer);
+        var new_pos: usize = 0;
+        var in_word = false;
+        var last_word_start: usize = 0;
 
-        // 空白をスキップ
-        while (new_pos > 0) {
-            const ch = self.buffer.charAt(new_pos).?;
-            if (!std.ascii.isWhitespace(ch)) break;
-            if (new_pos == 0) break;
-            new_pos -= 1;
-        }
+        while (iter.global_pos < pos) {
+            const ch = iter.next() orelse break;
+            const is_ws = std.ascii.isWhitespace(ch);
 
-        // 単語をスキップ
-        while (new_pos > 0) {
-            const ch = self.buffer.charAt(new_pos).?;
-            if (std.ascii.isWhitespace(ch)) {
-                new_pos += 1;
-                break;
+            if (!is_ws and !in_word) {
+                // 単語開始
+                last_word_start = iter.global_pos - 1;
+                in_word = true;
+            } else if (is_ws and in_word) {
+                // 単語終了
+                in_word = false;
             }
-            if (new_pos == 0) break;
-            new_pos -= 1;
         }
+
+        // 現在位置が単語中なら、その単語の開始位置へ
+        // そうでなければ、直前の単語の開始位置へ
+        new_pos = last_word_start;
 
         // カーソルを移動
-        const diff = pos - new_pos;
-        for (0..diff) |_| {
-            self.view.moveCursorLeft();
+        if (new_pos < pos) {
+            const diff = pos - new_pos;
+            for (0..diff) |_| {
+                self.view.moveCursorLeft();
+            }
         }
     }
 
@@ -617,22 +677,27 @@ pub const Editor = struct {
         const pos = self.view.getCursorBufferPos();
         if (pos >= self.buffer.len()) return;
 
-        var end_pos = pos;
+        // PieceIteratorで単語終端を探す
+        var iter = PieceIterator.init(&self.buffer);
+        iter.seek(pos);
 
         // 空白をスキップ
-        while (end_pos < self.buffer.len()) {
-            const ch = self.buffer.charAt(end_pos).?;
-            if (!std.ascii.isWhitespace(ch)) break;
-            end_pos += 1;
+        while (iter.next()) |ch| {
+            if (!std.ascii.isWhitespace(ch)) {
+                // 1文字戻る
+                if (iter.global_pos > 0) {
+                    iter.global_pos -= 1;
+                }
+                break;
+            }
         }
 
         // 単語をスキップ
-        while (end_pos < self.buffer.len()) {
-            const ch = self.buffer.charAt(end_pos).?;
+        while (iter.next()) |ch| {
             if (std.ascii.isWhitespace(ch)) break;
-            end_pos += 1;
         }
 
+        const end_pos = iter.global_pos;
         const count = end_pos - pos;
         if (count > 0) {
             const deleted = try self.extractText(pos, count);
