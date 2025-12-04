@@ -360,9 +360,9 @@ pub const View = struct {
 
         var status_buf: [config.Editor.STATUS_BUF_SIZE]u8 = undefined;
 
-        // エラーメッセージがあればそれを優先表示
-        const status = if (self.error_msg) |err_msg|
-            try std.fmt.bufPrint(&status_buf, " ERROR: {s}", .{err_msg})
+        // メッセージがあればそれを優先表示
+        const status = if (self.error_msg) |msg|
+            try std.fmt.bufPrint(&status_buf, " {s}", .{msg})
         else blk: {
             const lines = self.buffer.lineCount();
             break :blk try std.fmt.bufPrint(

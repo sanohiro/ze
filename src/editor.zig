@@ -31,6 +31,13 @@ const UndoEntry = struct {
     }
 };
 
+const EditorMode = enum {
+    normal,
+    prefix_x, // C-xプレフィックス待ち
+    quit_confirm, // 終了確認中（y/n/cを待つ）
+    filename_input, // ファイル名入力中
+};
+
 pub const Editor = struct {
     buffer: Buffer,
     view: View,
@@ -39,31 +46,38 @@ pub const Editor = struct {
     running: bool,
     filename: ?[]const u8,
     modified: bool,
-    quit_confirmation: bool, // 終了確認フラグ
+    mode: EditorMode, // エディタのモード
+    input_buffer: std.ArrayList(u8), // ミニバッファ入力用
+    quit_after_save: bool, // ファイル名入力後に終了するか
+    prompt_buffer: ?[]const u8, // allocPrintで作成したプロンプト文字列
     mark_pos: ?usize, // 範囲選択のマーク位置（null=未設定）
     kill_ring: ?[]const u8, // コピー/カットバッファ
     undo_stack: std.ArrayList(UndoEntry),
     redo_stack: std.ArrayList(UndoEntry),
 
     pub fn init(allocator: std.mem.Allocator) !Editor {
-        var buffer = try Buffer.init(allocator);
-        const view = View.init(allocator, &buffer);
-        const terminal = try Terminal.init(allocator);
-
-        return Editor{
-            .buffer = buffer,
-            .view = view,
-            .terminal = terminal,
+        var editor = Editor{
+            .buffer = try Buffer.init(allocator),
+            .view = undefined, // 後で初期化
+            .terminal = try Terminal.init(allocator),
             .allocator = allocator,
             .running = true,
             .filename = null,
             .modified = false,
-            .quit_confirmation = false,
+            .mode = .normal,
+            .input_buffer = std.ArrayList(u8).initCapacity(allocator, 0) catch unreachable,
+            .quit_after_save = false,
+            .prompt_buffer = null,
             .mark_pos = null,
             .kill_ring = null,
             .undo_stack = std.ArrayList(UndoEntry).initCapacity(allocator, 0) catch unreachable,
             .redo_stack = std.ArrayList(UndoEntry).initCapacity(allocator, 0) catch unreachable,
         };
+
+        // bufferが最終的な位置に配置された後、viewを初期化
+        editor.view = View.init(allocator, &editor.buffer);
+
+        return editor;
     }
 
     pub fn deinit(self: *Editor) void {
@@ -76,6 +90,14 @@ pub const Editor = struct {
         if (self.kill_ring) |text| {
             self.allocator.free(text);
         }
+
+        // プロンプトバッファのクリーンアップ
+        if (self.prompt_buffer) |prompt| {
+            self.allocator.free(prompt);
+        }
+
+        // 入力バッファのクリーンアップ
+        self.input_buffer.deinit(self.allocator);
 
         // Undo/Redoスタックのクリーンアップ
         for (self.undo_stack.items) |entry| {
@@ -414,28 +436,191 @@ pub const Editor = struct {
     }
 
     fn processKey(self: *Editor, key: input.Key) !void {
-        // Ctrl+Q以外のキーが押されたら終了確認フラグをリセット
-        const is_quit_key = switch (key) {
-            .ctrl => |c| c == 'q',
-            else => false,
-        };
-        if (!is_quit_key and self.quit_confirmation) {
-            self.quit_confirmation = false;
+        // 古いプロンプトバッファを解放
+        if (self.prompt_buffer) |old_prompt| {
+            self.allocator.free(old_prompt);
+            self.prompt_buffer = null;
         }
 
+        // モード別に処理を分岐
+        switch (self.mode) {
+            .filename_input => {
+                // ファイル名入力モード：文字とバックスペース、Enter、C-gのみ受け付ける
+                switch (key) {
+                    .char => |c| {
+                        // 入力バッファに文字を追加
+                        try self.input_buffer.append(self.allocator, c);
+                        // プロンプトを更新
+                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Write file: {s}", .{self.input_buffer.items}) catch null;
+                        if (self.prompt_buffer) |prompt| {
+                            self.view.setError(prompt);
+                        } else {
+                            self.view.setError("Write file: ");
+                        }
+                    },
+                    .ctrl => |c| {
+                        switch (c) {
+                            'g' => {
+                                // C-g: キャンセル
+                                self.mode = .normal;
+                                self.quit_after_save = false; // フラグをリセット
+                                self.input_buffer.clearRetainingCapacity();
+                                self.view.clearError();
+                            },
+                            else => {},
+                        }
+                    },
+                    .backspace => {
+                        // バックスペース：最後の文字を削除
+                        if (self.input_buffer.items.len > 0) {
+                            _ = self.input_buffer.pop();
+                            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Write file: {s}", .{self.input_buffer.items}) catch null;
+                            if (self.prompt_buffer) |prompt| {
+                                self.view.setError(prompt);
+                            } else {
+                                self.view.setError("Write file: ");
+                            }
+                        }
+                    },
+                    .enter => {
+                        // Enter: ファイル名確定
+                        if (self.input_buffer.items.len > 0) {
+                            // 既存のfilenameがあれば解放
+                            if (self.filename) |old| {
+                                self.allocator.free(old);
+                            }
+                            // 新しいfilenameを設定
+                            self.filename = try self.allocator.dupe(u8, self.input_buffer.items);
+                            self.input_buffer.clearRetainingCapacity();
+
+                            // ファイルを保存
+                            try self.saveFile();
+                            self.mode = .normal;
+
+                            // quit_after_saveフラグが立っている場合は終了
+                            if (self.quit_after_save) {
+                                self.quit_after_save = false;
+                                self.running = false;
+                            }
+                        }
+                    },
+                    else => {},
+                }
+                return;
+            },
+            .prefix_x => {
+                // C-xプレフィックスモード：次のCtrlキーを待つ
+                self.mode = .normal; // デフォルトでnormalに戻る
+                switch (key) {
+                    .ctrl => |c| {
+                        switch (c) {
+                            'g' => {
+                                // C-g: キャンセル
+                                self.view.clearError();
+                            },
+                            's' => {
+                                // C-x C-s: 保存
+                                if (self.filename == null) {
+                                    // 新規ファイル：ファイル名入力モードへ
+                                    self.mode = .filename_input;
+                                    self.quit_after_save = false; // 保存後は終了しない
+                                    self.input_buffer.clearRetainingCapacity();
+                                    self.view.setError("Write file: ");
+                                } else {
+                                    // 既存ファイル：そのまま保存
+                                    try self.saveFile();
+                                }
+                            },
+                            'c' => {
+                                // C-x C-c: 終了
+                                if (self.modified) {
+                                    if (self.filename) |name| {
+                                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Save changes to {s}? (y/n/c): ", .{name}) catch null;
+                                        if (self.prompt_buffer) |prompt| {
+                                            self.view.setError(prompt);
+                                        } else {
+                                            self.view.setError("Save changes? (y/n/c): ");
+                                        }
+                                    } else {
+                                        self.view.setError("Save changes? (y/n/c): ");
+                                    }
+                                    self.mode = .quit_confirm;
+                                } else {
+                                    self.running = false;
+                                }
+                            },
+                            else => {
+                                self.view.setError("Unknown command");
+                            },
+                        }
+                    },
+                    else => {
+                        self.view.setError("Expected C-x C-[key]");
+                    },
+                }
+                return;
+            },
+            .quit_confirm => {
+                // 終了確認モード：y/n/cのみ受け付ける
+                switch (key) {
+                    .char => |c| {
+                        switch (c) {
+                            'y', 'Y' => {
+                                // 保存して終了
+                                if (self.filename == null) {
+                                    // 新規ファイル：ファイル名入力モードへ
+                                    self.mode = .filename_input;
+                                    self.quit_after_save = true; // 保存後に終了
+                                    self.input_buffer.clearRetainingCapacity();
+                                    self.view.setError("Write file: ");
+                                } else {
+                                    self.saveFile() catch |err| {
+                                        self.view.setError(@errorName(err));
+                                        self.mode = .normal;
+                                        return;
+                                    };
+                                    self.running = false;
+                                }
+                            },
+                            'n', 'N' => {
+                                // 保存せずに終了
+                                self.running = false;
+                            },
+                            'c', 'C' => {
+                                // キャンセル
+                                self.mode = .normal;
+                                self.view.clearError();
+                            },
+                            else => {
+                                // 無効な入力
+                                self.view.setError("Please answer: (y)es, (n)o, (c)ancel");
+                            },
+                        }
+                    },
+                    .ctrl => |c| {
+                        // Ctrl-Gでもキャンセル
+                        if (c == 'g') {
+                            self.mode = .normal;
+                            self.view.clearError();
+                        }
+                    },
+                    else => {},
+                }
+                return;
+            },
+            .normal => {},
+        }
+
+        // 通常モード
         switch (key) {
             // Ctrl キー
             .ctrl => |c| {
                 switch (c) {
                     0, '@' => self.setMark(), // C-Space / C-@ マーク設定
-                    'q' => {
-                        // 未保存の変更がある場合は警告
-                        if (self.modified and !self.quit_confirmation) {
-                            self.view.setError("未保存の変更があります。もう一度Ctrl-Qで終了、Ctrl-Sで保存");
-                            self.quit_confirmation = true;
-                        } else {
-                            self.running = false;
-                        }
+                    'x' => {
+                        // C-x プレフィックスキー
+                        self.mode = .prefix_x;
+                        self.view.setError("C-x-");
                     },
                     'f' => self.view.moveCursorRight(&self.terminal), // C-f 前進
                     'b' => self.view.moveCursorLeft(), // C-b 後退
@@ -447,7 +632,7 @@ pub const Editor = struct {
                     'k' => try self.killLine(), // C-k 行削除
                     'w' => try self.killRegion(), // C-w 範囲削除（カット）
                     'y' => try self.yank(), // C-y ペースト
-                    's' => try self.saveFile(), // C-s 保存
+                    'g' => self.view.clearError(), // C-g キャンセル
                     'u' => try self.undo(), // C-u Undo
                     'r' => try self.redo(), // C-r Redo
                     else => {},

@@ -1,5 +1,6 @@
 const std = @import("std");
 const Editor = @import("editor.zig").Editor;
+const View = @import("view.zig").View;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -8,6 +9,9 @@ pub fn main() !void {
 
     var editor = try Editor.init(allocator);
     defer editor.deinit();
+
+    // Editorが値返しされた後、viewのbufferポインタを再設定
+    editor.view = View.init(allocator, &editor.buffer);
 
     // コマンドライン引数を処理
     var args = try std.process.argsWithAllocator(allocator);
@@ -29,6 +33,7 @@ pub fn main() !void {
     // エディタを実行
     try editor.run();
 
-    // 終了メッセージ
-    std.debug.print("\nze: Goodbye!\n", .{});
+    // 終了時に改行を出力（ターミナルのプロンプト表示を整える）
+    const stdout_file: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
+    _ = try stdout_file.write("\n");
 }

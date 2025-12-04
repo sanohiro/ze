@@ -55,11 +55,69 @@ zig build
 # リリースビルド（最適化）
 zig build -Doptimize=ReleaseFast
 
-# テスト実行
+# ユニットテスト実行
 zig build test
 
 # 実行
 ./zig-out/bin/ze [file]
+```
+
+### PTYテストハーネス（自動E2Eテスト）
+
+`test_harness_generic.zig`を使用して、実際のzeを擬似TTY上で起動してテストできます：
+
+```bash
+# 基本的な使い方：キーシーケンスを引数として渡す
+zig run test_harness_generic.zig -lc -- "hello" "C-x" "C-s" "/tmp/test.txt" "Enter" "C-x" "C-c"
+
+# 既存ファイルを開いて編集
+zig run test_harness_generic.zig -lc -- --file=/tmp/existing.txt "C-e" " world" "C-x" "C-s" "C-x" "C-c"
+
+# タイミング調整（待機500ms、キー間遅延100ms）
+zig run test_harness_generic.zig -lc -- --wait=500 --delay=100 "hello" "Enter"
+
+# ze の出力を表示
+zig run test_harness_generic.zig -lc -- --show-output "test" "C-x" "C-c"
+```
+
+**特殊キーの指定方法**：
+- `C-<char>`: Ctrl+文字（例: `C-x`, `C-s`, `C-g`）
+- `M-<char>`: Alt+文字（例: `M-f`, `M-b`）
+- `Enter`, `Backspace`, `Tab`, `Escape`: 各特殊キー
+- `Up`, `Down`, `Left`, `Right`: 矢印キー
+- 通常文字列: そのまま入力（例: `"hello world"`）
+
+**オプション**：
+- `--file=<path>`: 指定したファイルを開いて起動
+- `--wait=<ms>`: 起動後のキー送信前待機時間（デフォルト: 500ms）
+- `--delay=<ms>`: キー間の遅延（デフォルト: 100ms）
+- `--show-output`: zeの出力を表示
+
+**テストハーネスの仕組み**：
+- POSIXの`openpty()`で擬似TTYを作成
+- `fork()`で子プロセスとしてzeを起動
+- コマンドライン引数で指定されたキーシーケンスを送信
+- クラッシュやエラーを検出
+
+**利点**：
+- コマンドライン引数で柔軟にテストシナリオを指定可能
+- ハーネス本体を編集せずに多様なテストが可能
+- 手動テストが不要（自動化）
+- TTYが必要なコードを確実にテスト
+- CI/CDで実行可能
+- クラッシュの再現と修正確認が容易
+
+**実用例**：
+
+```bash
+# 新規ファイル作成と保存のテスト
+zig run test_harness_generic.zig -lc -- "line 1" "Enter" "line 2" "C-x" "C-s" "/tmp/test.txt" "Enter" "C-x" "C-c"
+
+# 編集とキャンセルのテスト（C-gでキャンセル）
+zig run test_harness_generic.zig -lc -- "test" "C-x" "C-g"
+
+# ファイル名入力のバックスペーステスト
+zig run test_harness_generic.zig -lc -- "text" "C-x" "C-s" "/tmp/wrong" "Backspace" "Backspace" "Backspace" "Backspace" "Backspace" "right.txt" "Enter" "C-x" "C-c"
 ```
 
 ## アーキテクチャの要点

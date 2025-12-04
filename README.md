@@ -780,3 +780,32 @@ MIT または BSD-2-Clause（未定）
 ---
 
 *"一つのことを上手く行う。高速に。"*
+
+## Testing
+
+zeは汎用PTYテストハーネスを提供しており、自動テストが可能です。
+
+### 汎用テストハーネス
+
+`test_harness_generic.zig` を使って、キーシーケンスを指定してzeをテストできます。
+
+```bash
+# 新規ファイル作成テスト
+zig run test_harness_generic.zig -lc -- "hello" "C-x" "C-s" "/tmp/test.txt" "Enter" "C-x" "C-c"
+
+# 既存ファイル編集テスト
+zig run test_harness_generic.zig -lc -- --file=README.md "C-e" " world" "C-x" "C-s" "C-x" "C-c"
+```
+
+**特殊キー**:
+- `C-<char>`: Ctrl+文字 (例: `C-x`, `C-s`, `C-g`)
+- `M-<char>`: Alt+文字 (例: `M-f`, `M-b`)  
+- `Enter`, `Backspace`, `Tab`, `Escape`
+- `Up`, `Down`, `Left`, `Right`
+
+**オプション**:
+- `--file=<path>`: 指定ファイルを開く
+- `--wait=<ms>`: キー送信前の待機時間（デフォルト: 500ms）
+- `--delay=<ms>`: キー間の遅延（デフォルト: 100ms）
+- `--show-output`: zeの出力を表示
+
