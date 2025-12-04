@@ -53,8 +53,8 @@ pub fn readKey(stdin: std.fs.File) !?Key {
             return Key.escape;
         }
 
-        if (n2 == 1 and buf[1] >= 'a' and buf[1] <= 'z') {
-            // Alt+文字
+        // Alt+印刷可能ASCII文字（大文字、小文字、数字、記号）
+        if (n2 == 1 and buf[1] >= 0x20 and buf[1] < 0x7F) {
             return Key{ .alt = buf[1] };
         }
 

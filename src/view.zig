@@ -519,11 +519,9 @@ pub const View = struct {
         const pos = self.getCursorBufferPos();
         if (pos >= self.buffer.len()) return;
 
-        // 現在位置のgrapheme clusterを取得
+        // 現在位置のgrapheme clusterを取得（O(pieces)で直接ジャンプ）
         var iter = PieceIterator.init(self.buffer);
-        while (iter.global_pos < pos) {
-            _ = iter.next();
-        }
+        iter.seek(pos);
 
         const cluster = iter.nextGraphemeCluster() catch {
             // エラー時は安全のため移動しない
@@ -572,6 +570,12 @@ pub const View = struct {
         if (self.cursor_x > line_width) {
             self.cursor_x = line_width;
         }
+
+        // 水平スクロール位置もクランプ（短い行に移動した時の空白表示を防ぐ）
+        if (self.top_col > self.cursor_x) {
+            self.top_col = self.cursor_x;
+            self.markFullRedraw();
+        }
     }
 
     pub fn moveCursorDown(self: *View, term: *Terminal) void {
@@ -588,6 +592,12 @@ pub const View = struct {
         const line_width = self.getCurrentLineWidth();
         if (self.cursor_x > line_width) {
             self.cursor_x = line_width;
+        }
+
+        // 水平スクロール位置もクランプ（短い行に移動した時の空白表示を防ぐ）
+        if (self.top_col > self.cursor_x) {
+            self.top_col = self.cursor_x;
+            self.markFullRedraw();
         }
     }
 

@@ -427,17 +427,20 @@ pub const Buffer = struct {
     pub fn delete(self: *Buffer, pos: usize, count: usize) !void {
         if (count == 0) return;
 
+        // pos が範囲外の場合は何もしない
+        if (pos >= self.total_len) return;
+
         const actual_count = @min(count, self.total_len - pos);
         if (actual_count == 0) return;
-
-        // total_lenを更新
-        self.total_len -= actual_count;
 
         const end_pos = pos + actual_count;
 
         // 削除開始位置と終了位置のpieceを見つける
         const start_loc = self.findPieceAt(pos) orelse return;
         const end_loc = self.findPieceAt(end_pos) orelse return;
+
+        // total_lenを更新（piece操作の前に更新しても安全）
+        self.total_len -= actual_count;
 
         // 同じpiece内での削除
         if (start_loc.piece_idx == end_loc.piece_idx) {
