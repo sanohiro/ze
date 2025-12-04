@@ -10,6 +10,10 @@ pub const View = struct {
     cursor_x: usize,
     cursor_y: usize,
     scroll_offset: usize,
+    // Dirty範囲追跡（差分描画用）
+    dirty_start: ?usize,
+    dirty_end: ?usize,
+    needs_full_redraw: bool,
 
     pub fn init(buffer: *Buffer) View {
         return View{
@@ -18,59 +22,133 @@ pub const View = struct {
             .cursor_x = 0,
             .cursor_y = 0,
             .scroll_offset = 0,
+            .dirty_start = null,
+            .dirty_end = null,
+            .needs_full_redraw = true,
         };
+    }
+
+    pub fn markDirty(self: *View, start_line: usize, end_line: usize) void {
+        if (self.dirty_start) |ds| {
+            self.dirty_start = @min(ds, start_line);
+        } else {
+            self.dirty_start = start_line;
+        }
+
+        if (self.dirty_end) |de| {
+            self.dirty_end = @max(de, end_line);
+        } else {
+            self.dirty_end = end_line;
+        }
+    }
+
+    pub fn markFullRedraw(self: *View) void {
+        self.needs_full_redraw = true;
+        self.dirty_start = null;
+        self.dirty_end = null;
+    }
+
+    pub fn clearDirty(self: *View) void {
+        self.dirty_start = null;
+        self.dirty_end = null;
+        self.needs_full_redraw = false;
+    }
+
+    // 1行を描画（grapheme-aware）
+    fn renderLine(_: *View, term: *Terminal, screen_row: usize, line_iter: *LineIterator) !void {
+        try term.moveCursor(screen_row, 0);
+        try term.write("\x1b[K"); // 行末までクリア
+
+        if (try line_iter.nextLine(term.allocator)) |line| {
+            defer term.allocator.free(line);
+            // grapheme-aware rendering: count display width properly
+            var byte_idx: usize = 0;
+            var col: usize = 0;
+            while (byte_idx < line.len and col < term.width) {
+                const ch = line[byte_idx];
+                if (ch < 0b10000000) {
+                    // ASCII
+                    byte_idx += 1;
+                    col += 1;
+                } else {
+                    // UTF-8: calculate codepoint and width
+                    const len = std.unicode.utf8ByteSequenceLength(ch) catch break;
+                    if (byte_idx + len > line.len) break;
+                    const codepoint = std.unicode.utf8Decode(line[byte_idx .. byte_idx + len]) catch {
+                        byte_idx += 1;
+                        continue;
+                    };
+                    const width = Buffer.charWidth(codepoint);
+                    if (col + width > term.width) break;
+                    byte_idx += len;
+                    col += width;
+                }
+            }
+            try term.write(line[0..byte_idx]);
+        } else {
+            try term.write("~");
+        }
     }
 
     pub fn render(self: *View, term: *Terminal) !void {
         try term.hideCursor();
-        // clear()を削除 - 代わりにホーム位置から上書き
-        try term.write("\x1b[H");
 
-        const max_lines = term.height - 1;
-        var line_iter = LineIterator.init(self.buffer);
-
-        // top_line までスキップ
-        var skip_count: usize = 0;
-        while (skip_count < self.top_line) : (skip_count += 1) {
-            const line = try line_iter.nextLine(term.allocator) orelse break;
-            term.allocator.free(line);
+        // 行キャッシュが無効なら再構築
+        if (!self.buffer.line_cache.valid) {
+            try self.buffer.line_cache.rebuild(self.buffer);
         }
 
-        // 画面に表示
-        var screen_row: usize = 0;
-        while (screen_row < max_lines) : (screen_row += 1) {
-            try term.moveCursor(screen_row, 0);
-            try term.write("\x1b[K"); // 行末までクリア
+        const max_lines = term.height - 1;
 
-            if (try line_iter.nextLine(term.allocator)) |line| {
-                defer term.allocator.free(line);
-                // grapheme-aware rendering: count display width properly
-                var byte_idx: usize = 0;
-                var col: usize = 0;
-                while (byte_idx < line.len and col < term.width) {
-                    const ch = line[byte_idx];
-                    if (ch < 0b10000000) {
-                        // ASCII
-                        byte_idx += 1;
-                        col += 1;
-                    } else {
-                        // UTF-8: calculate codepoint and width
-                        const len = std.unicode.utf8ByteSequenceLength(ch) catch break;
-                        if (byte_idx + len > line.len) break;
-                        const codepoint = std.unicode.utf8Decode(line[byte_idx .. byte_idx + len]) catch {
-                            byte_idx += 1;
-                            continue;
-                        };
-                        const width = Buffer.charWidth(codepoint);
-                        if (col + width > term.width) break;
-                        byte_idx += len;
-                        col += width;
-                    }
-                }
-                try term.write(line[0..byte_idx]);
-            } else {
-                try term.write("~");
+        // 全画面再描画が必要な場合
+        if (self.needs_full_redraw) {
+            try term.write("\x1b[H"); // ホーム位置
+
+            var line_iter = LineIterator.init(self.buffer);
+
+            // top_lineまでスキップ
+            var skip_count: usize = 0;
+            while (skip_count < self.top_line) : (skip_count += 1) {
+                const line = try line_iter.nextLine(term.allocator) orelse break;
+                term.allocator.free(line);
             }
+
+            // 全画面描画
+            var screen_row: usize = 0;
+            while (screen_row < max_lines) : (screen_row += 1) {
+                try self.renderLine(term, screen_row, &line_iter);
+            }
+
+            self.clearDirty();
+        } else if (self.dirty_start) |start| {
+            // 差分描画: dirty範囲のみ再描画
+            const end = @min(
+                self.dirty_end orelse start,
+                self.top_line + max_lines
+            );
+
+            if (start < self.top_line + max_lines and end >= self.top_line) {
+                const render_start = if (start > self.top_line) start - self.top_line else 0;
+                const render_end = @min(end - self.top_line + 1, max_lines);
+
+                var line_iter = LineIterator.init(self.buffer);
+
+                // dirty開始行までスキップ
+                var skip_count: usize = 0;
+                const skip_to = self.top_line + render_start;
+                while (skip_count < skip_to) : (skip_count += 1) {
+                    const line = try line_iter.nextLine(term.allocator) orelse break;
+                    term.allocator.free(line);
+                }
+
+                // dirty範囲を描画
+                var screen_row = render_start;
+                while (screen_row < render_end) : (screen_row += 1) {
+                    try self.renderLine(term, screen_row, &line_iter);
+                }
+            }
+
+            self.clearDirty();
         }
 
         // ステータスバーの描画

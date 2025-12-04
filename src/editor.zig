@@ -120,6 +120,11 @@ pub const Editor = struct {
         return result[0..i];
     }
 
+    // 現在のカーソル位置の行番号を取得（dirty tracking用）
+    fn getCurrentLine(self: *const Editor) usize {
+        return self.view.top_line + self.view.cursor_y;
+    }
+
     // 編集操作を記録（差分ベース）
     fn recordInsert(self: *Editor, pos: usize, text: []const u8) !void {
         const text_copy = try self.allocator.dupe(u8, text);
@@ -265,13 +270,17 @@ pub const Editor = struct {
     }
 
     fn insertChar(self: *Editor, ch: u8) !void {
+        const current_line = self.getCurrentLine();
         const pos = self.view.getCursorBufferPos();
         try self.recordInsert(pos, &[_]u8{ch});
         try self.buffer.insert(pos, ch);
         self.modified = true;
 
         if (ch == '\n') {
-            // 改行: 次の行の先頭に移動
+            // 改行: 現在行以降すべてdirty
+            self.view.markDirty(current_line, std.math.maxInt(usize));
+
+            // 次の行の先頭に移動
             const max_screen_line = self.terminal.height - 2; // ステータスバー分を引く
             if (self.view.cursor_y < max_screen_line) {
                 self.view.cursor_y += 1;
@@ -281,6 +290,9 @@ pub const Editor = struct {
             }
             self.view.cursor_x = 0;
         } else {
+            // 通常文字: 現在行のみdirty
+            self.view.markDirty(current_line, current_line);
+
             // UTF-8文字の幅を計算してカーソルを移動
             const width = Buffer.charWidth(@as(u21, ch));
             self.view.cursor_x += width;
@@ -288,6 +300,8 @@ pub const Editor = struct {
     }
 
     fn insertCodepoint(self: *Editor, codepoint: u21) !void {
+        const current_line = self.getCurrentLine();
+
         // UTF-8にエンコード
         var buf: [4]u8 = undefined;
         const len = std.unicode.utf8Encode(codepoint, &buf) catch return error.InvalidUtf8;
@@ -298,7 +312,10 @@ pub const Editor = struct {
         self.modified = true;
 
         if (codepoint == '\n') {
-            // 改行: 次の行の先頭に移動
+            // 改行: 現在行以降すべてdirty
+            self.view.markDirty(current_line, std.math.maxInt(usize));
+
+            // 次の行の先頭に移動
             const max_screen_line = self.terminal.height - 2; // ステータスバー分を引く
             if (self.view.cursor_y < max_screen_line) {
                 self.view.cursor_y += 1;
@@ -308,6 +325,9 @@ pub const Editor = struct {
             }
             self.view.cursor_x = 0;
         } else {
+            // 通常文字: 現在行のみdirty
+            self.view.markDirty(current_line, current_line);
+
             // UTF-8文字の幅を計算してカーソルを移動
             const width = Buffer.charWidth(codepoint);
             self.view.cursor_x += width;
@@ -315,6 +335,7 @@ pub const Editor = struct {
     }
 
     fn deleteChar(self: *Editor) !void {
+        const current_line = self.getCurrentLine();
         const pos = self.view.getCursorBufferPos();
         if (pos >= self.buffer.len()) return;
 
@@ -330,6 +351,7 @@ pub const Editor = struct {
             try self.recordDelete(pos, deleted);
             try self.buffer.delete(pos, 1);
             self.modified = true;
+            self.view.markDirty(current_line, current_line);
             return;
         };
 
@@ -339,10 +361,12 @@ pub const Editor = struct {
             try self.recordDelete(pos, deleted);
             try self.buffer.delete(pos, gc.byte_len);
             self.modified = true;
+            self.view.markDirty(current_line, current_line);
         }
     }
 
     fn backspace(self: *Editor) !void {
+        const current_line = self.getCurrentLine();
         const pos = self.view.getCursorBufferPos();
         if (pos == 0) return;
 
@@ -371,6 +395,7 @@ pub const Editor = struct {
         try self.recordDelete(char_start, deleted);
         try self.buffer.delete(char_start, char_len);
         self.modified = true;
+        self.view.markDirty(current_line, current_line);
 
         if (self.view.cursor_x >= char_width) {
             self.view.cursor_x -= char_width;
@@ -381,6 +406,7 @@ pub const Editor = struct {
     }
 
     fn killLine(self: *Editor) !void {
+        const current_line = self.getCurrentLine();
         const pos = self.view.getCursorBufferPos();
         var end_pos = pos;
 
@@ -401,6 +427,7 @@ pub const Editor = struct {
             try self.recordDelete(pos, deleted);
             try self.buffer.delete(pos, count);
             self.modified = true;
+            self.view.markDirty(current_line, current_line);
         }
     }
 
@@ -462,6 +489,7 @@ pub const Editor = struct {
     }
 
     fn deleteWord(self: *Editor) !void {
+        const current_line = self.getCurrentLine();
         const pos = self.view.getCursorBufferPos();
         if (pos >= self.buffer.len()) return;
 
@@ -488,6 +516,7 @@ pub const Editor = struct {
             try self.recordDelete(pos, deleted);
             try self.buffer.delete(pos, count);
             self.modified = true;
+            self.view.markDirty(current_line, current_line);
         }
     }
 };
