@@ -44,8 +44,30 @@ pub const View = struct {
 
             if (try line_iter.nextLine(term.allocator)) |line| {
                 defer term.allocator.free(line);
-                const display_len = @min(line.len, term.width);
-                try term.write(line[0..display_len]);
+                // grapheme-aware rendering: count display width properly
+                var byte_idx: usize = 0;
+                var col: usize = 0;
+                while (byte_idx < line.len and col < term.width) {
+                    const ch = line[byte_idx];
+                    if (ch < 0b10000000) {
+                        // ASCII
+                        byte_idx += 1;
+                        col += 1;
+                    } else {
+                        // UTF-8: calculate codepoint and width
+                        const len = std.unicode.utf8ByteSequenceLength(ch) catch break;
+                        if (byte_idx + len > line.len) break;
+                        const codepoint = std.unicode.utf8Decode(line[byte_idx .. byte_idx + len]) catch {
+                            byte_idx += 1;
+                            continue;
+                        };
+                        const width = Buffer.charWidth(codepoint);
+                        if (col + width > term.width) break;
+                        byte_idx += len;
+                        col += width;
+                    }
+                }
+                try term.write(line[0..byte_idx]);
             } else {
                 try term.write("~");
             }

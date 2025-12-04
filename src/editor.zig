@@ -6,8 +6,27 @@ const View = @import("view.zig").View;
 const Terminal = @import("terminal.zig").Terminal;
 const input = @import("input.zig");
 
+// 差分ログベースのUndo/Redo
+const EditOp = union(enum) {
+    insert: struct {
+        pos: usize,
+        text: []const u8, // owned by allocator
+    },
+    delete: struct {
+        pos: usize,
+        text: []const u8, // owned by allocator (削除されたテキストを保存)
+    },
+};
+
 const UndoEntry = struct {
-    pieces: []const Piece,
+    op: EditOp,
+
+    fn deinit(self: *const UndoEntry, allocator: std.mem.Allocator) void {
+        switch (self.op) {
+            .insert => |ins| allocator.free(ins.text),
+            .delete => |del| allocator.free(del.text),
+        }
+    }
 };
 
 pub const Editor = struct {
@@ -48,12 +67,12 @@ pub const Editor = struct {
 
         // Undo/Redoスタックのクリーンアップ
         for (self.undo_stack.items) |entry| {
-            self.allocator.free(entry.pieces);
+            entry.deinit(self.allocator);
         }
         self.undo_stack.deinit(self.allocator);
 
         for (self.redo_stack.items) |entry| {
-            self.allocator.free(entry.pieces);
+            entry.deinit(self.allocator);
         }
         self.redo_stack.deinit(self.allocator);
     }
@@ -91,13 +110,39 @@ pub const Editor = struct {
         }
     }
 
-    fn saveUndo(self: *Editor) !void {
-        const pieces = try self.buffer.clonePieces(self.allocator);
-        try self.undo_stack.append(self.allocator, .{ .pieces = pieces });
+    // バッファから指定範囲のテキストを取得（削除前に使用）
+    fn extractText(self: *Editor, pos: usize, len: usize) ![]u8 {
+        var result = try self.allocator.alloc(u8, len);
+        var i: usize = 0;
+        while (i < len) : (i += 1) {
+            result[i] = self.buffer.charAt(pos + i) orelse break;
+        }
+        return result[0..i];
+    }
+
+    // 編集操作を記録（差分ベース）
+    fn recordInsert(self: *Editor, pos: usize, text: []const u8) !void {
+        const text_copy = try self.allocator.dupe(u8, text);
+        try self.undo_stack.append(self.allocator, .{
+            .op = .{ .insert = .{ .pos = pos, .text = text_copy } },
+        });
 
         // Redoスタックをクリア
         for (self.redo_stack.items) |entry| {
-            self.allocator.free(entry.pieces);
+            entry.deinit(self.allocator);
+        }
+        self.redo_stack.clearRetainingCapacity();
+    }
+
+    fn recordDelete(self: *Editor, pos: usize, text: []const u8) !void {
+        const text_copy = try self.allocator.dupe(u8, text);
+        try self.undo_stack.append(self.allocator, .{
+            .op = .{ .delete = .{ .pos = pos, .text = text_copy } },
+        });
+
+        // Redoスタックをクリア
+        for (self.redo_stack.items) |entry| {
+            entry.deinit(self.allocator);
         }
         self.redo_stack.clearRetainingCapacity();
     }
@@ -105,27 +150,57 @@ pub const Editor = struct {
     fn undo(self: *Editor) !void {
         if (self.undo_stack.items.len == 0) return;
 
-        // 現在の状態をredoスタックに保存
-        const current = try self.buffer.clonePieces(self.allocator);
-        try self.redo_stack.append(self.allocator, .{ .pieces = current });
-
-        // undoスタックから状態を復元
         const entry = self.undo_stack.pop() orelse return;
-        try self.buffer.restorePieces(entry.pieces);
-        self.allocator.free(entry.pieces);
+        defer entry.deinit(self.allocator);
+
+        // 逆操作を実行してredoスタックに保存
+        switch (entry.op) {
+            .insert => |ins| {
+                // insertの取り消し: deleteする
+                try self.buffer.delete(ins.pos, ins.text.len);
+                const text_copy = try self.allocator.dupe(u8, ins.text);
+                try self.redo_stack.append(self.allocator, .{
+                    .op = .{ .insert = .{ .pos = ins.pos, .text = text_copy } },
+                });
+            },
+            .delete => |del| {
+                // deleteの取り消し: insertする
+                try self.buffer.insertSlice(del.pos, del.text);
+                const text_copy = try self.allocator.dupe(u8, del.text);
+                try self.redo_stack.append(self.allocator, .{
+                    .op = .{ .delete = .{ .pos = del.pos, .text = text_copy } },
+                });
+            },
+        }
+        self.modified = true;
     }
 
     fn redo(self: *Editor) !void {
         if (self.redo_stack.items.len == 0) return;
 
-        // 現在の状態をundoスタックに保存
-        const current = try self.buffer.clonePieces(self.allocator);
-        try self.undo_stack.append(self.allocator, .{ .pieces = current });
-
-        // redoスタックから状態を復元
         const entry = self.redo_stack.pop() orelse return;
-        try self.buffer.restorePieces(entry.pieces);
-        self.allocator.free(entry.pieces);
+        defer entry.deinit(self.allocator);
+
+        // 逆操作を実行してundoスタックに保存
+        switch (entry.op) {
+            .insert => |ins| {
+                // redoのinsert: もう一度insertする
+                try self.buffer.insertSlice(ins.pos, ins.text);
+                const text_copy = try self.allocator.dupe(u8, ins.text);
+                try self.undo_stack.append(self.allocator, .{
+                    .op = .{ .insert = .{ .pos = ins.pos, .text = text_copy } },
+                });
+            },
+            .delete => |del| {
+                // redoのdelete: もう一度deleteする
+                try self.buffer.delete(del.pos, del.text.len);
+                const text_copy = try self.allocator.dupe(u8, del.text);
+                try self.undo_stack.append(self.allocator, .{
+                    .op = .{ .delete = .{ .pos = del.pos, .text = text_copy } },
+                });
+            },
+        }
+        self.modified = true;
     }
 
     fn processKey(self: *Editor, key: input.Key) !void {
@@ -190,9 +265,8 @@ pub const Editor = struct {
     }
 
     fn insertChar(self: *Editor, ch: u8) !void {
-        try self.saveUndo();
-
         const pos = self.view.getCursorBufferPos();
+        try self.recordInsert(pos, &[_]u8{ch});
         try self.buffer.insert(pos, ch);
         self.modified = true;
 
@@ -214,13 +288,12 @@ pub const Editor = struct {
     }
 
     fn insertCodepoint(self: *Editor, codepoint: u21) !void {
-        try self.saveUndo();
-
         // UTF-8にエンコード
         var buf: [4]u8 = undefined;
         const len = std.unicode.utf8Encode(codepoint, &buf) catch return error.InvalidUtf8;
 
         const pos = self.view.getCursorBufferPos();
+        try self.recordInsert(pos, buf[0..len]);
         try self.buffer.insertSlice(pos, buf[0..len]);
         self.modified = true;
 
@@ -245,8 +318,6 @@ pub const Editor = struct {
         const pos = self.view.getCursorBufferPos();
         if (pos >= self.buffer.len()) return;
 
-        try self.saveUndo();
-
         // カーソル位置のgrapheme clusterのバイト数を取得
         var iter = PieceIterator.init(&self.buffer);
         while (iter.global_pos < pos) {
@@ -254,12 +325,18 @@ pub const Editor = struct {
         }
 
         const cluster = iter.nextGraphemeCluster() catch {
+            const deleted = try self.extractText(pos, 1);
+            defer self.allocator.free(deleted);
+            try self.recordDelete(pos, deleted);
             try self.buffer.delete(pos, 1);
             self.modified = true;
             return;
         };
 
         if (cluster) |gc| {
+            const deleted = try self.extractText(pos, gc.byte_len);
+            defer self.allocator.free(deleted);
+            try self.recordDelete(pos, deleted);
             try self.buffer.delete(pos, gc.byte_len);
             self.modified = true;
         }
@@ -268,8 +345,6 @@ pub const Editor = struct {
     fn backspace(self: *Editor) !void {
         const pos = self.view.getCursorBufferPos();
         if (pos == 0) return;
-
-        try self.saveUndo();
 
         // 削除するgrapheme clusterのバイト数と幅を取得
         var iter = PieceIterator.init(&self.buffer);
@@ -291,6 +366,9 @@ pub const Editor = struct {
             }
         }
 
+        const deleted = try self.extractText(char_start, char_len);
+        defer self.allocator.free(deleted);
+        try self.recordDelete(char_start, deleted);
         try self.buffer.delete(char_start, char_len);
         self.modified = true;
 
@@ -318,7 +396,9 @@ pub const Editor = struct {
 
         const count = end_pos - pos;
         if (count > 0) {
-            try self.saveUndo();
+            const deleted = try self.extractText(pos, count);
+            defer self.allocator.free(deleted);
+            try self.recordDelete(pos, deleted);
             try self.buffer.delete(pos, count);
             self.modified = true;
         }
@@ -403,7 +483,9 @@ pub const Editor = struct {
 
         const count = end_pos - pos;
         if (count > 0) {
-            try self.saveUndo();
+            const deleted = try self.extractText(pos, count);
+            defer self.allocator.free(deleted);
+            try self.recordDelete(pos, deleted);
             try self.buffer.delete(pos, count);
             self.modified = true;
         }
