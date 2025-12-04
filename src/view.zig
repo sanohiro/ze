@@ -1,7 +1,6 @@
 const std = @import("std");
 const Buffer = @import("buffer.zig").Buffer;
 const PieceIterator = @import("buffer.zig").PieceIterator;
-const LineIterator = @import("buffer.zig").Buffer.LineIterator;
 const Terminal = @import("terminal.zig").Terminal;
 
 pub const View = struct {
@@ -9,7 +8,6 @@ pub const View = struct {
     top_line: usize,
     cursor_x: usize,
     cursor_y: usize,
-    scroll_offset: usize,
     // Dirty範囲追跡（差分描画用）
     dirty_start: ?usize,
     dirty_end: ?usize,
@@ -21,7 +19,6 @@ pub const View = struct {
             .top_line = 0,
             .cursor_x = 0,
             .cursor_y = 0,
-            .scroll_offset = 0,
             .dirty_start = null,
             .dirty_end = null,
             .needs_full_redraw = true,
@@ -214,22 +211,24 @@ pub const View = struct {
         const line_start = self.buffer.line_index.getLineStart(target_line) orelse return self.buffer.len();
 
         // 行内のカーソル位置を計算
+        // cursor_xは表示幅（絵文字=2, 通常文字=1）なので、
+        // 表示幅を累積してcursor_xに到達するバイト位置を探す
         var iter = PieceIterator.init(self.buffer);
         iter.seek(line_start);
 
-        var col: usize = 0;
-        while (col < self.cursor_x) {
+        var display_col: usize = 0;
+        while (display_col < self.cursor_x) {
             const start_pos = iter.global_pos;
             const cluster = iter.nextGraphemeCluster() catch break;
             if (cluster == null) break;
             const gc = cluster.?;
             if (gc.base == '\n') break;
 
-            // 文字幅を加算
-            col += gc.width;
+            // 文字幅を加算（絵文字は2, 通常文字は1）
+            display_col += gc.width;
 
             // 目標カーソル位置を超えた場合は手前で止まる
-            if (col > self.cursor_x) {
+            if (display_col > self.cursor_x) {
                 // イテレータを元の位置に戻す
                 iter.global_pos = start_pos;
                 break;

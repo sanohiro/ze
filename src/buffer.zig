@@ -201,14 +201,19 @@ pub const LineIndex = struct {
             self.line_starts.clearRetainingCapacity();
         }
 
-        try self.line_starts.append(self.allocator, 0); // 1行目は常に0から
+        // 空バッファの場合は line_starts = [0] （1行とカウント）
+        try self.line_starts.append(self.allocator, 0);
 
+        // 各改行の次の位置を記録
         var iter = PieceIterator.init(buffer);
         while (iter.next()) |ch| {
             if (ch == '\n') {
                 try self.line_starts.append(self.allocator, iter.global_pos);
             }
         }
+
+        // 最終行が改行で終わっていない場合、line_startsの最後は最終改行の次
+        // = ファイル末尾になる。これでlineCount()と整合する
         self.valid = true;
     }
 
@@ -307,7 +312,8 @@ pub const Buffer = struct {
         var current_pos: usize = 0;
 
         for (self.pieces.items, 0..) |piece, i| {
-            if (pos <= current_pos + piece.length) {
+            // pos が [current_pos, current_pos + piece.length) の範囲内にあるか
+            if (pos < current_pos + piece.length) {
                 return .{
                     .piece_idx = i,
                     .offset = pos - current_pos,
@@ -513,6 +519,9 @@ pub const Buffer = struct {
     }
 
     pub fn lineCount(self: *const Buffer) usize {
+        // 空バッファは1行
+        if (self.len() == 0) return 1;
+
         var count: usize = 1;
         var iter = PieceIterator.init(self);
 
@@ -522,39 +531,6 @@ pub const Buffer = struct {
 
         return count;
     }
-
-    // 行イテレータ: getLineの代わりに使う
-    pub const LineIterator = struct {
-        iter: PieceIterator,
-        current_line: usize,
-
-        pub fn init(buffer: *const Buffer) LineIterator {
-            return .{
-                .iter = PieceIterator.init(buffer),
-                .current_line = 0,
-            };
-        }
-
-        pub fn nextLine(self: *LineIterator, allocator: std.mem.Allocator) !?[]const u8 {
-            var line: std.ArrayList(u8) = .{};
-            errdefer line.deinit(allocator);
-
-            while (self.iter.next()) |ch| {
-                if (ch == '\n') {
-                    self.current_line += 1;
-                    return try line.toOwnedSlice(allocator);
-                }
-                try line.append(allocator, ch);
-            }
-
-            if (line.items.len > 0) {
-                return try line.toOwnedSlice(allocator);
-            }
-
-            return null;
-        }
-    };
-
 
     // UTF-8文字幅を計算（unicode.zigに委譲）
     pub fn charWidth(codepoint: u21) usize {

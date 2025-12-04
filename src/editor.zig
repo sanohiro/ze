@@ -114,19 +114,25 @@ pub const Editor = struct {
     // バッファから指定範囲のテキストを取得（削除前に使用）
     // PieceIterator.seekを使ってO(pieces + len)で効率的に取得
     fn extractText(self: *Editor, pos: usize, len: usize) ![]u8 {
-        var result = try self.allocator.alloc(u8, len);
+        // 実際に読み取れるバイト数を計算（buffer末尾を超えないように）
+        const actual_len = @min(len, self.buffer.len() - pos);
+        var result = try self.allocator.alloc(u8, actual_len);
         errdefer self.allocator.free(result);
 
         var iter = PieceIterator.init(&self.buffer);
         iter.seek(pos); // O(pieces)で直接ジャンプ
 
-        // len分読み取る
+        // actual_len分読み取る（保証されている）
         var i: usize = 0;
-        while (i < len) : (i += 1) {
-            result[i] = iter.next() orelse break;
+        while (i < actual_len) : (i += 1) {
+            result[i] = iter.next() orelse {
+                // これは起こらないはず（actual_lenで範囲チェック済み）
+                // もし起きた場合はバグなので、部分的に返す
+                return result[0..i];
+            };
         }
 
-        return result[0..i];
+        return result;
     }
 
     // 現在のカーソル位置の行番号を取得（dirty tracking用）
@@ -331,26 +337,26 @@ pub const Editor = struct {
             self.view.cursor_y = line - self.view.top_line;
         }
 
-        // カーソルX位置を計算（grapheme cluster幅考慮）
+        // カーソルX位置を計算（grapheme clusterの表示幅）
         iter = PieceIterator.init(&self.buffer);
         iter.seek(line_start);
 
-        var col: usize = 0;
+        var display_col: usize = 0;
         while (iter.global_pos < clamped_pos) {
             const cluster = iter.nextGraphemeCluster() catch {
                 _ = iter.next();
-                col += 1;
+                display_col += 1;
                 continue;
             };
             if (cluster) |gc| {
                 if (gc.base == '\n') break;
-                col += gc.width;
+                display_col += gc.width; // 絵文字は2、通常文字は1
             } else {
                 break;
             }
         }
 
-        self.view.cursor_x = col;
+        self.view.cursor_x = display_col;
     }
 
     // エイリアス: restoreCursorPosはsetCursorToPosと同じ
@@ -634,15 +640,23 @@ pub const Editor = struct {
         iter.seek(pos);
 
         // 空白をスキップ
+        var non_ws_start: ?usize = null;
         while (iter.next()) |ch| {
             if (!std.ascii.isWhitespace(ch)) {
-                // 1文字戻る（non-whitespaceの先頭に）
-                if (iter.global_pos > 0) {
-                    iter.global_pos -= 1;
-                }
+                non_ws_start = iter.global_pos - 1;
                 break;
             }
         }
+
+        // 空白しかない場合はEOFまで移動
+        if (non_ws_start == null) {
+            self.setCursorToPos(self.buffer.len());
+            return;
+        }
+
+        // non-whitespaceの開始位置から単語終端を探す
+        iter.seek(non_ws_start.?);
+        _ = iter.next(); // 最初の文字をスキップ
 
         // 単語をスキップ
         while (iter.next()) |ch| {
