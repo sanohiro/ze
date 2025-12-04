@@ -166,6 +166,9 @@ pub const Editor = struct {
         const total_lines = self.buffer.lineCount();
         if (total_lines == 0) return;
 
+        // 端末サイズが0の場合は何もしない
+        if (self.terminal.height == 0) return;
+
         const max_screen_lines = self.terminal.height - 1; // ステータスバー分を引く
 
         // top_lineが範囲外の場合は調整

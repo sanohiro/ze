@@ -205,8 +205,8 @@ pub const LineIndex = struct {
         // 空バッファの場合は line_starts = [0] （1行とカウント）
         try self.line_starts.append(self.allocator, 0);
 
-        // バッファが空の場合はスキャン不要
-        if (buffer.total_len == 0) {
+        // バッファが空の場合、またはpiecesが空の場合はスキャン不要
+        if (buffer.total_len == 0 or buffer.pieces.items.len == 0) {
             self.valid = true;
             return;
         }
@@ -550,7 +550,7 @@ pub const Buffer = struct {
         if (!self.line_index.valid) {
             self.line_index.rebuild(self) catch {
                 // rebuild失敗時はフルスキャンにフォールバック
-                if (self.len() == 0) return 1;
+                if (self.len() == 0 or self.pieces.items.len == 0) return 1;
                 var count: usize = 1;
                 var iter = PieceIterator.init(self);
                 while (iter.next()) |ch| {
@@ -582,6 +582,7 @@ pub const Buffer = struct {
         if (!self.line_index.valid) {
             self.line_index.rebuild(self) catch {
                 // rebuild失敗時はフォールバック（O(N)スキャン）
+                if (self.pieces.items.len == 0) return 0;
                 var iter = PieceIterator.init(self);
                 var line: usize = 0;
                 while (iter.global_pos < pos) {

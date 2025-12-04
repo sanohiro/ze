@@ -280,6 +280,9 @@ pub const View = struct {
     }
 
     pub fn render(self: *View, term: *Terminal) !void {
+        // 端末サイズが0の場合は何もしない
+        if (term.height == 0 or term.width == 0) return;
+
         try term.hideCursor();
 
         const max_lines = term.height - 1;
