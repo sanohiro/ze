@@ -12,6 +12,13 @@ pub const Terminal = struct {
 
     pub fn init(allocator: std.mem.Allocator) !Terminal {
         const stdin: std.fs.File = .{ .handle = posix.STDIN_FILENO };
+
+        // stdin が TTY かどうかを確認
+        if (!posix.isatty(stdin.handle)) {
+            std.debug.print("Error: stdin is not a TTY. ze requires a terminal.\n", .{});
+            return error.NotATty;
+        }
+
         const original = try posix.tcgetattr(stdin.handle);
 
         var self = Terminal{
