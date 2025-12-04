@@ -40,6 +40,8 @@ pub const Editor = struct {
     filename: ?[]const u8,
     modified: bool,
     quit_confirmation: bool, // 終了確認フラグ
+    mark_pos: ?usize, // 範囲選択のマーク位置（null=未設定）
+    kill_ring: ?[]const u8, // コピー/カットバッファ
     undo_stack: std.ArrayList(UndoEntry),
     redo_stack: std.ArrayList(UndoEntry),
 
@@ -57,6 +59,8 @@ pub const Editor = struct {
             .filename = null,
             .modified = false,
             .quit_confirmation = false,
+            .mark_pos = null,
+            .kill_ring = null,
             .undo_stack = .{},
             .redo_stack = .{},
         };
@@ -68,6 +72,9 @@ pub const Editor = struct {
         self.terminal.deinit();
         if (self.filename) |fname| {
             self.allocator.free(fname);
+        }
+        if (self.kill_ring) |text| {
+            self.allocator.free(text);
         }
 
         // Undo/Redoスタックのクリーンアップ
@@ -417,6 +424,7 @@ pub const Editor = struct {
             // Ctrl キー
             .ctrl => |c| {
                 switch (c) {
+                    0, '@' => self.setMark(), // C-Space / C-@ マーク設定
                     'q' => {
                         // 未保存の変更がある場合は警告
                         if (self.modified and !self.quit_confirmation) {
@@ -434,6 +442,8 @@ pub const Editor = struct {
                     'e' => self.view.moveToLineEnd(), // C-e 行末
                     'd' => try self.deleteChar(), // C-d 文字削除
                     'k' => try self.killLine(), // C-k 行削除
+                    'w' => try self.killRegion(), // C-w 範囲削除（カット）
+                    'y' => try self.yank(), // C-y ペースト
                     's' => try self.saveFile(), // C-s 保存
                     'u' => try self.undo(), // C-u Undo
                     'r' => try self.redo(), // C-r Redo
@@ -447,6 +457,7 @@ pub const Editor = struct {
                     'f' => try self.forwardWord(), // M-f 単語前進
                     'b' => try self.backwardWord(), // M-b 単語後退
                     'd' => try self.deleteWord(), // M-d 単語削除
+                    'w' => try self.copyRegion(), // M-w 範囲コピー
                     else => {},
                 }
             },
@@ -810,5 +821,126 @@ pub const Editor = struct {
             }
             self.allocator.free(deleted);
         }
+    }
+
+    // マークを設定/解除（Ctrl+Space）
+    fn setMark(self: *Editor) void {
+        if (self.mark_pos) |_| {
+            // マークがある場合は解除
+            self.mark_pos = null;
+            self.view.setError("Mark deactivated");
+        } else {
+            // マークを設定
+            self.mark_pos = self.view.getCursorBufferPos();
+            self.view.setError("Mark set");
+        }
+    }
+
+    // マーク位置とカーソル位置から範囲を取得（開始位置と長さを返す）
+    fn getRegion(self: *Editor) ?struct { start: usize, len: usize } {
+        const mark = self.mark_pos orelse return null;
+        const cursor = self.view.getCursorBufferPos();
+
+        if (mark < cursor) {
+            return .{ .start = mark, .len = cursor - mark };
+        } else if (cursor < mark) {
+            return .{ .start = cursor, .len = mark - cursor };
+        } else {
+            return null; // 範囲が空
+        }
+    }
+
+    // 範囲をコピー（M-w）
+    fn copyRegion(self: *Editor) !void {
+        const region = self.getRegion() orelse {
+            self.view.setError("No active region");
+            return;
+        };
+
+        // 既存のkill_ringを解放
+        if (self.kill_ring) |old_text| {
+            self.allocator.free(old_text);
+        }
+
+        // 範囲のテキストをコピー
+        self.kill_ring = try self.extractText(region.start, region.len);
+
+        // マークを解除
+        self.mark_pos = null;
+
+        self.view.setError("Saved text to kill ring");
+    }
+
+    // 範囲を削除（カット）（C-w）
+    fn killRegion(self: *Editor) !void {
+        const current_line = self.getCurrentLine();
+        const region = self.getRegion() orelse {
+            self.view.setError("No active region");
+            return;
+        };
+
+        // 既存のkill_ringを解放
+        if (self.kill_ring) |old_text| {
+            self.allocator.free(old_text);
+        }
+
+        // 範囲のテキストをコピー
+        const deleted = try self.extractText(region.start, region.len);
+        errdefer self.allocator.free(deleted);
+
+        // バッファから削除
+        try self.buffer.delete(region.start, region.len);
+        errdefer self.buffer.insertSlice(region.start, deleted) catch unreachable;
+        try self.recordDelete(region.start, deleted, self.view.getCursorBufferPos());
+
+        // kill_ringに保存（extractTextと同じデータなので、新たにdupeせずそのまま使う）
+        self.kill_ring = deleted;
+
+        self.modified = true;
+
+        // カーソルを範囲の開始位置に移動
+        self.setCursorToPos(region.start);
+
+        // マークを解除
+        self.mark_pos = null;
+
+        // 改行が含まれる場合は末尾まで再描画
+        if (std.mem.indexOf(u8, deleted, "\n") != null) {
+            self.view.markDirty(current_line, null);
+        } else {
+            self.view.markDirty(current_line, current_line);
+        }
+
+        self.view.setError("Killed region");
+    }
+
+    // kill_ringの内容をペースト（C-y）
+    fn yank(self: *Editor) !void {
+        const current_line = self.getCurrentLine();
+        const text = self.kill_ring orelse {
+            self.view.setError("Kill ring is empty");
+            return;
+        };
+
+        const pos = self.view.getCursorBufferPos();
+
+        // バッファに挿入
+        try self.buffer.insertSlice(pos, text);
+        errdefer self.buffer.delete(pos, text.len) catch unreachable;
+        try self.recordInsert(pos, text, pos);
+
+        self.modified = true;
+
+        // カーソルを挿入後の位置に移動
+        self.setCursorToPos(pos + text.len);
+
+        // 改行が含まれる場合は末尾まで再描画
+        if (std.mem.indexOf(u8, text, "\n") != null) {
+            self.view.markDirty(current_line, null);
+        } else {
+            self.view.markDirty(current_line, current_line);
+        }
+
+        self.view.setError("Yanked text");
     }
 };
