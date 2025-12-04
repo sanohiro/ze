@@ -1,0 +1,127 @@
+const std = @import("std");
+const posix = std.posix;
+const io = std.io;
+
+pub const Terminal = struct {
+    original_termios: posix.termios,
+    width: usize,
+    height: usize,
+    buf: std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator) !Terminal {
+        const stdin: std.fs.File = .{ .handle = posix.STDIN_FILENO };
+        const original = try posix.tcgetattr(stdin.handle);
+
+        var self = Terminal{
+            .original_termios = original,
+            .width = 80,
+            .height = 24,
+            .buf = std.ArrayList(u8){},
+            .allocator = allocator,
+        };
+
+        try self.enableRawMode();
+        try self.getWindowSize();
+
+        return self;
+    }
+
+    pub fn deinit(self: *Terminal) void {
+        // 画面をクリアしてカーソルを表示
+        self.clear() catch {};
+        self.showCursor() catch {};
+        self.flush() catch {};
+
+        // 改行を出力（zshの%記号を防ぐ）
+        const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
+        stdout.writeAll("\n") catch {};
+
+        self.disableRawMode() catch {};
+        self.buf.deinit(self.allocator);
+    }
+
+    fn enableRawMode(self: *Terminal) !void {
+        const stdin: std.fs.File = .{ .handle = posix.STDIN_FILENO };
+        var raw = self.original_termios;
+
+        // 入力フラグ: BREAK無効、CR→NL変換無効、パリティ無効、8bit文字
+        raw.iflag.BRKINT = false;
+        raw.iflag.ICRNL = false;
+        raw.iflag.INPCK = false;
+        raw.iflag.ISTRIP = false;
+        raw.iflag.IXON = false;
+
+        // 出力フラグ: 出力処理無効
+        raw.oflag.OPOST = false;
+
+        // 制御フラグ: 8bit文字
+        raw.cflag.CSIZE = .CS8;
+
+        // ローカルフラグ: エコー無効、カノニカル無効、拡張機能無効、シグナル無効
+        raw.lflag.ECHO = false;
+        raw.lflag.ICANON = false;
+        raw.lflag.IEXTEN = false;
+        raw.lflag.ISIG = false;
+
+        // 制御文字: 最小読み取りバイト数、タイムアウト
+        raw.cc[@intFromEnum(posix.V.MIN)] = 0;
+        raw.cc[@intFromEnum(posix.V.TIME)] = 1;
+
+        try posix.tcsetattr(stdin.handle, .FLUSH, raw);
+    }
+
+    fn disableRawMode(self: *Terminal) !void {
+        const stdin: std.fs.File = .{ .handle = posix.STDIN_FILENO };
+        try posix.tcsetattr(stdin.handle, .FLUSH, self.original_termios);
+    }
+
+    fn getWindowSize(self: *Terminal) !void {
+        var ws: posix.winsize = undefined;
+        const stdout: std.fs.File = .{ .handle = posix.STDOUT_FILENO };
+
+        const result = posix.system.ioctl(stdout.handle, posix.system.T.IOCGWINSZ, @intFromPtr(&ws));
+        if (result == 0) {
+            self.width = ws.col;
+            self.height = ws.row;
+        }
+    }
+
+    pub fn clear(self: *Terminal) !void {
+        try self.buf.appendSlice(self.allocator, "\x1b[2J");
+        try self.buf.appendSlice(self.allocator, "\x1b[H");
+    }
+
+    pub fn hideCursor(self: *Terminal) !void {
+        try self.buf.appendSlice(self.allocator, "\x1b[?25l");
+    }
+
+    pub fn showCursor(self: *Terminal) !void {
+        try self.buf.appendSlice(self.allocator, "\x1b[?25h");
+    }
+
+    pub fn moveCursor(self: *Terminal, row: usize, col: usize) !void {
+        var buf: [32]u8 = undefined;
+        const str = try std.fmt.bufPrint(&buf, "\x1b[{d};{d}H", .{ row + 1, col + 1 });
+        try self.buf.appendSlice(self.allocator, str);
+    }
+
+    pub fn write(self: *Terminal, text: []const u8) !void {
+        try self.buf.appendSlice(self.allocator, text);
+    }
+
+    pub fn flush(self: *Terminal) !void {
+        const stdout: std.fs.File = .{ .handle = posix.STDOUT_FILENO };
+        try stdout.writeAll(self.buf.items);
+        self.buf.clearRetainingCapacity();
+    }
+
+    pub fn readKey(self: *Terminal) !?u8 {
+        _ = self;
+        const stdin: std.fs.File = .{ .handle = posix.STDIN_FILENO };
+        var buf: [1]u8 = undefined;
+        const n = try stdin.read(&buf);
+        if (n == 0) return null;
+        return buf[0];
+    }
+};

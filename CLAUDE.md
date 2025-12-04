@@ -1,0 +1,150 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+**ze** (Zig Editor / Zero-latency Editor) は、mgとUnix哲学に影響を受けた、高速で最小限のテキストエディタです。Zigで実装され、Emacsキーバインディングとシェル統合を特徴とします。
+
+## 開発状態
+
+現在は設計・初期実装フェーズ（Phase 1）です。README.mdに詳細な設計書があります。
+
+## ビルドとテスト
+
+```bash
+# ビルド
+zig build
+
+# リリースビルド（最適化）
+zig build -Doptimize=ReleaseFast
+
+# テスト実行
+zig build test
+
+# 実行
+./zig-out/bin/ze [file]
+```
+
+## アーキテクチャの要点
+
+### コアデータ構造
+
+1. **Buffer (buffer.zig)**: Piece Table + B-tree
+   - 元ファイルはmmap（読み取り専用、ゼロコピー）
+   - 追加バッファはArenaアロケータ（フラグメンテーションなし）
+   - B-treeで行番号→pieceオフセットの索引（遅延、オンデマンド）
+
+2. **View (view.zig)**: ダブルバッファセル、差分のみレンダリング
+   - フロント/バックバッファを使用
+   - 変更されたセルのみ出力（差分レンダリング）
+   - 1フレームあたり1回のwrite()システムコール
+
+3. **Input (input.zig)**: 専用入力スレッド
+   - epoll/kqueue使用
+   - ロックフリーキューでメインスレッドと通信
+   - 投機的レンダリング：文字入力時に即座に描画してからバッファ更新
+
+4. **Search (search.zig)**: SIMD検索エンジン
+   - リテラル検索にSIMD命令使用
+   - 1MBチャンクに分割して並列検索
+   - インクリメンタル検索対応
+
+### パフォーマンス目標
+
+| 指標 | 目標値 |
+|------|--------|
+| 起動時間 | < 10ms |
+| キー入力から画面更新 | < 8ms (125fps) |
+| ファイルオープン (1GB) | < 100ms |
+| 検索速度 (1GB) | > 2GB/s |
+| メモリオーバーヘッド | ファイルサイズの約10% |
+
+## コマンドシステム
+
+### 文法
+
+```
+command := source? pipe* sink?
+```
+
+### ソース指定子
+
+- `.` または `%`: バッファ全体
+- `,`: 選択範囲
+- `;`: 現在行
+- `n,m`: 行範囲
+- `@x`: レジスタx
+
+### シンク指定子
+
+- `.`: バッファ置換
+- `,`: 選択範囲置換
+- `+`: カーソル位置に挿入
+- `_`: 破棄
+- `@x`: レジスタxに保存
+- `new`, `vs`, `sp`: 新規バッファ/分割
+
+### 例
+
+```
+, | sort > .          # 選択範囲をソートしてバッファに置換
+; | sh > +            # 現在行をシェル実行して下に挿入
+. | grep TODO         # バッファをgrepして新規バッファに
+, | jq . > ,          # 選択範囲をjqでフォーマット
+```
+
+## 実装の優先順位
+
+Phase 1（現在）では以下を実装：
+- Piece tableバッファ
+- 基本レンダリング
+- Emacs移動キー（C-f, C-b, C-n, C-p, C-a, C-e等）
+- 挿入/削除
+- ファイルI/O
+
+## コーディングガイドライン
+
+- **パフォーマンス最優先**: 8ms以内の応答性を維持
+- **ゼロコピー**: 可能な限りmmapとスライスを使用
+- **comptime活用**: キーマップテーブル等はコンパイル時に解決
+- **アロケーション最小化**: Arena/固定バッファ使用
+- **SIMD最適化**: 検索等の高速化にSIMD命令を活用
+- **シンプルさ**: Unix哲学に従い、1つのことを上手く行う
+
+## ファイル構造
+
+```
+ze/
+├── src/
+│   ├── main.zig          # エントリポイント
+│   ├── editor.zig        # エディタコア状態
+│   ├── buffer.zig        # Piece table実装
+│   ├── view.zig          # レンダリング、画面管理
+│   ├── input.zig         # 入力処理、キーパース
+│   ├── command.zig       # コマンドパーサー、実行器
+│   ├── search.zig        # 検索エンジン (SIMD)
+│   ├── terminal.zig      # 端末制御
+│   ├── window.zig        # ウィンドウ/分割管理
+│   ├── keymap.zig        # キーバインディング定義
+│   ├── builtin.zig       # 組み込みコマンド
+│   ├── pipe.zig          # パイプライン実行
+│   └── util/
+│       ├── arena.zig     # Arenaアロケータ
+│       ├── btree.zig     # B-tree索引
+│       ├── queue.zig     # ロックフリーキュー
+│       └── simd.zig      # SIMDユーティリティ
+├── build.zig
+├── README.md
+└── config/
+    └── default.zig       # デフォルト設定、エイリアス
+```
+
+## 非目標
+
+以下は実装しない（v1では）：
+- シンタックスハイライト
+- LSP統合
+- プラグインシステム
+- マウスサポート
+- GUI
