@@ -61,8 +61,8 @@ pub const Editor = struct {
             .quit_confirmation = false,
             .mark_pos = null,
             .kill_ring = null,
-            .undo_stack = .{},
-            .redo_stack = .{},
+            .undo_stack = std.ArrayList(UndoEntry).initCapacity(allocator, 0) catch unreachable,
+            .redo_stack = std.ArrayList(UndoEntry).initCapacity(allocator, 0) catch unreachable,
         };
     }
 

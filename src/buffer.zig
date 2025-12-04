@@ -181,7 +181,7 @@ pub const LineIndex = struct {
 
     pub fn init(allocator: std.mem.Allocator) LineIndex {
         return .{
-            .line_starts = .{},
+            .line_starts = std.ArrayList(usize).initCapacity(allocator, 0) catch unreachable,
             .valid = false,
             .allocator = allocator,
         };
@@ -241,8 +241,8 @@ pub const Buffer = struct {
     pub fn init(allocator: std.mem.Allocator) !Buffer {
         return Buffer{
             .original = &[_]u8{},
-            .add_buffer = .{},
-            .pieces = .{},
+            .add_buffer = try std.ArrayList(u8).initCapacity(allocator, 0),
+            .pieces = try std.ArrayList(Piece).initCapacity(allocator, 0),
             .allocator = allocator,
             .owns_original = false,
             .total_len = 0,
@@ -269,8 +269,8 @@ pub const Buffer = struct {
 
         var self = Buffer{
             .original = content,
-            .add_buffer = .{},
-            .pieces = .{},
+            .add_buffer = try std.ArrayList(u8).initCapacity(allocator, 0),
+            .pieces = try std.ArrayList(Piece).initCapacity(allocator, 0),
             .allocator = allocator,
             .owns_original = true,
             .total_len = content.len,
@@ -496,7 +496,7 @@ pub const Buffer = struct {
         }
 
         // 複数pieceにまたがる削除
-        var pieces_to_remove: std.ArrayList(usize) = .{};
+        var pieces_to_remove = try std.ArrayList(usize).initCapacity(self.allocator, 0);
         defer pieces_to_remove.deinit(self.allocator);
 
         // 中間のpieceをすべて削除対象に

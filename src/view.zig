@@ -32,9 +32,9 @@ pub const View = struct {
             .dirty_start = null,
             .dirty_end = null,
             .needs_full_redraw = true,
-            .line_buffer = .{},
+            .line_buffer = std.ArrayList(u8).initCapacity(allocator, 0) catch unreachable,
             .error_msg = null,
-            .prev_screen = .{},
+            .prev_screen = std.ArrayList(std.ArrayList(u8)).initCapacity(allocator, 0) catch unreachable,
             .allocator = allocator,
         };
     }
