@@ -176,16 +176,18 @@ pub const PieceIterator = struct {
 pub const LineIndex = struct {
     line_starts: std.ArrayList(usize),
     valid: bool,
+    allocator: std.mem.Allocator,
 
-    pub fn init(_: std.mem.Allocator) LineIndex {
+    pub fn init(allocator: std.mem.Allocator) LineIndex {
         return .{
             .line_starts = .{},
             .valid = false,
+            .allocator = allocator,
         };
     }
 
-    pub fn deinit(self: *LineIndex, allocator: std.mem.Allocator) void {
-        self.line_starts.deinit(allocator);
+    pub fn deinit(self: *LineIndex) void {
+        self.line_starts.deinit(self.allocator);
     }
 
     pub fn invalidate(self: *LineIndex) void {
@@ -199,12 +201,12 @@ pub const LineIndex = struct {
             self.line_starts.clearRetainingCapacity();
         }
 
-        try self.line_starts.append(buffer.allocator, 0); // 1行目は常に0から
+        try self.line_starts.append(self.allocator, 0); // 1行目は常に0から
 
         var iter = PieceIterator.init(buffer);
         while (iter.next()) |ch| {
             if (ch == '\n') {
-                try self.line_starts.append(buffer.allocator, iter.global_pos);
+                try self.line_starts.append(self.allocator, iter.global_pos);
             }
         }
         self.valid = true;
@@ -248,7 +250,7 @@ pub const Buffer = struct {
         }
         self.add_buffer.deinit(self.allocator);
         self.pieces.deinit(self.allocator);
-        self.line_index.deinit(self.allocator);
+        self.line_index.deinit();
     }
 
     pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !Buffer {
@@ -277,6 +279,9 @@ pub const Buffer = struct {
                 .length = content.len,
             });
         }
+
+        // LineIndexを即座に構築
+        try self.line_index.rebuild(&self);
 
         return self;
     }

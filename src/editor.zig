@@ -173,6 +173,31 @@ pub const Editor = struct {
     }
 
     fn recordDelete(self: *Editor, pos: usize, text: []const u8) !void {
+        // 連続削除のコアレッシング: 直前の操作が連続する削除ならマージ
+        if (self.undo_stack.items.len > 0) {
+            const last = &self.undo_stack.items[self.undo_stack.items.len - 1];
+            if (last.op == .delete) {
+                const last_del = last.op.delete;
+                // Backspace: 削除位置が前に移動（pos == last_pos - text.len）
+                if (pos + text.len == last_del.pos) {
+                    const new_text = try std.mem.concat(self.allocator, u8, &[_][]const u8{ text, last_del.text });
+                    errdefer self.allocator.free(new_text);
+                    self.allocator.free(last_del.text);
+                    last.op.delete.text = new_text;
+                    last.op.delete.pos = pos;
+                    return;
+                }
+                // Delete: 削除位置が同じ（連続してpos位置で削除）
+                if (pos == last_del.pos) {
+                    const new_text = try std.mem.concat(self.allocator, u8, &[_][]const u8{ last_del.text, text });
+                    errdefer self.allocator.free(new_text);
+                    self.allocator.free(last_del.text);
+                    last.op.delete.text = new_text;
+                    return;
+                }
+            }
+        }
+
         const text_copy = try self.allocator.dupe(u8, text);
         try self.undo_stack.append(self.allocator, .{
             .op = .{ .delete = .{ .pos = pos, .text = text_copy } },
