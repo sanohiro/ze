@@ -519,6 +519,12 @@ pub const Buffer = struct {
     }
 
     pub fn lineCount(self: *const Buffer) usize {
+        // LineIndexが有効ならO(1)で返す
+        if (self.line_index.valid) {
+            return self.line_index.lineCount();
+        }
+
+        // LineIndexが無効な場合のみフルスキャン
         // 空バッファは1行
         if (self.len() == 0) return 1;
 

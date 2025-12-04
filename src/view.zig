@@ -12,6 +12,8 @@ pub const View = struct {
     dirty_start: ?usize,
     dirty_end: ?usize,
     needs_full_redraw: bool,
+    // レンダリング用の再利用バッファ（メモリ確保を減らす）
+    line_buffer: std.ArrayList(u8),
 
     pub fn init(buffer: *Buffer) View {
         return View{
@@ -22,7 +24,12 @@ pub const View = struct {
             .dirty_start = null,
             .dirty_end = null,
             .needs_full_redraw = true,
+            .line_buffer = .{},
         };
+    }
+
+    pub fn deinit(self: *View, allocator: std.mem.Allocator) void {
+        self.line_buffer.deinit(allocator);
     }
 
     pub fn markDirty(self: *View, start_line: usize, end_line: ?usize) void {
@@ -114,10 +121,6 @@ pub const View = struct {
             try self.buffer.line_index.rebuild(self.buffer);
         }
 
-        // 行バッファを再利用（ヒープ確保削減）
-        var line_buffer: std.ArrayList(u8) = .{};
-        defer line_buffer.deinit(term.allocator);
-
         // 全画面再描画が必要な場合
         if (self.needs_full_redraw) {
             try term.write("\x1b[H"); // ホーム位置
@@ -132,7 +135,7 @@ pub const View = struct {
             while (screen_row < max_lines) : (screen_row += 1) {
                 const file_line = self.top_line + screen_row;
                 if (file_line < self.buffer.line_index.lineCount()) {
-                    try self.renderLineWithIter(term, screen_row, &iter, &line_buffer);
+                    try self.renderLineWithIter(term, screen_row, &iter, &self.line_buffer);
                 } else {
                     try self.renderEmptyLine(term, screen_row);
                 }
@@ -162,7 +165,7 @@ pub const View = struct {
                 while (screen_row < render_end) : (screen_row += 1) {
                     const file_line = self.top_line + screen_row;
                     if (file_line < self.buffer.line_index.lineCount()) {
-                        try self.renderLineWithIter(term, screen_row, &iter, &line_buffer);
+                        try self.renderLineWithIter(term, screen_row, &iter, &self.line_buffer);
                     } else {
                         try self.renderEmptyLine(term, screen_row);
                     }
@@ -208,7 +211,12 @@ pub const View = struct {
         const target_line = self.top_line + self.cursor_y;
 
         // LineIndexでO(1)行開始位置取得
-        const line_start = self.buffer.line_index.getLineStart(target_line) orelse return self.buffer.len();
+        // 無効な場合はEOF（安全側に倒す）
+        const line_start = self.buffer.line_index.getLineStart(target_line) orelse {
+            // LineIndexが無効またはtarget_lineが範囲外
+            // EOFを返すことで、編集操作が安全に失敗する
+            return self.buffer.len();
+        };
 
         // 行内のカーソル位置を計算
         // cursor_xは表示幅（絵文字=2, 通常文字=1）なので、
@@ -243,7 +251,12 @@ pub const View = struct {
         const target_line = self.top_line + self.cursor_y;
 
         // LineIndexでO(1)行開始位置取得
-        const line_start = self.buffer.line_index.getLineStart(target_line) orelse return 0;
+        // 無効な場合は幅0（安全側に倒す）
+        const line_start = self.buffer.line_index.getLineStart(target_line) orelse {
+            // LineIndexが無効またはtarget_lineが範囲外
+            // 幅0を返すことで、カーソルが行頭にクランプされる
+            return 0;
+        };
 
         var iter = PieceIterator.init(self.buffer);
         iter.seek(line_start);
@@ -392,7 +405,9 @@ pub const View = struct {
         const target_line = self.top_line + self.cursor_y;
 
         // LineIndexでO(1)行開始位置取得
+        // 無効な場合は行頭に留まる（安全側に倒す）
         const line_start = self.buffer.line_index.getLineStart(target_line) orelse {
+            // LineIndexが無効またはtarget_lineが範囲外
             self.cursor_x = 0;
             return;
         };

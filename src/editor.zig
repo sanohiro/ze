@@ -61,6 +61,7 @@ pub const Editor = struct {
 
     pub fn deinit(self: *Editor) void {
         self.buffer.deinit();
+        self.view.deinit(self.allocator);
         self.terminal.deinit();
         if (self.filename) |fname| {
             self.allocator.free(fname);
