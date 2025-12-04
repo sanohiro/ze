@@ -65,6 +65,9 @@ pub const Editor = struct {
 
     /// ステータスバーのバッファサイズ
     pub const STATUS_BUF_SIZE: usize = 256;
+
+    /// タブ幅（空白文字数）
+    pub const TAB_WIDTH: usize = 4;
 };
 
 /// 入力処理の定数

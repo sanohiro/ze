@@ -364,11 +364,17 @@ pub const Buffer = struct {
         }
 
         // 挿入位置が末尾なら最後に追加
-        if (pos >= self.total_len) {
+        // pos == total_len は許可するが、それを超える場合はエラー
+        if (pos == self.total_len) {
             try self.pieces.append(self.allocator, new_piece);
             self.total_len += text.len;
             self.line_index.invalidate();
             return;
+        }
+
+        // pos > total_len の場合はエラー
+        if (pos > self.total_len) {
+            return error.PositionOutOfBounds;
         }
 
         // 挿入位置のpieceを見つける

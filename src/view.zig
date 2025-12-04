@@ -7,6 +7,7 @@ const config = @import("config.zig");
 pub const View = struct {
     buffer: *Buffer,
     top_line: usize,
+    top_col: usize, // 水平スクロールオフセット
     cursor_x: usize,
     cursor_y: usize,
     // Dirty範囲追跡（差分描画用）
@@ -25,6 +26,7 @@ pub const View = struct {
         return View{
             .buffer = buffer,
             .top_line = 0,
+            .top_col = 0,
             .cursor_x = 0,
             .cursor_y = 0,
             .dirty_start = null,
@@ -105,15 +107,40 @@ pub const View = struct {
             try line_buffer.append(term.allocator, ch);
         }
 
-        // grapheme-aware rendering: 画面幅に収まる範囲を計算
+        // Tab展開用の一時バッファ
+        var expanded_line = std.ArrayList(u8){};
+        defer expanded_line.deinit(self.allocator);
+
+        // grapheme-aware rendering with tab expansion and horizontal scrolling
         var byte_idx: usize = 0;
-        var col: usize = 0;
-        while (byte_idx < line_buffer.items.len and col < term.width) {
+        var col: usize = 0; // 論理カラム位置（行全体での位置）
+        const visible_end = self.top_col + term.width; // 表示範囲の終端
+
+        while (byte_idx < line_buffer.items.len and col < visible_end) {
             const ch = line_buffer.items[byte_idx];
             if (ch < config.UTF8.CONTINUATION_MASK) {
                 // ASCII
-                byte_idx += 1;
-                col += 1;
+                if (ch == '\t') {
+                    // Tabを空白に展開
+                    const next_tab_stop = (col / config.Editor.TAB_WIDTH + 1) * config.Editor.TAB_WIDTH;
+                    const spaces_needed = next_tab_stop - col;
+                    var i: usize = 0;
+                    while (i < spaces_needed) : (i += 1) {
+                        // 水平スクロール範囲内なら追加
+                        if (col + i >= self.top_col and col + i < visible_end) {
+                            try expanded_line.append(self.allocator, ' ');
+                        }
+                    }
+                    col = next_tab_stop;
+                    byte_idx += 1;
+                } else {
+                    // 通常のASCII文字
+                    if (col >= self.top_col) {
+                        try expanded_line.append(self.allocator, ch);
+                    }
+                    byte_idx += 1;
+                    col += 1;
+                }
             } else {
                 // UTF-8: calculate codepoint and width
                 const len = std.unicode.utf8ByteSequenceLength(ch) catch break;
@@ -123,13 +150,20 @@ pub const View = struct {
                     continue;
                 };
                 const width = Buffer.charWidth(codepoint);
-                if (col + width > term.width) break;
+                // 水平スクロール範囲内なら追加
+                if (col >= self.top_col) {
+                    // UTF-8文字をそのままコピー
+                    var i: usize = 0;
+                    while (i < len) : (i += 1) {
+                        try expanded_line.append(self.allocator, line_buffer.items[byte_idx + i]);
+                    }
+                }
                 byte_idx += len;
                 col += width;
             }
         }
 
-        const new_line = line_buffer.items[0..byte_idx];
+        const new_line = expanded_line.items;
 
         // 前フレームと比較してセルレベル差分描画
         if (screen_row < self.prev_screen.items.len) {
@@ -154,7 +188,14 @@ pub const View = struct {
                 diff_end = @max(old_line.len, new_line.len);
             }
 
-            if (diff_start) |start| {
+            if (diff_start) |start_raw| {
+                // UTF-8文字境界に調整（継続バイトの途中から始まらないように）
+                var start = start_raw;
+                while (start > 0 and new_line[start] >= 0x80 and new_line[start] < 0xC0) {
+                    // 継続バイト（0x80-0xBF）の場合は前に戻る
+                    start -= 1;
+                }
+
                 // バイト位置から画面カラム位置を計算
                 var screen_col: usize = 0;
                 var b: usize = 0;
@@ -300,8 +341,13 @@ pub const View = struct {
         // ステータスバーの描画
         try self.renderStatusBar(term);
 
-        // カーソルを表示
-        try term.moveCursor(self.cursor_y, self.cursor_x);
+        // カーソルを表示（水平スクロールを考慮、境界チェック）
+        var screen_cursor_x = if (self.cursor_x >= self.top_col) self.cursor_x - self.top_col else 0;
+        // 端末幅を超えないようにクリップ
+        if (screen_cursor_x >= term.width) {
+            screen_cursor_x = term.width - 1;
+        }
+        try term.moveCursor(self.cursor_y, screen_cursor_x);
         try term.showCursor();
         try term.flush();
     }
@@ -325,10 +371,13 @@ pub const View = struct {
 
         // ステータスバーを反転表示
         try term.write(config.ANSI.INVERT);
-        try term.write(status);
+
+        // ステータスが端末幅を超える場合は切り捨て
+        const display_status = if (status.len > term.width) status[0..term.width] else status;
+        try term.write(display_status);
 
         // 残りの部分を空白で埋める（underflow防止）
-        const padding = if (status.len < term.width) term.width - status.len else 0;
+        const padding = if (display_status.len < term.width) term.width - display_status.len else 0;
         for (0..padding) |_| {
             try term.write(" ");
         }
@@ -444,6 +493,12 @@ pub const View = struct {
             } else {
                 self.cursor_x = 0;
             }
+
+            // 水平スクロール: カーソルが左端より左に行った場合
+            if (self.cursor_x < self.top_col) {
+                self.top_col = self.cursor_x;
+                self.markFullRedraw();
+            }
         } else {
             // cursor_x == 0、前の行に移動
             if (self.cursor_y > 0) {
@@ -455,6 +510,8 @@ pub const View = struct {
                 self.moveToLineEnd();
                 self.markFullRedraw(); // スクロールで全画面再描画
             }
+            // 行移動時は水平スクロールをリセット
+            self.top_col = 0;
         }
     }
 
@@ -484,9 +541,18 @@ pub const View = struct {
                     self.cursor_x = 0;
                     self.markFullRedraw(); // スクロールで全画面再描画
                 }
+                // 行移動時は水平スクロールをリセット
+                self.top_col = 0;
             } else {
                 // grapheme clusterの幅分進める
                 self.cursor_x += gc.width;
+
+                // 水平スクロール: カーソルが右端を超えた場合
+                const visible_width = term.width;
+                if (self.cursor_x >= self.top_col + visible_width) {
+                    self.top_col = self.cursor_x - visible_width + 1;
+                    self.markFullRedraw();
+                }
             }
         }
     }
@@ -527,6 +593,7 @@ pub const View = struct {
 
     pub fn moveToLineStart(self: *View) void {
         self.cursor_x = 0;
+        self.top_col = 0;
     }
 
     pub fn moveToLineEnd(self: *View) void {

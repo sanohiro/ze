@@ -39,6 +39,7 @@ pub const Editor = struct {
     running: bool,
     filename: ?[]const u8,
     modified: bool,
+    quit_confirmation: bool, // 終了確認フラグ
     undo_stack: std.ArrayList(UndoEntry),
     redo_stack: std.ArrayList(UndoEntry),
 
@@ -55,6 +56,7 @@ pub const Editor = struct {
             .running = true,
             .filename = null,
             .modified = false,
+            .quit_confirmation = false,
             .undo_stack = .{},
             .redo_stack = .{},
         };
@@ -138,9 +140,9 @@ pub const Editor = struct {
         var i: usize = 0;
         while (i < actual_len) : (i += 1) {
             result[i] = iter.next() orelse {
-                // これは起こらないはず（actual_lenで範囲チェック済み）
-                // もし起きた場合はバグなので、部分的に返す
-                return result[0..i];
+                // Piece table の不整合が発生した場合
+                // メモリリークを防ぐため、エラーを返す（errdefer が解放する）
+                return error.BufferInconsistency;
             };
         }
 
@@ -402,11 +404,28 @@ pub const Editor = struct {
     }
 
     fn processKey(self: *Editor, key: input.Key) !void {
+        // Ctrl+Q以外のキーが押されたら終了確認フラグをリセット
+        const is_quit_key = switch (key) {
+            .ctrl => |c| c == 'q',
+            else => false,
+        };
+        if (!is_quit_key and self.quit_confirmation) {
+            self.quit_confirmation = false;
+        }
+
         switch (key) {
             // Ctrl キー
             .ctrl => |c| {
                 switch (c) {
-                    'q' => self.running = false, // C-q で終了
+                    'q' => {
+                        // 未保存の変更がある場合は警告
+                        if (self.modified and !self.quit_confirmation) {
+                            self.view.setError("未保存の変更があります。もう一度Ctrl-Qで終了、Ctrl-Sで保存");
+                            self.quit_confirmation = true;
+                        } else {
+                            self.running = false;
+                        }
+                    },
                     'f' => self.view.moveCursorRight(&self.terminal), // C-f 前進
                     'b' => self.view.moveCursorLeft(), // C-b 後退
                     'n' => self.view.moveCursorDown(&self.terminal), // C-n 次行
@@ -710,12 +729,21 @@ pub const Editor = struct {
         const pos = self.view.getCursorBufferPos();
         if (pos == 0) return;
 
-        // バッファ全体をイテレートして単語境界を記録
+        // パフォーマンス最適化: 現在位置から適度な範囲だけ走査
+        // 大きなファイルでも高速に動作するように、最大1000バイト程度を見る
+        const scan_distance: usize = 1000;
+        const start_pos = if (pos > scan_distance) pos - scan_distance else 0;
+
         var iter = PieceIterator.init(&self.buffer);
+        if (start_pos > 0) {
+            iter.seek(start_pos);
+        }
+
         var new_pos: usize = 0;
         var in_word = false;
         var last_word_start: usize = 0;
 
+        // start_posから現在位置まで走査して単語境界を記録
         while (iter.global_pos < pos) {
             const ch = iter.next() orelse break;
             const is_ws = std.ascii.isWhitespace(ch);

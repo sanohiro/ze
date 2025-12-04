@@ -45,8 +45,11 @@ pub fn readKey(stdin: std.fs.File) !?Key {
     // ESC シーケンス
     if (ch == config.Input.ESC) {
         // さらに読み込んでエスケープシーケンスを判定
+        // VMIN=0, VTIME=1の設定により、100msでタイムアウト
+        // バイトが分割到着する場合も、100ms以内なら正しく読み取れる
         const n2 = try stdin.read(buf[1..3]);
         if (n2 == 0) {
+            // タイムアウト: ESCキー単体として扱う
             return Key.escape;
         }
 
