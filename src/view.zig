@@ -243,17 +243,12 @@ pub const View = struct {
 
         const max_lines = term.height - 1;
 
-        // 行キャッシュが無効なら再構築
-        if (!self.buffer.line_index.valid) {
-            try self.buffer.line_index.rebuild(self.buffer);
-        }
-
         // 全画面再描画が必要な場合
         if (self.needs_full_redraw) {
             try term.write(config.ANSI.CURSOR_HOME); // ホーム位置
 
             // top_lineの開始位置を取得してイテレータを初期化
-            const start_pos = self.buffer.line_index.getLineStart(self.top_line) orelse self.buffer.len();
+            const start_pos = self.buffer.getLineStart(self.top_line) orelse self.buffer.len();
             var iter = PieceIterator.init(self.buffer);
             iter.seek(start_pos);
 
@@ -261,7 +256,7 @@ pub const View = struct {
             var screen_row: usize = 0;
             while (screen_row < max_lines) : (screen_row += 1) {
                 const file_line = self.top_line + screen_row;
-                if (file_line < self.buffer.line_index.lineCount()) {
+                if (file_line < self.buffer.lineCount()) {
                     try self.renderLineWithIter(term, screen_row, &iter, &self.line_buffer);
                 } else {
                     try self.renderEmptyLine(term, screen_row);
@@ -283,7 +278,7 @@ pub const View = struct {
 
                 // dirty範囲の開始位置を取得
                 const start_file_line = self.top_line + render_start;
-                const start_pos = self.buffer.line_index.getLineStart(start_file_line) orelse self.buffer.len();
+                const start_pos = self.buffer.getLineStart(start_file_line) orelse self.buffer.len();
                 var iter = PieceIterator.init(self.buffer);
                 iter.seek(start_pos);
 
@@ -291,7 +286,7 @@ pub const View = struct {
                 var screen_row = render_start;
                 while (screen_row < render_end) : (screen_row += 1) {
                     const file_line = self.top_line + screen_row;
-                    if (file_line < self.buffer.line_index.lineCount()) {
+                    if (file_line < self.buffer.lineCount()) {
                         try self.renderLineWithIter(term, screen_row, &iter, &self.line_buffer);
                     } else {
                         try self.renderEmptyLine(term, screen_row);
@@ -340,12 +335,12 @@ pub const View = struct {
         try term.write(config.ANSI.RESET);
     }
 
-    pub fn getCursorBufferPos(self: *const View) usize {
+    pub fn getCursorBufferPos(self: *View) usize {
         const target_line = self.top_line + self.cursor_y;
 
         // LineIndexでO(1)行開始位置取得
         // 無効な場合はEOF（安全側に倒す）
-        const line_start = self.buffer.line_index.getLineStart(target_line) orelse {
+        const line_start = self.buffer.getLineStart(target_line) orelse {
             // LineIndexが無効またはtarget_lineが範囲外
             // EOFを返すことで、編集操作が安全に失敗する
             return self.buffer.len();
@@ -380,12 +375,12 @@ pub const View = struct {
     }
 
     // 現在行の表示幅を取得（grapheme cluster単位）
-    fn getCurrentLineWidth(self: *const View) usize {
+    pub fn getCurrentLineWidth(self: *View) usize {
         const target_line = self.top_line + self.cursor_y;
 
         // LineIndexでO(1)行開始位置取得
         // 無効な場合は幅0（安全側に倒す）
-        const line_start = self.buffer.line_index.getLineStart(target_line) orelse {
+        const line_start = self.buffer.getLineStart(target_line) orelse {
             // LineIndexが無効またはtarget_lineが範囲外
             // 幅0を返すことで、カーソルが行頭にクランプされる
             return 0;
@@ -539,7 +534,7 @@ pub const View = struct {
 
         // LineIndexでO(1)行開始位置取得
         // 無効な場合は行頭に留まる（安全側に倒す）
-        const line_start = self.buffer.line_index.getLineStart(target_line) orelse {
+        const line_start = self.buffer.getLineStart(target_line) orelse {
             // LineIndexが無効またはtarget_lineが範囲外
             self.cursor_x = 0;
             return;

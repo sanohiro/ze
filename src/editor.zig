@@ -105,6 +105,9 @@ pub const Editor = struct {
         const stdin: std.fs.File = .{ .handle = std.posix.STDIN_FILENO };
 
         while (self.running) {
+            // カーソル位置をバッファ範囲内にクランプ（大量削除後の対策）
+            self.clampCursorPosition();
+
             try self.view.render(&self.terminal);
 
             if (try input.readKey(stdin)) |key| {
@@ -149,12 +152,46 @@ pub const Editor = struct {
         return self.view.top_line + self.view.cursor_y;
     }
 
+    // カーソル位置をバッファの有効範囲にクランプ（大量削除後の対策）
+    fn clampCursorPosition(self: *Editor) void {
+        const total_lines = self.buffer.lineCount();
+        if (total_lines == 0) return;
+
+        const max_screen_lines = self.terminal.height - 1; // ステータスバー分を引く
+
+        // top_lineが範囲外の場合は調整
+        if (self.view.top_line >= total_lines) {
+            if (total_lines > max_screen_lines) {
+                self.view.top_line = total_lines - max_screen_lines;
+            } else {
+                self.view.top_line = 0;
+            }
+            self.view.markFullRedraw();
+        }
+
+        // cursor_yが範囲外の場合は調整
+        const current_line = self.view.top_line + self.view.cursor_y;
+        if (current_line >= total_lines) {
+            if (total_lines > self.view.top_line) {
+                self.view.cursor_y = total_lines - self.view.top_line - 1;
+            } else {
+                self.view.cursor_y = 0;
+            }
+
+            // cursor_xも行末にクランプ
+            const line_width = self.view.getCurrentLineWidth();
+            if (self.view.cursor_x > line_width) {
+                self.view.cursor_x = line_width;
+            }
+        }
+    }
+
     // Undoスタックの最大エントリ数
     const MAX_UNDO_ENTRIES = config.Editor.MAX_UNDO_ENTRIES;
 
     // 編集操作を記録（差分ベース、連続挿入はマージ）
-    fn recordInsert(self: *Editor, pos: usize, text: []const u8) !void {
-        const cursor_pos = self.view.getCursorBufferPos();
+    fn recordInsert(self: *Editor, pos: usize, text: []const u8, cursor_pos_before_edit: usize) !void {
+        const cursor_pos = cursor_pos_before_edit;
 
         // 連続挿入のコアレッシング: 直前の操作が連続する挿入ならマージ
         if (self.undo_stack.items.len > 0) {
@@ -192,8 +229,8 @@ pub const Editor = struct {
         self.redo_stack.clearRetainingCapacity();
     }
 
-    fn recordDelete(self: *Editor, pos: usize, text: []const u8) !void {
-        const cursor_pos = self.view.getCursorBufferPos();
+    fn recordDelete(self: *Editor, pos: usize, text: []const u8, cursor_pos_before_edit: usize) !void {
+        const cursor_pos = cursor_pos_before_edit;
 
         // 連続削除のコアレッシング: 直前の操作が連続する削除ならマージ
         if (self.undo_stack.items.len > 0) {
@@ -323,18 +360,9 @@ pub const Editor = struct {
     fn setCursorToPos(self: *Editor, target_pos: usize) void {
         const clamped_pos = @min(target_pos, self.buffer.len());
 
-        // 行番号とオフセットを計算
-        var iter = PieceIterator.init(&self.buffer);
-        var line: usize = 0;
-        var line_start: usize = 0;
-
-        while (iter.global_pos < clamped_pos) {
-            const ch = iter.next() orelse break;
-            if (ch == '\n') {
-                line += 1;
-                line_start = iter.global_pos;
-            }
-        }
+        // LineIndexでO(log N)行番号計算
+        const line = self.buffer.findLineByPos(clamped_pos);
+        const line_start = self.buffer.getLineStart(line) orelse 0;
 
         // 画面内の行位置を計算
         const max_screen_lines = self.terminal.height - 1;
@@ -347,7 +375,7 @@ pub const Editor = struct {
         }
 
         // カーソルX位置を計算（grapheme clusterの表示幅）
-        iter = PieceIterator.init(&self.buffer);
+        var iter = PieceIterator.init(&self.buffer);
         iter.seek(line_start);
 
         var display_col: usize = 0;
@@ -441,7 +469,7 @@ pub const Editor = struct {
         // バッファ変更を先に実行（失敗した場合はundoログに記録しない）
         try self.buffer.insert(pos, ch);
         errdefer self.buffer.delete(pos, 1) catch unreachable; // rollback失敗は致命的
-        try self.recordInsert(pos, &[_]u8{ch});
+        try self.recordInsert(pos, &[_]u8{ch}, pos); // 編集前のカーソル位置を記録
         self.modified = true;
 
         if (ch == '\n') {
@@ -479,7 +507,7 @@ pub const Editor = struct {
         // バッファ変更を先に実行
         try self.buffer.insertSlice(pos, buf[0..len]);
         errdefer self.buffer.delete(pos, len) catch unreachable; // rollback失敗は致命的
-        try self.recordInsert(pos, buf[0..len]);
+        try self.recordInsert(pos, buf[0..len], pos); // 編集前のカーソル位置を記録
         self.modified = true;
 
         if (codepoint == '\n') {
@@ -522,7 +550,7 @@ pub const Editor = struct {
 
             try self.buffer.delete(pos, 1);
             errdefer self.buffer.insertSlice(pos, deleted) catch unreachable; // rollback失敗は致命的
-            try self.recordDelete(pos, deleted);
+            try self.recordDelete(pos, deleted, pos); // 編集前のカーソル位置を記録
 
             self.modified = true;
             // 改行削除の場合は末尾まで再描画
@@ -541,7 +569,7 @@ pub const Editor = struct {
 
             try self.buffer.delete(pos, gc.byte_len);
             errdefer self.buffer.insertSlice(pos, deleted) catch unreachable; // rollback失敗は致命的
-            try self.recordDelete(pos, deleted);
+            try self.recordDelete(pos, deleted, pos); // 編集前のカーソル位置を記録
 
             self.modified = true;
             // 改行削除の場合は末尾まで再描画
@@ -584,7 +612,7 @@ pub const Editor = struct {
 
         try self.buffer.delete(char_start, char_len);
         errdefer self.buffer.insertSlice(char_start, deleted) catch unreachable; // rollback失敗は致命的
-        try self.recordDelete(char_start, deleted);
+        try self.recordDelete(char_start, deleted, pos); // 編集前のカーソル位置を記録
 
         self.modified = true;
         // 改行削除の場合は末尾まで再描画
@@ -628,7 +656,7 @@ pub const Editor = struct {
 
             try self.buffer.delete(pos, count);
             errdefer self.buffer.insertSlice(pos, deleted) catch unreachable; // rollback失敗は致命的
-            try self.recordDelete(pos, deleted);
+            try self.recordDelete(pos, deleted, pos); // 編集前のカーソル位置を記録
 
             self.modified = true;
             // 改行削除の場合は末尾まで再描画
@@ -743,7 +771,7 @@ pub const Editor = struct {
 
             try self.buffer.delete(pos, count);
             errdefer self.buffer.insertSlice(pos, deleted) catch unreachable; // rollback失敗は致命的
-            try self.recordDelete(pos, deleted);
+            try self.recordDelete(pos, deleted, pos); // 編集前のカーソル位置を記録
 
             self.modified = true;
             // 改行削除の場合は末尾まで再描画

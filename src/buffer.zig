@@ -323,6 +323,16 @@ pub const Buffer = struct {
             current_pos += piece.length;
         }
 
+        // EOF境界（pos == buffer.len()）の場合は最後のpieceの末尾を返す
+        if (self.pieces.items.len > 0 and pos == current_pos) {
+            const last_idx = self.pieces.items.len - 1;
+            const last_piece = self.pieces.items[last_idx];
+            return .{
+                .piece_idx = last_idx,
+                .offset = last_piece.length,
+            };
+        }
+
         return null;
     }
 
@@ -519,24 +529,72 @@ pub const Buffer = struct {
         self.line_index.invalidate();
     }
 
-    pub fn lineCount(self: *const Buffer) usize {
-        // LineIndexが有効ならO(1)で返す
-        if (self.line_index.valid) {
-            return self.line_index.lineCount();
+    // LineIndexを使った行数取得（自動rebuild）
+    pub fn lineCount(self: *Buffer) usize {
+        // LineIndexが無効なら再構築
+        if (!self.line_index.valid) {
+            self.line_index.rebuild(self) catch {
+                // rebuild失敗時はフルスキャンにフォールバック
+                if (self.len() == 0) return 1;
+                var count: usize = 1;
+                var iter = PieceIterator.init(self);
+                while (iter.next()) |ch| {
+                    if (ch == '\n') count += 1;
+                }
+                return count;
+            };
         }
 
-        // LineIndexが無効な場合のみフルスキャン
-        // 空バッファは1行
-        if (self.len() == 0) return 1;
+        return self.line_index.lineCount();
+    }
 
-        var count: usize = 1;
-        var iter = PieceIterator.init(self);
-
-        while (iter.next()) |ch| {
-            if (ch == '\n') count += 1;
+    // LineIndexを使った行開始位置取得（自動rebuild）
+    pub fn getLineStart(self: *Buffer, line_num: usize) ?usize {
+        // LineIndexが無効なら再構築
+        if (!self.line_index.valid) {
+            self.line_index.rebuild(self) catch {
+                // rebuild失敗時はnullを返す
+                return null;
+            };
         }
 
-        return count;
+        return self.line_index.getLineStart(line_num);
+    }
+
+    // バイト位置から行番号を計算（O(log N)バイナリサーチ）
+    pub fn findLineByPos(self: *Buffer, pos: usize) usize {
+        // LineIndexが無効なら再構築
+        if (!self.line_index.valid) {
+            self.line_index.rebuild(self) catch {
+                // rebuild失敗時はフォールバック（O(N)スキャン）
+                var iter = PieceIterator.init(self);
+                var line: usize = 0;
+                while (iter.global_pos < pos) {
+                    const ch = iter.next() orelse break;
+                    if (ch == '\n') line += 1;
+                }
+                return line;
+            };
+        }
+
+        // バイナリサーチで行番号を見つける
+        const line_starts = self.line_index.line_starts.items;
+        if (line_starts.len == 0) return 0;
+
+        var left: usize = 0;
+        var right: usize = line_starts.len;
+
+        while (left < right) {
+            const mid = left + (right - left) / 2;
+            if (line_starts[mid] <= pos) {
+                left = mid + 1;
+            } else {
+                right = mid;
+            }
+        }
+
+        // leftは pos より大きい最初の行、なので left - 1 が pos を含む行
+        return if (left > 0) left - 1 else 0;
     }
 
     // UTF-8文字幅を計算（unicode.zigに委譲）
