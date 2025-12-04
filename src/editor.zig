@@ -146,6 +146,7 @@ pub const Editor = struct {
                 // 直前の挿入の直後に続く挿入ならマージ
                 if (last_ins.pos + last_ins.text.len == pos) {
                     const new_text = try std.mem.concat(self.allocator, u8, &[_][]const u8{ last_ins.text, text });
+                    errdefer self.allocator.free(new_text); // concat成功後の保護
                     self.allocator.free(last_ins.text);
                     last.op.insert.text = new_text;
                     return;
@@ -331,7 +332,7 @@ pub const Editor = struct {
 
         // バッファ変更を先に実行（失敗した場合はundoログに記録しない）
         try self.buffer.insert(pos, ch);
-        errdefer self.buffer.delete(pos, 1) catch {}; // recordInsert失敗時にロールバック
+        errdefer self.buffer.delete(pos, 1) catch unreachable; // rollback失敗は致命的
         try self.recordInsert(pos, &[_]u8{ch});
         self.modified = true;
 
@@ -369,7 +370,7 @@ pub const Editor = struct {
 
         // バッファ変更を先に実行
         try self.buffer.insertSlice(pos, buf[0..len]);
-        errdefer self.buffer.delete(pos, len) catch {}; // recordInsert失敗時にロールバック
+        errdefer self.buffer.delete(pos, len) catch unreachable; // rollback失敗は致命的
         try self.recordInsert(pos, buf[0..len]);
         self.modified = true;
 
@@ -412,7 +413,7 @@ pub const Editor = struct {
             errdefer self.allocator.free(deleted);
 
             try self.buffer.delete(pos, 1);
-            errdefer self.buffer.insertSlice(pos, deleted) catch {}; // recordDelete失敗時にロールバック
+            errdefer self.buffer.insertSlice(pos, deleted) catch unreachable; // rollback失敗は致命的
             try self.recordDelete(pos, deleted);
 
             self.modified = true;
@@ -431,7 +432,7 @@ pub const Editor = struct {
             errdefer self.allocator.free(deleted);
 
             try self.buffer.delete(pos, gc.byte_len);
-            errdefer self.buffer.insertSlice(pos, deleted) catch {}; // recordDelete失敗時にロールバック
+            errdefer self.buffer.insertSlice(pos, deleted) catch unreachable; // rollback失敗は致命的
             try self.recordDelete(pos, deleted);
 
             self.modified = true;
@@ -474,7 +475,7 @@ pub const Editor = struct {
         errdefer self.allocator.free(deleted);
 
         try self.buffer.delete(char_start, char_len);
-        errdefer self.buffer.insertSlice(char_start, deleted) catch {}; // recordDelete失敗時にロールバック
+        errdefer self.buffer.insertSlice(char_start, deleted) catch unreachable; // rollback失敗は致命的
         try self.recordDelete(char_start, deleted);
 
         self.modified = true;
@@ -515,7 +516,7 @@ pub const Editor = struct {
             errdefer self.allocator.free(deleted);
 
             try self.buffer.delete(pos, count);
-            errdefer self.buffer.insertSlice(pos, deleted) catch {}; // recordDelete失敗時にロールバック
+            errdefer self.buffer.insertSlice(pos, deleted) catch unreachable; // rollback失敗は致命的
             try self.recordDelete(pos, deleted);
 
             self.modified = true;
@@ -613,7 +614,7 @@ pub const Editor = struct {
             errdefer self.allocator.free(deleted);
 
             try self.buffer.delete(pos, count);
-            errdefer self.buffer.insertSlice(pos, deleted) catch {}; // recordDelete失敗時にロールバック
+            errdefer self.buffer.insertSlice(pos, deleted) catch unreachable; // rollback失敗は致命的
             try self.recordDelete(pos, deleted);
 
             self.modified = true;

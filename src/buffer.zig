@@ -194,6 +194,11 @@ pub const LineIndex = struct {
 
     pub fn rebuild(self: *LineIndex, buffer: *const Buffer) !void {
         self.line_starts.clearRetainingCapacity();
+        errdefer {
+            self.valid = false;
+            self.line_starts.clearRetainingCapacity();
+        }
+
         try self.line_starts.append(buffer.allocator, 0); // 1行目は常に0から
 
         var iter = PieceIterator.init(buffer);
@@ -425,6 +430,7 @@ pub const Buffer = struct {
             // piece全体を削除
             if (start_loc.offset == 0 and end_loc.offset == piece.length) {
                 _ = self.pieces.orderedRemove(start_loc.piece_idx);
+                self.line_index.invalidate();
                 return;
             }
 
@@ -435,6 +441,7 @@ pub const Buffer = struct {
                     .start = piece.start + actual_count,
                     .length = piece.length - actual_count,
                 };
+                self.line_index.invalidate();
                 return;
             }
 
@@ -445,6 +452,7 @@ pub const Buffer = struct {
                     .start = piece.start,
                     .length = start_loc.offset,
                 };
+                self.line_index.invalidate();
                 return;
             }
 
@@ -464,6 +472,7 @@ pub const Buffer = struct {
             _ = self.pieces.orderedRemove(start_loc.piece_idx);
             try self.pieces.insert(self.allocator, start_loc.piece_idx, right_piece);
             try self.pieces.insert(self.allocator, start_loc.piece_idx, left_piece);
+            self.line_index.invalidate();
             return;
         }
 
