@@ -108,7 +108,14 @@ pub const Editor = struct {
             try self.view.render(&self.terminal);
 
             if (try input.readKey(stdin)) |key| {
-                try self.processKey(key);
+                // 何かキー入力があればエラーメッセージをクリア
+                self.view.clearError();
+
+                // キー処理でエラーが発生したらステータスバーに表示
+                self.processKey(key) catch |err| {
+                    const err_name = @errorName(err);
+                    self.view.setError(err_name);
+                };
             }
         }
     }

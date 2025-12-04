@@ -15,6 +15,8 @@ pub const View = struct {
     needs_full_redraw: bool,
     // レンダリング用の再利用バッファ（メモリ確保を減らす）
     line_buffer: std.ArrayList(u8),
+    // エラーメッセージ表示用
+    error_msg: ?[]const u8,
 
     pub fn init(buffer: *Buffer) View {
         return View{
@@ -26,11 +28,22 @@ pub const View = struct {
             .dirty_end = null,
             .needs_full_redraw = true,
             .line_buffer = .{},
+            .error_msg = null,
         };
     }
 
     pub fn deinit(self: *View, allocator: std.mem.Allocator) void {
         self.line_buffer.deinit(allocator);
+    }
+
+    // エラーメッセージを設定
+    pub fn setError(self: *View, msg: []const u8) void {
+        self.error_msg = msg;
+    }
+
+    // エラーメッセージをクリア
+    pub fn clearError(self: *View) void {
+        self.error_msg = null;
     }
 
     pub fn markDirty(self: *View, start_line: usize, end_line: ?usize) void {
@@ -189,12 +202,18 @@ pub const View = struct {
         try term.moveCursor(term.height - 1, 0);
 
         var status_buf: [config.Editor.STATUS_BUF_SIZE]u8 = undefined;
-        const lines = self.buffer.lineCount();
-        const status = try std.fmt.bufPrint(
-            &status_buf,
-            " ze | Line {d}/{d} | Pos {d},{d}",
-            .{ self.top_line + self.cursor_y + 1, lines, self.cursor_y + 1, self.cursor_x + 1 },
-        );
+
+        // エラーメッセージがあればそれを優先表示
+        const status = if (self.error_msg) |err_msg|
+            try std.fmt.bufPrint(&status_buf, " ERROR: {s}", .{err_msg})
+        else blk: {
+            const lines = self.buffer.lineCount();
+            break :blk try std.fmt.bufPrint(
+                &status_buf,
+                " ze | Line {d}/{d} | Pos {d},{d}",
+                .{ self.top_line + self.cursor_y + 1, lines, self.cursor_y + 1, self.cursor_x + 1 },
+            );
+        };
 
         // ステータスバーを反転表示
         try term.write(config.ANSI.INVERT);
