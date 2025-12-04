@@ -60,23 +60,12 @@ pub const View = struct {
         self.needs_full_redraw = false;
     }
 
-    // LineIndexを使って指定行を直接描画（O(1)行アクセス＋再利用バッファ）
-    fn renderLineAt(self: *View, term: *Terminal, screen_row: usize, file_line: usize, line_buffer: *std.ArrayList(u8)) !void {
+    // イテレータを再利用して行を描画（seek()なしで前進のみ）
+    fn renderLineWithIter(_: *View, term: *Terminal, screen_row: usize, iter: *PieceIterator, line_buffer: *std.ArrayList(u8)) !void {
         try term.moveCursor(screen_row, 0);
         try term.write("\x1b[K"); // 行末までクリア
 
-        // 行の開始位置を取得（O(1)）
-        const line_start = self.buffer.line_index.getLineStart(file_line) orelse {
-            // 行が存在しない場合は~を表示
-            try term.write("~");
-            return;
-        };
-
-        // 行の終了位置を見つける
-        var iter = PieceIterator.init(self.buffer);
-        iter.seek(line_start);
-
-        // 再利用バッファにクリア
+        // 再利用バッファをクリア
         line_buffer.clearRetainingCapacity();
 
         // 行末まで読み取る
@@ -111,6 +100,13 @@ pub const View = struct {
         try term.write(line_buffer.items[0..byte_idx]);
     }
 
+    // 空行（~）を描画
+    fn renderEmptyLine(_: *View, term: *Terminal, screen_row: usize) !void {
+        try term.moveCursor(screen_row, 0);
+        try term.write("\x1b[K");
+        try term.write("~");
+    }
+
     pub fn render(self: *View, term: *Terminal) !void {
         try term.hideCursor();
 
@@ -129,15 +125,25 @@ pub const View = struct {
         if (self.needs_full_redraw) {
             try term.write("\x1b[H"); // ホーム位置
 
-            // 全画面描画 - LineIndexでO(1)アクセス
+            // top_lineの開始位置を取得してイテレータを初期化
+            const start_pos = self.buffer.line_index.getLineStart(self.top_line) orelse self.buffer.len();
+            var iter = PieceIterator.init(self.buffer);
+            iter.seek(start_pos);
+
+            // 全画面描画 - イテレータを再利用して前進のみ
             var screen_row: usize = 0;
             while (screen_row < max_lines) : (screen_row += 1) {
-                try self.renderLineAt(term, screen_row, self.top_line + screen_row, &line_buffer);
+                const file_line = self.top_line + screen_row;
+                if (file_line < self.buffer.line_index.lineCount()) {
+                    try self.renderLineWithIter(term, screen_row, &iter, &line_buffer);
+                } else {
+                    try self.renderEmptyLine(term, screen_row);
+                }
             }
 
             self.clearDirty();
         } else if (self.dirty_start) |start| {
-            // 差分描画: dirty範囲のみ再描画 - LineIndexでO(1)アクセス
+            // 差分描画: dirty範囲のみ再描画
             const end_line = self.dirty_end orelse (self.top_line + max_lines);
             const end = @min(end_line, self.top_line + max_lines);
 
@@ -148,11 +154,21 @@ pub const View = struct {
                     max_lines
                 );
 
-                // dirty範囲を描画
+                // dirty範囲の開始位置を取得
+                const start_file_line = self.top_line + render_start;
+                const start_pos = self.buffer.line_index.getLineStart(start_file_line) orelse self.buffer.len();
+                var iter = PieceIterator.init(self.buffer);
+                iter.seek(start_pos);
+
+                // dirty範囲を描画 - イテレータを再利用
                 var screen_row = render_start;
                 while (screen_row < render_end) : (screen_row += 1) {
                     const file_line = self.top_line + screen_row;
-                    try self.renderLineAt(term, screen_row, file_line, &line_buffer);
+                    if (file_line < self.buffer.line_index.lineCount()) {
+                        try self.renderLineWithIter(term, screen_row, &iter, &line_buffer);
+                    } else {
+                        try self.renderEmptyLine(term, screen_row);
+                    }
                 }
             }
 
@@ -192,22 +208,15 @@ pub const View = struct {
     }
 
     pub fn getCursorBufferPos(self: *const View) usize {
-        var pos: usize = 0;
-        var line: usize = 0;
         const target_line = self.top_line + self.cursor_y;
 
+        // LineIndexでO(1)行開始位置取得
+        const line_start = self.buffer.line_index.getLineStart(target_line) orelse return self.buffer.len();
+
+        // 行内のカーソル位置を計算
         var iter = PieceIterator.init(self.buffer);
+        iter.seek(line_start);
 
-        // 目標行まで進める
-        while (line < target_line) {
-            const ch = iter.next() orelse return pos;
-            if (ch == '\n') line += 1;
-        }
-
-        // 現在の位置を記録
-        pos = iter.global_pos;
-
-        // 行内の位置を追加（grapheme cluster単位で処理）
         var col: usize = 0;
         while (col < self.cursor_x) {
             const start_pos = iter.global_pos;
@@ -232,15 +241,13 @@ pub const View = struct {
 
     // 現在行の表示幅を取得（grapheme cluster単位）
     fn getCurrentLineWidth(self: *const View) usize {
-        var iter = PieceIterator.init(self.buffer);
-        var line: usize = 0;
         const target_line = self.top_line + self.cursor_y;
 
-        // 目標行まで進める
-        while (line < target_line) {
-            const ch = iter.next() orelse return 0;
-            if (ch == '\n') line += 1;
-        }
+        // LineIndexでO(1)行開始位置取得
+        const line_start = self.buffer.line_index.getLineStart(target_line) orelse return 0;
+
+        var iter = PieceIterator.init(self.buffer);
+        iter.seek(line_start);
 
         // 行の表示幅を計算
         var line_width: usize = 0;
@@ -383,19 +390,16 @@ pub const View = struct {
     }
 
     pub fn moveToLineEnd(self: *View) void {
-        // 現在行の幅を計算（grapheme cluster単位）
-        var iter = PieceIterator.init(self.buffer);
-        var line: usize = 0;
         const target_line = self.top_line + self.cursor_y;
 
-        // 目標行まで進める
-        while (line < target_line) {
-            const ch = iter.next() orelse {
-                self.cursor_x = 0;
-                return;
-            };
-            if (ch == '\n') line += 1;
-        }
+        // LineIndexでO(1)行開始位置取得
+        const line_start = self.buffer.line_index.getLineStart(target_line) orelse {
+            self.cursor_x = 0;
+            return;
+        };
+
+        var iter = PieceIterator.init(self.buffer);
+        iter.seek(line_start);
 
         // 行の表示幅を計算
         var line_width: usize = 0;
