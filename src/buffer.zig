@@ -172,6 +172,50 @@ pub const PieceIterator = struct {
 };
 
 
+// 行キャッシュ: 各行の開始バイト位置を記録してO(1)アクセス
+pub const LineIndex = struct {
+    line_starts: std.ArrayList(usize),
+    valid: bool,
+
+    pub fn init(_: std.mem.Allocator) LineIndex {
+        return .{
+            .line_starts = .{},
+            .valid = false,
+        };
+    }
+
+    pub fn deinit(self: *LineIndex, allocator: std.mem.Allocator) void {
+        self.line_starts.deinit(allocator);
+    }
+
+    pub fn invalidate(self: *LineIndex) void {
+        self.valid = false;
+    }
+
+    pub fn rebuild(self: *LineIndex, buffer: *const Buffer) !void {
+        self.line_starts.clearRetainingCapacity();
+        try self.line_starts.append(buffer.allocator, 0); // 1行目は常に0から
+
+        var iter = PieceIterator.init(buffer);
+        while (iter.next()) |ch| {
+            if (ch == '\n') {
+                try self.line_starts.append(buffer.allocator, iter.global_pos);
+            }
+        }
+        self.valid = true;
+    }
+
+    pub fn getLineStart(self: *const LineIndex, line_num: usize) ?usize {
+        if (!self.valid or line_num >= self.line_starts.items.len) return null;
+        return self.line_starts.items[line_num];
+    }
+
+    pub fn lineCount(self: *const LineIndex) usize {
+        if (!self.valid) return 0;
+        return self.line_starts.items.len;
+    }
+};
+
 pub const Buffer = struct {
     original: []const u8,
     add_buffer: std.ArrayList(u8),
@@ -179,6 +223,7 @@ pub const Buffer = struct {
     allocator: std.mem.Allocator,
     owns_original: bool,
     total_len: usize,
+    line_index: LineIndex,
 
     pub fn init(allocator: std.mem.Allocator) !Buffer {
         return Buffer{
@@ -188,6 +233,7 @@ pub const Buffer = struct {
             .allocator = allocator,
             .owns_original = false,
             .total_len = 0,
+            .line_index = LineIndex.init(allocator),
         };
     }
 
@@ -197,6 +243,7 @@ pub const Buffer = struct {
         }
         self.add_buffer.deinit(self.allocator);
         self.pieces.deinit(self.allocator);
+        self.line_index.deinit(self.allocator);
     }
 
     pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !Buffer {
@@ -214,6 +261,7 @@ pub const Buffer = struct {
             .allocator = allocator,
             .owns_original = true,
             .total_len = content.len,
+            .line_index = LineIndex.init(allocator),
         };
 
         // 初期状態：originalファイル全体を指す1つのpiece
@@ -280,6 +328,7 @@ pub const Buffer = struct {
 
     pub fn insert(self: *Buffer, pos: usize, ch: u8) !void {
         try self.insertSlice(pos, &[_]u8{ch});
+        self.line_index.invalidate();
     }
 
     pub fn insertSlice(self: *Buffer, pos: usize, text: []const u8) !void {
@@ -351,6 +400,7 @@ pub const Buffer = struct {
         try self.pieces.insert(self.allocator, location.piece_idx, new_piece);
         try self.pieces.insert(self.allocator, location.piece_idx, left_piece);
         self.total_len += text.len;
+        self.line_index.invalidate();
     }
 
     pub fn delete(self: *Buffer, pos: usize, count: usize) !void {
@@ -457,6 +507,7 @@ pub const Buffer = struct {
             j -= 1;
             _ = self.pieces.orderedRemove(pieces_to_remove.items[j]);
         }
+        self.line_index.invalidate();
     }
 
     pub fn lineCount(self: *const Buffer) usize {

@@ -60,40 +60,55 @@ pub const View = struct {
         self.needs_full_redraw = false;
     }
 
-    // 1行を描画（grapheme-aware）
-    fn renderLine(_: *View, term: *Terminal, screen_row: usize, line_iter: *LineIterator) !void {
+    // LineIndexを使って指定行を直接描画（O(1)行アクセス＋再利用バッファ）
+    fn renderLineAt(self: *View, term: *Terminal, screen_row: usize, file_line: usize, line_buffer: *std.ArrayList(u8)) !void {
         try term.moveCursor(screen_row, 0);
         try term.write("\x1b[K"); // 行末までクリア
 
-        if (try line_iter.nextLine(term.allocator)) |line| {
-            defer term.allocator.free(line);
-            // grapheme-aware rendering: count display width properly
-            var byte_idx: usize = 0;
-            var col: usize = 0;
-            while (byte_idx < line.len and col < term.width) {
-                const ch = line[byte_idx];
-                if (ch < 0b10000000) {
-                    // ASCII
-                    byte_idx += 1;
-                    col += 1;
-                } else {
-                    // UTF-8: calculate codepoint and width
-                    const len = std.unicode.utf8ByteSequenceLength(ch) catch break;
-                    if (byte_idx + len > line.len) break;
-                    const codepoint = std.unicode.utf8Decode(line[byte_idx .. byte_idx + len]) catch {
-                        byte_idx += 1;
-                        continue;
-                    };
-                    const width = Buffer.charWidth(codepoint);
-                    if (col + width > term.width) break;
-                    byte_idx += len;
-                    col += width;
-                }
-            }
-            try term.write(line[0..byte_idx]);
-        } else {
+        // 行の開始位置を取得（O(1)）
+        const line_start = self.buffer.line_index.getLineStart(file_line) orelse {
+            // 行が存在しない場合は~を表示
             try term.write("~");
+            return;
+        };
+
+        // 行の終了位置を見つける
+        var iter = PieceIterator.init(self.buffer);
+        iter.seek(line_start);
+
+        // 再利用バッファにクリア
+        line_buffer.clearRetainingCapacity();
+
+        // 行末まで読み取る
+        while (iter.next()) |ch| {
+            if (ch == '\n') break;
+            try line_buffer.append(term.allocator, ch);
         }
+
+        // grapheme-aware rendering
+        var byte_idx: usize = 0;
+        var col: usize = 0;
+        while (byte_idx < line_buffer.items.len and col < term.width) {
+            const ch = line_buffer.items[byte_idx];
+            if (ch < 0b10000000) {
+                // ASCII
+                byte_idx += 1;
+                col += 1;
+            } else {
+                // UTF-8: calculate codepoint and width
+                const len = std.unicode.utf8ByteSequenceLength(ch) catch break;
+                if (byte_idx + len > line_buffer.items.len) break;
+                const codepoint = std.unicode.utf8Decode(line_buffer.items[byte_idx .. byte_idx + len]) catch {
+                    byte_idx += 1;
+                    continue;
+                };
+                const width = Buffer.charWidth(codepoint);
+                if (col + width > term.width) break;
+                byte_idx += len;
+                col += width;
+            }
+        }
+        try term.write(line_buffer.items[0..byte_idx]);
     }
 
     pub fn render(self: *View, term: *Terminal) !void {
@@ -101,54 +116,43 @@ pub const View = struct {
 
         const max_lines = term.height - 1;
 
+        // 行キャッシュが無効なら再構築
+        if (!self.buffer.line_index.valid) {
+            try self.buffer.line_index.rebuild(self.buffer);
+        }
+
+        // 行バッファを再利用（ヒープ確保削減）
+        var line_buffer: std.ArrayList(u8) = .{};
+        defer line_buffer.deinit(term.allocator);
+
         // 全画面再描画が必要な場合
         if (self.needs_full_redraw) {
             try term.write("\x1b[H"); // ホーム位置
 
-            var line_iter = LineIterator.init(self.buffer);
-
-            // top_lineまでスキップ
-            var skip_count: usize = 0;
-            while (skip_count < self.top_line) : (skip_count += 1) {
-                const line = try line_iter.nextLine(term.allocator) orelse break;
-                term.allocator.free(line);
-            }
-
-            // 全画面描画
+            // 全画面描画 - LineIndexでO(1)アクセス
             var screen_row: usize = 0;
             while (screen_row < max_lines) : (screen_row += 1) {
-                try self.renderLine(term, screen_row, &line_iter);
+                try self.renderLineAt(term, screen_row, self.top_line + screen_row, &line_buffer);
             }
 
             self.clearDirty();
         } else if (self.dirty_start) |start| {
-            // 差分描画: dirty範囲のみ再描画
-            // dirty_end が null なら EOF まで、そうでなければその値を使う
+            // 差分描画: dirty範囲のみ再描画 - LineIndexでO(1)アクセス
             const end_line = self.dirty_end orelse (self.top_line + max_lines);
             const end = @min(end_line, self.top_line + max_lines);
 
             if (start < self.top_line + max_lines and end >= self.top_line) {
                 const render_start = if (start > self.top_line) start - self.top_line else 0;
-                // end >= self.top_line が保証されているので安全
                 const render_end = @min(
                     if (end >= self.top_line) end - self.top_line + 1 else 0,
                     max_lines
                 );
 
-                var line_iter = LineIterator.init(self.buffer);
-
-                // dirty開始行までスキップ
-                var skip_count: usize = 0;
-                const skip_to = self.top_line + render_start;
-                while (skip_count < skip_to) : (skip_count += 1) {
-                    const line = try line_iter.nextLine(term.allocator) orelse break;
-                    term.allocator.free(line);
-                }
-
                 // dirty範囲を描画
                 var screen_row = render_start;
                 while (screen_row < render_end) : (screen_row += 1) {
-                    try self.renderLine(term, screen_row, &line_iter);
+                    const file_line = self.top_line + screen_row;
+                    try self.renderLineAt(term, screen_row, file_line, &line_buffer);
                 }
             }
 
