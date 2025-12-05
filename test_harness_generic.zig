@@ -284,23 +284,40 @@ fn parseKeySequence(allocator: std.mem.Allocator, seq: []const u8) ![]const u8 {
     if (std.mem.startsWith(u8, seq, "C-") and seq.len == 3) {
         // Ctrl+文字
         const char = seq[2];
-        const ctrl_char = if (char >= 'a' and char <= 'z')
+        const ctrl_char: u8 = if (char >= 'a' and char <= 'z')
             char - 'a' + 1
         else if (char >= 'A' and char <= 'Z')
             char - 'A' + 1
         else if (char == '@')
             0
+        else if (char == '/' or char == '_')
+            31 // C-/ と C-_ は 0x1f (31)
         else
             return error.InvalidCtrlChar;
 
         const result = try allocator.alloc(u8, 1);
-        result[0] = @intCast(ctrl_char);
+        result[0] = ctrl_char;
         return result;
     } else if (std.mem.startsWith(u8, seq, "M-") and seq.len == 3) {
         // Alt+文字 (ESC + 文字)
         const result = try allocator.alloc(u8, 2);
         result[0] = 0x1B; // ESC
         result[1] = seq[2];
+        return result;
+    } else if (std.mem.eql(u8, seq, "M-delete")) {
+        // Alt+Delete (ESC [3;3~)
+        const result = try allocator.alloc(u8, 6);
+        result[0] = 0x1B;
+        result[1] = '[';
+        result[2] = '3';
+        result[3] = ';';
+        result[4] = '3';
+        result[5] = '~';
+        return result;
+    } else if (std.mem.eql(u8, seq, "C-Space")) {
+        // Ctrl+Space (C-@)
+        const result = try allocator.alloc(u8, 1);
+        result[0] = 0;
         return result;
     } else if (std.mem.eql(u8, seq, "Enter")) {
         const result = try allocator.alloc(u8, 1);

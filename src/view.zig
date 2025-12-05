@@ -745,4 +745,47 @@ pub const View = struct {
 
         self.cursor_x = line_width;
     }
+
+    // M-< (beginning-of-buffer): ファイルの先頭に移動
+    pub fn moveToBufferStart(self: *View) void {
+        self.cursor_x = 0;
+        self.cursor_y = 0;
+        self.top_line = 0;
+        self.top_col = 0;
+        self.markFullRedraw();
+    }
+
+    // M-> (end-of-buffer): ファイルの終端に移動
+    pub fn moveToBufferEnd(self: *View, term: *Terminal) void {
+        const total_lines = self.buffer.lineCount();
+        if (total_lines == 0) {
+            self.cursor_x = 0;
+            self.cursor_y = 0;
+            self.top_line = 0;
+            self.top_col = 0;
+            self.markFullRedraw();
+            return;
+        }
+
+        // 最終行の番号（0-indexed）
+        const last_line = if (total_lines > 0) total_lines - 1 else 0;
+
+        // 端末の表示可能行数
+        const max_screen_lines = if (term.height >= 2) term.height - 2 else 0;
+
+        // 最終行をできるだけ画面下部に表示
+        if (last_line <= max_screen_lines) {
+            // ファイルが画面に収まる場合
+            self.top_line = 0;
+            self.cursor_y = last_line;
+        } else {
+            // ファイルが長い場合は最終行が画面下部に来るようにスクロール
+            self.top_line = last_line - max_screen_lines;
+            self.cursor_y = max_screen_lines;
+        }
+
+        // 最終行の末尾にカーソルを移動
+        self.moveToLineEnd();
+        self.markFullRedraw();
+    }
 };
