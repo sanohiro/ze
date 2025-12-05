@@ -79,4 +79,16 @@ cat > "$TEST_DIR/test_replace_ja.txt" << 'EOF'
 こんにちは、また会いましょう。
 EOF
 
+# ページスクロール用のテストファイル
+python3 << 'PYEOF' > "$TEST_DIR/test_page_scroll.txt"
+for i in range(1, 101):
+    print(f'line {i}')
+PYEOF
+
+# 998行のテストファイル (行番号幅変更テスト用)
+python3 << 'PYEOF' > "$TEST_DIR/test_998_real.txt"
+for i in range(1, 999):
+    print(f'Line {i}')
+PYEOF
+
 echo "テストファイルのセットアップが完了しました: $TEST_DIR"
