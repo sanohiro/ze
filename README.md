@@ -434,6 +434,13 @@ cmd         := builtin | external | alias
 | `C-u` | 元に戻す（Undo） |
 | `C-/` | やり直す（Redo） |
 
+#### Rectangle (矩形選択)
+
+| キー | 動作 |
+|-----|--------|
+| `C-x r k` | 矩形領域を削除（kill-rectangle） ✅ |
+| `C-x r y` | 矩形を貼り付け（yank-rectangle） ✅ |
+
 ### File
 
 | キー | 動作 |
