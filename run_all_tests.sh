@@ -28,7 +28,14 @@ test_result() {
 run_test() {
     local test_name="$1"
     shift
-    if $HARNESS "$@" 2>&1 | grep -q "Child exited with status: 0"; then
+    # test_data/ のパスを /tmp/ze_test_data/ に置換
+    local args=()
+    for arg in "$@"; do
+        # sedを使ってパスを置換（バックスラッシュエスケープの問題を回避）
+        local replaced_arg=$(echo "$arg" | sed 's|test_data/|/tmp/ze_test_data/|g')
+        args+=("$replaced_arg")
+    done
+    if $HARNESS "${args[@]}" 2>&1 | grep -q "Child exited with status: 0"; then
         test_result "$test_name" "PASS"
     else
         test_result "$test_name" "FAIL"
@@ -41,6 +48,12 @@ echo "========================================="
 echo
 
 zig build
+
+# テストデータを /tmp にコピー（元のファイルを保護）
+echo "テストデータを /tmp にコピー中..."
+rm -rf /tmp/ze_test_data
+cp -r test_data /tmp/ze_test_data
+echo
 
 echo "=== カテゴリ 1: 基本的な編集操作 ==="
 run_test "1.1 シンプルな文字入力" --file=test_data/test_nums.txt "hello" "C-x" "C-c" "n"
