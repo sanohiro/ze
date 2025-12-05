@@ -55,6 +55,7 @@ pub const Editor = struct {
     mark_pos: ?usize, // 範囲選択のマーク位置（null=未設定）
     kill_ring: ?[]const u8, // コピー/カットバッファ
     search_start_pos: ?usize, // 検索開始時のカーソル位置（C-gでここに戻る）
+    last_search: ?[]const u8, // 最後に実行した検索文字列（検索繰り返し用）
     undo_stack: std.ArrayList(UndoEntry),
     redo_stack: std.ArrayList(UndoEntry),
 
@@ -74,6 +75,7 @@ pub const Editor = struct {
             .mark_pos = null,
             .kill_ring = null,
             .search_start_pos = null,
+            .last_search = null,
             .undo_stack = std.ArrayList(UndoEntry).initCapacity(allocator, 0) catch unreachable,
             .redo_stack = std.ArrayList(UndoEntry).initCapacity(allocator, 0) catch unreachable,
         };
@@ -93,6 +95,9 @@ pub const Editor = struct {
         }
         if (self.kill_ring) |text| {
             self.allocator.free(text);
+        }
+        if (self.last_search) |search| {
+            self.allocator.free(search);
         }
 
         // プロンプトバッファのクリーンアップ
@@ -590,6 +595,13 @@ pub const Editor = struct {
                     },
                     .enter => {
                         // Enter: 検索確定（現在位置で確定）
+                        // 検索文字列を保存
+                        if (self.input_buffer.items.len > 0) {
+                            if (self.last_search) |old_search| {
+                                self.allocator.free(old_search);
+                            }
+                            self.last_search = self.allocator.dupe(u8, self.input_buffer.items) catch null;
+                        }
                         self.mode = .normal;
                         self.input_buffer.clearRetainingCapacity();
                         self.view.setSearchHighlight(null); // ハイライトクリア
@@ -728,10 +740,22 @@ pub const Editor = struct {
                     31, '/' => try self.redo(), // C-/ または C-_ Redo
                     's' => {
                         // C-s インクリメンタルサーチ（前方）
-                        self.mode = .isearch_forward;
-                        self.search_start_pos = self.view.getCursorBufferPos();
-                        self.input_buffer.clearRetainingCapacity();
-                        self.view.setError("I-search: ");
+                        // 前回の検索文字列がある場合は、それを使って次の一致を検索
+                        if (self.last_search) |search_str| {
+                            // input_bufferに前回の検索文字列をコピー
+                            self.input_buffer.clearRetainingCapacity();
+                            self.input_buffer.appendSlice(self.allocator, search_str) catch {};
+                            self.view.setSearchHighlight(search_str);
+                            try self.performSearch(true, true); // skip_current=true で次を検索
+                            // 検索ハイライトは残すが、プロンプトはクリア（Emacs風）
+                            self.view.clearError();
+                        } else {
+                            // 新規検索開始
+                            self.mode = .isearch_forward;
+                            self.search_start_pos = self.view.getCursorBufferPos();
+                            self.input_buffer.clearRetainingCapacity();
+                            self.view.setError("I-search: ");
+                        }
                     },
                     'r' => {
                         // C-r インクリメンタルサーチ（後方）

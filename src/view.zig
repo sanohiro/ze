@@ -22,6 +22,8 @@ pub const View = struct {
     prev_screen: std.ArrayList(std.ArrayList(u8)),
     // 検索ハイライト用
     search_highlight: ?[]const u8, // 検索文字列（nullならハイライトなし）
+    // 行番号表示の幅キャッシュ（幅変更時に全画面再描画するため）
+    cached_line_num_width: usize,
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, buffer: *Buffer) View {
@@ -38,6 +40,7 @@ pub const View = struct {
             .error_msg = null,
             .prev_screen = std.ArrayList(std.ArrayList(u8)).initCapacity(allocator, 0) catch unreachable,
             .search_highlight = null,
+            .cached_line_num_width = 0,
             .allocator = allocator,
         };
     }
@@ -68,21 +71,26 @@ pub const View = struct {
         self.markFullRedraw();
     }
 
-    // 行番号の表示幅を計算（総行数に応じて動的に変化）
+    // 行番号の表示幅を計算（999行まで固定、1000行以上で動的拡張）
     fn getLineNumberWidth(self: *View) usize {
         if (!config.Editor.SHOW_LINE_NUMBERS) return 0;
 
         const total_lines = self.buffer.lineCount();
         if (total_lines == 0) return 0;
 
-        // 桁数を計算
+        // 999行まで: 3桁 + スペース2個 = 5文字固定
+        if (total_lines <= 999) {
+            return 5;
+        }
+
+        // 1000行以上: 桁数を動的計算
         var width: usize = 1;
         var n = total_lines;
         while (n >= 10) {
             width += 1;
             n /= 10;
         }
-        return width + 1; // 行番号 + スペース1個
+        return width + 2; // 行番号 + スペース2個
     }
 
     pub fn markDirty(self: *View, start_line: usize, end_line: ?usize) void {
@@ -138,11 +146,12 @@ pub const View = struct {
         var expanded_line = std.ArrayList(u8){};
         defer expanded_line.deinit(self.allocator);
 
-        // 行番号を先に追加
+        // 行番号を先に追加（グレー表示 + スペース2個）
         const line_num_width = self.getLineNumberWidth();
         if (line_num_width > 0) {
-            var num_buf: [32]u8 = undefined;
-            const line_num_str = std.fmt.bufPrint(&num_buf, "{d: >[1]} ", .{ file_line + 1, line_num_width - 1 }) catch "";
+            var num_buf: [64]u8 = undefined;
+            // グレー(\x1b[90m) + 右詰め行番号 + リセット(\x1b[m) + スペース2個
+            const line_num_str = std.fmt.bufPrint(&num_buf, "\x1b[90m{d: >[1]}\x1b[m  ", .{ file_line + 1, line_num_width - 2 }) catch "";
             try expanded_line.appendSlice(self.allocator, line_num_str);
         }
 
@@ -255,45 +264,69 @@ pub const View = struct {
             }
 
             if (diff_start) |start_raw| {
-                // UTF-8文字境界に調整（継続バイトの途中から始まらないように）
-                var start = start_raw;
-                while (start > 0 and start < new_line.len and new_line[start] >= 0x80 and new_line[start] < 0xC0) {
-                    // 継続バイト（0x80-0xBF）の場合は前に戻る
-                    start -= 1;
-                }
+                // 行番号の表示幅を取得
+                const line_num_display_width = self.getLineNumberWidth();
 
-                // バイト位置から画面カラム位置を計算
-                var screen_col: usize = 0;
-                var b: usize = 0;
-                while (b < start) {
-                    const c = new_line[b];
-                    if (c < config.UTF8.CONTINUATION_MASK) {
-                        b += 1;
-                        screen_col += 1;
-                    } else {
-                        const len = std.unicode.utf8ByteSequenceLength(c) catch 1;
-                        if (b + len <= new_line.len) {
-                            const cp = std.unicode.utf8Decode(new_line[b..b + len]) catch {
+                // 行番号がある場合は常に行全体を再描画
+                // （ANSIシーケンスの計算が複雑なため、シンプルな実装を優先）
+                if (line_num_display_width > 0) {
+                    // 行頭から全体を再描画
+                    try term.moveCursor(screen_row, 0);
+                    try term.write(config.ANSI.CLEAR_LINE);
+                    try term.write(new_line);
+                } else {
+                    // UTF-8文字境界に調整（継続バイトの途中から始まらないように）
+                    var start = start_raw;
+                    while (start > 0 and start < new_line.len and new_line[start] >= 0x80 and new_line[start] < 0xC0) {
+                        // 継続バイト（0x80-0xBF）の場合は前に戻る
+                        start -= 1;
+                    }
+
+                    // バイト位置から画面カラム位置を計算
+                    // ANSIエスケープシーケンスを除外して計算
+                    var screen_col: usize = 0;
+                    var b: usize = 0;
+                    while (b < start) {
+                        const c = new_line[b];
+                        // ANSIエスケープシーケンスをスキップ（ESC [ ... m）
+                        if (c == 0x1B and b + 1 < new_line.len and new_line[b + 1] == '[') {
+                            // ESCシーケンスの終わり('m')まで読み飛ばす
+                            b += 2;
+                            while (b < new_line.len and new_line[b] != 'm') {
                                 b += 1;
-                                screen_col += 1;
-                                continue;
-                            };
-                            screen_col += Buffer.charWidth(cp);
-                            b += len;
-                        } else {
+                            }
+                            if (b < new_line.len) b += 1; // 'm'をスキップ
+                            continue;
+                        }
+
+                        if (c < config.UTF8.CONTINUATION_MASK) {
                             b += 1;
                             screen_col += 1;
+                        } else {
+                            const len = std.unicode.utf8ByteSequenceLength(c) catch 1;
+                            if (b + len <= new_line.len) {
+                                const cp = std.unicode.utf8Decode(new_line[b..b + len]) catch {
+                                    b += 1;
+                                    screen_col += 1;
+                                    continue;
+                                };
+                                screen_col += Buffer.charWidth(cp);
+                                b += len;
+                            } else {
+                                b += 1;
+                                screen_col += 1;
+                            }
                         }
                     }
-                }
 
-                // 差分部分のみ描画
-                try term.moveCursor(screen_row, screen_col);
-                try term.write(new_line[start..]);
+                    // 差分部分のみ描画
+                    try term.moveCursor(screen_row, screen_col);
+                    try term.write(new_line[start..]);
 
-                // 古い行の方が長い場合は残りをクリア
-                if (old_line.len > new_line.len) {
-                    try term.write(config.ANSI.CLEAR_LINE);
+                    // 古い行の方が長い場合は残りをクリア
+                    if (old_line.len > new_line.len) {
+                        try term.write(config.ANSI.CLEAR_LINE);
+                    }
                 }
             }
         } else {
@@ -350,6 +383,13 @@ pub const View = struct {
         if (term.height == 0 or term.width == 0) return;
 
         try term.hideCursor();
+
+        // 行番号幅の変更をチェック（999→1000行など）
+        const current_width = self.getLineNumberWidth();
+        if (current_width != self.cached_line_num_width) {
+            self.cached_line_num_width = current_width;
+            self.markFullRedraw();
+        }
 
         const max_lines = term.height - 1;
 

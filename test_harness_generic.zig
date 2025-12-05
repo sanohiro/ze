@@ -85,7 +85,14 @@ pub fn main() !void {
     var master_fd: c_int = undefined;
     var slave_fd: c_int = undefined;
 
-    const result = openpty(&master_fd, &slave_fd, null, null, null);
+    // ウィンドウサイズを設定（80x24）
+    var winsize: winsize_t = undefined;
+    winsize.ws_row = 24;
+    winsize.ws_col = 80;
+    winsize.ws_xpixel = 0;
+    winsize.ws_ypixel = 0;
+
+    const result = openpty(&master_fd, &slave_fd, null, null, &winsize);
     if (result != 0) {
         std.debug.print("Error: openpty failed\n", .{});
         return error.OpenPtyFailed;
@@ -96,6 +103,10 @@ pub fn main() !void {
     }
 
     std.debug.print("PTY created: master_fd={}, slave_fd={}\n", .{ master_fd, slave_fd });
+
+    // マスターFDをノンブロッキングモードに設定
+    const flags = fcntl(master_fd, F_GETFL, 0);
+    _ = fcntl(master_fd, F_SETFL, flags | O_NONBLOCK);
 
     const pid = try posix.fork();
 
@@ -137,6 +148,29 @@ pub fn main() !void {
 
         const master_file = std.fs.File{ .handle = master_fd };
 
+        var all_output = try std.ArrayList(u8).initCapacity(allocator, 8192);
+        defer all_output.deinit(allocator);
+
+        // 初期画面をキャプチャ（キー送信前）
+        if (show_output) {
+            std.debug.print("Capturing initial screen...\n", .{});
+        }
+        {
+            var read_attempts: u32 = 0;
+            while (read_attempts < 3) : (read_attempts += 1) {
+                std.Thread.sleep(100 * std.time.ns_per_ms);
+                var output_buffer: [4096]u8 = undefined;
+                const bytes_read: usize = posix.read(master_fd, &output_buffer) catch |err| blk: {
+                    if (err == error.WouldBlock) break :blk 0;
+                    if (show_output) std.debug.print("Read error: {}\n", .{err});
+                    break :blk 0;
+                };
+                if (bytes_read > 0 and show_output) {
+                    try all_output.appendSlice(allocator, output_buffer[0..bytes_read]);
+                }
+            }
+        }
+
         // キーシーケンスを送信
         for (key_sequences.items, 0..) |seq, i| {
             std.debug.print("Sending key #{}: \"{s}\"\n", .{ i + 1, seq });
@@ -146,18 +180,62 @@ pub fn main() !void {
 
             _ = try master_file.writeAll(bytes);
             std.Thread.sleep(delay_ms * std.time.ns_per_ms);
+
+            // 各キー送信後に出力をキャプチャ（常にバッファを空にする）
+            {
+                var read_attempts: u32 = 0;
+                while (read_attempts < 2) : (read_attempts += 1) {
+                    std.Thread.sleep(50 * std.time.ns_per_ms);
+                    var output_buffer: [4096]u8 = undefined;
+                    const bytes_read: usize = posix.read(master_fd, &output_buffer) catch |err| blk: {
+                        if (err == error.WouldBlock) break :blk 0;
+                        break :blk 0;
+                    };
+                    if (bytes_read > 0 and show_output) {
+                        try all_output.appendSlice(allocator, output_buffer[0..bytes_read]);
+                    }
+                }
+            }
         }
 
-        // 出力を読み取る
+        // 最終的な画面状態をキャプチャ
         if (show_output) {
-            std.Thread.sleep(200 * std.time.ns_per_ms);
-            var output_buffer: [4096]u8 = undefined;
-            const bytes_read = master_file.read(&output_buffer) catch |err| blk: {
-                std.debug.print("Read error: {}\n", .{err});
-                break :blk 0;
-            };
-            if (bytes_read > 0) {
-                std.debug.print("\n=== Output ({} bytes) ===\n{s}\n", .{ bytes_read, output_buffer[0..bytes_read] });
+            std.debug.print("Capturing final screen...\n", .{});
+        }
+        {
+            var read_attempts: u32 = 0;
+            while (read_attempts < 3) : (read_attempts += 1) {
+                std.Thread.sleep(100 * std.time.ns_per_ms);
+                var output_buffer: [4096]u8 = undefined;
+                const bytes_read: usize = posix.read(master_fd, &output_buffer) catch |err| blk: {
+                    if (err == error.WouldBlock) break :blk 0;
+                    break :blk 0;
+                };
+                if (bytes_read > 0 and show_output) {
+                    try all_output.appendSlice(allocator, output_buffer[0..bytes_read]);
+                }
+            }
+        }
+
+        if (show_output) {
+            if (all_output.items.len > 0) {
+                std.debug.print("\n=== Output ({} bytes) ===\n", .{all_output.items.len});
+                std.debug.print("{s}\n", .{all_output.items});
+                std.debug.print("\n=== Escaped view ===\n", .{});
+                for (all_output.items) |byte| {
+                    if (byte == '\x1b') {
+                        std.debug.print("\\x1b", .{});
+                    } else if (byte >= 32 and byte < 127) {
+                        std.debug.print("{c}", .{byte});
+                    } else if (byte == '\n') {
+                        std.debug.print("\\n\n", .{});
+                    } else if (byte == '\r') {
+                        std.debug.print("\\r", .{});
+                    } else {
+                        std.debug.print("\\x{x:0>2}", .{byte});
+                    }
+                }
+                std.debug.print("\n", .{});
             }
         }
 
@@ -261,6 +339,32 @@ fn parseKeySequence(allocator: std.mem.Allocator, seq: []const u8) ![]const u8 {
         result[1] = '[';
         result[2] = 'D';
         return result;
+    } else if (std.mem.eql(u8, seq, "PageDown")) {
+        const result = try allocator.alloc(u8, 4);
+        result[0] = 0x1B;
+        result[1] = '[';
+        result[2] = '6';
+        result[3] = '~';
+        return result;
+    } else if (std.mem.eql(u8, seq, "PageUp")) {
+        const result = try allocator.alloc(u8, 4);
+        result[0] = 0x1B;
+        result[1] = '[';
+        result[2] = '5';
+        result[3] = '~';
+        return result;
+    } else if (std.mem.eql(u8, seq, "Home")) {
+        const result = try allocator.alloc(u8, 3);
+        result[0] = 0x1B;
+        result[1] = '[';
+        result[2] = 'H';
+        return result;
+    } else if (std.mem.eql(u8, seq, "End")) {
+        const result = try allocator.alloc(u8, 3);
+        result[0] = 0x1B;
+        result[1] = '[';
+        result[2] = 'F';
+        return result;
     } else {
         // 通常の文字列
         return try allocator.dupe(u8, seq);
@@ -280,3 +384,16 @@ extern "c" fn setenv(
     value: [*:0]const u8,
     overwrite: c_int,
 ) c_int;
+
+extern "c" fn fcntl(fd: c_int, cmd: c_int, arg: c_int) c_int;
+
+const F_GETFL = 3;
+const F_SETFL = 4;
+const O_NONBLOCK = 0x0004;
+
+const winsize_t = extern struct {
+    ws_row: c_ushort,
+    ws_col: c_ushort,
+    ws_xpixel: c_ushort,
+    ws_ypixel: c_ushort,
+};
