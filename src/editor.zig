@@ -44,6 +44,15 @@ const EditorMode = enum {
     query_replace_confirm, // 置換：確認中（y/n/!/qを待つ）
 };
 
+/// 全角英数記号（U+FF01〜U+FF5E）を半角（U+0021〜U+007E）に変換
+fn normalizeCodepoint(cp: u21) u21 {
+    // 全角英数記号の範囲を半角に変換
+    if (cp >= 0xFF01 and cp <= 0xFF5E) {
+        return cp - 0xFF00 + 0x20;
+    }
+    return cp;
+}
+
 pub const Editor = struct {
     buffer: Buffer,
     view: View,
@@ -810,8 +819,9 @@ pub const Editor = struct {
                         }
                     },
                     .codepoint => |cp| {
-                        // IMEがオンの状態でもy/n/cを受け付ける
-                        switch (cp) {
+                        // IMEがオンの状態でもy/n/cを受け付ける（全角も半角に変換して処理）
+                        const normalized = normalizeCodepoint(cp);
+                        switch (normalized) {
                             'y', 'Y' => {
                                 // 保存して終了
                                 if (self.filename == null) {
