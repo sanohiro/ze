@@ -95,6 +95,25 @@ pub const Terminal = struct {
         }
     }
 
+    /// 端末サイズが変更されたかチェックし、変更されていればサイズを更新してtrueを返す
+    pub fn checkResize(self: *Terminal) !bool {
+        var ws: posix.winsize = undefined;
+        const stdout: std.fs.File = .{ .handle = posix.STDOUT_FILENO };
+
+        const result = posix.system.ioctl(stdout.handle, posix.system.T.IOCGWINSZ, @intFromPtr(&ws));
+        if (result == 0) {
+            const new_width = ws.col;
+            const new_height = ws.row;
+
+            if (new_width != self.width or new_height != self.height) {
+                self.width = new_width;
+                self.height = new_height;
+                return true;
+            }
+        }
+        return false;
+    }
+
     pub fn clear(self: *Terminal) !void {
         try self.buf.appendSlice(self.allocator, config.ANSI.CLEAR_SCREEN);
         try self.buf.appendSlice(self.allocator, config.ANSI.CURSOR_HOME);

@@ -952,7 +952,24 @@ zig run test_harness_generic.zig -lc -- --file=README.md "C-e" " world" "C-x" "C
 
 **オプション**:
 - `--file=<path>`: 指定ファイルを開く
-- `--wait=<ms>`: キー送信前の待機時間（デフォルト: 500ms）
-- `--delay=<ms>`: キー間の遅延（デフォルト: 100ms）
+- `--wait=<ms>`: キー送信前の待機時間(デフォルト: 500ms)
+- `--delay=<ms>`: キー間の遅延(デフォルト: 100ms)
 - `--show-output`: zeの出力を表示
+
+### テストデータ
+
+テストファイルは`test_data/`ディレクトリに永続化されています:
+
+```bash
+# テストデータのセットアップ
+cd test_data && ./setup_test_files.sh
+
+# 拡張テストスイート実行 (66テスト)
+./run_extended_tests.sh
+```
+
+**テストカバレッジ**:
+- カテゴリ 11-21: Undo/Redo、範囲選択、単語操作、検索、置換など
+- 66個の包括的テスト、100%成功率
+- 日本語・絵文字・UTF-8完全対応テスト含む
 

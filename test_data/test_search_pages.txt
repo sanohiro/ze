@@ -1,0 +1,5 @@
+Target line with search term
+Another line here
+More content
+Target line again
+Final line

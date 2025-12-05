@@ -39,6 +39,9 @@ const EditorMode = enum {
     filename_input, // ファイル名入力中
     isearch_forward, // インクリメンタルサーチ（前方）
     isearch_backward, // インクリメンタルサーチ（後方）
+    query_replace_input_search, // 置換：検索文字列入力中
+    query_replace_input_replacement, // 置換：置換文字列入力中
+    query_replace_confirm, // 置換：確認中（y/n/!/qを待つ）
 };
 
 pub const Editor = struct {
@@ -60,6 +63,10 @@ pub const Editor = struct {
     rectangle_ring: ?std.ArrayList([]const u8), // 矩形コピー/カットバッファ（各行の文字列の配列）
     search_start_pos: ?usize, // 検索開始時のカーソル位置（C-gでここに戻る）
     last_search: ?[]const u8, // 最後に実行した検索文字列（検索繰り返し用）
+    replace_search: ?[]const u8, // 置換：検索文字列
+    replace_replacement: ?[]const u8, // 置換：置換文字列
+    replace_current_pos: ?usize, // 置換：現在の一致位置（バイトオフセット）
+    replace_match_count: usize, // 置換：見つかった一致の数
     undo_stack: std.ArrayList(UndoEntry),
     redo_stack: std.ArrayList(UndoEntry),
 
@@ -83,6 +90,10 @@ pub const Editor = struct {
             .rectangle_ring = null,
             .search_start_pos = null,
             .last_search = null,
+            .replace_search = null,
+            .replace_replacement = null,
+            .replace_current_pos = null,
+            .replace_match_count = 0,
             .undo_stack = std.ArrayList(UndoEntry).initCapacity(allocator, 0) catch unreachable,
             .redo_stack = std.ArrayList(UndoEntry).initCapacity(allocator, 0) catch unreachable,
         };
@@ -111,6 +122,12 @@ pub const Editor = struct {
         }
         if (self.last_search) |search| {
             self.allocator.free(search);
+        }
+        if (self.replace_search) |search| {
+            self.allocator.free(search);
+        }
+        if (self.replace_replacement) |replacement| {
+            self.allocator.free(replacement);
         }
 
         // プロンプトバッファのクリーンアップ
@@ -193,6 +210,12 @@ pub const Editor = struct {
         const stdin: std.fs.File = .{ .handle = std.posix.STDIN_FILENO };
 
         while (self.running) {
+            // 端末サイズ変更をチェック
+            if (try self.terminal.checkResize()) {
+                // サイズが変わったら全画面再描画をマーク
+                self.view.markFullRedraw();
+            }
+
             // カーソル位置をバッファ範囲内にクランプ（大量削除後の対策）
             self.clampCursorPosition();
 
@@ -811,6 +834,245 @@ pub const Editor = struct {
                 }
                 return;
             },
+            .query_replace_input_search => {
+                // 置換：検索文字列入力モード
+                switch (key) {
+                    .char => |c| {
+                        // 入力バッファに文字を追加
+                        try self.input_buffer.append(self.allocator, c);
+                        // プロンプトを更新
+                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace: {s}", .{self.input_buffer.items}) catch null;
+                        if (self.prompt_buffer) |prompt| {
+                            self.view.setError(prompt);
+                        } else {
+                            self.view.setError("Query replace: ");
+                        }
+                    },
+                    .ctrl => |c| {
+                        switch (c) {
+                            'g' => {
+                                // C-g: キャンセル
+                                self.mode = .normal;
+                                self.input_buffer.clearRetainingCapacity();
+                                self.view.clearError();
+                            },
+                            else => {},
+                        }
+                    },
+                    .backspace => {
+                        // バックスペース：最後の文字を削除
+                        if (self.input_buffer.items.len > 0) {
+                            _ = self.input_buffer.pop();
+                            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace: {s}", .{self.input_buffer.items}) catch null;
+                            if (self.prompt_buffer) |prompt| {
+                                self.view.setError(prompt);
+                            } else {
+                                self.view.setError("Query replace: ");
+                            }
+                        }
+                    },
+                    .enter => {
+                        // Enter: 検索文字列確定、置換文字列入力へ
+                        if (self.input_buffer.items.len > 0) {
+                            // 検索文字列を保存
+                            if (self.replace_search) |old| {
+                                self.allocator.free(old);
+                            }
+                            self.replace_search = try self.allocator.dupe(u8, self.input_buffer.items);
+                            self.input_buffer.clearRetainingCapacity();
+
+                            // 置換文字列入力モードへ
+                            self.mode = .query_replace_input_replacement;
+                            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace {s} with: ", .{self.replace_search.?}) catch null;
+                            if (self.prompt_buffer) |prompt| {
+                                self.view.setError(prompt);
+                            } else {
+                                self.view.setError("Query replace with: ");
+                            }
+                        }
+                    },
+                    else => {},
+                }
+                return;
+            },
+            .query_replace_input_replacement => {
+                // 置換：置換文字列入力モード
+                switch (key) {
+                    .char => |c| {
+                        // 入力バッファに文字を追加
+                        try self.input_buffer.append(self.allocator, c);
+                        // プロンプトを更新
+                        if (self.replace_search) |search| {
+                            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace {s} with: {s}", .{search, self.input_buffer.items}) catch null;
+                        } else {
+                            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace with: {s}", .{self.input_buffer.items}) catch null;
+                        }
+                        if (self.prompt_buffer) |prompt| {
+                            self.view.setError(prompt);
+                        }
+                    },
+                    .ctrl => |c| {
+                        switch (c) {
+                            'g' => {
+                                // C-g: キャンセル
+                                self.mode = .normal;
+                                self.input_buffer.clearRetainingCapacity();
+                                if (self.replace_search) |search| {
+                                    self.allocator.free(search);
+                                    self.replace_search = null;
+                                }
+                                self.view.clearError();
+                            },
+                            else => {},
+                        }
+                    },
+                    .backspace => {
+                        // バックスペース：最後の文字を削除
+                        if (self.input_buffer.items.len > 0) {
+                            _ = self.input_buffer.pop();
+                            if (self.replace_search) |search| {
+                                self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace {s} with: {s}", .{search, self.input_buffer.items}) catch null;
+                            } else {
+                                self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace with: {s}", .{self.input_buffer.items}) catch null;
+                            }
+                            if (self.prompt_buffer) |prompt| {
+                                self.view.setError(prompt);
+                            }
+                        }
+                    },
+                    .enter => {
+                        // Enter: 置換文字列確定、最初の一致を検索
+                        // 置換文字列を保存（空文字列も許可）
+                        if (self.replace_replacement) |old| {
+                            self.allocator.free(old);
+                        }
+                        self.replace_replacement = try self.allocator.dupe(u8, self.input_buffer.items);
+                        self.input_buffer.clearRetainingCapacity();
+
+                        // 最初の一致を検索
+                        if (self.replace_search) |search| {
+                            const found = try self.findNextMatch(search, self.view.getCursorBufferPos());
+                            if (found) {
+                                // 一致が見つかった：確認モードへ
+                                self.mode = .query_replace_confirm;
+                                self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Replace? (y)es (n)ext (!)all (q)uit", .{}) catch null;
+                                if (self.prompt_buffer) |prompt| {
+                                    self.view.setError(prompt);
+                                } else {
+                                    self.view.setError("Replace? (y/n/!/q)");
+                                }
+                            } else {
+                                // 一致が見つからない
+                                self.mode = .normal;
+                                self.view.setError("No match found");
+                            }
+                        } else {
+                            // 検索文字列がない（エラー）
+                            self.mode = .normal;
+                            self.view.setError("No search string");
+                        }
+                    },
+                    else => {},
+                }
+                return;
+            },
+            .query_replace_confirm => {
+                // 置換：確認モード
+                switch (key) {
+                    .char => |c| {
+                        switch (c) {
+                            'y', 'Y' => {
+                                // この箇所を置換して次へ
+                                try self.replaceCurrentMatch();
+                                const search = self.replace_search orelse {
+                                    self.mode = .normal;
+                                    self.view.setError("Error: no search string");
+                                    return;
+                                };
+                                // 次の一致を検索
+                                const found = try self.findNextMatch(search, self.view.getCursorBufferPos());
+                                if (!found) {
+                                    // これ以上一致がない
+                                    self.mode = .normal;
+                                    var msg_buf: [128]u8 = undefined;
+                                    const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace done";
+                                    self.view.setError(msg);
+                                } else {
+                                    // 次のマッチが見つかった - 確認プロンプトを表示
+                                    self.view.setError("Replace? (y)es (n)ext (!)all (q)uit");
+                                }
+                            },
+                            'n', 'N', ' ' => {
+                                // スキップして次へ
+                                const search = self.replace_search orelse {
+                                    self.mode = .normal;
+                                    self.view.setError("Error: no search string");
+                                    return;
+                                };
+                                // 現在の一致をスキップ（カーソルを一致の後ろに移動）
+                                const current_pos = self.view.getCursorBufferPos();
+                                const found = try self.findNextMatch(search, current_pos + 1);
+                                if (!found) {
+                                    // これ以上一致がない
+                                    self.mode = .normal;
+                                    var msg_buf: [128]u8 = undefined;
+                                    const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace done";
+                                    self.view.setError(msg);
+                                } else {
+                                    // 次のマッチが見つかった - 確認プロンプトを表示
+                                    self.view.setError("Replace? (y)es (n)ext (!)all (q)uit");
+                                }
+                            },
+                            '!' => {
+                                // 残りすべてを置換
+                                try self.replaceCurrentMatch();
+                                const search = self.replace_search orelse {
+                                    self.mode = .normal;
+                                    self.view.setError("Error: no search string");
+                                    return;
+                                };
+                                // 残りすべてを置換
+                                var pos = self.view.getCursorBufferPos();
+                                while (true) {
+                                    const found = try self.findNextMatch(search, pos);
+                                    if (!found) break;
+                                    try self.replaceCurrentMatch();
+                                    pos = self.view.getCursorBufferPos();
+                                }
+                                self.mode = .normal;
+                                var msg_buf: [128]u8 = undefined;
+                                const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace done";
+                                self.view.setError(msg);
+                            },
+                            'q', 'Q' => {
+                                // 終了
+                                self.mode = .normal;
+                                var msg_buf: [128]u8 = undefined;
+                                const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace cancelled";
+                                self.view.setError(msg);
+                            },
+                            else => {
+                                // 無効な入力
+                                self.view.setError("Please answer: (y)es, (n)ext, (!)all, (q)uit");
+                            },
+                        }
+                    },
+                    .ctrl => |c| {
+                        // Ctrl-Gで終了
+                        if (c == 'g') {
+                            self.mode = .normal;
+                            const msg = std.fmt.allocPrint(self.allocator, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch null;
+                            if (msg) |m| {
+                                self.view.setError(m);
+                            } else {
+                                self.view.setError("Replace cancelled");
+                            }
+                        }
+                    },
+                    else => {},
+                }
+                return;
+            },
             .normal => {},
         }
 
@@ -871,6 +1133,13 @@ pub const Editor = struct {
             // Alt キー
             .alt => |c| {
                 switch (c) {
+                    '%' => {
+                        // M-% : query-replace
+                        self.mode = .query_replace_input_search;
+                        self.input_buffer.clearRetainingCapacity();
+                        self.replace_match_count = 0;
+                        self.view.setError("Query replace: ");
+                    },
                     'f' => try self.forwardWord(), // M-f 単語前進
                     'b' => try self.backwardWord(), // M-b 単語後退
                     'd' => try self.deleteWord(), // M-d 単語削除
@@ -1626,5 +1895,86 @@ pub const Editor = struct {
 
         self.view.setError("Rectangle yanked");
         self.modified = true;
+    }
+
+    // 置換：次の一致を検索してカーソルを移動
+    fn findNextMatch(self: *Editor, search: []const u8, start_pos: usize) !bool {
+        if (search.len == 0) return false;
+
+        const buf_len = self.buffer.len();
+        if (start_pos >= buf_len) return false;
+
+        // バッファを検索
+        var iter = PieceIterator.init(&self.buffer);
+        iter.seek(start_pos);
+
+        var match_start: ?usize = null;
+        var match_len: usize = 0;
+
+        while (iter.global_pos < buf_len) {
+            const start = iter.global_pos;
+
+            // 一致を確認
+            var temp_iter = PieceIterator.init(&self.buffer);
+            temp_iter.seek(start);
+
+            var matched = true;
+            for (search) |ch| {
+                const next_byte = temp_iter.next();
+                if (next_byte == null or next_byte.? != ch) {
+                    matched = false;
+                    break;
+                }
+            }
+
+            if (matched) {
+                match_start = start;
+                match_len = search.len;
+                break;
+            }
+
+            _ = iter.next();
+        }
+
+        if (match_start) |pos| {
+            // 一致が見つかった：カーソルを移動
+            self.setCursorToPos(pos);
+            self.replace_current_pos = pos;
+            return true;
+        }
+
+        return false;
+    }
+
+    // 置換：現在の一致を置換
+    fn replaceCurrentMatch(self: *Editor) !void {
+        const search = self.replace_search orelse return error.NoSearchString;
+        const replacement = self.replace_replacement orelse return error.NoReplacementString;
+        const match_pos = self.replace_current_pos orelse return error.NoMatchPosition;
+
+        // Undo記録のために現在のカーソル位置を保存
+        const cursor_pos_before = match_pos;
+
+        // 一致部分を削除
+        const deleted_text = try self.extractText(match_pos, search.len);
+        defer self.allocator.free(deleted_text);
+
+        try self.buffer.delete(match_pos, search.len);
+        try self.recordDelete(match_pos, deleted_text, cursor_pos_before);
+
+        // 置換文字列を挿入
+        if (replacement.len > 0) {
+            try self.buffer.insertSlice(match_pos, replacement);
+            try self.recordInsert(match_pos, replacement, match_pos);
+        }
+
+        self.modified = true;
+        self.replace_match_count += 1;
+
+        // カーソルを置換後の位置に移動
+        self.setCursorToPos(match_pos + replacement.len);
+
+        // 全画面再描画
+        self.view.markFullRedraw();
     }
 };

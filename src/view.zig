@@ -384,14 +384,19 @@ pub const View = struct {
 
         try term.hideCursor();
 
+        const max_lines = term.height - 1;
+
+        // 画面サイズ変更を検出（prev_screenの行数が変わった場合）
+        if (self.prev_screen.items.len > 0 and self.prev_screen.items.len != max_lines) {
+            self.markFullRedraw();
+        }
+
         // 行番号幅の変更をチェック（999→1000行など）
         const current_width = self.getLineNumberWidth();
         if (current_width != self.cached_line_num_width) {
             self.cached_line_num_width = current_width;
             self.markFullRedraw();
         }
-
-        const max_lines = term.height - 1;
 
         // 全画面再描画が必要な場合
         if (self.needs_full_redraw) {

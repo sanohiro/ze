@@ -1,0 +1,5 @@
+foo is a test word.
+This foo should be replaced.
+Multiple foo foo foo here.
+No match on this line.
+Last foo here.
