@@ -20,6 +20,8 @@ pub const View = struct {
     error_msg: ?[]const u8,
     // セルレベル差分描画用: 前フレームの画面状態
     prev_screen: std.ArrayList(std.ArrayList(u8)),
+    // 検索ハイライト用
+    search_highlight: ?[]const u8, // 検索文字列（nullならハイライトなし）
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, buffer: *Buffer) View {
@@ -35,6 +37,7 @@ pub const View = struct {
             .line_buffer = std.ArrayList(u8).initCapacity(allocator, 0) catch unreachable,
             .error_msg = null,
             .prev_screen = std.ArrayList(std.ArrayList(u8)).initCapacity(allocator, 0) catch unreachable,
+            .search_highlight = null,
             .allocator = allocator,
         };
     }
@@ -56,6 +59,30 @@ pub const View = struct {
     // エラーメッセージをクリア
     pub fn clearError(self: *View) void {
         self.error_msg = null;
+    }
+
+    // 検索ハイライトを設定
+    pub fn setSearchHighlight(self: *View, search_str: ?[]const u8) void {
+        self.search_highlight = search_str;
+        // ハイライトが変わったので全画面再描画
+        self.markFullRedraw();
+    }
+
+    // 行番号の表示幅を計算（総行数に応じて動的に変化）
+    fn getLineNumberWidth(self: *View) usize {
+        if (!config.Editor.SHOW_LINE_NUMBERS) return 0;
+
+        const total_lines = self.buffer.lineCount();
+        if (total_lines == 0) return 0;
+
+        // 桁数を計算
+        var width: usize = 1;
+        var n = total_lines;
+        while (n >= 10) {
+            width += 1;
+            n /= 10;
+        }
+        return width + 1; // 行番号 + スペース1個
     }
 
     pub fn markDirty(self: *View, start_line: usize, end_line: ?usize) void {
@@ -97,7 +124,7 @@ pub const View = struct {
     }
 
     // イテレータを再利用して行を描画（セルレベル差分描画版）
-    fn renderLineWithIter(self: *View, term: *Terminal, screen_row: usize, iter: *PieceIterator, line_buffer: *std.ArrayList(u8)) !void {
+    fn renderLineWithIter(self: *View, term: *Terminal, screen_row: usize, file_line: usize, iter: *PieceIterator, line_buffer: *std.ArrayList(u8)) !void {
         // 再利用バッファをクリア
         line_buffer.clearRetainingCapacity();
 
@@ -110,6 +137,14 @@ pub const View = struct {
         // Tab展開用の一時バッファ
         var expanded_line = std.ArrayList(u8){};
         defer expanded_line.deinit(self.allocator);
+
+        // 行番号を先に追加
+        const line_num_width = self.getLineNumberWidth();
+        if (line_num_width > 0) {
+            var num_buf: [32]u8 = undefined;
+            const line_num_str = std.fmt.bufPrint(&num_buf, "{d: >[1]} ", .{ file_line + 1, line_num_width - 1 }) catch "";
+            try expanded_line.appendSlice(self.allocator, line_num_str);
+        }
 
         // grapheme-aware rendering with tab expansion and horizontal scrolling
         var byte_idx: usize = 0;
@@ -163,7 +198,38 @@ pub const View = struct {
             }
         }
 
-        const new_line = expanded_line.items;
+        var new_line = expanded_line.items;
+
+        // 検索ハイライトの適用
+        var highlighted_line = std.ArrayList(u8){};
+        defer highlighted_line.deinit(self.allocator);
+
+        if (self.search_highlight) |search_str| {
+            if (search_str.len > 0 and new_line.len > 0) {
+                // 行内で検索文字列を探してハイライト
+                var pos: usize = 0;
+                while (pos < new_line.len) {
+                    if (std.mem.indexOf(u8, new_line[pos..], search_str)) |match_offset| {
+                        const match_pos = pos + match_offset;
+                        // マッチ前の部分をコピー
+                        try highlighted_line.appendSlice(self.allocator, new_line[pos..match_pos]);
+                        // 反転表示開始
+                        try highlighted_line.appendSlice(self.allocator, "\x1b[7m");
+                        // マッチ部分をコピー
+                        try highlighted_line.appendSlice(self.allocator, new_line[match_pos..match_pos + search_str.len]);
+                        // 反転表示終了
+                        try highlighted_line.appendSlice(self.allocator, "\x1b[27m");
+                        // 次の検索位置へ
+                        pos = match_pos + search_str.len;
+                    } else {
+                        // これ以上マッチなし：残りをコピー
+                        try highlighted_line.appendSlice(self.allocator, new_line[pos..]);
+                        break;
+                    }
+                }
+                new_line = highlighted_line.items;
+            }
+        }
 
         // 前フレームと比較してセルレベル差分描画
         if (screen_row < self.prev_screen.items.len) {
@@ -301,7 +367,7 @@ pub const View = struct {
             while (screen_row < max_lines) : (screen_row += 1) {
                 const file_line = self.top_line + screen_row;
                 if (file_line < self.buffer.lineCount()) {
-                    try self.renderLineWithIter(term, screen_row, &iter, &self.line_buffer);
+                    try self.renderLineWithIter(term, screen_row, file_line, &iter, &self.line_buffer);
                 } else {
                     try self.renderEmptyLine(term, screen_row);
                 }
@@ -331,7 +397,7 @@ pub const View = struct {
                 while (screen_row < render_end) : (screen_row += 1) {
                     const file_line = self.top_line + screen_row;
                     if (file_line < self.buffer.lineCount()) {
-                        try self.renderLineWithIter(term, screen_row, &iter, &self.line_buffer);
+                        try self.renderLineWithIter(term, screen_row, file_line, &iter, &self.line_buffer);
                     } else {
                         try self.renderEmptyLine(term, screen_row);
                     }
@@ -344,8 +410,9 @@ pub const View = struct {
         // ステータスバーの描画
         try self.renderStatusBar(term);
 
-        // カーソルを表示（水平スクロールを考慮、境界チェック）
-        var screen_cursor_x = if (self.cursor_x >= self.top_col) self.cursor_x - self.top_col else 0;
+        // カーソルを表示（水平スクロール+行番号を考慮、境界チェック）
+        const line_num_width = self.getLineNumberWidth();
+        var screen_cursor_x = line_num_width + (if (self.cursor_x >= self.top_col) self.cursor_x - self.top_col else 0);
         // 端末幅を超えないようにクリップ
         if (screen_cursor_x >= term.width) {
             screen_cursor_x = term.width - 1;

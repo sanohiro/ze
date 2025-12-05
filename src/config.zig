@@ -68,6 +68,9 @@ pub const Editor = struct {
 
     /// タブ幅（空白文字数）
     pub const TAB_WIDTH: usize = 4;
+
+    /// 行番号を表示するか
+    pub const SHOW_LINE_NUMBERS: bool = true;
 };
 
 /// 入力処理の定数
