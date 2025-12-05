@@ -1,0 +1,9 @@
+M-%
+こんにちは
+Enter
+さようなら
+Enter
+!
+C-x
+C-c
+n

@@ -25,7 +25,12 @@ const posix = std.posix;
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const base_allocator = gpa.allocator();
+
+    // ArenaAllocatorを使用してメモリ管理を簡素化
+    var arena = std.heap.ArenaAllocator.init(base_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
 
     var args = try std.process.argsWithAllocator(allocator);
     defer args.deinit();
@@ -33,6 +38,7 @@ pub fn main() !void {
     _ = args.skip(); // プログラム名をスキップ
 
     var filename: ?[]const u8 = null;
+    var input_file: ?[]const u8 = null;
     var wait_ms: u64 = 500;
     var delay_ms: u64 = 100;
     var show_output = false;
@@ -43,6 +49,8 @@ pub fn main() !void {
     while (args.next()) |arg| {
         if (std.mem.startsWith(u8, arg, "--file=")) {
             filename = arg[7..];
+        } else if (std.mem.startsWith(u8, arg, "--input-file=")) {
+            input_file = arg[13..];
         } else if (std.mem.startsWith(u8, arg, "--wait=")) {
             wait_ms = try std.fmt.parseInt(u64, arg[7..], 10);
         } else if (std.mem.startsWith(u8, arg, "--delay=")) {
@@ -54,13 +62,32 @@ pub fn main() !void {
         }
     }
 
+    // --input-file が指定された場合、ファイルからキーシーケンスを読み込む
+    if (input_file) |file_path| {
+        const file = try std.fs.cwd().openFile(file_path, .{});
+        defer file.close();
+
+        const content = try file.readToEndAlloc(allocator, 1024 * 1024); // 最大1MB
+        defer allocator.free(content);
+
+        // 改行で分割してキーシーケンスを作成
+        var it = std.mem.splitScalar(u8, content, '\n');
+        while (it.next()) |line| {
+            if (line.len > 0) { // 空行をスキップ
+                const line_copy = try allocator.dupe(u8, line);
+                try key_sequences.append(allocator, line_copy);
+            }
+        }
+    }
+
     if (key_sequences.items.len == 0) {
         std.debug.print("Usage: test_harness_generic [options] <key1> <key2> ...\n\n", .{});
         std.debug.print("Options:\n", .{});
-        std.debug.print("  --file=<path>   Open specified file\n", .{});
-        std.debug.print("  --wait=<ms>     Wait time before sending keys (default: 500ms)\n", .{});
-        std.debug.print("  --delay=<ms>    Delay between keys (default: 100ms)\n", .{});
-        std.debug.print("  --show-output   Show ze output\n\n", .{});
+        std.debug.print("  --file=<path>        Open specified file\n", .{});
+        std.debug.print("  --input-file=<path>  Read key sequences from file (one per line)\n", .{});
+        std.debug.print("  --wait=<ms>          Wait time before sending keys (default: 500ms)\n", .{});
+        std.debug.print("  --delay=<ms>         Delay between keys (default: 100ms)\n", .{});
+        std.debug.print("  --show-output        Show ze output\n\n", .{});
         std.debug.print("Special keys:\n", .{});
         std.debug.print("  C-<char>        Ctrl+char (e.g., C-x, C-s)\n", .{});
         std.debug.print("  M-<char>        Alt+char (e.g., M-f)\n", .{});

@@ -205,7 +205,7 @@ run_test "21.6 マッチなし" --file=test_data/test_replace.txt "M-%" "notfoun
 run_test "21.7 空の置換文字列" --file=test_data/test_replace.txt "M-%" "foo" "Enter" "Enter" "y" "q" "C-x" "C-c" "n"
 run_test "21.8 複数回の置換 (y,y,y)" --file=test_data/test_replace.txt "M-%" "foo" "Enter" "bar" "Enter" "y" "y" "y" "q" "C-x" "C-c" "n"
 run_test "21.9 置換のUndo" --file=test_data/test_replace.txt "M-%" "foo" "Enter" "bar" "Enter" "!" "C-u" "C-x" "C-c" "n"
-# run_test "21.10 日本語の置換" --file=test_data/test_replace_ja.txt "M-%" "こんにちは" "Enter" "さようなら" "Enter" "!" "C-x" "C-c" "n"  # genericハーネスで日本語文字列の渡しが困難なためスキップ
+run_test "21.10 日本語の置換" --input-file=test_data/test_japanese_replace_keys.txt --file=test_data/test_replace_ja.txt
 
 echo
 echo "========================================="

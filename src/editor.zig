@@ -614,6 +614,23 @@ pub const Editor = struct {
                             try self.performSearch(is_forward, false);
                         }
                     },
+                    .codepoint => |cp| {
+                        // UTF-8マルチバイト文字を処理
+                        var buf: [4]u8 = undefined;
+                        const len = std.unicode.utf8Encode(cp, &buf) catch return;
+                        try self.input_buffer.appendSlice(self.allocator, buf[0..len]);
+                        // プロンプトを更新して検索実行
+                        const prefix = if (is_forward) "I-search: " else "I-search backward: ";
+                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ prefix, self.input_buffer.items }) catch null;
+                        if (self.prompt_buffer) |prompt| {
+                            self.view.setError(prompt);
+                        }
+                        // 検索実行（現在位置から）
+                        if (self.input_buffer.items.len > 0) {
+                            self.view.setSearchHighlight(self.input_buffer.items);
+                            try self.performSearch(is_forward, false);
+                        }
+                    },
                     .ctrl => |c| {
                         switch (c) {
                             'g' => {
@@ -848,6 +865,19 @@ pub const Editor = struct {
                             self.view.setError("Query replace: ");
                         }
                     },
+                    .codepoint => |cp| {
+                        // UTF-8マルチバイト文字を処理
+                        var buf: [4]u8 = undefined;
+                        const len = std.unicode.utf8Encode(cp, &buf) catch return;
+                        try self.input_buffer.appendSlice(self.allocator, buf[0..len]);
+                        // プロンプトを更新
+                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace: {s}", .{self.input_buffer.items}) catch null;
+                        if (self.prompt_buffer) |prompt| {
+                            self.view.setError(prompt);
+                        } else {
+                            self.view.setError("Query replace: ");
+                        }
+                    },
                     .ctrl => |c| {
                         switch (c) {
                             'g' => {
@@ -901,6 +931,21 @@ pub const Editor = struct {
                     .char => |c| {
                         // 入力バッファに文字を追加
                         try self.input_buffer.append(self.allocator, c);
+                        // プロンプトを更新
+                        if (self.replace_search) |search| {
+                            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace {s} with: {s}", .{search, self.input_buffer.items}) catch null;
+                        } else {
+                            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace with: {s}", .{self.input_buffer.items}) catch null;
+                        }
+                        if (self.prompt_buffer) |prompt| {
+                            self.view.setError(prompt);
+                        }
+                    },
+                    .codepoint => |cp| {
+                        // UTF-8マルチバイト文字を処理
+                        var buf: [4]u8 = undefined;
+                        const len = std.unicode.utf8Encode(cp, &buf) catch return;
+                        try self.input_buffer.appendSlice(self.allocator, buf[0..len]);
                         // プロンプトを更新
                         if (self.replace_search) |search| {
                             self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace {s} with: {s}", .{search, self.input_buffer.items}) catch null;
