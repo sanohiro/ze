@@ -50,7 +50,6 @@ pub const Editor = struct {
     filename: ?[]const u8,
     modified: bool,
     readonly: bool, // ファイルが読み取り専用かどうか
-    line_ending: config.LineEnding, // 改行コード（LF/CRLF）
     file_mtime: ?i128, // ファイルの最終更新時刻（外部変更検知用）
     mode: EditorMode, // エディタのモード
     input_buffer: std.ArrayList(u8), // ミニバッファ入力用（検索文字列、ファイル名入力等）
@@ -74,7 +73,6 @@ pub const Editor = struct {
             .filename = null,
             .modified = false,
             .readonly = false,
-            .line_ending = .LF, // デフォルトはLF
             .file_mtime = null,
             .mode = .normal,
             .input_buffer = std.ArrayList(u8).initCapacity(allocator, 0) catch unreachable,
@@ -148,9 +146,6 @@ pub const Editor = struct {
         self.filename = try self.allocator.dupe(u8, path);
         self.modified = false;
 
-        // バッファから検出した改行コードを取得
-        self.line_ending = self.buffer.detected_line_ending;
-
         // ファイルの最終更新時刻を記録（外部変更検知用）
         const file = try std.fs.cwd().openFile(path, .{});
         defer file.close();
@@ -201,7 +196,7 @@ pub const Editor = struct {
             // カーソル位置をバッファ範囲内にクランプ（大量削除後の対策）
             self.clampCursorPosition();
 
-            try self.view.render(&self.terminal, self.modified, self.readonly, self.line_ending, self.filename);
+            try self.view.render(&self.terminal, self.modified, self.readonly, self.buffer.detected_line_ending, self.filename);
 
             if (try input.readKey(stdin)) |key| {
                 // 何かキー入力があればエラーメッセージをクリア
