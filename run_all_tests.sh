@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# 拡張テストスイート for ze エディタ
-# 実装済み機能の完全網羅テスト
+# 統合テストスイート for ze エディタ
+# 全ての機能を徹底的にテスト
 
 set -e
 
@@ -36,12 +36,78 @@ run_test() {
 }
 
 echo "========================================="
-echo "ze エディタ 拡張テストスイート"
+echo "ze エディタ 統合テストスイート"
 echo "========================================="
 echo
 
 zig build
 
+echo "=== カテゴリ 1: 基本的な編集操作 ==="
+run_test "1.1 シンプルな文字入力" --file=test_data/test_nums.txt "hello" "C-x" "C-c" "n"
+run_test "1.2 複数行の入力" --file=test_data/test_nums.txt "line1" "Enter" "line2" "C-x" "C-c" "n"
+run_test "1.3 Backspaceで削除" --file=test_data/test_nums.txt "hello" "Backspace" "Backspace" "C-x" "C-c" "n"
+run_test "1.4 Enterで改行" --file=test_data/test_nums.txt "test" "Enter" "Enter" "C-x" "C-c" "n"
+
+echo
+echo "=== カテゴリ 2: カーソル移動 ==="
+run_test "2.1 右移動" --file=test_data/test_cursor_input.txt "Right" "Right" "X" "C-x" "C-c" "n"
+run_test "2.2 左移動" --file=test_data/test_cursor_input.txt "End" "Left" "Left" "X" "C-x" "C-c" "n"
+run_test "2.3 上移動" --file=test_data/test_cursor_input.txt "Down" "Down" "Up" "X" "C-x" "C-c" "n"
+run_test "2.4 下移動" --file=test_data/test_cursor_input.txt "Down" "X" "C-x" "C-c" "n"
+run_test "2.5 Home移動" --file=test_data/test_cursor_input.txt "End" "Home" "X" "C-x" "C-c" "n"
+run_test "2.6 End移動" --file=test_data/test_cursor_input.txt "End" "X" "C-x" "C-c" "n"
+
+echo
+echo "=== カテゴリ 3: ファイル操作 ==="
+run_test "3.1 保存 (C-x C-s)" --file=test_data/test_nums.txt "test" "C-x" "C-s" "C-x" "C-c"
+run_test "3.2 保存せず終了 (n)" --file=test_data/test_nums.txt "test" "C-x" "C-c" "n"
+run_test "3.3 保存して終了 (y)" --file=test_data/test_nums.txt "test" "C-x" "C-c" "y"
+
+echo
+echo "=== カテゴリ 4: 検索機能 ==="
+run_test "4.1 英語で検索" --file=test_data/test_search_pages.txt "C-s" "T" "a" "r" "g" "e" "t" "Enter" "C-x" "C-c"
+run_test "4.2 次を検索 (C-s C-s)" --file=test_data/test_search_pages.txt "C-s" "T" "a" "r" "Enter" "C-s" "C-x" "C-c"
+run_test "4.3 検索キャンセル (C-g)" --file=test_data/test_search_pages.txt "C-s" "test" "C-g" "C-x" "C-c"
+
+echo
+echo "=== カテゴリ 5: 日本語対応 ==="
+run_test "5.1 日本語入力" --file=test_data/test_japanese.txt "テスト" "C-x" "C-c" "n"
+run_test "5.2 日本語で検索" --file=test_data/test_japanese.txt "C-s" "日本語" "Enter" "C-x" "C-c"
+run_test "5.3 日本語カーソル移動" --file=test_data/test_japanese.txt "Down" "Right" "Right" "X" "C-x" "C-c" "n"
+run_test "5.4 漢字ひらがな混在" --file=test_data/test_japanese.txt "漢字test" "C-x" "C-c" "n"
+
+echo
+echo "=== カテゴリ 6: 絵文字対応 ==="
+run_test "6.1 絵文字表示" --file=test_data/test_emoji.txt "C-x" "C-c"
+run_test "6.2 絵文字入力" --file=test_data/test_emoji.txt "😀" "C-x" "C-c" "n"
+run_test "6.3 絵文字カーソル移動" --file=test_data/test_emoji.txt "Down" "Right" "Right" "X" "C-x" "C-c" "n"
+
+echo
+echo "=== カテゴリ 7: 長い行の処理 ==="
+run_test "7.1 長い行の表示" --file=test_data/test_long_line.txt "C-x" "C-c"
+run_test "7.2 長い行の編集" --file=test_data/test_long_line.txt "End" "X" "C-x" "C-c" "n"
+run_test "7.3 長い行でのカーソル移動" --file=test_data/test_long_line.txt "Right" "Right" "Right" "Right" "Right" "C-x" "C-c"
+
+echo
+echo "=== カテゴリ 8: 大量行の処理 ==="
+run_test "8.1 999行ファイル表示" --file=test_data/test_999_lines.txt "C-x" "C-c"
+run_test "8.2 999行ファイル編集" --file=test_data/test_999_lines.txt "Down" "test" "C-x" "C-c" "n"
+run_test "8.3 行番号幅変更 (998→999)" --file=test_data/test_998_real.txt "End" "Enter" "C-x" "C-c" "n"
+
+echo
+echo "=== カテゴリ 9: ページスクロール ==="
+run_test "9.1 Page Down動作" --file=test_data/test_page_scroll.txt "PageDown" "C-x" "C-c"
+run_test "9.2 Page Up動作" --file=test_data/test_page_scroll.txt "PageDown" "PageUp" "C-x" "C-c"
+run_test "9.3 ページまたぎ検索" --file=test_data/test_page_scroll.txt "C-s" "line" "Space" "3" "0" "Enter" "C-x" "C-c"
+
+echo
+echo "=== カテゴリ 10: エッジケース ==="
+run_test "10.1 空ファイル" --file=test_data/test_empty.txt "test" "C-x" "C-c" "n"
+run_test "10.2 最終行での Enter" --file=test_data/test_cursor_input.txt "Down" "Down" "Down" "Enter" "C-x" "C-c" "n"
+run_test "10.3 先頭での Backspace" --file=test_data/test_cursor_input.txt "Backspace" "C-x" "C-c"
+run_test "10.4 長いファイルの末尾" --file=test_data/test_999_lines.txt "C-e" "X" "C-x" "C-c" "n"
+
+echo
 echo "=== カテゴリ 11: Undo/Redo機能 ==="
 run_test "11.1 単純なUndo" --file=test_data/test_nums.txt "hello" "C-u" "C-x" "C-c"
 run_test "11.2 複数回のUndo" --file=test_data/test_nums.txt "a" "b" "c" "C-u" "C-u" "C-u" "C-x" "C-c"
@@ -143,7 +209,7 @@ run_test "21.9 置換のUndo" --file=test_data/test_replace.txt "M-%" "foo" "Ent
 
 echo
 echo "========================================="
-echo "拡張テスト完了"
+echo "統合テスト完了"
 echo "========================================="
 echo "合計: $TOTAL_COUNT"
 echo "成功: $PASS_COUNT"
