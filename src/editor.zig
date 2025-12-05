@@ -403,8 +403,8 @@ pub const Editor = struct {
         const line_start = self.buffer.getLineStart(line) orelse 0;
 
         // 画面内の行位置を計算
-        const max_screen_lines = self.terminal.height - 1;
-        if (line < max_screen_lines) {
+        const max_screen_lines = if (self.terminal.height >= 1) self.terminal.height - 1 else 0;
+        if (max_screen_lines == 0 or line < max_screen_lines) {
             self.view.top_line = 0;
             self.view.cursor_y = line;
         } else {
@@ -527,6 +527,7 @@ pub const Editor = struct {
                         }
                         // 検索実行（現在位置から）
                         if (self.input_buffer.items.len > 0) {
+                            self.view.setSearchHighlight(self.input_buffer.items);
                             try self.performSearch(is_forward, false);
                         }
                     },
@@ -539,17 +540,20 @@ pub const Editor = struct {
                                 }
                                 self.mode = .normal;
                                 self.input_buffer.clearRetainingCapacity();
+                                self.view.setSearchHighlight(null); // ハイライトクリア
                                 self.view.clearError();
                             },
                             's' => {
                                 // C-s: 次の一致を検索（前方）
                                 if (self.input_buffer.items.len > 0) {
+                                    self.view.setSearchHighlight(self.input_buffer.items);
                                     try self.performSearch(true, true);
                                 }
                             },
                             'r' => {
                                 // C-r: 前の一致を検索（後方）
                                 if (self.input_buffer.items.len > 0) {
+                                    self.view.setSearchHighlight(self.input_buffer.items);
                                     try self.performSearch(false, true);
                                 }
                             },
@@ -569,6 +573,7 @@ pub const Editor = struct {
                             }
                             // 検索文字列が残っていれば再検索
                             if (self.input_buffer.items.len > 0) {
+                                self.view.setSearchHighlight(self.input_buffer.items);
                                 // 開始位置から再検索
                                 if (self.search_start_pos) |start_pos| {
                                     self.setCursorToPos(start_pos);
@@ -576,6 +581,7 @@ pub const Editor = struct {
                                 try self.performSearch(is_forward, false);
                             } else {
                                 // 検索文字列が空になったら開始位置に戻る
+                                self.view.setSearchHighlight(null); // ハイライトクリア
                                 if (self.search_start_pos) |start_pos| {
                                     self.setCursorToPos(start_pos);
                                 }
@@ -586,6 +592,7 @@ pub const Editor = struct {
                         // Enter: 検索確定（現在位置で確定）
                         self.mode = .normal;
                         self.input_buffer.clearRetainingCapacity();
+                        self.view.setSearchHighlight(null); // ハイライトクリア
                         self.view.clearError();
                     },
                     else => {},
