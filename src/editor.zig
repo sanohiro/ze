@@ -34,6 +34,7 @@ const UndoEntry = struct {
 const EditorMode = enum {
     normal,
     prefix_x, // C-xプレフィックス待ち
+    prefix_r, // C-x rプレフィックス待ち（矩形選択コマンド）
     quit_confirm, // 終了確認中（y/n/cを待つ）
     filename_input, // ファイル名入力中
     isearch_forward, // インクリメンタルサーチ（前方）
@@ -54,6 +55,7 @@ pub const Editor = struct {
     prompt_buffer: ?[]const u8, // allocPrintで作成したプロンプト文字列
     mark_pos: ?usize, // 範囲選択のマーク位置（null=未設定）
     kill_ring: ?[]const u8, // コピー/カットバッファ
+    rectangle_ring: ?std.ArrayList([]const u8), // 矩形コピー/カットバッファ（各行の文字列の配列）
     search_start_pos: ?usize, // 検索開始時のカーソル位置（C-gでここに戻る）
     last_search: ?[]const u8, // 最後に実行した検索文字列（検索繰り返し用）
     undo_stack: std.ArrayList(UndoEntry),
@@ -74,6 +76,7 @@ pub const Editor = struct {
             .prompt_buffer = null,
             .mark_pos = null,
             .kill_ring = null,
+            .rectangle_ring = null,
             .search_start_pos = null,
             .last_search = null,
             .undo_stack = std.ArrayList(UndoEntry).initCapacity(allocator, 0) catch unreachable,
@@ -95,6 +98,12 @@ pub const Editor = struct {
         }
         if (self.kill_ring) |text| {
             self.allocator.free(text);
+        }
+        if (self.rectangle_ring) |*rect| {
+            for (rect.items) |line| {
+                self.allocator.free(line);
+            }
+            rect.deinit(self.allocator);
         }
         if (self.last_search) |search| {
             self.allocator.free(search);
@@ -351,7 +360,12 @@ pub const Editor = struct {
             },
         }
 
-        self.modified = true;
+        // Undoスタックが空になったら元の状態に戻ったのでmodified=false
+        if (self.undo_stack.items.len == 0) {
+            self.modified = false;
+        } else {
+            self.modified = true;
+        }
 
         // 画面全体を再描画
         self.view.markFullRedraw();
@@ -390,7 +404,9 @@ pub const Editor = struct {
             },
         }
 
-        self.modified = true;
+        // Undoスタックが空でなければ変更されている
+        // （Redoによって変更が再適用されたため）
+        self.modified = (self.undo_stack.items.len > 0);
 
         // 画面全体を再描画
         self.view.markFullRedraw();
@@ -657,6 +673,20 @@ pub const Editor = struct {
                             },
                         }
                     },
+                    .char => |c| {
+                        // C-x の後に通常文字を受け付ける（C-x h、C-x r など）
+                        switch (c) {
+                            'h' => self.selectAll(), // C-x h 全選択
+                            'r' => {
+                                // C-x r: 矩形コマンドプレフィックス
+                                self.mode = .prefix_r;
+                                return;
+                            },
+                            else => {
+                                self.view.setError("Unknown command");
+                            },
+                        }
+                    },
                     else => {
                         self.view.setError("Expected C-x C-[key]");
                     },
@@ -708,6 +738,37 @@ pub const Editor = struct {
                         }
                     },
                     else => {},
+                }
+                return;
+            },
+            .prefix_r => {
+                // C-x r プレフィックスモード：矩形コマンドを受け付ける
+                self.mode = .normal; // 次のキーの後は通常モードに戻る
+                switch (key) {
+                    .char => |c| {
+                        switch (c) {
+                            'k' => self.killRectangle(), // C-x r k 矩形削除
+                            'y' => self.yankRectangle(), // C-x r y 矩形貼り付け
+                            't' => {
+                                // C-x r t 矩形文字列挿入（未実装）
+                                self.view.setError("C-x r t not implemented yet");
+                            },
+                            else => {
+                                self.view.setError("Unknown rectangle command");
+                            },
+                        }
+                    },
+                    .ctrl => |c| {
+                        // Ctrl-Gでキャンセル
+                        if (c == 'g') {
+                            self.view.clearError();
+                        } else {
+                            self.view.setError("Unknown rectangle command");
+                        }
+                    },
+                    else => {
+                        self.view.setError("Unknown rectangle command");
+                    },
                 }
                 return;
             },
@@ -775,6 +836,8 @@ pub const Editor = struct {
                     'b' => try self.backwardWord(), // M-b 単語後退
                     'd' => try self.deleteWord(), // M-d 単語削除
                     'w' => try self.copyRegion(), // M-w 範囲コピー
+                    '<' => self.view.moveToBufferStart(), // M-< ファイル先頭
+                    '>' => self.view.moveToBufferEnd(&self.terminal), // M-> ファイル終端
                     else => {},
                 }
             },
@@ -1178,6 +1241,14 @@ pub const Editor = struct {
         }
     }
 
+    // 全選択（C-x h）：バッファの先頭にマークを設定し、終端にカーソルを移動
+    fn selectAll(self: *Editor) void {
+        // バッファの先頭（位置0）にマークを設定
+        self.mark_pos = 0;
+        // カーソルをバッファの終端に移動
+        self.view.moveToBufferEnd(&self.terminal);
+    }
+
     // マーク位置とカーソル位置から範囲を取得（開始位置と長さを返す）
     fn getRegion(self: *Editor) ?struct { start: usize, len: usize } {
         const mark = self.mark_pos orelse return null;
@@ -1336,5 +1407,17 @@ pub const Editor = struct {
             // それでも見つからない
             self.view.setError("Failing I-search backward");
         }
+    }
+
+    // 矩形領域の削除（C-x r k）
+    fn killRectangle(self: *Editor) void {
+        _ = self;
+        // TODO: 矩形領域の削除を実装
+    }
+
+    // 矩形の貼り付け（C-x r y）
+    fn yankRectangle(self: *Editor) void {
+        _ = self;
+        // TODO: 矩形の貼り付けを実装
     }
 };

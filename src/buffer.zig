@@ -613,6 +613,25 @@ pub const Buffer = struct {
         return if (left > 0) left - 1 else 0;
     }
 
+    // バイト位置から列番号を計算（グラフェムクラスタ数）
+    pub fn findColumnByPos(self: *Buffer, pos: usize) usize {
+        const line_num = self.findLineByPos(pos);
+        const line_start = self.getLineStart(line_num) orelse 0;
+
+        if (pos <= line_start) return 0;
+
+        // 行の開始位置からposまでのグラフェムクラスタ数を数える
+        var iter = PieceIterator.init(self);
+        iter.seek(line_start);
+
+        var col: usize = 0;
+        while (iter.global_pos < pos) {
+            _ = iter.nextGraphemeCluster() catch break;
+            col += 1;
+        }
+        return col;
+    }
+
     // UTF-8文字幅を計算（unicode.zigに委譲）
     pub fn charWidth(codepoint: u21) usize {
         return unicode.displayWidth(codepoint);

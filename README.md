@@ -416,8 +416,8 @@ cmd         := builtin | external | alias
 | `M-b` | 後退（単語） |
 | `C-v` | ページダウン |
 | `M-v` | ページアップ |
-| `M-<` | バッファの先頭へ |
-| `M->` | バッファの末尾へ |
+| `M-<` | バッファの先頭へ (beginning-of-buffer) ✅ |
+| `M->` | バッファの末尾へ (end-of-buffer) ✅ |
 | `C-l` | カーソルを中央に |
 
 ### Editing
@@ -448,6 +448,7 @@ cmd         := builtin | external | alias
 | キー | 動作 |
 |-----|--------|
 | `C-x b` | バッファ切り替え |
+| `C-x h` | 全選択 (mark-whole-buffer) ✅ |
 | `C-x k` | バッファを閉じる |
 | `C-x 2` | 横分割 |
 | `C-x 3` | 縦分割 |
