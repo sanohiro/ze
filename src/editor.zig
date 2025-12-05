@@ -809,6 +809,41 @@ pub const Editor = struct {
                             },
                         }
                     },
+                    .codepoint => |cp| {
+                        // IMEがオンの状態でもy/n/cを受け付ける
+                        switch (cp) {
+                            'y', 'Y' => {
+                                // 保存して終了
+                                if (self.filename == null) {
+                                    // 新規ファイル：ファイル名入力モードへ
+                                    self.mode = .filename_input;
+                                    self.quit_after_save = true; // 保存後に終了
+                                    self.input_buffer.clearRetainingCapacity();
+                                    self.view.setError("Write file: ");
+                                } else {
+                                    self.saveFile() catch |err| {
+                                        self.view.setError(@errorName(err));
+                                        self.mode = .normal;
+                                        return;
+                                    };
+                                    self.running = false;
+                                }
+                            },
+                            'n', 'N' => {
+                                // 保存せずに終了
+                                self.running = false;
+                            },
+                            'c', 'C' => {
+                                // キャンセル
+                                self.mode = .normal;
+                                self.view.clearError();
+                            },
+                            else => {
+                                // 無効な入力
+                                self.view.setError("Please answer: (y)es, (n)o, (c)ancel");
+                            },
+                        }
+                    },
                     .ctrl => |c| {
                         // Ctrl-Gでもキャンセル
                         if (c == 'g') {
