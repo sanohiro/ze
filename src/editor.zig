@@ -49,6 +49,9 @@ pub const Editor = struct {
     running: bool,
     filename: ?[]const u8,
     modified: bool,
+    readonly: bool, // ファイルが読み取り専用かどうか
+    line_ending: config.LineEnding, // 改行コード（LF/CRLF）
+    file_mtime: ?i128, // ファイルの最終更新時刻（外部変更検知用）
     mode: EditorMode, // エディタのモード
     input_buffer: std.ArrayList(u8), // ミニバッファ入力用（検索文字列、ファイル名入力等）
     quit_after_save: bool, // ファイル名入力後に終了するか
@@ -70,6 +73,9 @@ pub const Editor = struct {
             .running = true,
             .filename = null,
             .modified = false,
+            .readonly = false,
+            .line_ending = .LF, // デフォルトはLF
+            .file_mtime = null,
             .mode = .normal,
             .input_buffer = std.ArrayList(u8).initCapacity(allocator, 0) catch unreachable,
             .quit_after_save = false,
@@ -141,12 +147,50 @@ pub const Editor = struct {
 
         self.filename = try self.allocator.dupe(u8, path);
         self.modified = false;
+
+        // バッファから検出した改行コードを取得
+        self.line_ending = self.buffer.detected_line_ending;
+
+        // ファイルの最終更新時刻を記録（外部変更検知用）
+        const file = try std.fs.cwd().openFile(path, .{});
+        defer file.close();
+        const stat = try file.stat();
+        self.file_mtime = stat.mtime;
     }
 
     pub fn saveFile(self: *Editor) !void {
         if (self.filename) |path| {
+            // 外部変更チェック（新規ファイルの場合はスキップ）
+            if (self.file_mtime) |original_mtime| {
+                const maybe_file = std.fs.cwd().openFile(path, .{}) catch |err| blk: {
+                    // ファイルが存在しない場合は外部で削除された
+                    if (err == error.FileNotFound) {
+                        self.view.error_msg = "警告: ファイルが外部で削除されています";
+                        // 続行して保存する（再作成）
+                        break :blk null;
+                    } else {
+                        return err;
+                    }
+                };
+
+                if (maybe_file) |f| {
+                    defer f.close();
+                    const stat = try f.stat();
+                    if (stat.mtime != original_mtime) {
+                        self.view.error_msg = "警告: ファイルが外部で変更されています！";
+                        // 続行して上書きする（ユーザーの編集を優先）
+                    }
+                }
+            }
+
             try self.buffer.saveToFile(path);
             self.modified = false;
+
+            // 保存後に新しい mtime を記録
+            const file = try std.fs.cwd().openFile(path, .{});
+            defer file.close();
+            const stat = try file.stat();
+            self.file_mtime = stat.mtime;
         }
     }
 
@@ -157,7 +201,7 @@ pub const Editor = struct {
             // カーソル位置をバッファ範囲内にクランプ（大量削除後の対策）
             self.clampCursorPosition();
 
-            try self.view.render(&self.terminal);
+            try self.view.render(&self.terminal, self.modified, self.readonly, self.line_ending, self.filename);
 
             if (try input.readKey(stdin)) |key| {
                 // 何かキー入力があればエラーメッセージをクリア

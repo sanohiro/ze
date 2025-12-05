@@ -243,6 +243,7 @@ pub const Buffer = struct {
     owns_original: bool,
     total_len: usize,
     line_index: LineIndex,
+    detected_line_ending: config.LineEnding, // ファイル読み込み時に検出した改行コード
 
     pub fn init(allocator: std.mem.Allocator) !Buffer {
         return Buffer{
@@ -253,6 +254,7 @@ pub const Buffer = struct {
             .owns_original = false,
             .total_len = 0,
             .line_index = LineIndex.init(allocator),
+            .detected_line_ending = .LF, // デフォルトはLF
         };
     }
 
@@ -265,30 +267,88 @@ pub const Buffer = struct {
         self.line_index.deinit();
     }
 
+    /// バイナリファイルかどうかを判定（NULL バイトの有無でチェック）
+    fn isBinaryFile(content: []const u8) bool {
+        // 最初の8KBをチェック（全体をチェックすると大きいファイルで遅い）
+        const check_size = @min(content.len, 8192);
+        for (content[0..check_size]) |byte| {
+            if (byte == 0) return true;
+        }
+        return false;
+    }
+
+    /// ファイル内容から改行コードを検出し、CRLF を LF に正規化
+    fn detectAndNormalizeLineEnding(allocator: std.mem.Allocator, content: []const u8) !struct { normalized: []u8, line_ending: config.LineEnding } {
+        var has_crlf = false;
+
+        // まず CRLF があるかチェック
+        var i: usize = 0;
+        while (i < content.len) : (i += 1) {
+            if (content[i] == '\r' and i + 1 < content.len and content[i + 1] == '\n') {
+                has_crlf = true;
+                break;
+            }
+        }
+
+        // CRLF がなければそのまま返す
+        if (!has_crlf) {
+            const normalized = try allocator.dupe(u8, content);
+            return .{ .normalized = normalized, .line_ending = .LF };
+        }
+
+        // CRLF を LF に変換
+        var normalized = try std.ArrayList(u8).initCapacity(allocator, content.len);
+        errdefer normalized.deinit(allocator);
+
+        i = 0;
+        while (i < content.len) {
+            if (content[i] == '\r' and i + 1 < content.len and content[i + 1] == '\n') {
+                // CRLF を LF に変換
+                try normalized.append(allocator, '\n');
+                i += 2; // \r\n の2バイトをスキップ
+            } else {
+                try normalized.append(allocator, content[i]);
+                i += 1;
+            }
+        }
+
+        return .{ .normalized = try normalized.toOwnedSlice(allocator), .line_ending = .CRLF };
+    }
+
     pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !Buffer {
         var file = try std.fs.cwd().openFile(path, .{});
         defer file.close();
 
         // ファイルサイズを取得
         const stat = try file.stat();
-        const content = try file.readToEndAlloc(allocator, stat.size);
+        const raw_content = try file.readToEndAlloc(allocator, stat.size);
+        defer allocator.free(raw_content);
+
+        // バイナリファイルチェック
+        if (isBinaryFile(raw_content)) {
+            return error.BinaryFile;
+        }
+
+        // 改行コードを検出して正規化
+        const result = try detectAndNormalizeLineEnding(allocator, raw_content);
 
         var self = Buffer{
-            .original = content,
+            .original = result.normalized,
             .add_buffer = try std.ArrayList(u8).initCapacity(allocator, 0),
             .pieces = try std.ArrayList(Piece).initCapacity(allocator, 0),
             .allocator = allocator,
             .owns_original = true,
-            .total_len = content.len,
+            .total_len = result.normalized.len,
             .line_index = LineIndex.init(allocator),
+            .detected_line_ending = result.line_ending,
         };
 
         // 初期状態：originalファイル全体を指す1つのpiece
-        if (content.len > 0) {
+        if (result.normalized.len > 0) {
             try self.pieces.append(allocator, .{
                 .source = .original,
                 .start = 0,
-                .length = content.len,
+                .length = result.normalized.len,
             });
         }
 
@@ -320,12 +380,31 @@ pub const Buffer = struct {
             }
             defer file.close();
 
-            for (self.pieces.items) |piece| {
-                const data = switch (piece.source) {
-                    .original => self.original[piece.start .. piece.start + piece.length],
-                    .add => self.add_buffer.items[piece.start .. piece.start + piece.length],
-                };
-                try file.writeAll(data);
+            // CRLF モードの場合は変換しながら書き込み
+            if (self.detected_line_ending == .CRLF) {
+                for (self.pieces.items) |piece| {
+                    const data = switch (piece.source) {
+                        .original => self.original[piece.start .. piece.start + piece.length],
+                        .add => self.add_buffer.items[piece.start .. piece.start + piece.length],
+                    };
+                    // LF を CRLF に変換
+                    for (data) |byte| {
+                        if (byte == '\n') {
+                            try file.writeAll("\r\n");
+                        } else {
+                            try file.writeAll(&[_]u8{byte});
+                        }
+                    }
+                }
+            } else {
+                // LF モードはそのまま書き込み
+                for (self.pieces.items) |piece| {
+                    const data = switch (piece.source) {
+                        .original => self.original[piece.start .. piece.start + piece.length],
+                        .add => self.add_buffer.items[piece.start .. piece.start + piece.length],
+                    };
+                    try file.writeAll(data);
+                }
             }
 
             // 元のファイルのパーミッションを一時ファイルに適用

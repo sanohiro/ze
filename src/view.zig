@@ -378,7 +378,7 @@ pub const View = struct {
         }
     }
 
-    pub fn render(self: *View, term: *Terminal) !void {
+    pub fn render(self: *View, term: *Terminal, modified: bool, readonly: bool, line_ending: anytype, filename: ?[]const u8) !void {
         // 端末サイズが0の場合は何もしない
         if (term.height == 0 or term.width == 0) return;
 
@@ -448,7 +448,7 @@ pub const View = struct {
         }
 
         // ステータスバーの描画
-        try self.renderStatusBar(term);
+        try self.renderStatusBar(term, modified, readonly, line_ending, filename);
 
         // カーソルを表示（水平スクロール+行番号を考慮、境界チェック）
         const line_num_width = self.getLineNumberWidth();
@@ -462,7 +462,7 @@ pub const View = struct {
         try term.flush();
     }
 
-    fn renderStatusBar(self: *View, term: *Terminal) !void {
+    pub fn renderStatusBar(self: *View, term: *Terminal, modified: bool, readonly: bool, line_ending: anytype, filename: ?[]const u8) !void {
         try term.moveCursor(term.height - 1, 0);
 
         var status_buf: [config.Editor.STATUS_BUF_SIZE]u8 = undefined;
@@ -472,10 +472,17 @@ pub const View = struct {
             try std.fmt.bufPrint(&status_buf, " {s}", .{msg})
         else blk: {
             const lines = self.buffer.lineCount();
+
+            // ステータスフラグを構築
+            const modified_flag = if (modified) "[+]" else "";
+            const readonly_flag = if (readonly) "[RO]" else "";
+            const le_str = if (@as(u32, @intFromEnum(line_ending)) == 0) "LF" else "CRLF";
+            const fname = if (filename) |f| f else "[No Name]";
+
             break :blk try std.fmt.bufPrint(
                 &status_buf,
-                " ze | Line {d}/{d} | Pos {d},{d}",
-                .{ self.top_line + self.cursor_y + 1, lines, self.cursor_y + 1, self.cursor_x + 1 },
+                " {s}{s} {s} | Line {d}/{d} | {d},{d} | {s} | UTF-8",
+                .{ modified_flag, readonly_flag, fname, self.top_line + self.cursor_y + 1, lines, self.cursor_y + 1, self.cursor_x + 1, le_str },
             );
         };
 

@@ -96,3 +96,9 @@ pub const Buffer = struct {
     /// 初期add_bufferのキャパシティ
     pub const INITIAL_ADD_CAPACITY: usize = 1024;
 };
+
+/// 改行コードの種類
+pub const LineEnding = enum {
+    LF,   // Unix/Linux/macOS (\n)
+    CRLF, // Windows (\r\n)
+};
