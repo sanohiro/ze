@@ -64,7 +64,7 @@
 ┌─────────────────────────────────────────────────────┐
 │                      Buffer                         │
 │        (Piece Table + B-tree line index)            │
-│          mmap original, arena additions             │
+│      readToEndAlloc original, arena additions       │
 └────────────────────────┬────────────────────────────┘
                          ▼
 ┌─────────────────────────────────────────────────────┐
@@ -97,7 +97,7 @@
 ### Buffer: Piece Table + B-tree
 
 ```
-Original File (mmap, read-only):
+Original File (readToEndAlloc):
 ┌─────────────────────────────────────────────────┐
 │ The quick brown fox jumps over the lazy dog.   │
 └─────────────────────────────────────────────────┘
@@ -122,7 +122,7 @@ B-tree Index:
 
 | コンポーネント | アロケータ |
 |-----------|-----------|
-| 元ファイル | mmap (ゼロコピー) |
+| 元ファイル | readToEndAlloc (将来 mmap 予定) |
 | 追加バッファ | Arena (フラグメンテーションなし) |
 | Undoスタック | Piece参照 (コピーなし) |
 | レンダーバッファ | 固定バッファ |
@@ -366,12 +366,7 @@ cmd         := builtin | external | alias
 
 ### Window Operations
 
-| コマンド | 説明 |
-|-----|-------------|
-| `sp` | 横分割 |
-| `vs` | 縦分割 |
-| `c` | ウィンドウを閉じる |
-| `o` | 他のウィンドウを閉じる |
+（未実装 - v1.0 で予定）
 
 ### Navigation
 
@@ -454,14 +449,7 @@ cmd         := builtin | external | alias
 
 | キー | 動作 |
 |-----|--------|
-| `C-x b` | バッファ切り替え |
 | `C-x h` | 全選択 (mark-whole-buffer) ✅ |
-| `C-x k` | バッファを閉じる |
-| `C-x 2` | 横分割 |
-| `C-x 3` | 縦分割 |
-| `C-x 0` | ウィンドウを閉じる |
-| `C-x 1` | 他のウィンドウを閉じる |
-| `C-x o` | 他のウィンドウへ |
 
 ### Search
 
@@ -525,18 +513,21 @@ ze/
 │   ├── buffer.zig         # Piece table実装
 │   ├── view.zig           # レンダリング、画面管理
 │   ├── input.zig          # 入力処理、キーパース
-│   ├── command.zig        # コマンドパーサー、実行器
-│   ├── search.zig         # 検索エンジン (SIMD)
 │   ├── terminal.zig       # 端末制御
-│   ├── window.zig         # ウィンドウ/分割管理
-│   ├── keymap.zig         # キーバインディング定義
-│   ├── builtin.zig        # 組み込みコマンド
-│   ├── pipe.zig           # パイプライン実行
-│   └── util/
-│       ├── arena.zig      # Arenaアロケータ
-│       ├── btree.zig      # 索引用B-tree
-│       ├── queue.zig      # ロックフリーキュー
-│       └── simd.zig       # SIMDユーティリティ
+│   └── config.zig         # 設定定数
+│
+│   # 将来追加予定:
+│   # ├── command.zig        # コマンドパーサー、実行器
+│   # ├── search.zig         # 検索エンジン (SIMD)
+│   # ├── window.zig         # ウィンドウ/分割管理
+│   # ├── keymap.zig         # キーバインディング定義
+│   # ├── builtin.zig        # 組み込みコマンド
+│   # ├── pipe.zig           # パイプライン実行
+│   # └── util/
+│   #     ├── arena.zig      # Arenaアロケータ
+│   #     ├── btree.zig      # 索引用B-tree
+│   #     ├── queue.zig      # ロックフリーキュー
+│   #     └── simd.zig       # SIMDユーティリティ
 ├── build.zig
 ├── README.md
 └── config/
@@ -579,10 +570,8 @@ pub const config = .{
 
 ## Non-Goals
 
-- シンタックスハイライト（v2で検討）
 - LSP統合（v2で検討）
 - プラグインシステム
-- マウスサポート
 - GUI
 - Emacs Lisp互換性
 - Org-mode
@@ -692,9 +681,6 @@ pub const config = .{
 ### Phase 2: 快適な編集 (v0.3)
 **目標: 日常的に使えるレベル**
 
-- [ ] **シンタックスハイライト** (シンプルな正規表現ベース)
-  - [ ] 主要言語5-10個 (Zig, C, Go, Python, JS, Rust等)
-  - [ ] ファイル拡張子による自動認識
 - [ ] **置換機能** (M-%)
   - [ ] 検索・置換の問い合わせ
   - [ ] 一括置換
@@ -711,6 +697,9 @@ pub const config = .{
 ### Phase 3: モダンな見た目 (v0.4)
 **目標: 綺麗で快適なUI**
 
+- [ ] **シンタックスハイライト** (シンプルな正規表現ベース)
+  - [ ] 主要言語5-10個 (Zig, C, Go, Python, JS, Rust等)
+  - [ ] ファイル拡張子による自動認識
 - [ ] **24bit色対応**
   - [ ] シンタックスハイライトでの利用
   - [ ] デフォルトテーマ (Dracula風、Nord風等)
@@ -721,9 +710,6 @@ pub const config = .{
 - [ ] **大きなファイルの最適化**
   - [ ] 遅延ロード
   - [ ] 1GB以上のファイル対応
-- [ ] **マウスサポート (オプション)**
-  - [ ] クリックでカーソル移動
-  - [ ] ドラッグで選択
 
 ### Phase 4: Unix統合 (v0.5)
 **目標: Unixツールとの連携**
@@ -742,18 +728,29 @@ pub const config = .{
 ### Phase 5: 高度な機能 (v1.0)
 **目標: パワーユーザー向け**
 
+- [ ] **複数バッファ管理**
+  - [ ] C-x b (switch-buffer)
+  - [ ] C-x k (kill-buffer)
+  - [ ] バッファ一覧
 - [ ] **ウィンドウ分割**
   - [ ] C-x 2 (横分割)
   - [ ] C-x 3 (縦分割)
+  - [ ] C-x 0 (ウィンドウを閉じる)
+  - [ ] C-x 1 (他のウィンドウを閉じる)
   - [ ] C-x o (ウィンドウ切り替え)
-- [ ] **マーク・リージョン**
-  - [ ] C-@ (set-mark)
+- [ ] **拡張マーク機能**
   - [ ] C-x C-x (exchange-point-and-mark)
 - [ ] **レジスタ**
   - [ ] テキストの保存・呼び出し
 - [ ] **差分ログベースのUndo/Redo**
   - [ ] メモリ効率の改善
 - [ ] **mmap ファイルロード**
+
+### Phase 6: 便利機能 (v1.1)
+
+- [ ] **マウスサポート (オプション)**
+  - [ ] クリックでカーソル移動
+  - [ ] ドラッグで選択
 
 ### 長期目標 (v2.0+)
 - [ ] LSP対応 (オプション、軽量に)
