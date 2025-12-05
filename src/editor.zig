@@ -554,6 +554,19 @@ pub const Editor = struct {
                             self.view.setError("Write file: ");
                         }
                     },
+                    .codepoint => |cp| {
+                        // UTF-8マルチバイト文字を処理
+                        var buf: [4]u8 = undefined;
+                        const len = std.unicode.utf8Encode(cp, &buf) catch return;
+                        try self.input_buffer.appendSlice(self.allocator, buf[0..len]);
+                        // プロンプトを更新
+                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Write file: {s}", .{self.input_buffer.items}) catch null;
+                        if (self.prompt_buffer) |prompt| {
+                            self.view.setError(prompt);
+                        } else {
+                            self.view.setError("Write file: ");
+                        }
+                    },
                     .ctrl => |c| {
                         switch (c) {
                             'g' => {
