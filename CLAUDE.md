@@ -94,11 +94,33 @@ zig run test_harness_generic.zig -lc -- --show-output "test" "C-x" "C-c"
 
 **方針**: ハーネスは「動作確認の自動化」が目的。ハーネスが使えなければ手動テストに戻ってしまう。ハーネスを常に改善し続けること。
 
+**重要：新規キーバインドを追加したら必ずハーネスにも追加すること**
+
+zeに新しいキーバインド（例：C-/、M-delete等）を実装したら、**必ず同時に** `test_harness_generic.zig` の `parseKeySequence()` 関数にそのキーのサポートを追加してください。
+
+これを守らないと：
+- ❌ 統合テストでその機能をテストできない
+- ❌ リグレッションを見逃す可能性がある
+- ❌ 後で気づいて慌てて追加することになる
+
+**手順**：
+1. zeのeditor.zigに新しいキーバインドを追加
+2. test_harness_generic.zigの`parseKeySequence()`にそのキーのパース処理を追加
+3. 両方を同じコミットに含める
+
+**例**：C-/（Redo）を追加する場合
+```zig
+// test_harness_generic.zig
+else if (char == '/' or char == '_')
+    31 // C-/ と C-_ は 0x1f (31)
+```
+
 **特殊キーの指定方法**：
-- `C-<char>`: Ctrl+文字（例: `C-x`, `C-s`, `C-g`）
-- `M-<char>`: Alt+文字（例: `M-f`, `M-b`）
+- `C-<char>`: Ctrl+文字（例: `C-x`, `C-s`, `C-g`, `C-/`, `C-@`）
+- `M-<char>`: Alt+文字（例: `M-f`, `M-b`, `M-w`, `M-delete`）
+- `C-Space`: Ctrl+Space（マーク設定）
 - `Enter`, `Backspace`, `Tab`, `Escape`: 各特殊キー
-- `Up`, `Down`, `Left`, `Right`: 矢印キー
+- `Up`, `Down`, `Left`, `Right`, `Home`, `End`: 矢印キー、ナビゲーション
 - 通常文字列: そのまま入力（例: `"hello world"`）
 
 **オプション**：
