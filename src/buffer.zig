@@ -299,16 +299,43 @@ pub const Buffer = struct {
     }
 
     pub fn saveToFile(self: *Buffer, path: []const u8) !void {
-        var file = try std.fs.cwd().createFile(path, .{});
-        defer file.close();
+        // アトミックセーブ: 一時ファイルに書き込んでから rename
+        const tmp_path = try std.fmt.allocPrint(self.allocator, "{s}.tmp", .{path});
+        defer self.allocator.free(tmp_path);
 
-        for (self.pieces.items) |piece| {
-            const data = switch (piece.source) {
-                .original => self.original[piece.start .. piece.start + piece.length],
-                .add => self.add_buffer.items[piece.start .. piece.start + piece.length],
-            };
-            try file.writeAll(data);
+        // 元のファイルのパーミッションを取得（存在する場合）
+        var original_mode: ?std.posix.mode_t = null;
+        if (std.fs.cwd().statFile(path)) |stat| {
+            original_mode = stat.mode;
+        } else |_| {
+            // ファイルが存在しない場合は新規作成なので、デフォルトパーミッション
         }
+
+        // 一時ファイルに書き込み
+        {
+            var file = try std.fs.cwd().createFile(tmp_path, .{});
+            errdefer {
+                file.close();
+                std.fs.cwd().deleteFile(tmp_path) catch {};
+            }
+            defer file.close();
+
+            for (self.pieces.items) |piece| {
+                const data = switch (piece.source) {
+                    .original => self.original[piece.start .. piece.start + piece.length],
+                    .add => self.add_buffer.items[piece.start .. piece.start + piece.length],
+                };
+                try file.writeAll(data);
+            }
+
+            // 元のファイルのパーミッションを一時ファイルに適用
+            if (original_mode) |mode| {
+                try file.chmod(mode);
+            }
+        }
+
+        // 成功したら rename で置き換え（アトミック操作）
+        try std.fs.cwd().rename(tmp_path, path);
     }
 
     pub fn len(self: *const Buffer) usize {
