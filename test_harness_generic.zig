@@ -178,7 +178,10 @@ pub fn main() !void {
             const bytes = try parseKeySequence(allocator, seq);
             defer allocator.free(bytes);
 
-            _ = try master_file.writeAll(bytes);
+            master_file.writeAll(bytes) catch |err| {
+                std.debug.print("Warning: Failed to send key (process may have exited): {}\n", .{err});
+                break; // プロセスが終了した場合はループを抜ける
+            };
             std.Thread.sleep(delay_ms * std.time.ns_per_ms);
 
             // 各キー送信後に出力をキャプチャ（常にバッファを空にする）

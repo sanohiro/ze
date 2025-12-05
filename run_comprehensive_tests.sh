@@ -104,7 +104,7 @@ echo
 echo "=== カテゴリ 10: エッジケース ==="
 run_test "10.1 空ファイル" --file=/tmp/test_empty.txt "test" "C-x" "C-c" "n"
 run_test "10.2 最終行での Enter" --file=/tmp/test_cursor_input.txt "Down" "Down" "Down" "Enter" "C-x" "C-c" "n"
-run_test "10.3 先頭での Backspace" --file=/tmp/test_cursor_input.txt "Backspace" "C-x" "C-c" "n"
+run_test "10.3 先頭での Backspace" --file=/tmp/test_cursor_input.txt "Backspace" "C-x" "C-c"
 run_test "10.4 長いファイルの末尾" --file=/tmp/test_999_lines.txt "C-e" "X" "C-x" "C-c" "n"
 
 echo
