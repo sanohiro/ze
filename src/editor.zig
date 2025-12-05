@@ -1147,6 +1147,86 @@ pub const Editor = struct {
                             },
                         }
                     },
+                    .codepoint => |cp| {
+                        // IMEがオンの状態でもy/n/!/qを受け付ける（全角も半角に変換して処理）
+                        const normalized = normalizeCodepoint(cp);
+                        switch (normalized) {
+                            'y', 'Y' => {
+                                // この箇所を置換して次へ
+                                try self.replaceCurrentMatch();
+                                const search = self.replace_search orelse {
+                                    self.mode = .normal;
+                                    self.view.setError("Error: no search string");
+                                    return;
+                                };
+                                // 次の一致を検索
+                                const found = try self.findNextMatch(search, self.view.getCursorBufferPos());
+                                if (!found) {
+                                    // これ以上一致がない
+                                    self.mode = .normal;
+                                    var msg_buf: [128]u8 = undefined;
+                                    const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace done";
+                                    self.view.setError(msg);
+                                } else {
+                                    // 次のマッチが見つかった - 確認プロンプトを表示
+                                    self.view.setError("Replace? (y)es (n)ext (!)all (q)uit");
+                                }
+                            },
+                            'n', 'N', ' ' => {
+                                // スキップして次へ
+                                const search = self.replace_search orelse {
+                                    self.mode = .normal;
+                                    self.view.setError("Error: no search string");
+                                    return;
+                                };
+                                // 現在の一致をスキップ（カーソルを一致の後ろに移動）
+                                const current_pos = self.view.getCursorBufferPos();
+                                const found = try self.findNextMatch(search, current_pos + 1);
+                                if (!found) {
+                                    // これ以上一致がない
+                                    self.mode = .normal;
+                                    var msg_buf: [128]u8 = undefined;
+                                    const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace done";
+                                    self.view.setError(msg);
+                                } else {
+                                    // 次のマッチが見つかった - 確認プロンプトを表示
+                                    self.view.setError("Replace? (y)es (n)ext (!)all (q)uit");
+                                }
+                            },
+                            '!' => {
+                                // 残りすべてを置換
+                                try self.replaceCurrentMatch();
+                                const search = self.replace_search orelse {
+                                    self.mode = .normal;
+                                    self.view.setError("Error: no search string");
+                                    return;
+                                };
+                                // 残りすべてを置換
+                                var pos = self.view.getCursorBufferPos();
+                                while (true) {
+                                    const found = try self.findNextMatch(search, pos);
+                                    if (!found) break;
+                                    try self.replaceCurrentMatch();
+                                    pos = self.view.getCursorBufferPos();
+                                }
+                                self.mode = .normal;
+                                var msg_buf: [128]u8 = undefined;
+                                const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace done";
+                                self.view.setError(msg);
+                            },
+                            'q', 'Q' => {
+                                // 終了
+                                self.mode = .normal;
+                                var msg_buf: [128]u8 = undefined;
+                                const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace cancelled";
+                                self.view.setError(msg);
+                            },
+                            else => {
+                                // 無効な入力
+                                self.view.setError("Please answer: (y)es, (n)ext, (!)all, (q)uit");
+                            },
+                        }
+                    },
                     .ctrl => |c| {
                         // Ctrl-Gで終了
                         if (c == 'g') {
