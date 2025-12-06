@@ -1595,129 +1595,6 @@ pub const Editor = struct {
         }
     }
 
-    fn forwardWord(self: *Editor) !void {
-        const pos = self.view.getCursorBufferPos();
-
-        // PieceIteratorで単語終端を探す
-        var iter = PieceIterator.init(&self.buffer);
-        iter.seek(pos);
-
-        // 空白をスキップ
-        var non_ws_start: ?usize = null;
-        while (iter.next()) |ch| {
-            if (!std.ascii.isWhitespace(ch)) {
-                non_ws_start = iter.global_pos - 1;
-                break;
-            }
-        }
-
-        // 空白しかない場合はEOFまで移動
-        if (non_ws_start == null) {
-            self.setCursorToPos(self.buffer.len());
-            return;
-        }
-
-        // non-whitespaceの開始位置から単語終端を探す
-        iter.seek(non_ws_start.?);
-        _ = iter.next(); // 最初の文字をスキップ
-
-        // 単語をスキップ
-        while (iter.next()) |ch| {
-            if (std.ascii.isWhitespace(ch)) break;
-        }
-
-        const new_pos = iter.global_pos;
-
-        // カーソル位置を直接計算して設定
-        self.setCursorToPos(new_pos);
-    }
-
-    fn backwardWord(self: *Editor) !void {
-        const pos = self.view.getCursorBufferPos();
-        if (pos == 0) return;
-
-        // パフォーマンス最適化: 現在位置から適度な範囲だけ走査
-        // 大きなファイルでも高速に動作するように、最大1000バイト程度を見る
-        const scan_distance: usize = 1000;
-        const start_pos = if (pos > scan_distance) pos - scan_distance else 0;
-
-        var iter = PieceIterator.init(&self.buffer);
-        if (start_pos > 0) {
-            iter.seek(start_pos);
-        }
-
-        var new_pos: usize = 0;
-        var in_word = false;
-        var last_word_start: usize = 0;
-
-        // start_posから現在位置まで走査して単語境界を記録
-        while (iter.global_pos < pos) {
-            const ch = iter.next() orelse break;
-            const is_ws = std.ascii.isWhitespace(ch);
-
-            if (!is_ws and !in_word) {
-                // 単語開始
-                last_word_start = iter.global_pos - 1;
-                in_word = true;
-            } else if (is_ws and in_word) {
-                // 単語終了
-                in_word = false;
-            }
-        }
-
-        // 現在位置が単語中なら、その単語の開始位置へ
-        // そうでなければ、直前の単語の開始位置へ
-        new_pos = last_word_start;
-
-        // カーソル位置を直接計算して設定
-        self.setCursorToPos(new_pos);
-    }
-
-    fn deleteWord(self: *Editor) !void {
-        const current_line = self.getCurrentLine();
-        const pos = self.view.getCursorBufferPos();
-        if (pos >= self.buffer.len()) return;
-
-        // PieceIteratorで単語終端を探す
-        var iter = PieceIterator.init(&self.buffer);
-        iter.seek(pos);
-
-        // 空白をスキップ
-        while (iter.next()) |ch| {
-            if (!std.ascii.isWhitespace(ch)) {
-                // 1文字戻る
-                if (iter.global_pos > 0) {
-                    iter.global_pos -= 1;
-                }
-                break;
-            }
-        }
-
-        // 単語をスキップ
-        while (iter.next()) |ch| {
-            if (std.ascii.isWhitespace(ch)) break;
-        }
-
-        const end_pos = iter.global_pos;
-        const count = end_pos - pos;
-        if (count > 0) {
-            const deleted = try self.extractText(pos, count);
-            errdefer self.allocator.free(deleted);
-
-            try self.buffer.delete(pos, count);
-            errdefer self.buffer.insertSlice(pos, deleted) catch unreachable; // rollback失敗は致命的
-            try self.recordDelete(pos, deleted, pos); // 編集前のカーソル位置を記録
-
-            self.modified = true;
-            // 改行削除の場合は末尾まで再描画
-            if (std.mem.indexOf(u8, deleted, "\n") != null) {
-                self.view.markDirty(current_line, null);
-            } else {
-                self.view.markDirty(current_line, current_line);
-            }
-            self.allocator.free(deleted);
-        }
-    }
 
     // マークを設定/解除（Ctrl+Space）
     fn setMark(self: *Editor) void {
@@ -2159,5 +2036,281 @@ pub const Editor = struct {
 
         // 全画面再描画
         self.view.markFullRedraw();
+    }
+
+    // ========================================
+    // 単語移動・削除（日本語対応）
+    // ========================================
+
+    /// 文字種を判定（単語境界の検出用）
+    const CharType = enum {
+        alnum, // 英数字・アンダースコア
+        hiragana, // ひらがな
+        katakana, // カタカナ
+        kanji, // 漢字
+        space, // 空白
+        other, // その他（記号など）
+    };
+
+    fn getCharType(cp: u21) CharType {
+        // 英数字とアンダースコア
+        if ((cp >= 'a' and cp <= 'z') or
+            (cp >= 'A' and cp <= 'Z') or
+            (cp >= '0' and cp <= '9') or
+            cp == '_')
+        {
+            return .alnum;
+        }
+
+        // 空白文字
+        if (cp == ' ' or cp == '\t' or cp == '\n' or cp == '\r') {
+            return .space;
+        }
+
+        // ひらがな（U+3040〜U+309F）
+        if (cp >= 0x3040 and cp <= 0x309F) {
+            return .hiragana;
+        }
+
+        // カタカナ（U+30A0〜U+30FF）
+        if (cp >= 0x30A0 and cp <= 0x30FF) {
+            return .katakana;
+        }
+
+        // 漢字（CJK統合漢字）
+        // U+4E00〜U+9FFF: CJK Unified Ideographs
+        // U+3400〜U+4DBF: CJK Unified Ideographs Extension A
+        if ((cp >= 0x4E00 and cp <= 0x9FFF) or
+            (cp >= 0x3400 and cp <= 0x4DBF))
+        {
+            return .kanji;
+        }
+
+        // その他の記号
+        return .other;
+    }
+
+    /// 前方の単語へ移動（M-f）
+    fn forwardWord(self: *Editor) !void {
+        const start_pos = self.view.getCursorBufferPos();
+        const buf_len = self.buffer.len();
+        if (start_pos >= buf_len) return;
+
+        var iter = PieceIterator.init(&self.buffer);
+        iter.seek(start_pos);
+
+        var pos = start_pos;
+        var prev_type: ?CharType = null;
+
+        // 現在位置の文字種を取得
+        while (iter.next()) |byte| {
+            const cp = blk: {
+                if (byte < 0x80) {
+                    // ASCII
+                    break :blk @as(u21, byte);
+                } else {
+                    // UTF-8マルチバイト
+                    var utf8_buf: [4]u8 = undefined;
+                    utf8_buf[0] = byte;
+                    var utf8_len: usize = 1;
+
+                    // 残りのバイトを読む
+                    const expected_len = std.unicode.utf8ByteSequenceLength(byte) catch {
+                        pos += 1;
+                        continue;
+                    };
+
+                    while (utf8_len < expected_len) : (utf8_len += 1) {
+                        const next_byte = iter.next() orelse break;
+                        utf8_buf[utf8_len] = next_byte;
+                    }
+
+                    if (utf8_len != expected_len) {
+                        pos += utf8_len;
+                        continue;
+                    }
+
+                    break :blk std.unicode.utf8Decode(utf8_buf[0..expected_len]) catch {
+                        pos += expected_len;
+                        continue;
+                    };
+                }
+            };
+
+            const current_type = getCharType(cp);
+
+            if (prev_type) |pt| {
+                // 文字種が変わったら停止（ただし空白は飛ばす）
+                if (current_type != .space and pt != .space and current_type != pt) {
+                    break;
+                }
+            }
+
+            prev_type = current_type;
+            pos += if (cp < 0x80) 1 else std.unicode.utf8CodepointSequenceLength(cp) catch 1;
+
+            // 空白から非空白に変わる場合、その位置で停止
+            if (prev_type == .space and current_type != .space) {
+                break;
+            }
+        }
+
+        // カーソル位置を更新
+        if (pos > start_pos) {
+            self.setCursorToPos(pos);
+        }
+    }
+
+    /// 後方の単語へ移動（M-b）
+    fn backwardWord(self: *Editor) !void {
+        const start_pos = self.view.getCursorBufferPos();
+        if (start_pos == 0) return;
+
+        // 後方移動のため、逆方向に文字を読む
+        var pos = start_pos;
+        var prev_type: ?CharType = null;
+        var found_non_space = false;
+
+        while (pos > 0) {
+            // 1文字戻る（UTF-8考慮）
+            const char_start = blk: {
+                var test_pos = if (pos > 0) pos - 1 else 0;
+                while (test_pos > 0) : (test_pos -= 1) {
+                    var iter = PieceIterator.init(&self.buffer);
+                    iter.seek(test_pos);
+                    const byte = iter.next() orelse break;
+                    // UTF-8の先頭バイトかチェック
+                    if (byte < 0x80 or (byte & 0xC0) == 0xC0) {
+                        break :blk test_pos;
+                    }
+                }
+                break :blk 0;
+            };
+
+            // 文字を読み取る
+            var iter = PieceIterator.init(&self.buffer);
+            iter.seek(char_start);
+            const first_byte = iter.next() orelse break;
+
+            const cp = blk: {
+                if (first_byte < 0x80) {
+                    break :blk @as(u21, first_byte);
+                } else {
+                    var utf8_buf: [4]u8 = undefined;
+                    utf8_buf[0] = first_byte;
+                    var utf8_len: usize = 1;
+
+                    const expected_len = std.unicode.utf8ByteSequenceLength(first_byte) catch break :blk @as(u21, first_byte);
+
+                    while (utf8_len < expected_len) : (utf8_len += 1) {
+                        const next_byte = iter.next() orelse break;
+                        utf8_buf[utf8_len] = next_byte;
+                    }
+
+                    if (utf8_len != expected_len) break :blk @as(u21, first_byte);
+
+                    break :blk std.unicode.utf8Decode(utf8_buf[0..expected_len]) catch @as(u21, first_byte);
+                }
+            };
+
+            const current_type = getCharType(cp);
+
+            // 空白をスキップ
+            if (!found_non_space and current_type == .space) {
+                pos = char_start;
+                continue;
+            }
+
+            found_non_space = true;
+
+            if (prev_type) |pt| {
+                // 文字種が変わったら停止
+                if (current_type != pt) {
+                    break;
+                }
+            }
+
+            prev_type = current_type;
+            pos = char_start;
+        }
+
+        // カーソル位置を更新
+        if (pos < start_pos) {
+            self.setCursorToPos(pos);
+        }
+    }
+
+    /// カーソル位置から次の単語までを削除（M-d）
+    fn deleteWord(self: *Editor) !void {
+        const start_pos = self.view.getCursorBufferPos();
+        const buf_len = self.buffer.len();
+        if (start_pos >= buf_len) return;
+
+        // forwardWordと同じロジックで終了位置を見つける
+        var iter = PieceIterator.init(&self.buffer);
+        iter.seek(start_pos);
+
+        var pos = start_pos;
+        var prev_type: ?CharType = null;
+
+        while (iter.next()) |byte| {
+            const cp = blk: {
+                if (byte < 0x80) {
+                    break :blk @as(u21, byte);
+                } else {
+                    var utf8_buf: [4]u8 = undefined;
+                    utf8_buf[0] = byte;
+                    var utf8_len: usize = 1;
+
+                    const expected_len = std.unicode.utf8ByteSequenceLength(byte) catch {
+                        pos += 1;
+                        continue;
+                    };
+
+                    while (utf8_len < expected_len) : (utf8_len += 1) {
+                        const next_byte = iter.next() orelse break;
+                        utf8_buf[utf8_len] = next_byte;
+                    }
+
+                    if (utf8_len != expected_len) {
+                        pos += utf8_len;
+                        continue;
+                    }
+
+                    break :blk std.unicode.utf8Decode(utf8_buf[0..expected_len]) catch {
+                        pos += expected_len;
+                        continue;
+                    };
+                }
+            };
+
+            const current_type = getCharType(cp);
+
+            if (prev_type) |pt| {
+                if (current_type != .space and pt != .space and current_type != pt) {
+                    break;
+                }
+            }
+
+            prev_type = current_type;
+            pos += if (cp < 0x80) 1 else std.unicode.utf8CodepointSequenceLength(cp) catch 1;
+
+            if (prev_type == .space and current_type != .space) {
+                break;
+            }
+        }
+
+        // 削除する範囲が存在する場合のみ削除
+        if (pos > start_pos) {
+            const delete_len = pos - start_pos;
+            const deleted_text = try self.extractText(start_pos, delete_len);
+            defer self.allocator.free(deleted_text);
+
+            try self.buffer.delete(start_pos, delete_len);
+            try self.recordDelete(start_pos, deleted_text, start_pos);
+
+            self.modified = true;
+            self.view.markFullRedraw();
+        }
     }
 };
