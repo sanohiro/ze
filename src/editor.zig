@@ -1533,14 +1533,16 @@ pub const Editor = struct {
     }
 
     fn insertChar(self: *Editor, ch: u8) !void {
+        const buffer = self.getCurrentBufferContent();
+        const buffer_state = self.getCurrentBuffer();
         const current_line = self.getCurrentLine();
         const pos = self.getCurrentView().getCursorBufferPos();
 
         // バッファ変更を先に実行（失敗した場合はundoログに記録しない）
-        try self.buffer.insert(pos, ch);
-        errdefer self.buffer.delete(pos, 1) catch unreachable; // rollback失敗は致命的
+        try buffer.insert(pos, ch);
+        errdefer buffer.delete(pos, 1) catch unreachable; // rollback失敗は致命的
         try self.recordInsert(pos, &[_]u8{ch}, pos); // 編集前のカーソル位置を記録
-        self.modified = true;
+        buffer_state.modified = true;
 
         if (ch == '\n') {
             // 改行: 現在行以降すべてdirty
@@ -1566,6 +1568,8 @@ pub const Editor = struct {
     }
 
     fn insertCodepoint(self: *Editor, codepoint: u21) !void {
+        const buffer = self.getCurrentBufferContent();
+        const buffer_state = self.getCurrentBuffer();
         const current_line = self.getCurrentLine();
 
         // UTF-8にエンコード
@@ -1575,10 +1579,10 @@ pub const Editor = struct {
         const pos = self.getCurrentView().getCursorBufferPos();
 
         // バッファ変更を先に実行
-        try self.buffer.insertSlice(pos, buf[0..len]);
-        errdefer self.buffer.delete(pos, len) catch unreachable; // rollback失敗は致命的
+        try buffer.insertSlice(pos, buf[0..len]);
+        errdefer buffer.delete(pos, len) catch unreachable; // rollback失敗は致命的
         try self.recordInsert(pos, buf[0..len], pos); // 編集前のカーソル位置を記録
-        self.modified = true;
+        buffer_state.modified = true;
 
         if (codepoint == '\n') {
             // 改行: 現在行以降すべてdirty
@@ -1655,12 +1659,14 @@ pub const Editor = struct {
     }
 
     fn backspace(self: *Editor) !void {
+        const buffer = self.getCurrentBufferContent();
+        const buffer_state = self.getCurrentBuffer();
         const current_line = self.getCurrentLine();
         const pos = self.getCurrentView().getCursorBufferPos();
         if (pos == 0) return;
 
         // 削除するgrapheme clusterのバイト数と幅を取得
-        var iter = PieceIterator.init(&self.buffer);
+        var iter = PieceIterator.init(buffer);
         var char_start: usize = 0;
         var char_width: usize = 1;
         var char_len: usize = 1;
@@ -1685,11 +1691,11 @@ pub const Editor = struct {
         // 改行削除の場合、削除後のカーソル位置を計算
         const is_newline = std.mem.indexOf(u8, deleted, "\n") != null;
 
-        try self.buffer.delete(char_start, char_len);
-        errdefer self.buffer.insertSlice(char_start, deleted) catch unreachable; // rollback失敗は致命的
+        try buffer.delete(char_start, char_len);
+        errdefer buffer.insertSlice(char_start, deleted) catch unreachable; // rollback失敗は致命的
         try self.recordDelete(char_start, deleted, pos); // 編集前のカーソル位置を記録
 
-        self.modified = true;
+        buffer_state.modified = true;
         // 改行削除の場合は末尾まで再描画
         if (is_newline) {
             self.getCurrentView().markDirty(current_line, null);
@@ -1707,9 +1713,9 @@ pub const Editor = struct {
                 // 改行削除の場合、削除位置（char_start）が新しいカーソル位置
                 // そこまでの行内の表示幅を計算
                 const new_line = self.getCurrentLine();
-                if (self.buffer.getLineStart(self.getCurrentView().top_line + new_line)) |line_start| {
+                if (buffer.getLineStart(self.getCurrentView().top_line + new_line)) |line_start| {
                     var x: usize = 0;
-                    var width_iter = PieceIterator.init(&self.buffer);
+                    var width_iter = PieceIterator.init(buffer);
                     width_iter.seek(line_start);
                     while (width_iter.global_pos < char_start) {
                         const cluster = width_iter.nextGraphemeCluster() catch break;
