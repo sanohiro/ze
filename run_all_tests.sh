@@ -146,6 +146,10 @@ run_test "13.3 単語削除 (M-d)" --file=test_data/test_words.txt "M-d" "C-x" "
 run_test "13.4 後方単語削除 (M-delete)" --file=test_data/test_words.txt "M-f" "M-delete" "C-x" "C-c" "n"
 run_test "13.5 複数単語前進" --file=test_data/test_words.txt "M-f" "M-f" "M-f" "X" "C-x" "C-c" "n"
 run_test "13.6 行末から単語後退" --file=test_data/test_words.txt "End" "M-b" "M-b" "X" "C-x" "C-c" "n"
+run_test "13.7 日本語単語前進 (M-f)" --file=test_data/test_words_ja.txt "M-f" "X" "C-x" "C-c" "n"
+run_test "13.8 日本語単語後退 (M-b)" --file=test_data/test_words_ja.txt "End" "M-b" "X" "C-x" "C-c" "n"
+run_test "13.9 日本語単語削除 (M-d)" --file=test_data/test_words_ja.txt "M-d" "C-x" "C-c" "n"
+run_test "13.10 混在文字の単語移動" --file=test_data/test_words_ja.txt "M-f" "M-f" "M-f" "X" "C-x" "C-c" "n"
 
 echo
 echo "=== カテゴリ 14: Emacs スタイルカーソル移動 ==="
