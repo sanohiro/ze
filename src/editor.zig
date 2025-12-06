@@ -36,7 +36,9 @@ const EditorMode = enum {
     prefix_x, // C-xプレフィックス待ち
     prefix_r, // C-x rプレフィックス待ち（矩形選択コマンド）
     quit_confirm, // 終了確認中（y/n/cを待つ）
-    filename_input, // ファイル名入力中
+    filename_input, // ファイル名入力中（保存）
+    find_file_input, // ファイル名入力中（開く）
+    buffer_switch_input, // バッファ名入力中（切り替え）
     isearch_forward, // インクリメンタルサーチ（前方）
     isearch_backward, // インクリメンタルサーチ（後方）
     query_replace_input_search, // 置換：検索文字列入力中
@@ -293,6 +295,71 @@ pub const Editor = struct {
     /// 現在のバッファのBufferを取得
     pub fn getCurrentBufferContent(self: *Editor) *Buffer {
         return &self.getCurrentBuffer().buffer;
+    }
+
+    /// 新しいバッファを作成してリストに追加
+    pub fn createNewBuffer(self: *Editor) !*BufferState {
+        const new_buffer = try BufferState.init(self.allocator, self.next_buffer_id);
+        try self.buffers.append(self.allocator, new_buffer);
+        self.next_buffer_id += 1;
+        return new_buffer;
+    }
+
+    /// 指定されたIDのバッファを検索
+    fn findBufferById(self: *Editor, buffer_id: usize) ?*BufferState {
+        for (self.buffers.items) |buf| {
+            if (buf.id == buffer_id) return buf;
+        }
+        return null;
+    }
+
+    /// 指定されたファイル名のバッファを検索
+    fn findBufferByFilename(self: *Editor, filename: []const u8) ?*BufferState {
+        for (self.buffers.items) |buf| {
+            if (buf.filename) |buf_filename| {
+                if (std.mem.eql(u8, buf_filename, filename)) return buf;
+            }
+        }
+        return null;
+    }
+
+    /// 現在のウィンドウを指定されたバッファに切り替え
+    pub fn switchToBuffer(self: *Editor, buffer_id: usize) !void {
+        const buffer_state = self.findBufferById(buffer_id) orelse return error.BufferNotFound;
+        const window = self.getCurrentWindow();
+
+        // Viewを更新
+        window.view.deinit(self.allocator);
+        window.view = View.init(self.allocator, &buffer_state.buffer);
+        window.buffer_id = buffer_id;
+    }
+
+    /// 指定されたバッファを閉じる（削除）
+    pub fn closeBuffer(self: *Editor, buffer_id: usize) !void {
+        // 最後のバッファは閉じられない
+        if (self.buffers.items.len == 1) return error.CannotCloseLastBuffer;
+
+        // バッファを検索して削除
+        for (self.buffers.items, 0..) |buf, i| {
+            if (buf.id == buffer_id) {
+                // このバッファを使用しているウィンドウを別のバッファに切り替え
+                for (self.windows.items) |*window| {
+                    if (window.buffer_id == buffer_id) {
+                        // 次のバッファに切り替え（削除するバッファ以外）
+                        const next_buffer = if (i > 0) self.buffers.items[i - 1] else self.buffers.items[1];
+                        window.view.deinit(self.allocator);
+                        window.view = View.init(self.allocator, &next_buffer.buffer);
+                        window.buffer_id = next_buffer.id;
+                    }
+                }
+
+                // バッファを削除
+                buf.deinit();
+                _ = self.buffers.orderedRemove(i);
+                return;
+            }
+        }
+        return error.BufferNotFound;
     }
 
     pub fn loadFile(self: *Editor, path: []const u8) !void {
@@ -780,6 +847,197 @@ pub const Editor = struct {
                 }
                 return;
             },
+            .find_file_input => {
+                // ファイルを開くためのファイル名入力モード
+                switch (key) {
+                    .char => |c| {
+                        // 通常文字を入力バッファに追加
+                        try self.input_buffer.append(self.allocator, c);
+                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Find file: {s}", .{self.input_buffer.items}) catch null;
+                        if (self.prompt_buffer) |prompt| {
+                            self.getCurrentView().setError(prompt);
+                        } else {
+                            self.getCurrentView().setError("Find file: ");
+                        }
+                    },
+                    .codepoint => |cp| {
+                        // UTF-8マルチバイト文字を処理
+                        var buf: [4]u8 = undefined;
+                        const len = std.unicode.utf8Encode(cp, &buf) catch return;
+                        try self.input_buffer.appendSlice(self.allocator, buf[0..len]);
+                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Find file: {s}", .{self.input_buffer.items}) catch null;
+                        if (self.prompt_buffer) |prompt| {
+                            self.getCurrentView().setError(prompt);
+                        }
+                    },
+                    .ctrl => |c| {
+                        switch (c) {
+                            'g' => {
+                                // C-g: キャンセル
+                                self.mode = .normal;
+                                self.input_buffer.clearRetainingCapacity();
+                                self.getCurrentView().clearError();
+                            },
+                            else => {},
+                        }
+                    },
+                    .backspace => {
+                        // バックスペース：最後の文字を削除
+                        if (self.input_buffer.items.len > 0) {
+                            _ = self.input_buffer.pop();
+                            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Find file: {s}", .{self.input_buffer.items}) catch null;
+                            if (self.prompt_buffer) |prompt| {
+                                self.getCurrentView().setError(prompt);
+                            } else {
+                                self.getCurrentView().setError("Find file: ");
+                            }
+                        }
+                    },
+                    .enter => {
+                        // Enter: ファイル名確定
+                        if (self.input_buffer.items.len > 0) {
+                            const filename = self.input_buffer.items;
+
+                            // 既存のバッファでこのファイルが開かれているか検索
+                            const existing_buffer = self.findBufferByFilename(filename);
+                            if (existing_buffer) |buf| {
+                                // 既に開かれている場合は、そのバッファに切り替え
+                                try self.switchToBuffer(buf.id);
+                            } else {
+                                // 新しいバッファを作成
+                                const new_buffer = try self.createNewBuffer();
+
+                                // ファイルを読み込む
+                                const file = std.fs.cwd().openFile(filename, .{}) catch |err| {
+                                    if (err == error.FileNotFound) {
+                                        // 新規ファイルとして扱う
+                                        new_buffer.filename = try self.allocator.dupe(u8, filename);
+                                        try self.switchToBuffer(new_buffer.id);
+                                        self.mode = .normal;
+                                        self.input_buffer.clearRetainingCapacity();
+                                        self.getCurrentView().clearError();
+                                        return;
+                                    } else {
+                                        self.getCurrentView().setError(@errorName(err));
+                                        self.mode = .normal;
+                                        self.input_buffer.clearRetainingCapacity();
+                                        return;
+                                    }
+                                };
+                                defer file.close();
+
+                                const stat = try file.stat();
+                                const content = try file.readToEndAlloc(self.allocator, stat.size);
+                                defer self.allocator.free(content);
+
+                                // バイナリファイルチェック
+                                const check_size = @min(content.len, 8192);
+                                var is_binary = false;
+                                for (content[0..check_size]) |byte| {
+                                    if (byte == 0) {
+                                        is_binary = true;
+                                        break;
+                                    }
+                                }
+
+                                if (is_binary) {
+                                    // バイナリファイルはバッファを削除して拒否
+                                    _ = try self.closeBuffer(new_buffer.id);
+                                    self.getCurrentView().setError("Cannot open binary file");
+                                    self.mode = .normal;
+                                    self.input_buffer.clearRetainingCapacity();
+                                    return;
+                                }
+
+                                // ファイル内容をバッファに挿入
+                                try new_buffer.buffer.insertSlice(0, content);
+                                new_buffer.filename = try self.allocator.dupe(u8, filename);
+                                new_buffer.modified = false;
+                                new_buffer.file_mtime = stat.mtime;
+
+                                // バッファに切り替え
+                                try self.switchToBuffer(new_buffer.id);
+                            }
+
+                            self.mode = .normal;
+                            self.input_buffer.clearRetainingCapacity();
+                            self.getCurrentView().clearError();
+                        }
+                    },
+                    else => {},
+                }
+                return;
+            },
+            .buffer_switch_input => {
+                // バッファ切り替えのための入力モード
+                switch (key) {
+                    .char => |c| {
+                        // 通常文字を入力バッファに追加
+                        try self.input_buffer.append(self.allocator, c);
+                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Switch to buffer: {s}", .{self.input_buffer.items}) catch null;
+                        if (self.prompt_buffer) |prompt| {
+                            self.getCurrentView().setError(prompt);
+                        } else {
+                            self.getCurrentView().setError("Switch to buffer: ");
+                        }
+                    },
+                    .codepoint => |cp| {
+                        // UTF-8マルチバイト文字を処理
+                        var buf: [4]u8 = undefined;
+                        const len = std.unicode.utf8Encode(cp, &buf) catch return;
+                        try self.input_buffer.appendSlice(self.allocator, buf[0..len]);
+                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Switch to buffer: {s}", .{self.input_buffer.items}) catch null;
+                        if (self.prompt_buffer) |prompt| {
+                            self.getCurrentView().setError(prompt);
+                        }
+                    },
+                    .ctrl => |c| {
+                        switch (c) {
+                            'g' => {
+                                // C-g: キャンセル
+                                self.mode = .normal;
+                                self.input_buffer.clearRetainingCapacity();
+                                self.getCurrentView().clearError();
+                            },
+                            else => {},
+                        }
+                    },
+                    .backspace => {
+                        // バックスペース：最後の文字を削除
+                        if (self.input_buffer.items.len > 0) {
+                            _ = self.input_buffer.pop();
+                            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Switch to buffer: {s}", .{self.input_buffer.items}) catch null;
+                            if (self.prompt_buffer) |prompt| {
+                                self.getCurrentView().setError(prompt);
+                            } else {
+                                self.getCurrentView().setError("Switch to buffer: ");
+                            }
+                        }
+                    },
+                    .enter => {
+                        // Enter: バッファ名確定
+                        if (self.input_buffer.items.len > 0) {
+                            const buffer_name = self.input_buffer.items;
+
+                            // バッファをファイル名で検索
+                            const found_buffer = self.findBufferByFilename(buffer_name);
+                            if (found_buffer) |buf| {
+                                try self.switchToBuffer(buf.id);
+                                self.mode = .normal;
+                                self.input_buffer.clearRetainingCapacity();
+                                self.getCurrentView().clearError();
+                            } else {
+                                // バッファが見つからない場合
+                                self.getCurrentView().setError("No such buffer");
+                                self.mode = .normal;
+                                self.input_buffer.clearRetainingCapacity();
+                            }
+                        }
+                    },
+                    else => {},
+                }
+                return;
+            },
             .isearch_forward, .isearch_backward => {
                 // インクリメンタルサーチモード
                 const is_forward = (self.mode == .isearch_forward);
@@ -901,6 +1159,12 @@ pub const Editor = struct {
                                 // C-g: キャンセル
                                 self.getCurrentView().clearError();
                             },
+                            'f' => {
+                                // C-x C-f: ファイルを開く
+                                self.mode = .find_file_input;
+                                self.input_buffer.clearRetainingCapacity();
+                                self.getCurrentView().setError("Find file: ");
+                            },
                             's' => {
                                 // C-x C-s: 保存
                                 const buffer_state = self.getCurrentBuffer();
@@ -947,6 +1211,59 @@ pub const Editor = struct {
                                 // C-x r: 矩形コマンドプレフィックス
                                 self.mode = .prefix_r;
                                 return;
+                            },
+                            'b' => {
+                                // C-x b: バッファ切り替え
+                                self.mode = .buffer_switch_input;
+                                self.input_buffer.clearRetainingCapacity();
+                                self.getCurrentView().setError("Switch to buffer: ");
+                            },
+                            'k' => {
+                                // C-x k: バッファを閉じる
+                                const buffer_state = self.getCurrentBuffer();
+                                if (buffer_state.modified) {
+                                    // 変更がある場合は確認
+                                    if (buffer_state.filename) |name| {
+                                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Buffer {s} modified; kill anyway? (y/n): ", .{name}) catch null;
+                                        if (self.prompt_buffer) |prompt| {
+                                            self.getCurrentView().setError(prompt);
+                                        } else {
+                                            self.getCurrentView().setError("Buffer modified; kill anyway? (y/n): ");
+                                        }
+                                    } else {
+                                        self.getCurrentView().setError("Buffer modified; kill anyway? (y/n): ");
+                                    }
+                                    // TODO: 確認モードを実装
+                                    self.getCurrentView().setError("Kill buffer not yet fully implemented");
+                                } else {
+                                    // 変更がない場合は直接閉じる
+                                    const buffer_id = buffer_state.id;
+                                    self.closeBuffer(buffer_id) catch |err| {
+                                        self.getCurrentView().setError(@errorName(err));
+                                    };
+                                }
+                            },
+                            '2' => {
+                                // C-x 2: 横分割（上下に分割）
+                                self.getCurrentView().setError("Split window not yet implemented");
+                            },
+                            '3' => {
+                                // C-x 3: 縦分割（左右に分割）
+                                self.getCurrentView().setError("Split window not yet implemented");
+                            },
+                            'o' => {
+                                // C-x o: 次のウィンドウに移動
+                                if (self.windows.items.len > 1) {
+                                    self.current_window_idx = (self.current_window_idx + 1) % self.windows.items.len;
+                                }
+                            },
+                            '0' => {
+                                // C-x 0: 現在のウィンドウを閉じる
+                                if (self.windows.items.len > 1) {
+                                    self.getCurrentView().setError("Close window not yet implemented");
+                                } else {
+                                    self.getCurrentView().setError("Attempt to delete sole window");
+                                }
                             },
                             else => {
                                 self.getCurrentView().setError("Unknown command");
