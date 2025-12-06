@@ -1329,6 +1329,8 @@ pub const Editor = struct {
                     'w' => try self.copyRegion(), // M-w 範囲コピー
                     '<' => self.view.moveToBufferStart(), // M-< ファイル先頭
                     '>' => self.view.moveToBufferEnd(&self.terminal), // M-> ファイル終端
+                    '{' => try self.backwardParagraph(), // M-{ 前の段落
+                    '}' => try self.forwardParagraph(), // M-} 次の段落
                     else => {},
                 }
             },
@@ -2312,5 +2314,134 @@ pub const Editor = struct {
             self.modified = true;
             self.view.markFullRedraw();
         }
+    }
+
+    /// 次の段落へ移動（M-}）
+    fn forwardParagraph(self: *Editor) !void {
+        const start_pos = self.view.getCursorBufferPos();
+        const buf_len = self.buffer.len();
+        if (start_pos >= buf_len) return;
+
+        var iter = PieceIterator.init(&self.buffer);
+        iter.seek(start_pos);
+
+        var pos = start_pos;
+        var in_blank_line = false;
+        var found_blank_section = false;
+
+        // 現在行の終わりまで移動
+        while (iter.next()) |byte| {
+            pos += 1;
+            if (byte == '\n') break;
+        }
+
+        // 空行のブロックを探し、その後の非空白行の先頭へ移動
+        while (pos < buf_len) {
+            iter = PieceIterator.init(&self.buffer);
+            iter.seek(pos);
+
+            // 現在行が空行かチェック
+            const line_start = pos;
+            var is_blank = true;
+            var line_end = pos;
+
+            while (iter.next()) |byte| {
+                line_end += 1;
+                if (byte == '\n') break;
+                if (byte != ' ' and byte != '\t' and byte != '\r') {
+                    is_blank = false;
+                }
+            }
+
+            if (is_blank) {
+                in_blank_line = true;
+                found_blank_section = true;
+                pos = line_end;
+            } else if (found_blank_section) {
+                // 空行の後の最初の非空白行に到達
+                self.setCursorToPos(line_start);
+                return;
+            } else {
+                pos = line_end;
+            }
+
+            if (pos >= buf_len) break;
+        }
+
+        // バッファの終端に到達
+        if (pos > start_pos) {
+            self.setCursorToPos(pos);
+        }
+    }
+
+    /// 前の段落へ移動（M-{）
+    fn backwardParagraph(self: *Editor) !void {
+        const start_pos = self.view.getCursorBufferPos();
+        if (start_pos == 0) return;
+
+        var pos = start_pos;
+        var found_blank_section = false;
+
+        // 現在行の先頭に移動
+        while (pos > 0) {
+            var iter = PieceIterator.init(&self.buffer);
+            iter.seek(pos - 1);
+            const byte = iter.next() orelse break;
+            if (byte == '\n') break;
+            pos -= 1;
+        }
+
+        // 1つ前の行から開始
+        if (pos > 0) pos -= 1;
+
+        // 空行のブロックを見つけて、その前の段落の先頭へ移動
+        while (pos > 0) {
+            // 現在行の先頭を見つける
+            var line_start = pos;
+            while (line_start > 0) {
+                var iter = PieceIterator.init(&self.buffer);
+                iter.seek(line_start - 1);
+                const byte = iter.next() orelse break;
+                if (byte == '\n') break;
+                line_start -= 1;
+            }
+
+            // 現在行が空行かチェック
+            var iter = PieceIterator.init(&self.buffer);
+            iter.seek(line_start);
+            var is_blank = true;
+
+            while (iter.next()) |byte| {
+                if (byte == '\n') break;
+                if (byte != ' ' and byte != '\t' and byte != '\r') {
+                    is_blank = false;
+                    break;
+                }
+            }
+
+            if (is_blank) {
+                found_blank_section = true;
+                if (line_start > 0) {
+                    pos = line_start - 1;
+                } else {
+                    break;
+                }
+            } else if (found_blank_section) {
+                // 空行の前の非空白行に到達
+                self.setCursorToPos(line_start);
+                return;
+            } else {
+                if (line_start > 0) {
+                    pos = line_start - 1;
+                } else {
+                    // バッファの先頭に到達
+                    self.setCursorToPos(0);
+                    return;
+                }
+            }
+        }
+
+        // バッファの先頭に到達
+        self.setCursorToPos(0);
     }
 };

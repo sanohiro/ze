@@ -150,6 +150,9 @@ run_test "13.7 日本語単語前進 (M-f)" --file=test_data/test_words_ja.txt "
 run_test "13.8 日本語単語後退 (M-b)" --file=test_data/test_words_ja.txt "End" "M-b" "X" "C-x" "C-c" "n"
 run_test "13.9 日本語単語削除 (M-d)" --file=test_data/test_words_ja.txt "M-d" "C-x" "C-c" "n"
 run_test "13.10 混在文字の単語移動" --file=test_data/test_words_ja.txt "M-f" "M-f" "M-f" "X" "C-x" "C-c" "n"
+run_test "13.11 段落前進 (M-})" --file=test_data/test_paragraphs.txt "M-}" "X" "C-x" "C-c" "n"
+run_test "13.12 段落後退 (M-{)" --file=test_data/test_paragraphs.txt "End" "M-{" "M-{" "X" "C-x" "C-c" "n"
+run_test "13.13 段落移動（複数前進）" --file=test_data/test_paragraphs.txt "M-}" "M-}" "X" "C-x" "C-c" "n"
 
 echo
 echo "=== カテゴリ 14: Emacs スタイルカーソル移動 ==="

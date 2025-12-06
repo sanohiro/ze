@@ -463,6 +463,8 @@ cmd         := builtin | external | alias
 | `M-v` | ページアップ |
 | `M-<` | バッファの先頭へ (beginning-of-buffer) ✅ |
 | `M->` | バッファの末尾へ (end-of-buffer) ✅ |
+| `M-{` | 前の段落へ (backward-paragraph) ✅ |
+| `M-}` | 次の段落へ (forward-paragraph) ✅ |
 | `C-l` | カーソルを中央に |
 
 ### Editing
