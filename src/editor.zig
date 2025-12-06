@@ -53,48 +53,156 @@ fn normalizeCodepoint(cp: u21) u21 {
     return cp;
 }
 
-pub const Editor = struct {
-    buffer: Buffer,
-    view: View,
-    terminal: Terminal,
+// ========================================
+// BufferState: バッファの内容と状態
+// ========================================
+pub const BufferState = struct {
+    id: usize, // バッファID（一意）
+    buffer: Buffer, // 実際のテキスト内容
+    filename: ?[]const u8, // ファイル名（nullなら*scratch*）
+    modified: bool, // 変更フラグ
+    readonly: bool, // 読み取り専用フラグ
+    file_mtime: ?i128, // ファイルの最終更新時刻
+    undo_stack: std.ArrayList(UndoEntry), // Undoスタック
+    redo_stack: std.ArrayList(UndoEntry), // Redoスタック
     allocator: std.mem.Allocator,
-    running: bool,
-    filename: ?[]const u8,
-    modified: bool,
-    readonly: bool, // ファイルが読み取り専用かどうか
-    file_mtime: ?i128, // ファイルの最終更新時刻（外部変更検知用）
-    mode: EditorMode, // エディタのモード
-    input_buffer: std.ArrayList(u8), // ミニバッファ入力用（検索文字列、ファイル名入力等）
-    quit_after_save: bool, // ファイル名入力後に終了するか
-    prompt_buffer: ?[]const u8, // allocPrintで作成したプロンプト文字列
-    mark_pos: ?usize, // 範囲選択のマーク位置（null=未設定）
-    kill_ring: ?[]const u8, // コピー/カットバッファ
-    rectangle_ring: ?std.ArrayList([]const u8), // 矩形コピー/カットバッファ（各行の文字列の配列）
-    search_start_pos: ?usize, // 検索開始時のカーソル位置（C-gでここに戻る）
-    last_search: ?[]const u8, // 最後に実行した検索文字列（検索繰り返し用）
-    replace_search: ?[]const u8, // 置換：検索文字列
-    replace_replacement: ?[]const u8, // 置換：置換文字列
-    replace_current_pos: ?usize, // 置換：現在の一致位置（バイトオフセット）
-    replace_match_count: usize, // 置換：見つかった一致の数
-    undo_stack: std.ArrayList(UndoEntry),
-    redo_stack: std.ArrayList(UndoEntry),
 
-    pub fn init(allocator: std.mem.Allocator) !Editor {
-        var editor = Editor{
+    pub fn init(allocator: std.mem.Allocator, id: usize) !*BufferState {
+        const self = try allocator.create(BufferState);
+        self.* = BufferState{
+            .id = id,
             .buffer = try Buffer.init(allocator),
-            .view = undefined, // 後で初期化
-            .terminal = try Terminal.init(allocator),
-            .allocator = allocator,
-            .running = true,
             .filename = null,
             .modified = false,
             .readonly = false,
             .file_mtime = null,
+            .undo_stack = undefined, // 後で初期化
+            .redo_stack = undefined, // 後で初期化
+            .allocator = allocator,
+        };
+        // ArrayListは構造体リテラル内で初期化できないため、後で初期化
+        // Zig 0.15では.{}で空のリストとして初期化
+        self.undo_stack = .{};
+        self.redo_stack = .{};
+        return self;
+    }
+
+    pub fn deinit(self: *BufferState) void {
+        self.buffer.deinit();
+        if (self.filename) |fname| {
+            self.allocator.free(fname);
+        }
+        for (self.undo_stack.items) |*entry| {
+            entry.deinit(self.allocator);
+        }
+        self.undo_stack.deinit(self.allocator);
+        for (self.redo_stack.items) |*entry| {
+            entry.deinit(self.allocator);
+        }
+        self.redo_stack.deinit(self.allocator);
+        self.allocator.destroy(self);
+    }
+};
+
+// ========================================
+// Window: 画面上の表示領域
+// ========================================
+pub const Window = struct {
+    id: usize, // ウィンドウID
+    buffer_id: usize, // 表示しているバッファのID
+    view: View, // 表示状態（カーソル位置、スクロールなど）
+    x: usize, // 画面上のX座標
+    y: usize, // 画面上のY座標
+    width: usize, // ウィンドウの幅
+    height: usize, // ウィンドウの高さ
+    mark_pos: ?usize, // 範囲選択のマーク位置
+
+    pub fn init(id: usize, buffer_id: usize, x: usize, y: usize, width: usize, height: usize) Window {
+        return Window{
+            .id = id,
+            .buffer_id = buffer_id,
+            .view = undefined, // 後で初期化
+            .x = x,
+            .y = y,
+            .width = width,
+            .height = height,
+            .mark_pos = null,
+        };
+    }
+
+    pub fn deinit(self: *Window, allocator: std.mem.Allocator) void {
+        self.view.deinit(allocator);
+    }
+};
+
+// ========================================
+// Editor: エディタ本体（複数バッファ・ウィンドウを管理）
+// ========================================
+pub const Editor = struct {
+    // グローバルリソース
+    terminal: Terminal,
+    allocator: std.mem.Allocator,
+    running: bool,
+
+    // バッファとウィンドウの管理
+    buffers: std.ArrayList(*BufferState), // 全バッファのリスト
+    windows: std.ArrayList(Window), // 全ウィンドウのリスト
+    current_window_idx: usize, // 現在アクティブなウィンドウのインデックス
+    next_buffer_id: usize, // 次に割り当てるバッファID
+    next_window_id: usize, // 次に割り当てるウィンドウID
+
+    // エディタ状態
+    mode: EditorMode,
+    input_buffer: std.ArrayList(u8), // ミニバッファ入力用
+    quit_after_save: bool,
+    prompt_buffer: ?[]const u8, // allocPrintで作成したプロンプト文字列
+
+    // グローバルバッファ（全バッファで共有）
+    kill_ring: ?[]const u8,
+    rectangle_ring: ?std.ArrayList([]const u8),
+
+    // 検索状態（グローバル）
+    search_start_pos: ?usize,
+    last_search: ?[]const u8,
+
+    // 置換状態（グローバル）
+    replace_search: ?[]const u8,
+    replace_replacement: ?[]const u8,
+    replace_current_pos: ?usize,
+    replace_match_count: usize,
+
+    pub fn init(allocator: std.mem.Allocator) !Editor {
+        // ターミナルを先に初期化（サイズ取得のため）
+        const terminal = try Terminal.init(allocator);
+
+        // 最初のバッファを作成（ID: 0）
+        const first_buffer = try BufferState.init(allocator, 0);
+
+        // バッファリストを作成
+        var buffers: std.ArrayList(*BufferState) = .{};
+        try buffers.append(allocator, first_buffer);
+
+        // 最初のウィンドウを作成（全画面）
+        var first_window = Window.init(0, 0, 0, 0, terminal.width, terminal.height - 1); // -1はステータスライン分
+        first_window.view = View.init(allocator, &first_buffer.buffer);
+
+        // ウィンドウリストを作成
+        var windows: std.ArrayList(Window) = .{};
+        try windows.append(allocator, first_window);
+
+        const editor = Editor{
+            .terminal = terminal,
+            .allocator = allocator,
+            .running = true,
+            .buffers = buffers,
+            .windows = windows,
+            .current_window_idx = 0,
+            .next_buffer_id = 1,
+            .next_window_id = 1,
             .mode = .normal,
-            .input_buffer = std.ArrayList(u8).initCapacity(allocator, 0) catch unreachable,
+            .input_buffer = .{},
             .quit_after_save = false,
             .prompt_buffer = null,
-            .mark_pos = null,
             .kill_ring = null,
             .rectangle_ring = null,
             .search_start_pos = null,
@@ -103,23 +211,28 @@ pub const Editor = struct {
             .replace_replacement = null,
             .replace_current_pos = null,
             .replace_match_count = 0,
-            .undo_stack = std.ArrayList(UndoEntry).initCapacity(allocator, 0) catch unreachable,
-            .redo_stack = std.ArrayList(UndoEntry).initCapacity(allocator, 0) catch unreachable,
         };
-
-        // bufferが最終的な位置に配置された後、viewを初期化
-        editor.view = View.init(allocator, &editor.buffer);
 
         return editor;
     }
 
     pub fn deinit(self: *Editor) void {
-        self.buffer.deinit();
-        self.view.deinit(self.allocator);
-        self.terminal.deinit();
-        if (self.filename) |fname| {
-            self.allocator.free(fname);
+        // 全ウィンドウを解放
+        for (self.windows.items) |*window| {
+            window.deinit(self.allocator);
         }
+        self.windows.deinit(self.allocator);
+
+        // 全バッファを解放
+        for (self.buffers.items) |buffer| {
+            buffer.deinit();
+        }
+        self.buffers.deinit(self.allocator);
+
+        // ターミナルを解放
+        self.terminal.deinit();
+
+        // グローバルバッファの解放
         if (self.kill_ring) |text| {
             self.allocator.free(text);
         }
@@ -129,9 +242,13 @@ pub const Editor = struct {
             }
             rect.deinit(self.allocator);
         }
+
+        // 検索状態の解放
         if (self.last_search) |search| {
             self.allocator.free(search);
         }
+
+        // 置換状態の解放
         if (self.replace_search) |search| {
             self.allocator.free(search);
         }
@@ -146,47 +263,77 @@ pub const Editor = struct {
 
         // 入力バッファのクリーンアップ
         self.input_buffer.deinit(self.allocator);
+    }
 
-        // Undo/Redoスタックのクリーンアップ
-        for (self.undo_stack.items) |entry| {
-            entry.deinit(self.allocator);
-        }
-        self.undo_stack.deinit(self.allocator);
+    // ========================================
+    // ヘルパーメソッド
+    // ========================================
 
-        for (self.redo_stack.items) |entry| {
-            entry.deinit(self.allocator);
+    /// 現在のウィンドウを取得
+    pub fn getCurrentWindow(self: *Editor) *Window {
+        return &self.windows.items[self.current_window_idx];
+    }
+
+    /// 現在のバッファを取得
+    pub fn getCurrentBuffer(self: *Editor) *BufferState {
+        const window = self.getCurrentWindow();
+        for (self.buffers.items) |buffer| {
+            if (buffer.id == window.buffer_id) {
+                return buffer;
+            }
         }
-        self.redo_stack.deinit(self.allocator);
+        unreachable; // ウィンドウが参照しているバッファは必ず存在する
+    }
+
+    /// 現在のビューを取得
+    pub fn getCurrentView(self: *Editor) *View {
+        return &self.getCurrentWindow().view;
+    }
+
+    /// 現在のバッファのBufferを取得
+    pub fn getCurrentBufferContent(self: *Editor) *Buffer {
+        return &self.getCurrentBuffer().buffer;
     }
 
     pub fn loadFile(self: *Editor, path: []const u8) !void {
-        self.buffer.deinit();
-        self.buffer = try Buffer.loadFromFile(self.allocator, path);
-        self.view.buffer = &self.buffer;
+        const buffer_state = self.getCurrentBuffer();
+        const view = self.getCurrentView();
+
+        // 古いバッファを解放
+        buffer_state.buffer.deinit();
+        buffer_state.buffer = try Buffer.loadFromFile(self.allocator, path);
+        view.buffer = &buffer_state.buffer;
 
         // View状態をリセット（新しいファイルを開いた時に前のカーソル位置が残らないように）
-        self.view.top_line = 0;
-        self.view.cursor_x = 0;
-        self.view.cursor_y = 0;
+        view.top_line = 0;
+        view.cursor_x = 0;
+        view.cursor_y = 0;
 
-        self.filename = try self.allocator.dupe(u8, path);
-        self.modified = false;
+        // 古いファイル名を解放して新しいファイル名を設定
+        if (buffer_state.filename) |old_name| {
+            self.allocator.free(old_name);
+        }
+        buffer_state.filename = try self.allocator.dupe(u8, path);
+        buffer_state.modified = false;
 
         // ファイルの最終更新時刻を記録（外部変更検知用）
         const file = try std.fs.cwd().openFile(path, .{});
         defer file.close();
         const stat = try file.stat();
-        self.file_mtime = stat.mtime;
+        buffer_state.file_mtime = stat.mtime;
     }
 
     pub fn saveFile(self: *Editor) !void {
-        if (self.filename) |path| {
+        const buffer_state = self.getCurrentBuffer();
+        const view = self.getCurrentView();
+
+        if (buffer_state.filename) |path| {
             // 外部変更チェック（新規ファイルの場合はスキップ）
-            if (self.file_mtime) |original_mtime| {
+            if (buffer_state.file_mtime) |original_mtime| {
                 const maybe_file = std.fs.cwd().openFile(path, .{}) catch |err| blk: {
                     // ファイルが存在しない場合は外部で削除された
                     if (err == error.FileNotFound) {
-                        self.view.error_msg = "警告: ファイルが外部で削除されています";
+                        view.error_msg = "警告: ファイルが外部で削除されています";
                         // 続行して保存する（再作成）
                         break :blk null;
                     } else {
@@ -198,20 +345,20 @@ pub const Editor = struct {
                     defer f.close();
                     const stat = try f.stat();
                     if (stat.mtime != original_mtime) {
-                        self.view.error_msg = "警告: ファイルが外部で変更されています！";
+                        view.error_msg = "警告: ファイルが外部で変更されています！";
                         // 続行して上書きする（ユーザーの編集を優先）
                     }
                 }
             }
 
-            try self.buffer.saveToFile(path);
-            self.modified = false;
+            try buffer_state.buffer.saveToFile(path);
+            buffer_state.modified = false;
 
             // 保存後に新しい mtime を記録
             const file = try std.fs.cwd().openFile(path, .{});
             defer file.close();
             const stat = try file.stat();
-            self.file_mtime = stat.mtime;
+            buffer_state.file_mtime = stat.mtime;
         }
     }
 
@@ -222,22 +369,24 @@ pub const Editor = struct {
             // 端末サイズ変更をチェック
             if (try self.terminal.checkResize()) {
                 // サイズが変わったら全画面再描画をマーク
-                self.view.markFullRedraw();
+                self.getCurrentView().markFullRedraw();
             }
 
             // カーソル位置をバッファ範囲内にクランプ（大量削除後の対策）
             self.clampCursorPosition();
 
-            try self.view.render(&self.terminal, self.modified, self.readonly, self.buffer.detected_line_ending, self.filename);
+            const buffer_state = self.getCurrentBuffer();
+            const buffer = self.getCurrentBufferContent();
+            try self.getCurrentView().render(&self.terminal, buffer_state.modified, buffer_state.readonly, buffer.detected_line_ending, buffer_state.filename);
 
             if (try input.readKey(stdin)) |key| {
                 // 何かキー入力があればエラーメッセージをクリア
-                self.view.clearError();
+                self.getCurrentView().clearError();
 
                 // キー処理でエラーが発生したらステータスバーに表示
                 self.processKey(key) catch |err| {
                     const err_name = @errorName(err);
-                    self.view.setError(err_name);
+                    self.getCurrentView().setError(err_name);
                 };
             }
         }
@@ -246,12 +395,13 @@ pub const Editor = struct {
     // バッファから指定範囲のテキストを取得（削除前に使用）
     // PieceIterator.seekを使ってO(pieces + len)で効率的に取得
     fn extractText(self: *Editor, pos: usize, len: usize) ![]u8 {
+        const buffer = self.getCurrentBufferContent();
         // 実際に読み取れるバイト数を計算（buffer末尾を超えないように）
-        const actual_len = @min(len, self.buffer.len() - pos);
+        const actual_len = @min(len, buffer.len() - pos);
         var result = try self.allocator.alloc(u8, actual_len);
         errdefer self.allocator.free(result);
 
-        var iter = PieceIterator.init(&self.buffer);
+        var iter = PieceIterator.init(buffer);
         iter.seek(pos); // O(pieces)で直接ジャンプ
 
         // actual_len分読み取る（保証されている）
@@ -269,12 +419,16 @@ pub const Editor = struct {
 
     // 現在のカーソル位置の行番号を取得（dirty tracking用）
     fn getCurrentLine(self: *const Editor) usize {
-        return self.view.top_line + self.view.cursor_y;
+        const view = &self.windows.items[self.current_window_idx].view;
+        return view.top_line + view.cursor_y;
     }
 
     // カーソル位置をバッファの有効範囲にクランプ（大量削除後の対策）
     fn clampCursorPosition(self: *Editor) void {
-        const total_lines = self.buffer.lineCount();
+        const buffer = self.getCurrentBufferContent();
+        const view = self.getCurrentView();
+
+        const total_lines = buffer.lineCount();
         if (total_lines == 0) return;
 
         // 端末サイズが0の場合は何もしない
@@ -283,28 +437,28 @@ pub const Editor = struct {
         const max_screen_lines = self.terminal.height - 1; // ステータスバー分を引く
 
         // top_lineが範囲外の場合は調整
-        if (self.view.top_line >= total_lines) {
+        if (view.top_line >= total_lines) {
             if (total_lines > max_screen_lines) {
-                self.view.top_line = total_lines - max_screen_lines;
+                view.top_line = total_lines - max_screen_lines;
             } else {
-                self.view.top_line = 0;
+                view.top_line = 0;
             }
-            self.view.markFullRedraw();
+            view.markFullRedraw();
         }
 
         // cursor_yが範囲外の場合は調整
-        const current_line = self.view.top_line + self.view.cursor_y;
+        const current_line = view.top_line + view.cursor_y;
         if (current_line >= total_lines) {
-            if (total_lines > self.view.top_line) {
-                self.view.cursor_y = total_lines - self.view.top_line - 1;
+            if (total_lines > view.top_line) {
+                view.cursor_y = total_lines - view.top_line - 1;
             } else {
-                self.view.cursor_y = 0;
+                view.cursor_y = 0;
             }
 
             // cursor_xも行末にクランプ
-            const line_width = self.view.getCurrentLineWidth();
-            if (self.view.cursor_x > line_width) {
-                self.view.cursor_x = line_width;
+            const line_width = view.getCurrentLineWidth();
+            if (view.cursor_x > line_width) {
+                view.cursor_x = line_width;
             }
         }
     }
@@ -314,11 +468,12 @@ pub const Editor = struct {
 
     // 編集操作を記録（差分ベース、連続挿入はマージ）
     fn recordInsert(self: *Editor, pos: usize, text: []const u8, cursor_pos_before_edit: usize) !void {
+        const buffer_state = self.getCurrentBuffer();
         const cursor_pos = cursor_pos_before_edit;
 
         // 連続挿入のコアレッシング: 直前の操作が連続する挿入ならマージ
-        if (self.undo_stack.items.len > 0) {
-            const last = &self.undo_stack.items[self.undo_stack.items.len - 1];
+        if (buffer_state.undo_stack.items.len > 0) {
+            const last = &buffer_state.undo_stack.items[buffer_state.undo_stack.items.len - 1];
             if (last.op == .insert) {
                 const last_ins = last.op.insert;
                 // 直前の挿入の直後に続く挿入ならマージ
@@ -334,30 +489,31 @@ pub const Editor = struct {
         }
 
         const text_copy = try self.allocator.dupe(u8, text);
-        try self.undo_stack.append(self.allocator, .{
+        try buffer_state.undo_stack.append(self.allocator, .{
             .op = .{ .insert = .{ .pos = pos, .text = text_copy } },
             .cursor_pos = cursor_pos,
         });
 
         // Undoスタックが上限を超えたら古いエントリを削除
-        if (self.undo_stack.items.len > MAX_UNDO_ENTRIES) {
-            const old_entry = self.undo_stack.orderedRemove(0);
+        if (buffer_state.undo_stack.items.len > MAX_UNDO_ENTRIES) {
+            const old_entry = buffer_state.undo_stack.orderedRemove(0);
             old_entry.deinit(self.allocator);
         }
 
         // Redoスタックをクリア
-        for (self.redo_stack.items) |entry| {
+        for (buffer_state.redo_stack.items) |entry| {
             entry.deinit(self.allocator);
         }
-        self.redo_stack.clearRetainingCapacity();
+        buffer_state.redo_stack.clearRetainingCapacity();
     }
 
     fn recordDelete(self: *Editor, pos: usize, text: []const u8, cursor_pos_before_edit: usize) !void {
+        const buffer_state = self.getCurrentBuffer();
         const cursor_pos = cursor_pos_before_edit;
 
         // 連続削除のコアレッシング: 直前の操作が連続する削除ならマージ
-        if (self.undo_stack.items.len > 0) {
-            const last = &self.undo_stack.items[self.undo_stack.items.len - 1];
+        if (buffer_state.undo_stack.items.len > 0) {
+            const last = &buffer_state.undo_stack.items[buffer_state.undo_stack.items.len - 1];
             if (last.op == .delete) {
                 const last_del = last.op.delete;
                 // Backspace: 削除位置が前に移動（pos == last_pos - text.len）
@@ -383,28 +539,30 @@ pub const Editor = struct {
         }
 
         const text_copy = try self.allocator.dupe(u8, text);
-        try self.undo_stack.append(self.allocator, .{
+        try buffer_state.undo_stack.append(self.allocator, .{
             .op = .{ .delete = .{ .pos = pos, .text = text_copy } },
             .cursor_pos = cursor_pos,
         });
 
         // Undoスタックが上限を超えたら古いエントリを削除
-        if (self.undo_stack.items.len > MAX_UNDO_ENTRIES) {
-            const old_entry = self.undo_stack.orderedRemove(0);
+        if (buffer_state.undo_stack.items.len > MAX_UNDO_ENTRIES) {
+            const old_entry = buffer_state.undo_stack.orderedRemove(0);
             old_entry.deinit(self.allocator);
         }
 
         // Redoスタックをクリア
-        for (self.redo_stack.items) |entry| {
+        for (buffer_state.redo_stack.items) |entry| {
             entry.deinit(self.allocator);
         }
-        self.redo_stack.clearRetainingCapacity();
+        buffer_state.redo_stack.clearRetainingCapacity();
     }
 
     fn undo(self: *Editor) !void {
-        if (self.undo_stack.items.len == 0) return;
+        const buffer_state = self.getCurrentBuffer();
+        const buffer = self.getCurrentBufferContent();
+        if (buffer_state.undo_stack.items.len == 0) return;
 
-        const entry = self.undo_stack.pop() orelse return;
+        const entry = buffer_state.undo_stack.pop() orelse return;
         defer entry.deinit(self.allocator);
 
         const saved_cursor = entry.cursor_pos;
@@ -415,24 +573,24 @@ pub const Editor = struct {
                 // insertの取り消し: deleteする
                 try self.buffer.delete(ins.pos, ins.text.len);
                 const text_copy = try self.allocator.dupe(u8, ins.text);
-                try self.redo_stack.append(self.allocator, .{
+                try buffer_state.redo_stack.append(self.allocator, .{
                     .op = .{ .insert = .{ .pos = ins.pos, .text = text_copy } },
-                    .cursor_pos = self.view.getCursorBufferPos(),
+                    .cursor_pos = self.getCurrentView().getCursorBufferPos(),
                 });
             },
             .delete => |del| {
                 // deleteの取り消し: insertする
                 try self.buffer.insertSlice(del.pos, del.text);
                 const text_copy = try self.allocator.dupe(u8, del.text);
-                try self.redo_stack.append(self.allocator, .{
+                try buffer_state.redo_stack.append(self.allocator, .{
                     .op = .{ .delete = .{ .pos = del.pos, .text = text_copy } },
-                    .cursor_pos = self.view.getCursorBufferPos(),
+                    .cursor_pos = self.getCurrentView().getCursorBufferPos(),
                 });
             },
         }
 
         // Undoスタックが空になったら元の状態に戻ったのでmodified=false
-        if (self.undo_stack.items.len == 0) {
+        if (buffer_state.undo_stack.items.len == 0) {
             self.modified = false;
         } else {
             self.modified = true;
@@ -446,9 +604,11 @@ pub const Editor = struct {
     }
 
     fn redo(self: *Editor) !void {
-        if (self.redo_stack.items.len == 0) return;
+        const buffer_state = self.getCurrentBuffer();
+        const buffer = self.getCurrentBufferContent();
+        if (buffer_state.redo_stack.items.len == 0) return;
 
-        const entry = self.redo_stack.pop() orelse return;
+        const entry = buffer_state.redo_stack.pop() orelse return;
         defer entry.deinit(self.allocator);
 
         const saved_cursor = entry.cursor_pos;
@@ -459,25 +619,25 @@ pub const Editor = struct {
                 // redoのinsert: もう一度insertする
                 try self.buffer.insertSlice(ins.pos, ins.text);
                 const text_copy = try self.allocator.dupe(u8, ins.text);
-                try self.undo_stack.append(self.allocator, .{
+                try buffer_state.undo_stack.append(self.allocator, .{
                     .op = .{ .insert = .{ .pos = ins.pos, .text = text_copy } },
-                    .cursor_pos = self.view.getCursorBufferPos(),
+                    .cursor_pos = self.getCurrentView().getCursorBufferPos(),
                 });
             },
             .delete => |del| {
                 // redoのdelete: もう一度deleteする
                 try self.buffer.delete(del.pos, del.text.len);
                 const text_copy = try self.allocator.dupe(u8, del.text);
-                try self.undo_stack.append(self.allocator, .{
+                try buffer_state.undo_stack.append(self.allocator, .{
                     .op = .{ .delete = .{ .pos = del.pos, .text = text_copy } },
-                    .cursor_pos = self.view.getCursorBufferPos(),
+                    .cursor_pos = self.getCurrentView().getCursorBufferPos(),
                 });
             },
         }
 
         // Undoスタックが空でなければ変更されている
         // （Redoによって変更が再適用されたため）
-        self.modified = (self.undo_stack.items.len > 0);
+        self.modified = (buffer_state.undo_stack.items.len > 0);
 
         // 画面全体を再描画
         self.view.markFullRedraw();
@@ -488,24 +648,26 @@ pub const Editor = struct {
 
     // バイト位置からカーソル座標を計算して設定（grapheme cluster考慮）
     fn setCursorToPos(self: *Editor, target_pos: usize) void {
-        const clamped_pos = @min(target_pos, self.buffer.len());
+        const buffer = self.getCurrentBufferContent();
+        const view = self.getCurrentView();
+        const clamped_pos = @min(target_pos, buffer.len());
 
         // LineIndexでO(log N)行番号計算
-        const line = self.buffer.findLineByPos(clamped_pos);
-        const line_start = self.buffer.getLineStart(line) orelse 0;
+        const line = buffer.findLineByPos(clamped_pos);
+        const line_start = buffer.getLineStart(line) orelse 0;
 
         // 画面内の行位置を計算
         const max_screen_lines = if (self.terminal.height >= 1) self.terminal.height - 1 else 0;
         if (max_screen_lines == 0 or line < max_screen_lines) {
-            self.view.top_line = 0;
-            self.view.cursor_y = line;
+            view.top_line = 0;
+            view.cursor_y = line;
         } else {
-            self.view.top_line = line - max_screen_lines / 2; // 中央に表示
-            self.view.cursor_y = line - self.view.top_line;
+            view.top_line = line - max_screen_lines / 2; // 中央に表示
+            view.cursor_y = line - view.top_line;
         }
 
         // カーソルX位置を計算（grapheme clusterの表示幅）
-        var iter = PieceIterator.init(&self.buffer);
+        var iter = PieceIterator.init(buffer);
         iter.seek(line_start);
 
         var display_col: usize = 0;
@@ -523,7 +685,7 @@ pub const Editor = struct {
             }
         }
 
-        self.view.cursor_x = display_col;
+        view.cursor_x = display_col;
     }
 
     // エイリアス: restoreCursorPosはsetCursorToPosと同じ
@@ -549,9 +711,9 @@ pub const Editor = struct {
                         // プロンプトを更新
                         self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Write file: {s}", .{self.input_buffer.items}) catch null;
                         if (self.prompt_buffer) |prompt| {
-                            self.view.setError(prompt);
+                            self.getCurrentView().setError(prompt);
                         } else {
-                            self.view.setError("Write file: ");
+                            self.getCurrentView().setError("Write file: ");
                         }
                     },
                     .codepoint => |cp| {
@@ -562,9 +724,9 @@ pub const Editor = struct {
                         // プロンプトを更新
                         self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Write file: {s}", .{self.input_buffer.items}) catch null;
                         if (self.prompt_buffer) |prompt| {
-                            self.view.setError(prompt);
+                            self.getCurrentView().setError(prompt);
                         } else {
-                            self.view.setError("Write file: ");
+                            self.getCurrentView().setError("Write file: ");
                         }
                     },
                     .ctrl => |c| {
@@ -574,7 +736,7 @@ pub const Editor = struct {
                                 self.mode = .normal;
                                 self.quit_after_save = false; // フラグをリセット
                                 self.input_buffer.clearRetainingCapacity();
-                                self.view.clearError();
+                                self.getCurrentView().clearError();
                             },
                             else => {},
                         }
@@ -585,9 +747,9 @@ pub const Editor = struct {
                             _ = self.input_buffer.pop();
                             self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Write file: {s}", .{self.input_buffer.items}) catch null;
                             if (self.prompt_buffer) |prompt| {
-                                self.view.setError(prompt);
+                                self.getCurrentView().setError(prompt);
                             } else {
-                                self.view.setError("Write file: ");
+                                self.getCurrentView().setError("Write file: ");
                             }
                         }
                     },
@@ -595,11 +757,12 @@ pub const Editor = struct {
                         // Enter: ファイル名確定
                         if (self.input_buffer.items.len > 0) {
                             // 既存のfilenameがあれば解放
-                            if (self.filename) |old| {
+                            const buffer_state = self.getCurrentBuffer();
+                            if (buffer_state.filename) |old| {
                                 self.allocator.free(old);
                             }
                             // 新しいfilenameを設定
-                            self.filename = try self.allocator.dupe(u8, self.input_buffer.items);
+                            buffer_state.filename = try self.allocator.dupe(u8, self.input_buffer.items);
                             self.input_buffer.clearRetainingCapacity();
 
                             // ファイルを保存
@@ -628,11 +791,11 @@ pub const Editor = struct {
                         const prefix = if (is_forward) "I-search: " else "I-search backward: ";
                         self.prompt_buffer = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ prefix, self.input_buffer.items }) catch null;
                         if (self.prompt_buffer) |prompt| {
-                            self.view.setError(prompt);
+                            self.getCurrentView().setError(prompt);
                         }
                         // 検索実行（現在位置から）
                         if (self.input_buffer.items.len > 0) {
-                            self.view.setSearchHighlight(self.input_buffer.items);
+                            self.getCurrentView().setSearchHighlight(self.input_buffer.items);
                             try self.performSearch(is_forward, false);
                         }
                     },
@@ -645,11 +808,11 @@ pub const Editor = struct {
                         const prefix = if (is_forward) "I-search: " else "I-search backward: ";
                         self.prompt_buffer = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ prefix, self.input_buffer.items }) catch null;
                         if (self.prompt_buffer) |prompt| {
-                            self.view.setError(prompt);
+                            self.getCurrentView().setError(prompt);
                         }
                         // 検索実行（現在位置から）
                         if (self.input_buffer.items.len > 0) {
-                            self.view.setSearchHighlight(self.input_buffer.items);
+                            self.getCurrentView().setSearchHighlight(self.input_buffer.items);
                             try self.performSearch(is_forward, false);
                         }
                     },
@@ -662,20 +825,20 @@ pub const Editor = struct {
                                 }
                                 self.mode = .normal;
                                 self.input_buffer.clearRetainingCapacity();
-                                self.view.setSearchHighlight(null); // ハイライトクリア
-                                self.view.clearError();
+                                self.getCurrentView().setSearchHighlight(null); // ハイライトクリア
+                                self.getCurrentView().clearError();
                             },
                             's' => {
                                 // C-s: 次の一致を検索（前方）
                                 if (self.input_buffer.items.len > 0) {
-                                    self.view.setSearchHighlight(self.input_buffer.items);
+                                    self.getCurrentView().setSearchHighlight(self.input_buffer.items);
                                     try self.performSearch(true, true);
                                 }
                             },
                             'r' => {
                                 // C-r: 前の一致を検索（後方）
                                 if (self.input_buffer.items.len > 0) {
-                                    self.view.setSearchHighlight(self.input_buffer.items);
+                                    self.getCurrentView().setSearchHighlight(self.input_buffer.items);
                                     try self.performSearch(false, true);
                                 }
                             },
@@ -689,13 +852,13 @@ pub const Editor = struct {
                             const prefix = if (is_forward) "I-search: " else "I-search backward: ";
                             self.prompt_buffer = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ prefix, self.input_buffer.items }) catch null;
                             if (self.prompt_buffer) |prompt| {
-                                self.view.setError(prompt);
+                                self.getCurrentView().setError(prompt);
                             } else {
-                                self.view.clearError();
+                                self.getCurrentView().clearError();
                             }
                             // 検索文字列が残っていれば再検索
                             if (self.input_buffer.items.len > 0) {
-                                self.view.setSearchHighlight(self.input_buffer.items);
+                                self.getCurrentView().setSearchHighlight(self.input_buffer.items);
                                 // 開始位置から再検索
                                 if (self.search_start_pos) |start_pos| {
                                     self.setCursorToPos(start_pos);
@@ -703,7 +866,7 @@ pub const Editor = struct {
                                 try self.performSearch(is_forward, false);
                             } else {
                                 // 検索文字列が空になったら開始位置に戻る
-                                self.view.setSearchHighlight(null); // ハイライトクリア
+                                self.getCurrentView().setSearchHighlight(null); // ハイライトクリア
                                 if (self.search_start_pos) |start_pos| {
                                     self.setCursorToPos(start_pos);
                                 }
@@ -721,8 +884,8 @@ pub const Editor = struct {
                         }
                         self.mode = .normal;
                         self.input_buffer.clearRetainingCapacity();
-                        self.view.setSearchHighlight(null); // ハイライトクリア
-                        self.view.clearError();
+                        self.getCurrentView().setSearchHighlight(null); // ハイライトクリア
+                        self.getCurrentView().clearError();
                     },
                     else => {},
                 }
@@ -736,16 +899,17 @@ pub const Editor = struct {
                         switch (c) {
                             'g' => {
                                 // C-g: キャンセル
-                                self.view.clearError();
+                                self.getCurrentView().clearError();
                             },
                             's' => {
                                 // C-x C-s: 保存
-                                if (self.filename == null) {
+                                const buffer_state = self.getCurrentBuffer();
+                                if (buffer_state.filename == null) {
                                     // 新規ファイル：ファイル名入力モードへ
                                     self.mode = .filename_input;
                                     self.quit_after_save = false; // 保存後は終了しない
                                     self.input_buffer.clearRetainingCapacity();
-                                    self.view.setError("Write file: ");
+                                    self.getCurrentView().setError("Write file: ");
                                 } else {
                                     // 既存ファイル：そのまま保存
                                     try self.saveFile();
@@ -753,16 +917,17 @@ pub const Editor = struct {
                             },
                             'c' => {
                                 // C-x C-c: 終了
-                                if (self.modified) {
-                                    if (self.filename) |name| {
+                                const buffer_state = self.getCurrentBuffer();
+                                if (buffer_state.modified) {
+                                    if (buffer_state.filename) |name| {
                                         self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Save changes to {s}? (y/n/c): ", .{name}) catch null;
                                         if (self.prompt_buffer) |prompt| {
-                                            self.view.setError(prompt);
+                                            self.getCurrentView().setError(prompt);
                                         } else {
-                                            self.view.setError("Save changes? (y/n/c): ");
+                                            self.getCurrentView().setError("Save changes? (y/n/c): ");
                                         }
                                     } else {
-                                        self.view.setError("Save changes? (y/n/c): ");
+                                        self.getCurrentView().setError("Save changes? (y/n/c): ");
                                     }
                                     self.mode = .quit_confirm;
                                 } else {
@@ -770,7 +935,7 @@ pub const Editor = struct {
                                 }
                             },
                             else => {
-                                self.view.setError("Unknown command");
+                                self.getCurrentView().setError("Unknown command");
                             },
                         }
                     },
@@ -784,12 +949,12 @@ pub const Editor = struct {
                                 return;
                             },
                             else => {
-                                self.view.setError("Unknown command");
+                                self.getCurrentView().setError("Unknown command");
                             },
                         }
                     },
                     else => {
-                        self.view.setError("Expected C-x C-[key]");
+                        self.getCurrentView().setError("Expected C-x C-[key]");
                     },
                 }
                 return;
@@ -801,15 +966,16 @@ pub const Editor = struct {
                         switch (c) {
                             'y', 'Y' => {
                                 // 保存して終了
-                                if (self.filename == null) {
+                                const buffer_state = self.getCurrentBuffer();
+                                if (buffer_state.filename == null) {
                                     // 新規ファイル：ファイル名入力モードへ
                                     self.mode = .filename_input;
                                     self.quit_after_save = true; // 保存後に終了
                                     self.input_buffer.clearRetainingCapacity();
-                                    self.view.setError("Write file: ");
+                                    self.getCurrentView().setError("Write file: ");
                                 } else {
                                     self.saveFile() catch |err| {
-                                        self.view.setError(@errorName(err));
+                                        self.getCurrentView().setError(@errorName(err));
                                         self.mode = .normal;
                                         return;
                                     };
@@ -823,11 +989,11 @@ pub const Editor = struct {
                             'c', 'C' => {
                                 // キャンセル
                                 self.mode = .normal;
-                                self.view.clearError();
+                                self.getCurrentView().clearError();
                             },
                             else => {
                                 // 無効な入力
-                                self.view.setError("Please answer: (y)es, (n)o, (c)ancel");
+                                self.getCurrentView().setError("Please answer: (y)es, (n)o, (c)ancel");
                             },
                         }
                     },
@@ -837,15 +1003,16 @@ pub const Editor = struct {
                         switch (normalized) {
                             'y', 'Y' => {
                                 // 保存して終了
-                                if (self.filename == null) {
+                                const buffer_state = self.getCurrentBuffer();
+                                if (buffer_state.filename == null) {
                                     // 新規ファイル：ファイル名入力モードへ
                                     self.mode = .filename_input;
                                     self.quit_after_save = true; // 保存後に終了
                                     self.input_buffer.clearRetainingCapacity();
-                                    self.view.setError("Write file: ");
+                                    self.getCurrentView().setError("Write file: ");
                                 } else {
                                     self.saveFile() catch |err| {
-                                        self.view.setError(@errorName(err));
+                                        self.getCurrentView().setError(@errorName(err));
                                         self.mode = .normal;
                                         return;
                                     };
@@ -859,11 +1026,11 @@ pub const Editor = struct {
                             'c', 'C' => {
                                 // キャンセル
                                 self.mode = .normal;
-                                self.view.clearError();
+                                self.getCurrentView().clearError();
                             },
                             else => {
                                 // 無効な入力
-                                self.view.setError("Please answer: (y)es, (n)o, (c)ancel");
+                                self.getCurrentView().setError("Please answer: (y)es, (n)o, (c)ancel");
                             },
                         }
                     },
@@ -871,7 +1038,7 @@ pub const Editor = struct {
                         // Ctrl-Gでもキャンセル
                         if (c == 'g') {
                             self.mode = .normal;
-                            self.view.clearError();
+                            self.getCurrentView().clearError();
                         }
                     },
                     else => {},
@@ -888,23 +1055,23 @@ pub const Editor = struct {
                             'y' => self.yankRectangle(), // C-x r y 矩形貼り付け
                             't' => {
                                 // C-x r t 矩形文字列挿入（未実装）
-                                self.view.setError("C-x r t not implemented yet");
+                                self.getCurrentView().setError("C-x r t not implemented yet");
                             },
                             else => {
-                                self.view.setError("Unknown rectangle command");
+                                self.getCurrentView().setError("Unknown rectangle command");
                             },
                         }
                     },
                     .ctrl => |c| {
                         // Ctrl-Gでキャンセル
                         if (c == 'g') {
-                            self.view.clearError();
+                            self.getCurrentView().clearError();
                         } else {
-                            self.view.setError("Unknown rectangle command");
+                            self.getCurrentView().setError("Unknown rectangle command");
                         }
                     },
                     else => {
-                        self.view.setError("Unknown rectangle command");
+                        self.getCurrentView().setError("Unknown rectangle command");
                     },
                 }
                 return;
@@ -918,9 +1085,9 @@ pub const Editor = struct {
                         // プロンプトを更新
                         self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace: {s}", .{self.input_buffer.items}) catch null;
                         if (self.prompt_buffer) |prompt| {
-                            self.view.setError(prompt);
+                            self.getCurrentView().setError(prompt);
                         } else {
-                            self.view.setError("Query replace: ");
+                            self.getCurrentView().setError("Query replace: ");
                         }
                     },
                     .codepoint => |cp| {
@@ -931,9 +1098,9 @@ pub const Editor = struct {
                         // プロンプトを更新
                         self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace: {s}", .{self.input_buffer.items}) catch null;
                         if (self.prompt_buffer) |prompt| {
-                            self.view.setError(prompt);
+                            self.getCurrentView().setError(prompt);
                         } else {
-                            self.view.setError("Query replace: ");
+                            self.getCurrentView().setError("Query replace: ");
                         }
                     },
                     .ctrl => |c| {
@@ -942,7 +1109,7 @@ pub const Editor = struct {
                                 // C-g: キャンセル
                                 self.mode = .normal;
                                 self.input_buffer.clearRetainingCapacity();
-                                self.view.clearError();
+                                self.getCurrentView().clearError();
                             },
                             else => {},
                         }
@@ -953,9 +1120,9 @@ pub const Editor = struct {
                             _ = self.input_buffer.pop();
                             self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace: {s}", .{self.input_buffer.items}) catch null;
                             if (self.prompt_buffer) |prompt| {
-                                self.view.setError(prompt);
+                                self.getCurrentView().setError(prompt);
                             } else {
-                                self.view.setError("Query replace: ");
+                                self.getCurrentView().setError("Query replace: ");
                             }
                         }
                     },
@@ -973,9 +1140,9 @@ pub const Editor = struct {
                             self.mode = .query_replace_input_replacement;
                             self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace {s} with: ", .{self.replace_search.?}) catch null;
                             if (self.prompt_buffer) |prompt| {
-                                self.view.setError(prompt);
+                                self.getCurrentView().setError(prompt);
                             } else {
-                                self.view.setError("Query replace with: ");
+                                self.getCurrentView().setError("Query replace with: ");
                             }
                         }
                     },
@@ -996,7 +1163,7 @@ pub const Editor = struct {
                             self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace with: {s}", .{self.input_buffer.items}) catch null;
                         }
                         if (self.prompt_buffer) |prompt| {
-                            self.view.setError(prompt);
+                            self.getCurrentView().setError(prompt);
                         }
                     },
                     .codepoint => |cp| {
@@ -1011,7 +1178,7 @@ pub const Editor = struct {
                             self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace with: {s}", .{self.input_buffer.items}) catch null;
                         }
                         if (self.prompt_buffer) |prompt| {
-                            self.view.setError(prompt);
+                            self.getCurrentView().setError(prompt);
                         }
                     },
                     .ctrl => |c| {
@@ -1024,7 +1191,7 @@ pub const Editor = struct {
                                     self.allocator.free(search);
                                     self.replace_search = null;
                                 }
-                                self.view.clearError();
+                                self.getCurrentView().clearError();
                             },
                             else => {},
                         }
@@ -1039,7 +1206,7 @@ pub const Editor = struct {
                                 self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace with: {s}", .{self.input_buffer.items}) catch null;
                             }
                             if (self.prompt_buffer) |prompt| {
-                                self.view.setError(prompt);
+                                self.getCurrentView().setError(prompt);
                             }
                         }
                     },
@@ -1054,25 +1221,25 @@ pub const Editor = struct {
 
                         // 最初の一致を検索
                         if (self.replace_search) |search| {
-                            const found = try self.findNextMatch(search, self.view.getCursorBufferPos());
+                            const found = try self.findNextMatch(search, self.getCurrentView().getCursorBufferPos());
                             if (found) {
                                 // 一致が見つかった：確認モードへ
                                 self.mode = .query_replace_confirm;
                                 self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Replace? (y)es (n)ext (!)all (q)uit", .{}) catch null;
                                 if (self.prompt_buffer) |prompt| {
-                                    self.view.setError(prompt);
+                                    self.getCurrentView().setError(prompt);
                                 } else {
-                                    self.view.setError("Replace? (y/n/!/q)");
+                                    self.getCurrentView().setError("Replace? (y/n/!/q)");
                                 }
                             } else {
                                 // 一致が見つからない
                                 self.mode = .normal;
-                                self.view.setError("No match found");
+                                self.getCurrentView().setError("No match found");
                             }
                         } else {
                             // 検索文字列がない（エラー）
                             self.mode = .normal;
-                            self.view.setError("No search string");
+                            self.getCurrentView().setError("No search string");
                         }
                     },
                     else => {},
@@ -1089,41 +1256,41 @@ pub const Editor = struct {
                                 try self.replaceCurrentMatch();
                                 const search = self.replace_search orelse {
                                     self.mode = .normal;
-                                    self.view.setError("Error: no search string");
+                                    self.getCurrentView().setError("Error: no search string");
                                     return;
                                 };
                                 // 次の一致を検索
-                                const found = try self.findNextMatch(search, self.view.getCursorBufferPos());
+                                const found = try self.findNextMatch(search, self.getCurrentView().getCursorBufferPos());
                                 if (!found) {
                                     // これ以上一致がない
                                     self.mode = .normal;
                                     var msg_buf: [128]u8 = undefined;
                                     const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace done";
-                                    self.view.setError(msg);
+                                    self.getCurrentView().setError(msg);
                                 } else {
                                     // 次のマッチが見つかった - 確認プロンプトを表示
-                                    self.view.setError("Replace? (y)es (n)ext (!)all (q)uit");
+                                    self.getCurrentView().setError("Replace? (y)es (n)ext (!)all (q)uit");
                                 }
                             },
                             'n', 'N', ' ' => {
                                 // スキップして次へ
                                 const search = self.replace_search orelse {
                                     self.mode = .normal;
-                                    self.view.setError("Error: no search string");
+                                    self.getCurrentView().setError("Error: no search string");
                                     return;
                                 };
                                 // 現在の一致をスキップ（カーソルを一致の後ろに移動）
-                                const current_pos = self.view.getCursorBufferPos();
+                                const current_pos = self.getCurrentView().getCursorBufferPos();
                                 const found = try self.findNextMatch(search, current_pos + 1);
                                 if (!found) {
                                     // これ以上一致がない
                                     self.mode = .normal;
                                     var msg_buf: [128]u8 = undefined;
                                     const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace done";
-                                    self.view.setError(msg);
+                                    self.getCurrentView().setError(msg);
                                 } else {
                                     // 次のマッチが見つかった - 確認プロンプトを表示
-                                    self.view.setError("Replace? (y)es (n)ext (!)all (q)uit");
+                                    self.getCurrentView().setError("Replace? (y)es (n)ext (!)all (q)uit");
                                 }
                             },
                             '!' => {
@@ -1131,32 +1298,32 @@ pub const Editor = struct {
                                 try self.replaceCurrentMatch();
                                 const search = self.replace_search orelse {
                                     self.mode = .normal;
-                                    self.view.setError("Error: no search string");
+                                    self.getCurrentView().setError("Error: no search string");
                                     return;
                                 };
                                 // 残りすべてを置換
-                                var pos = self.view.getCursorBufferPos();
+                                var pos = self.getCurrentView().getCursorBufferPos();
                                 while (true) {
                                     const found = try self.findNextMatch(search, pos);
                                     if (!found) break;
                                     try self.replaceCurrentMatch();
-                                    pos = self.view.getCursorBufferPos();
+                                    pos = self.getCurrentView().getCursorBufferPos();
                                 }
                                 self.mode = .normal;
                                 var msg_buf: [128]u8 = undefined;
                                 const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace done";
-                                self.view.setError(msg);
+                                self.getCurrentView().setError(msg);
                             },
                             'q', 'Q' => {
                                 // 終了
                                 self.mode = .normal;
                                 var msg_buf: [128]u8 = undefined;
                                 const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace cancelled";
-                                self.view.setError(msg);
+                                self.getCurrentView().setError(msg);
                             },
                             else => {
                                 // 無効な入力
-                                self.view.setError("Please answer: (y)es, (n)ext, (!)all, (q)uit");
+                                self.getCurrentView().setError("Please answer: (y)es, (n)ext, (!)all, (q)uit");
                             },
                         }
                     },
@@ -1169,41 +1336,41 @@ pub const Editor = struct {
                                 try self.replaceCurrentMatch();
                                 const search = self.replace_search orelse {
                                     self.mode = .normal;
-                                    self.view.setError("Error: no search string");
+                                    self.getCurrentView().setError("Error: no search string");
                                     return;
                                 };
                                 // 次の一致を検索
-                                const found = try self.findNextMatch(search, self.view.getCursorBufferPos());
+                                const found = try self.findNextMatch(search, self.getCurrentView().getCursorBufferPos());
                                 if (!found) {
                                     // これ以上一致がない
                                     self.mode = .normal;
                                     var msg_buf: [128]u8 = undefined;
                                     const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace done";
-                                    self.view.setError(msg);
+                                    self.getCurrentView().setError(msg);
                                 } else {
                                     // 次のマッチが見つかった - 確認プロンプトを表示
-                                    self.view.setError("Replace? (y)es (n)ext (!)all (q)uit");
+                                    self.getCurrentView().setError("Replace? (y)es (n)ext (!)all (q)uit");
                                 }
                             },
                             'n', 'N', ' ' => {
                                 // スキップして次へ
                                 const search = self.replace_search orelse {
                                     self.mode = .normal;
-                                    self.view.setError("Error: no search string");
+                                    self.getCurrentView().setError("Error: no search string");
                                     return;
                                 };
                                 // 現在の一致をスキップ（カーソルを一致の後ろに移動）
-                                const current_pos = self.view.getCursorBufferPos();
+                                const current_pos = self.getCurrentView().getCursorBufferPos();
                                 const found = try self.findNextMatch(search, current_pos + 1);
                                 if (!found) {
                                     // これ以上一致がない
                                     self.mode = .normal;
                                     var msg_buf: [128]u8 = undefined;
                                     const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace done";
-                                    self.view.setError(msg);
+                                    self.getCurrentView().setError(msg);
                                 } else {
                                     // 次のマッチが見つかった - 確認プロンプトを表示
-                                    self.view.setError("Replace? (y)es (n)ext (!)all (q)uit");
+                                    self.getCurrentView().setError("Replace? (y)es (n)ext (!)all (q)uit");
                                 }
                             },
                             '!' => {
@@ -1211,32 +1378,32 @@ pub const Editor = struct {
                                 try self.replaceCurrentMatch();
                                 const search = self.replace_search orelse {
                                     self.mode = .normal;
-                                    self.view.setError("Error: no search string");
+                                    self.getCurrentView().setError("Error: no search string");
                                     return;
                                 };
                                 // 残りすべてを置換
-                                var pos = self.view.getCursorBufferPos();
+                                var pos = self.getCurrentView().getCursorBufferPos();
                                 while (true) {
                                     const found = try self.findNextMatch(search, pos);
                                     if (!found) break;
                                     try self.replaceCurrentMatch();
-                                    pos = self.view.getCursorBufferPos();
+                                    pos = self.getCurrentView().getCursorBufferPos();
                                 }
                                 self.mode = .normal;
                                 var msg_buf: [128]u8 = undefined;
                                 const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace done";
-                                self.view.setError(msg);
+                                self.getCurrentView().setError(msg);
                             },
                             'q', 'Q' => {
                                 // 終了
                                 self.mode = .normal;
                                 var msg_buf: [128]u8 = undefined;
                                 const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace cancelled";
-                                self.view.setError(msg);
+                                self.getCurrentView().setError(msg);
                             },
                             else => {
                                 // 無効な入力
-                                self.view.setError("Please answer: (y)es, (n)ext, (!)all, (q)uit");
+                                self.getCurrentView().setError("Please answer: (y)es, (n)ext, (!)all, (q)uit");
                             },
                         }
                     },
@@ -1246,9 +1413,9 @@ pub const Editor = struct {
                             self.mode = .normal;
                             const msg = std.fmt.allocPrint(self.allocator, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch null;
                             if (msg) |m| {
-                                self.view.setError(m);
+                                self.getCurrentView().setError(m);
                             } else {
-                                self.view.setError("Replace cancelled");
+                                self.getCurrentView().setError("Replace cancelled");
                             }
                         }
                     },
@@ -1268,7 +1435,7 @@ pub const Editor = struct {
                     'x' => {
                         // C-x プレフィックスキー
                         self.mode = .prefix_x;
-                        self.view.setError("C-x-");
+                        self.getCurrentView().setError("C-x-");
                     },
                     'f' => self.view.moveCursorRight(&self.terminal), // C-f 前進
                     'b' => self.view.moveCursorLeft(), // C-b 後退
@@ -1280,7 +1447,7 @@ pub const Editor = struct {
                     'k' => try self.killLine(), // C-k 行削除
                     'w' => try self.killRegion(), // C-w 範囲削除（カット）
                     'y' => try self.yank(), // C-y ペースト
-                    'g' => self.view.clearError(), // C-g キャンセル
+                    'g' => self.getCurrentView().clearError(), // C-g キャンセル
                     'u' => try self.undo(), // C-u Undo
                     31, '/' => try self.redo(), // C-/ または C-_ Redo
                     's' => {
@@ -1290,24 +1457,24 @@ pub const Editor = struct {
                             // input_bufferに前回の検索文字列をコピー
                             self.input_buffer.clearRetainingCapacity();
                             self.input_buffer.appendSlice(self.allocator, search_str) catch {};
-                            self.view.setSearchHighlight(search_str);
+                            self.getCurrentView().setSearchHighlight(search_str);
                             try self.performSearch(true, true); // skip_current=true で次を検索
                             // 検索ハイライトは残すが、プロンプトはクリア（Emacs風）
-                            self.view.clearError();
+                            self.getCurrentView().clearError();
                         } else {
                             // 新規検索開始
                             self.mode = .isearch_forward;
-                            self.search_start_pos = self.view.getCursorBufferPos();
+                            self.search_start_pos = self.getCurrentView().getCursorBufferPos();
                             self.input_buffer.clearRetainingCapacity();
-                            self.view.setError("I-search: ");
+                            self.getCurrentView().setError("I-search: ");
                         }
                     },
                     'r' => {
                         // C-r インクリメンタルサーチ（後方）
                         self.mode = .isearch_backward;
-                        self.search_start_pos = self.view.getCursorBufferPos();
+                        self.search_start_pos = self.getCurrentView().getCursorBufferPos();
                         self.input_buffer.clearRetainingCapacity();
-                        self.view.setError("I-search backward: ");
+                        self.getCurrentView().setError("I-search backward: ");
                     },
                     else => {},
                 }
@@ -1321,7 +1488,7 @@ pub const Editor = struct {
                         self.mode = .query_replace_input_search;
                         self.input_buffer.clearRetainingCapacity();
                         self.replace_match_count = 0;
-                        self.view.setError("Query replace: ");
+                        self.getCurrentView().setError("Query replace: ");
                     },
                     'f' => try self.forwardWord(), // M-f 単語前進
                     'b' => try self.backwardWord(), // M-b 単語後退
@@ -1367,7 +1534,7 @@ pub const Editor = struct {
 
     fn insertChar(self: *Editor, ch: u8) !void {
         const current_line = self.getCurrentLine();
-        const pos = self.view.getCursorBufferPos();
+        const pos = self.getCurrentView().getCursorBufferPos();
 
         // バッファ変更を先に実行（失敗した場合はundoログに記録しない）
         try self.buffer.insert(pos, ch);
@@ -1405,7 +1572,7 @@ pub const Editor = struct {
         var buf: [4]u8 = undefined;
         const len = std.unicode.utf8Encode(codepoint, &buf) catch return error.InvalidUtf8;
 
-        const pos = self.view.getCursorBufferPos();
+        const pos = self.getCurrentView().getCursorBufferPos();
 
         // バッファ変更を先に実行
         try self.buffer.insertSlice(pos, buf[0..len]);
@@ -1438,7 +1605,7 @@ pub const Editor = struct {
 
     fn deleteChar(self: *Editor) !void {
         const current_line = self.getCurrentLine();
-        const pos = self.view.getCursorBufferPos();
+        const pos = self.getCurrentView().getCursorBufferPos();
         if (pos >= self.buffer.len()) return;
 
         // カーソル位置のgrapheme clusterのバイト数を取得
@@ -1487,7 +1654,7 @@ pub const Editor = struct {
 
     fn backspace(self: *Editor) !void {
         const current_line = self.getCurrentLine();
-        const pos = self.view.getCursorBufferPos();
+        const pos = self.getCurrentView().getCursorBufferPos();
         if (pos == 0) return;
 
         // 削除するgrapheme clusterのバイト数と幅を取得
@@ -1561,7 +1728,7 @@ pub const Editor = struct {
 
     fn killLine(self: *Editor) !void {
         const current_line = self.getCurrentLine();
-        const pos = self.view.getCursorBufferPos();
+        const pos = self.getCurrentView().getCursorBufferPos();
 
         // PieceIteratorで行末を探す
         var iter = PieceIterator.init(&self.buffer);
@@ -1603,26 +1770,27 @@ pub const Editor = struct {
         if (self.mark_pos) |_| {
             // マークがある場合は解除
             self.mark_pos = null;
-            self.view.setError("Mark deactivated");
+            self.getCurrentView().setError("Mark deactivated");
         } else {
             // マークを設定
-            self.mark_pos = self.view.getCursorBufferPos();
-            self.view.setError("Mark set");
+            self.mark_pos = self.getCurrentView().getCursorBufferPos();
+            self.getCurrentView().setError("Mark set");
         }
     }
 
     // 全選択（C-x h）：バッファの先頭にマークを設定し、終端にカーソルを移動
     fn selectAll(self: *Editor) void {
         // バッファの先頭（位置0）にマークを設定
-        self.mark_pos = 0;
+        const window = self.getCurrentWindow();
+        window.mark_pos = 0;
         // カーソルをバッファの終端に移動
-        self.view.moveToBufferEnd(&self.terminal);
+        self.getCurrentView().moveToBufferEnd(&self.terminal);
     }
 
     // マーク位置とカーソル位置から範囲を取得（開始位置と長さを返す）
     fn getRegion(self: *Editor) ?struct { start: usize, len: usize } {
         const mark = self.mark_pos orelse return null;
-        const cursor = self.view.getCursorBufferPos();
+        const cursor = self.getCurrentView().getCursorBufferPos();
 
         if (mark < cursor) {
             return .{ .start = mark, .len = cursor - mark };
@@ -1636,7 +1804,7 @@ pub const Editor = struct {
     // 範囲をコピー（M-w）
     fn copyRegion(self: *Editor) !void {
         const region = self.getRegion() orelse {
-            self.view.setError("No active region");
+            self.getCurrentView().setError("No active region");
             return;
         };
 
@@ -1651,14 +1819,14 @@ pub const Editor = struct {
         // マークを解除
         self.mark_pos = null;
 
-        self.view.setError("Saved text to kill ring");
+        self.getCurrentView().setError("Saved text to kill ring");
     }
 
     // 範囲を削除（カット）（C-w）
     fn killRegion(self: *Editor) !void {
         const current_line = self.getCurrentLine();
         const region = self.getRegion() orelse {
-            self.view.setError("No active region");
+            self.getCurrentView().setError("No active region");
             return;
         };
 
@@ -1674,7 +1842,7 @@ pub const Editor = struct {
         // バッファから削除
         try self.buffer.delete(region.start, region.len);
         errdefer self.buffer.insertSlice(region.start, deleted) catch unreachable;
-        try self.recordDelete(region.start, deleted, self.view.getCursorBufferPos());
+        try self.recordDelete(region.start, deleted, self.getCurrentView().getCursorBufferPos());
 
         // kill_ringに保存（extractTextと同じデータなので、新たにdupeせずそのまま使う）
         self.kill_ring = deleted;
@@ -1694,18 +1862,18 @@ pub const Editor = struct {
             self.view.markDirty(current_line, current_line);
         }
 
-        self.view.setError("Killed region");
+        self.getCurrentView().setError("Killed region");
     }
 
     // kill_ringの内容をペースト（C-y）
     fn yank(self: *Editor) !void {
         const current_line = self.getCurrentLine();
         const text = self.kill_ring orelse {
-            self.view.setError("Kill ring is empty");
+            self.getCurrentView().setError("Kill ring is empty");
             return;
         };
 
-        const pos = self.view.getCursorBufferPos();
+        const pos = self.getCurrentView().getCursorBufferPos();
 
         // バッファに挿入
         try self.buffer.insertSlice(pos, text);
@@ -1724,7 +1892,7 @@ pub const Editor = struct {
             self.view.markDirty(current_line, current_line);
         }
 
-        self.view.setError("Yanked text");
+        self.getCurrentView().setError("Yanked text");
     }
 
     // インクリメンタルサーチ実行
@@ -1738,7 +1906,7 @@ pub const Editor = struct {
         const content = try self.extractText(0, self.buffer.total_len);
         defer self.allocator.free(content);
 
-        const start_pos = self.view.getCursorBufferPos();
+        const start_pos = self.getCurrentView().getCursorBufferPos();
         const search_from = if (skip_current and start_pos < content.len) start_pos + 1 else start_pos;
 
         if (forward) {
@@ -1758,7 +1926,7 @@ pub const Editor = struct {
                 }
             }
             // それでも見つからない
-            self.view.setError("Failing I-search");
+            self.getCurrentView().setError("Failing I-search");
         } else {
             // 後方検索
             if (search_from > 0) {
@@ -1775,21 +1943,23 @@ pub const Editor = struct {
                 }
             }
             // それでも見つからない
-            self.view.setError("Failing I-search backward");
+            self.getCurrentView().setError("Failing I-search backward");
         }
     }
 
     // カーソルの現在のバイト位置を取得
     fn getCursorPos(self: *Editor) usize {
-        const line_num = self.view.top_line + self.view.cursor_y;
-        const line_start = self.buffer.getLineStart(line_num) orelse 0;
+        const view = self.getCurrentView();
+        const buffer = self.getCurrentBufferContent();
+        const line_num = view.top_line + view.cursor_y;
+        const line_start = buffer.getLineStart(line_num) orelse 0;
 
         // 行の開始位置から cursor_x グラフェムクラスタ分進む
-        var iter = PieceIterator.init(&self.buffer);
+        var iter = PieceIterator.init(buffer);
         iter.seek(line_start);
 
         var col: usize = 0;
-        while (col < self.view.cursor_x) : (col += 1) {
+        while (col < view.cursor_x) : (col += 1) {
             _ = iter.nextGraphemeCluster() catch break;
         }
 
@@ -1798,24 +1968,26 @@ pub const Editor = struct {
 
     // 矩形領域の削除（C-x r k）
     fn killRectangle(self: *Editor) void {
-        const mark = self.mark_pos orelse {
-            self.view.setError("No mark set");
+        const window = self.getCurrentWindow();
+        const mark = window.mark_pos orelse {
+            self.getCurrentView().setError("No mark set");
             return;
         };
 
         const cursor = self.getCursorPos();
+        const buffer = self.getCurrentBufferContent();
 
         // マークとカーソルの位置から矩形の範囲を決定
         const start_pos = @min(mark, cursor);
         const end_pos = @max(mark, cursor);
 
         // 開始行と終了行を取得
-        const start_line = self.buffer.findLineByPos(start_pos);
-        const end_line = self.buffer.findLineByPos(end_pos);
+        const start_line = buffer.findLineByPos(start_pos);
+        const end_line = buffer.findLineByPos(end_pos);
 
         // 開始カラムと終了カラムを取得
-        const start_col = self.buffer.findColumnByPos(start_pos);
-        const end_col = self.buffer.findColumnByPos(end_pos);
+        const start_col = buffer.findColumnByPos(start_pos);
+        const end_col = buffer.findColumnByPos(end_pos);
 
         // カラム範囲を正規化（左から右へ）
         const left_col = @min(start_col, end_col);
@@ -1841,17 +2013,17 @@ pub const Editor = struct {
         // 各行から矩形領域を抽出して削除
         var line_num = start_line;
         while (line_num <= end_line) : (line_num += 1) {
-            const line_start = self.buffer.getLineStart(line_num) orelse continue;
+            const line_start = buffer.getLineStart(line_num) orelse continue;
 
             // 次の行の開始位置（または末尾）を取得
-            const next_line_start = self.buffer.getLineStart(line_num + 1);
+            const next_line_start = buffer.getLineStart(line_num + 1);
             const line_end = if (next_line_start) |nls|
                 if (nls > 0 and nls > line_start) nls - 1 else nls
             else
-                self.buffer.len();
+                buffer.len();
 
             // 行内のカラム位置を探す
-            var iter = PieceIterator.init(&self.buffer);
+            var iter = PieceIterator.init(buffer);
             iter.seek(line_start);
 
             var current_col: usize = 0;
@@ -1880,7 +2052,7 @@ pub const Editor = struct {
                         var line_buf: std.ArrayList(u8) = .{};
                         errdefer line_buf.deinit();
 
-                        var extract_iter = PieceIterator.init(&self.buffer);
+                        var extract_iter = PieceIterator.init(buffer);
                         extract_iter.seek(rsp);
                         while (extract_iter.global_pos < rep) {
                             const byte = extract_iter.next() orelse break;
@@ -1893,55 +2065,56 @@ pub const Editor = struct {
                         };
 
                         // バッファから削除
-                        self.buffer.delete(rsp, rep - rsp) catch {};
+                        buffer.delete(rsp, rep - rsp) catch {};
                     }
                 }
             }
         }
 
         self.rectangle_ring = rect_ring;
-        self.view.setError("Rectangle killed");
+        self.getCurrentView().setError("Rectangle killed");
     }
 
     // 矩形の貼り付け（C-x r y）
     fn yankRectangle(self: *Editor) void {
         const rect = self.rectangle_ring orelse {
-            self.view.setError("No rectangle to yank");
+            self.getCurrentView().setError("No rectangle to yank");
             return;
         };
 
         if (rect.items.len == 0) {
-            self.view.setError("Rectangle is empty");
+            self.getCurrentView().setError("Rectangle is empty");
             return;
         }
 
         // 現在のカーソル位置を取得
         const cursor_pos = self.getCursorPos();
-        const cursor_line = self.buffer.findLineByPos(cursor_pos);
-        const cursor_col = self.buffer.findColumnByPos(cursor_pos);
+        const buffer = self.getCurrentBufferContent();
+        const cursor_line = buffer.findLineByPos(cursor_pos);
+        const cursor_col = buffer.findColumnByPos(cursor_pos);
 
         // 各行の矩形テキストをカーソル位置から挿入
         for (rect.items, 0..) |line_text, i| {
             const target_line = cursor_line + i;
 
             // 対象行の開始位置を取得
-            const line_start = self.buffer.getLineStart(target_line) orelse {
+            const line_start = buffer.getLineStart(target_line) orelse {
                 // 行が存在しない場合は、改行を追加して新しい行を作成
-                const buf_end = self.buffer.len();
-                self.buffer.insert(buf_end, '\n') catch continue;
+                const buf_end = buffer.len();
+                buffer.insert(buf_end, '\n') catch continue;
                 continue;
             };
 
             // 対象行のカラム cursor_col の位置を探す
-            var iter = PieceIterator.init(&self.buffer);
+            var iter = PieceIterator.init(buffer);
             iter.seek(line_start);
 
             // 次の行の開始位置（または末尾）を取得
-            const next_line_start = self.buffer.getLineStart(target_line + 1);
+            const next_line_start = buffer.getLineStart(target_line + 1);
             const line_end = if (next_line_start) |nls|
                 if (nls > 0 and nls > line_start) nls - 1 else nls
             else
-                self.buffer.len();
+                buffer.len();
 
             var current_col: usize = 0;
             while (iter.global_pos < line_end and current_col < cursor_col) {
@@ -1952,22 +2125,24 @@ pub const Editor = struct {
             const insert_pos = iter.global_pos;
 
             // line_text を insert_pos に挿入
-            self.buffer.insertSlice(insert_pos, line_text) catch continue;
+            buffer.insertSlice(insert_pos, line_text) catch continue;
         }
 
-        self.view.setError("Rectangle yanked");
-        self.modified = true;
+        const buffer_state = self.getCurrentBuffer();
+        buffer_state.modified = true;
+        self.getCurrentView().setError("Rectangle yanked");
     }
 
     // 置換：次の一致を検索してカーソルを移動
     fn findNextMatch(self: *Editor, search: []const u8, start_pos: usize) !bool {
         if (search.len == 0) return false;
 
-        const buf_len = self.buffer.len();
+        const buffer = self.getCurrentBufferContent();
+        const buf_len = buffer.len();
         if (start_pos >= buf_len) return false;
 
         // バッファを検索
-        var iter = PieceIterator.init(&self.buffer);
+        var iter = PieceIterator.init(buffer);
         iter.seek(start_pos);
 
         var match_start: ?usize = null;
@@ -1977,7 +2152,7 @@ pub const Editor = struct {
             const start = iter.global_pos;
 
             // 一致を確認
-            var temp_iter = PieceIterator.init(&self.buffer);
+            var temp_iter = PieceIterator.init(buffer);
             temp_iter.seek(start);
 
             var matched = true;
@@ -2010,6 +2185,8 @@ pub const Editor = struct {
 
     // 置換：現在の一致を置換
     fn replaceCurrentMatch(self: *Editor) !void {
+        const buffer = self.getCurrentBufferContent();
+        const buffer_state = self.getCurrentBuffer();
         const search = self.replace_search orelse return error.NoSearchString;
         const replacement = self.replace_replacement orelse return error.NoReplacementString;
         const match_pos = self.replace_current_pos orelse return error.NoMatchPosition;
@@ -2021,23 +2198,23 @@ pub const Editor = struct {
         const deleted_text = try self.extractText(match_pos, search.len);
         defer self.allocator.free(deleted_text);
 
-        try self.buffer.delete(match_pos, search.len);
+        try buffer.delete(match_pos, search.len);
         try self.recordDelete(match_pos, deleted_text, cursor_pos_before);
 
         // 置換文字列を挿入
         if (replacement.len > 0) {
-            try self.buffer.insertSlice(match_pos, replacement);
+            try buffer.insertSlice(match_pos, replacement);
             try self.recordInsert(match_pos, replacement, match_pos);
         }
 
-        self.modified = true;
+        buffer_state.modified = true;
         self.replace_match_count += 1;
 
         // カーソルを置換後の位置に移動
         self.setCursorToPos(match_pos + replacement.len);
 
         // 全画面再描画
-        self.view.markFullRedraw();
+        self.getCurrentView().markFullRedraw();
     }
 
     // ========================================
@@ -2094,7 +2271,7 @@ pub const Editor = struct {
 
     /// 前方の単語へ移動（M-f）
     fn forwardWord(self: *Editor) !void {
-        const start_pos = self.view.getCursorBufferPos();
+        const start_pos = self.getCurrentView().getCursorBufferPos();
         const buf_len = self.buffer.len();
         if (start_pos >= buf_len) return;
 
@@ -2165,7 +2342,7 @@ pub const Editor = struct {
 
     /// 後方の単語へ移動（M-b）
     fn backwardWord(self: *Editor) !void {
-        const start_pos = self.view.getCursorBufferPos();
+        const start_pos = self.getCurrentView().getCursorBufferPos();
         if (start_pos == 0) return;
 
         // 後方移動のため、逆方向に文字を読む
@@ -2244,7 +2421,7 @@ pub const Editor = struct {
 
     /// カーソル位置から次の単語までを削除（M-d）
     fn deleteWord(self: *Editor) !void {
-        const start_pos = self.view.getCursorBufferPos();
+        const start_pos = self.getCurrentView().getCursorBufferPos();
         const buf_len = self.buffer.len();
         if (start_pos >= buf_len) return;
 
@@ -2318,7 +2495,7 @@ pub const Editor = struct {
 
     /// 次の段落へ移動（M-}）
     fn forwardParagraph(self: *Editor) !void {
-        const start_pos = self.view.getCursorBufferPos();
+        const start_pos = self.getCurrentView().getCursorBufferPos();
         const buf_len = self.buffer.len();
         if (start_pos >= buf_len) return;
 
@@ -2376,7 +2553,7 @@ pub const Editor = struct {
 
     /// 前の段落へ移動（M-{）
     fn backwardParagraph(self: *Editor) !void {
-        const start_pos = self.view.getCursorBufferPos();
+        const start_pos = self.getCurrentView().getCursorBufferPos();
         if (start_pos == 0) return;
 
         var pos = start_pos;

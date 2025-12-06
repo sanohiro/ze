@@ -59,9 +59,6 @@ pub fn main() !void {
     var editor = try Editor.init(allocator);
     defer editor.deinit();
 
-    // Editorが値返しされた後、viewのbufferポインタを再設定
-    editor.view = View.init(allocator, &editor.buffer);
-
     if (checked_filename) |filename| {
         // ファイルを開く（既にバイナリチェック済み）
         editor.loadFile(filename) catch |err| {
@@ -69,7 +66,9 @@ pub fn main() !void {
             if (err != error.FileNotFound) {
                 return err;
             }
-            editor.filename = try allocator.dupe(u8, filename);
+            // 新規ファイルの場合、現在のバッファにファイル名を設定
+            const buffer = editor.getCurrentBuffer();
+            buffer.filename = try allocator.dupe(u8, filename);
         };
     }
 
