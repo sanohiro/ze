@@ -571,7 +571,7 @@ pub const Editor = struct {
         switch (entry.op) {
             .insert => |ins| {
                 // insertの取り消し: deleteする
-                try self.buffer.delete(ins.pos, ins.text.len);
+                try buffer.delete(ins.pos, ins.text.len);
                 const text_copy = try self.allocator.dupe(u8, ins.text);
                 try buffer_state.redo_stack.append(self.allocator, .{
                     .op = .{ .insert = .{ .pos = ins.pos, .text = text_copy } },
@@ -580,7 +580,7 @@ pub const Editor = struct {
             },
             .delete => |del| {
                 // deleteの取り消し: insertする
-                try self.buffer.insertSlice(del.pos, del.text);
+                try buffer.insertSlice(del.pos, del.text);
                 const text_copy = try self.allocator.dupe(u8, del.text);
                 try buffer_state.redo_stack.append(self.allocator, .{
                     .op = .{ .delete = .{ .pos = del.pos, .text = text_copy } },
@@ -591,13 +591,13 @@ pub const Editor = struct {
 
         // Undoスタックが空になったら元の状態に戻ったのでmodified=false
         if (buffer_state.undo_stack.items.len == 0) {
-            self.modified = false;
+            buffer_state.modified = false;
         } else {
-            self.modified = true;
+            buffer_state.modified = true;
         }
 
         // 画面全体を再描画
-        self.view.markFullRedraw();
+        self.getCurrentView().markFullRedraw();
 
         // カーソル位置を復元（保存された位置へ）
         self.restoreCursorPos(saved_cursor);
@@ -617,7 +617,7 @@ pub const Editor = struct {
         switch (entry.op) {
             .insert => |ins| {
                 // redoのinsert: もう一度insertする
-                try self.buffer.insertSlice(ins.pos, ins.text);
+                try buffer.insertSlice(ins.pos, ins.text);
                 const text_copy = try self.allocator.dupe(u8, ins.text);
                 try buffer_state.undo_stack.append(self.allocator, .{
                     .op = .{ .insert = .{ .pos = ins.pos, .text = text_copy } },
@@ -626,7 +626,7 @@ pub const Editor = struct {
             },
             .delete => |del| {
                 // redoのdelete: もう一度deleteする
-                try self.buffer.delete(del.pos, del.text.len);
+                try buffer.delete(del.pos, del.text.len);
                 const text_copy = try self.allocator.dupe(u8, del.text);
                 try buffer_state.undo_stack.append(self.allocator, .{
                     .op = .{ .delete = .{ .pos = del.pos, .text = text_copy } },
@@ -637,10 +637,10 @@ pub const Editor = struct {
 
         // Undoスタックが空でなければ変更されている
         // （Redoによって変更が再適用されたため）
-        self.modified = (buffer_state.undo_stack.items.len > 0);
+        buffer_state.modified = (buffer_state.undo_stack.items.len > 0);
 
         // 画面全体を再描画
-        self.view.markFullRedraw();
+        self.getCurrentView().markFullRedraw();
 
         // カーソル位置を復元（保存された位置へ）
         self.restoreCursorPos(saved_cursor);
@@ -1437,12 +1437,12 @@ pub const Editor = struct {
                         self.mode = .prefix_x;
                         self.getCurrentView().setError("C-x-");
                     },
-                    'f' => self.view.moveCursorRight(&self.terminal), // C-f 前進
-                    'b' => self.view.moveCursorLeft(), // C-b 後退
-                    'n' => self.view.moveCursorDown(&self.terminal), // C-n 次行
-                    'p' => self.view.moveCursorUp(), // C-p 前行
-                    'a' => self.view.moveToLineStart(), // C-a 行頭
-                    'e' => self.view.moveToLineEnd(), // C-e 行末
+                    'f' => self.getCurrentView().moveCursorRight(&self.terminal), // C-f 前進
+                    'b' => self.getCurrentView().moveCursorLeft(), // C-b 後退
+                    'n' => self.getCurrentView().moveCursorDown(&self.terminal), // C-n 次行
+                    'p' => self.getCurrentView().moveCursorUp(), // C-p 前行
+                    'a' => self.getCurrentView().moveToLineStart(), // C-a 行頭
+                    'e' => self.getCurrentView().moveToLineEnd(), // C-e 行末
                     'd' => try self.deleteChar(), // C-d 文字削除
                     'k' => try self.killLine(), // C-k 行削除
                     'w' => try self.killRegion(), // C-w 範囲削除（カット）
@@ -1494,8 +1494,8 @@ pub const Editor = struct {
                     'b' => try self.backwardWord(), // M-b 単語後退
                     'd' => try self.deleteWord(), // M-d 単語削除
                     'w' => try self.copyRegion(), // M-w 範囲コピー
-                    '<' => self.view.moveToBufferStart(), // M-< ファイル先頭
-                    '>' => self.view.moveToBufferEnd(&self.terminal), // M-> ファイル終端
+                    '<' => self.getCurrentView().moveToBufferStart(), // M-< ファイル先頭
+                    '>' => self.getCurrentView().moveToBufferEnd(&self.terminal), // M-> ファイル終端
                     '{' => try self.backwardParagraph(), // M-{ 前の段落
                     '}' => try self.forwardParagraph(), // M-} 次の段落
                     else => {},
@@ -1506,10 +1506,10 @@ pub const Editor = struct {
             .alt_delete => try self.deleteWord(),
 
             // 矢印キー
-            .arrow_up => self.view.moveCursorUp(),
-            .arrow_down => self.view.moveCursorDown(&self.terminal),
-            .arrow_left => self.view.moveCursorLeft(),
-            .arrow_right => self.view.moveCursorRight(&self.terminal),
+            .arrow_up => self.getCurrentView().moveCursorUp(),
+            .arrow_down => self.getCurrentView().moveCursorDown(&self.terminal),
+            .arrow_left => self.getCurrentView().moveCursorLeft(),
+            .arrow_right => self.getCurrentView().moveCursorRight(&self.terminal),
 
             // 特殊キー
             .enter => try self.insertChar('\n'),
@@ -1544,24 +1544,24 @@ pub const Editor = struct {
 
         if (ch == '\n') {
             // 改行: 現在行以降すべてdirty
-            self.view.markDirty(current_line, null); // EOF まで再描画
+            self.getCurrentView().markDirty(current_line, null); // EOF まで再描画
 
             // 次の行の先頭に移動
             const max_screen_line = self.terminal.height - 2; // ステータスバー分を引く
-            if (self.view.cursor_y < max_screen_line) {
-                self.view.cursor_y += 1;
+            if (self.getCurrentView().cursor_y < max_screen_line) {
+                self.getCurrentView().cursor_y += 1;
             } else {
                 // 画面の最下部の場合はスクロール
-                self.view.top_line += 1;
+                self.getCurrentView().top_line += 1;
             }
-            self.view.cursor_x = 0;
+            self.getCurrentView().cursor_x = 0;
         } else {
             // 通常文字: 現在行のみdirty
-            self.view.markDirty(current_line, current_line);
+            self.getCurrentView().markDirty(current_line, current_line);
 
             // UTF-8文字の幅を計算してカーソルを移動
             const width = Buffer.charWidth(@as(u21, ch));
-            self.view.cursor_x += width;
+            self.getCurrentView().cursor_x += width;
         }
     }
 
@@ -1582,34 +1582,36 @@ pub const Editor = struct {
 
         if (codepoint == '\n') {
             // 改行: 現在行以降すべてdirty
-            self.view.markDirty(current_line, null);
+            self.getCurrentView().markDirty(current_line, null);
 
             // 次の行の先頭に移動
             const max_screen_line = self.terminal.height - 2; // ステータスバー分を引く
-            if (self.view.cursor_y < max_screen_line) {
-                self.view.cursor_y += 1;
+            if (self.getCurrentView().cursor_y < max_screen_line) {
+                self.getCurrentView().cursor_y += 1;
             } else {
                 // 画面の最下部の場合はスクロール
-                self.view.top_line += 1;
+                self.getCurrentView().top_line += 1;
             }
-            self.view.cursor_x = 0;
+            self.getCurrentView().cursor_x = 0;
         } else {
             // 通常文字: 現在行のみdirty
-            self.view.markDirty(current_line, current_line);
+            self.getCurrentView().markDirty(current_line, current_line);
 
             // UTF-8文字の幅を計算してカーソルを移動
             const width = Buffer.charWidth(codepoint);
-            self.view.cursor_x += width;
+            self.getCurrentView().cursor_x += width;
         }
     }
 
     fn deleteChar(self: *Editor) !void {
+        const buffer = self.getCurrentBufferContent();
+        const buffer_state = self.getCurrentBuffer();
         const current_line = self.getCurrentLine();
         const pos = self.getCurrentView().getCursorBufferPos();
-        if (pos >= self.buffer.len()) return;
+        if (pos >= buffer.len()) return;
 
         // カーソル位置のgrapheme clusterのバイト数を取得
-        var iter = PieceIterator.init(&self.buffer);
+        var iter = PieceIterator.init(buffer);
         while (iter.global_pos < pos) {
             _ = iter.next();
         }
@@ -1618,16 +1620,16 @@ pub const Editor = struct {
             const deleted = try self.extractText(pos, 1);
             errdefer self.allocator.free(deleted);
 
-            try self.buffer.delete(pos, 1);
-            errdefer self.buffer.insertSlice(pos, deleted) catch unreachable; // rollback失敗は致命的
+            try buffer.delete(pos, 1);
+            errdefer buffer.insertSlice(pos, deleted) catch unreachable; // rollback失敗は致命的
             try self.recordDelete(pos, deleted, pos); // 編集前のカーソル位置を記録
 
-            self.modified = true;
+            buffer_state.modified = true;
             // 改行削除の場合は末尾まで再描画
             if (std.mem.indexOf(u8, deleted, "\n") != null) {
-                self.view.markDirty(current_line, null);
+                self.getCurrentView().markDirty(current_line, null);
             } else {
-                self.view.markDirty(current_line, current_line);
+                self.getCurrentView().markDirty(current_line, current_line);
             }
             self.allocator.free(deleted);
             return;
@@ -1637,16 +1639,16 @@ pub const Editor = struct {
             const deleted = try self.extractText(pos, gc.byte_len);
             errdefer self.allocator.free(deleted);
 
-            try self.buffer.delete(pos, gc.byte_len);
-            errdefer self.buffer.insertSlice(pos, deleted) catch unreachable; // rollback失敗は致命的
+            try buffer.delete(pos, gc.byte_len);
+            errdefer buffer.insertSlice(pos, deleted) catch unreachable; // rollback失敗は致命的
             try self.recordDelete(pos, deleted, pos); // 編集前のカーソル位置を記録
 
-            self.modified = true;
+            buffer_state.modified = true;
             // 改行削除の場合は末尾まで再描画
             if (std.mem.indexOf(u8, deleted, "\n") != null) {
-                self.view.markDirty(current_line, null);
+                self.getCurrentView().markDirty(current_line, null);
             } else {
-                self.view.markDirty(current_line, current_line);
+                self.getCurrentView().markDirty(current_line, current_line);
             }
             self.allocator.free(deleted);
         }
@@ -1690,22 +1692,22 @@ pub const Editor = struct {
         self.modified = true;
         // 改行削除の場合は末尾まで再描画
         if (is_newline) {
-            self.view.markDirty(current_line, null);
+            self.getCurrentView().markDirty(current_line, null);
         } else {
-            self.view.markDirty(current_line, current_line);
+            self.getCurrentView().markDirty(current_line, current_line);
         }
         self.allocator.free(deleted);
 
         // カーソル移動
-        if (self.view.cursor_x >= char_width) {
-            self.view.cursor_x -= char_width;
-        } else if (self.view.cursor_y > 0) {
-            self.view.cursor_y -= 1;
+        if (self.getCurrentView().cursor_x >= char_width) {
+            self.getCurrentView().cursor_x -= char_width;
+        } else if (self.getCurrentView().cursor_y > 0) {
+            self.getCurrentView().cursor_y -= 1;
             if (is_newline) {
                 // 改行削除の場合、削除位置（char_start）が新しいカーソル位置
                 // そこまでの行内の表示幅を計算
                 const new_line = self.getCurrentLine();
-                if (self.buffer.getLineStart(self.view.top_line + new_line)) |line_start| {
+                if (self.buffer.getLineStart(self.getCurrentView().top_line + new_line)) |line_start| {
                     var x: usize = 0;
                     var width_iter = PieceIterator.init(&self.buffer);
                     width_iter.seek(line_start);
@@ -1718,20 +1720,22 @@ pub const Editor = struct {
                             break;
                         }
                     }
-                    self.view.cursor_x = x;
+                    self.getCurrentView().cursor_x = x;
                 }
             } else {
-                self.view.moveToLineEnd();
+                self.getCurrentView().moveToLineEnd();
             }
         }
     }
 
     fn killLine(self: *Editor) !void {
+        const buffer = self.getCurrentBufferContent();
+        const buffer_state = self.getCurrentBuffer();
         const current_line = self.getCurrentLine();
         const pos = self.getCurrentView().getCursorBufferPos();
 
         // PieceIteratorで行末を探す
-        var iter = PieceIterator.init(&self.buffer);
+        var iter = PieceIterator.init(buffer);
         iter.seek(pos);
 
         var end_pos = pos;
@@ -1741,7 +1745,7 @@ pub const Editor = struct {
                 break;
             }
         } else {
-            end_pos = self.buffer.len();
+            end_pos = buffer.len();
         }
 
         const count = end_pos - pos;
@@ -1749,16 +1753,16 @@ pub const Editor = struct {
             const deleted = try self.extractText(pos, count);
             errdefer self.allocator.free(deleted);
 
-            try self.buffer.delete(pos, count);
-            errdefer self.buffer.insertSlice(pos, deleted) catch unreachable; // rollback失敗は致命的
+            try buffer.delete(pos, count);
+            errdefer buffer.insertSlice(pos, deleted) catch unreachable; // rollback失敗は致命的
             try self.recordDelete(pos, deleted, pos); // 編集前のカーソル位置を記録
 
-            self.modified = true;
+            buffer_state.modified = true;
             // 改行削除の場合は末尾まで再描画
             if (std.mem.indexOf(u8, deleted, "\n") != null) {
-                self.view.markDirty(current_line, null);
+                self.getCurrentView().markDirty(current_line, null);
             } else {
-                self.view.markDirty(current_line, current_line);
+                self.getCurrentView().markDirty(current_line, current_line);
             }
             self.allocator.free(deleted);
         }
@@ -1767,13 +1771,14 @@ pub const Editor = struct {
 
     // マークを設定/解除（Ctrl+Space）
     fn setMark(self: *Editor) void {
-        if (self.mark_pos) |_| {
+        const window = self.getCurrentWindow();
+        if (window.mark_pos) |_| {
             // マークがある場合は解除
-            self.mark_pos = null;
+            window.mark_pos = null;
             self.getCurrentView().setError("Mark deactivated");
         } else {
             // マークを設定
-            self.mark_pos = self.getCurrentView().getCursorBufferPos();
+            window.mark_pos = self.getCurrentView().getCursorBufferPos();
             self.getCurrentView().setError("Mark set");
         }
     }
@@ -1789,7 +1794,8 @@ pub const Editor = struct {
 
     // マーク位置とカーソル位置から範囲を取得（開始位置と長さを返す）
     fn getRegion(self: *Editor) ?struct { start: usize, len: usize } {
-        const mark = self.mark_pos orelse return null;
+        const window = self.getCurrentWindow();
+        const mark = window.mark_pos orelse return null;
         const cursor = self.getCurrentView().getCursorBufferPos();
 
         if (mark < cursor) {
@@ -1803,6 +1809,7 @@ pub const Editor = struct {
 
     // 範囲をコピー（M-w）
     fn copyRegion(self: *Editor) !void {
+        const window = self.getCurrentWindow();
         const region = self.getRegion() orelse {
             self.getCurrentView().setError("No active region");
             return;
@@ -1817,13 +1824,16 @@ pub const Editor = struct {
         self.kill_ring = try self.extractText(region.start, region.len);
 
         // マークを解除
-        self.mark_pos = null;
+        window.mark_pos = null;
 
         self.getCurrentView().setError("Saved text to kill ring");
     }
 
     // 範囲を削除（カット）（C-w）
     fn killRegion(self: *Editor) !void {
+        const buffer = self.getCurrentBufferContent();
+        const buffer_state = self.getCurrentBuffer();
+        const window = self.getCurrentWindow();
         const current_line = self.getCurrentLine();
         const region = self.getRegion() orelse {
             self.getCurrentView().setError("No active region");
@@ -1840,26 +1850,26 @@ pub const Editor = struct {
         errdefer self.allocator.free(deleted);
 
         // バッファから削除
-        try self.buffer.delete(region.start, region.len);
-        errdefer self.buffer.insertSlice(region.start, deleted) catch unreachable;
+        try buffer.delete(region.start, region.len);
+        errdefer buffer.insertSlice(region.start, deleted) catch unreachable;
         try self.recordDelete(region.start, deleted, self.getCurrentView().getCursorBufferPos());
 
         // kill_ringに保存（extractTextと同じデータなので、新たにdupeせずそのまま使う）
         self.kill_ring = deleted;
 
-        self.modified = true;
+        buffer_state.modified = true;
 
         // カーソルを範囲の開始位置に移動
         self.setCursorToPos(region.start);
 
         // マークを解除
-        self.mark_pos = null;
+        window.mark_pos = null;
 
         // 改行が含まれる場合は末尾まで再描画
         if (std.mem.indexOf(u8, deleted, "\n") != null) {
-            self.view.markDirty(current_line, null);
+            self.getCurrentView().markDirty(current_line, null);
         } else {
-            self.view.markDirty(current_line, current_line);
+            self.getCurrentView().markDirty(current_line, current_line);
         }
 
         self.getCurrentView().setError("Killed region");
@@ -1867,6 +1877,8 @@ pub const Editor = struct {
 
     // kill_ringの内容をペースト（C-y）
     fn yank(self: *Editor) !void {
+        const buffer = self.getCurrentBufferContent();
+        const buffer_state = self.getCurrentBuffer();
         const current_line = self.getCurrentLine();
         const text = self.kill_ring orelse {
             self.getCurrentView().setError("Kill ring is empty");
@@ -1876,20 +1888,20 @@ pub const Editor = struct {
         const pos = self.getCurrentView().getCursorBufferPos();
 
         // バッファに挿入
-        try self.buffer.insertSlice(pos, text);
-        errdefer self.buffer.delete(pos, text.len) catch unreachable;
+        try buffer.insertSlice(pos, text);
+        errdefer buffer.delete(pos, text.len) catch unreachable;
         try self.recordInsert(pos, text, pos);
 
-        self.modified = true;
+        buffer_state.modified = true;
 
         // カーソルを挿入後の位置に移動
         self.setCursorToPos(pos + text.len);
 
         // 改行が含まれる場合は末尾まで再描画
         if (std.mem.indexOf(u8, text, "\n") != null) {
-            self.view.markDirty(current_line, null);
+            self.getCurrentView().markDirty(current_line, null);
         } else {
-            self.view.markDirty(current_line, current_line);
+            self.getCurrentView().markDirty(current_line, current_line);
         }
 
         self.getCurrentView().setError("Yanked text");
@@ -1899,11 +1911,12 @@ pub const Editor = struct {
     // forward: true=前方検索、false=後方検索
     // skip_current: true=現在位置をスキップして次を検索、false=現在位置から検索
     fn performSearch(self: *Editor, forward: bool, skip_current: bool) !void {
+        const buffer = self.getCurrentBufferContent();
         const search_str = self.input_buffer.items;
         if (search_str.len == 0) return;
 
         // バッファの全内容を取得
-        const content = try self.extractText(0, self.buffer.total_len);
+        const content = try self.extractText(0, buffer.total_len);
         defer self.allocator.free(content);
 
         const start_pos = self.getCurrentView().getCursorBufferPos();
@@ -2271,11 +2284,12 @@ pub const Editor = struct {
 
     /// 前方の単語へ移動（M-f）
     fn forwardWord(self: *Editor) !void {
+        const buffer = self.getCurrentBufferContent();
         const start_pos = self.getCurrentView().getCursorBufferPos();
-        const buf_len = self.buffer.len();
+        const buf_len = buffer.len();
         if (start_pos >= buf_len) return;
 
-        var iter = PieceIterator.init(&self.buffer);
+        var iter = PieceIterator.init(buffer);
         iter.seek(start_pos);
 
         var pos = start_pos;
@@ -2342,6 +2356,7 @@ pub const Editor = struct {
 
     /// 後方の単語へ移動（M-b）
     fn backwardWord(self: *Editor) !void {
+        const buffer = self.getCurrentBufferContent();
         const start_pos = self.getCurrentView().getCursorBufferPos();
         if (start_pos == 0) return;
 
@@ -2355,7 +2370,7 @@ pub const Editor = struct {
             const char_start = blk: {
                 var test_pos = if (pos > 0) pos - 1 else 0;
                 while (test_pos > 0) : (test_pos -= 1) {
-                    var iter = PieceIterator.init(&self.buffer);
+                    var iter = PieceIterator.init(buffer);
                     iter.seek(test_pos);
                     const byte = iter.next() orelse break;
                     // UTF-8の先頭バイトかチェック
@@ -2367,7 +2382,7 @@ pub const Editor = struct {
             };
 
             // 文字を読み取る
-            var iter = PieceIterator.init(&self.buffer);
+            var iter = PieceIterator.init(buffer);
             iter.seek(char_start);
             const first_byte = iter.next() orelse break;
 
@@ -2421,12 +2436,14 @@ pub const Editor = struct {
 
     /// カーソル位置から次の単語までを削除（M-d）
     fn deleteWord(self: *Editor) !void {
+        const buffer = self.getCurrentBufferContent();
+        const buffer_state = self.getCurrentBuffer();
         const start_pos = self.getCurrentView().getCursorBufferPos();
-        const buf_len = self.buffer.len();
+        const buf_len = buffer.len();
         if (start_pos >= buf_len) return;
 
         // forwardWordと同じロジックで終了位置を見つける
-        var iter = PieceIterator.init(&self.buffer);
+        var iter = PieceIterator.init(buffer);
         iter.seek(start_pos);
 
         var pos = start_pos;
@@ -2485,21 +2502,22 @@ pub const Editor = struct {
             const deleted_text = try self.extractText(start_pos, delete_len);
             defer self.allocator.free(deleted_text);
 
-            try self.buffer.delete(start_pos, delete_len);
+            try buffer.delete(start_pos, delete_len);
             try self.recordDelete(start_pos, deleted_text, start_pos);
 
-            self.modified = true;
-            self.view.markFullRedraw();
+            buffer_state.modified = true;
+            self.getCurrentView().markFullRedraw();
         }
     }
 
     /// 次の段落へ移動（M-}）
     fn forwardParagraph(self: *Editor) !void {
+        const buffer = self.getCurrentBufferContent();
         const start_pos = self.getCurrentView().getCursorBufferPos();
-        const buf_len = self.buffer.len();
+        const buf_len = buffer.len();
         if (start_pos >= buf_len) return;
 
-        var iter = PieceIterator.init(&self.buffer);
+        var iter = PieceIterator.init(buffer);
         iter.seek(start_pos);
 
         var pos = start_pos;
@@ -2514,7 +2532,7 @@ pub const Editor = struct {
 
         // 空行のブロックを探し、その後の非空白行の先頭へ移動
         while (pos < buf_len) {
-            iter = PieceIterator.init(&self.buffer);
+            iter = PieceIterator.init(buffer);
             iter.seek(pos);
 
             // 現在行が空行かチェック
@@ -2553,6 +2571,7 @@ pub const Editor = struct {
 
     /// 前の段落へ移動（M-{）
     fn backwardParagraph(self: *Editor) !void {
+        const buffer = self.getCurrentBufferContent();
         const start_pos = self.getCurrentView().getCursorBufferPos();
         if (start_pos == 0) return;
 
@@ -2561,7 +2580,7 @@ pub const Editor = struct {
 
         // 現在行の先頭に移動
         while (pos > 0) {
-            var iter = PieceIterator.init(&self.buffer);
+            var iter = PieceIterator.init(buffer);
             iter.seek(pos - 1);
             const byte = iter.next() orelse break;
             if (byte == '\n') break;
@@ -2576,7 +2595,7 @@ pub const Editor = struct {
             // 現在行の先頭を見つける
             var line_start = pos;
             while (line_start > 0) {
-                var iter = PieceIterator.init(&self.buffer);
+                var iter = PieceIterator.init(buffer);
                 iter.seek(line_start - 1);
                 const byte = iter.next() orelse break;
                 if (byte == '\n') break;
@@ -2584,7 +2603,7 @@ pub const Editor = struct {
             }
 
             // 現在行が空行かチェック
-            var iter = PieceIterator.init(&self.buffer);
+            var iter = PieceIterator.init(buffer);
             iter.seek(line_start);
             var is_blank = true;
 
