@@ -4,6 +4,36 @@ const PieceIterator = @import("buffer.zig").PieceIterator;
 const Terminal = @import("terminal.zig").Terminal;
 const config = @import("config.zig");
 
+/// 行がコメント行かどうかを判定
+/// 行頭の空白を飛ばして # // ; --  があればコメント
+fn isCommentLine(line: []const u8) bool {
+    // 行頭の空白をスキップ
+    var i: usize = 0;
+    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) {
+        i += 1;
+    }
+
+    // 残りがなければコメントではない
+    if (i >= line.len) return false;
+
+    // コメントプレフィックスをチェック
+    const rest = line[i..];
+
+    // # (シェル、Python、Ruby、Makefileなど)
+    if (rest.len >= 1 and rest[0] == '#') return true;
+
+    // // (C, C++, Java, Go, JavaScript, Zig など)
+    if (rest.len >= 2 and rest[0] == '/' and rest[1] == '/') return true;
+
+    // ; (Lisp, Assembly, INI ファイルなど)
+    if (rest.len >= 1 and rest[0] == ';') return true;
+
+    // -- (Lua, SQL, Haskell など)
+    if (rest.len >= 2 and rest[0] == '-' and rest[1] == '-') return true;
+
+    return false;
+}
+
 pub const View = struct {
     buffer: *Buffer,
     top_line: usize,
@@ -148,6 +178,9 @@ pub const View = struct {
             try line_buffer.append(term.allocator, ch);
         }
 
+        // コメント行かどうかをチェック（行頭の空白を飛ばして # // ; があればコメント）
+        const is_comment = isCommentLine(line_buffer.items);
+
         // Tab展開用の一時バッファ
         var expanded_line = std.ArrayList(u8){};
         defer expanded_line.deinit(self.allocator);
@@ -159,6 +192,11 @@ pub const View = struct {
             // グレー(\x1b[90m) + 右詰め行番号 + リセット(\x1b[m) + スペース2個
             const line_num_str = std.fmt.bufPrint(&num_buf, "\x1b[90m{d: >[1]}\x1b[m  ", .{ file_line + 1, line_num_width - 2 }) catch "";
             try expanded_line.appendSlice(self.allocator, line_num_str);
+        }
+
+        // コメント行なら暗めのグレーで開始
+        if (is_comment) {
+            try expanded_line.appendSlice(self.allocator, "\x1b[90m");
         }
 
         // grapheme-aware rendering with tab expansion and horizontal scrolling
@@ -211,6 +249,11 @@ pub const View = struct {
                 byte_idx += len;
                 col += width;
             }
+        }
+
+        // コメント行ならリセット
+        if (is_comment) {
+            try expanded_line.appendSlice(self.allocator, "\x1b[m");
         }
 
         var new_line = expanded_line.items;

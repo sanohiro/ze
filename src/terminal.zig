@@ -3,6 +3,14 @@ const posix = std.posix;
 const io = std.io;
 const config = @import("config.zig");
 
+/// グローバルリサイズフラグ（SIGWINCHハンドラから設定）
+var g_resize_pending: bool = false;
+
+/// SIGWINCHシグナルハンドラ
+fn sigwinchHandler(_: c_int) callconv(.c) void {
+    g_resize_pending = true;
+}
+
 pub const Terminal = struct {
     original_termios: posix.termios,
     width: usize,
@@ -32,7 +40,20 @@ pub const Terminal = struct {
         try self.enableRawMode();
         try self.getWindowSize();
 
+        // SIGWINCHハンドラを設定
+        self.setupSigwinch();
+
         return self;
+    }
+
+    /// SIGWINCHシグナルハンドラを設定
+    fn setupSigwinch(_: *Terminal) void {
+        const act = posix.Sigaction{
+            .handler = .{ .handler = sigwinchHandler },
+            .mask = posix.sigemptyset(),
+            .flags = 0,
+        };
+        _ = posix.sigaction(posix.SIG.WINCH, &act, null);
     }
 
     pub fn deinit(self: *Terminal) void {
@@ -97,6 +118,14 @@ pub const Terminal = struct {
 
     /// 端末サイズが変更されたかチェックし、変更されていればサイズを更新してtrueを返す
     pub fn checkResize(self: *Terminal) !bool {
+        // SIGWINCHフラグをチェック（シグナル駆動の高速検出）
+        if (g_resize_pending) {
+            g_resize_pending = false;
+            try self.getWindowSize();
+            return true;
+        }
+
+        // ポーリングでも確認（フォールバック）
         var ws: posix.winsize = undefined;
         const stdout: std.fs.File = .{ .handle = posix.STDOUT_FILENO };
 
