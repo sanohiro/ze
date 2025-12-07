@@ -356,11 +356,7 @@ pub const Buffer = struct {
             std.posix.munmap(mapped_ptr[0..file_size]);
 
             // サポート外のエンコーディングはエラー
-            if (detected.encoding != .UTF8 and
-                detected.encoding != .UTF8_BOM and
-                detected.encoding != .UTF16LE_BOM and
-                detected.encoding != .UTF16BE_BOM)
-            {
+            if (detected.encoding == .Unknown) {
                 return error.UnsupportedEncoding;
             }
 
@@ -446,11 +442,7 @@ pub const Buffer = struct {
 
         const detected = encoding.detectEncoding(raw_content);
 
-        if (detected.encoding != .UTF8 and
-            detected.encoding != .UTF8_BOM and
-            detected.encoding != .UTF16LE_BOM and
-            detected.encoding != .UTF16BE_BOM)
-        {
+        if (detected.encoding == .Unknown) {
             return error.UnsupportedEncoding;
         }
 
