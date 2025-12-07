@@ -6,6 +6,7 @@ const View = @import("view.zig").View;
 const Terminal = @import("terminal.zig").Terminal;
 const input = @import("input.zig");
 const config = @import("config.zig");
+const regex = @import("regex.zig");
 
 // 差分ログベースのUndo/Redo
 const EditOp = union(enum) {
@@ -195,6 +196,7 @@ pub const Editor = struct {
     // 検索状態（グローバル）
     search_start_pos: ?usize,
     last_search: ?[]const u8,
+    compiled_regex: ?regex.Regex,
 
     // 置換状態（グローバル）
     replace_search: ?[]const u8,
@@ -241,6 +243,7 @@ pub const Editor = struct {
             .rectangle_ring = null,
             .search_start_pos = null,
             .last_search = null,
+            .compiled_regex = null,
             .replace_search = null,
             .replace_replacement = null,
             .replace_current_pos = null,
@@ -281,6 +284,10 @@ pub const Editor = struct {
         // 検索状態の解放
         if (self.last_search) |search| {
             self.allocator.free(search);
+        }
+        if (self.compiled_regex) |*r| {
+            var re = r.*;
+            re.deinit();
         }
 
         // 置換状態の解放
@@ -3440,41 +3447,95 @@ pub const Editor = struct {
         const start_pos = self.getCurrentView().getCursorBufferPos();
         const search_from = if (skip_current and start_pos < content.len) start_pos + 1 else start_pos;
 
-        if (forward) {
-            // 前方検索
-            if (search_from < content.len) {
-                if (std.mem.indexOf(u8, content[search_from..], search_str)) |offset| {
-                    const found_pos = search_from + offset;
-                    self.setCursorToPos(found_pos);
+        // 正規表現パターンかチェック
+        const is_regex = regex.isRegexPattern(search_str);
+
+        if (is_regex) {
+            // 正規表現検索
+            // 古いコンパイル済み正規表現を解放
+            if (self.compiled_regex) |*r| {
+                var re = r.*;
+                re.deinit();
+                self.compiled_regex = null;
+            }
+
+            // 新しい正規表現をコンパイル
+            self.compiled_regex = regex.Regex.compile(self.allocator, search_str) catch {
+                self.getCurrentView().setError("Invalid regex pattern");
+                return;
+            };
+
+            const re = &self.compiled_regex.?;
+
+            if (forward) {
+                // 前方検索
+                if (re.search(content, search_from)) |match| {
+                    self.setCursorToPos(match.start);
                     return;
                 }
-            }
-            // 見つからなかったら先頭から検索（ラップアラウンド）
-            if (start_pos > 0) {
-                if (std.mem.indexOf(u8, content[0..start_pos], search_str)) |offset| {
-                    self.setCursorToPos(offset);
+                // ラップアラウンド
+                if (start_pos > 0) {
+                    if (re.search(content, 0)) |match| {
+                        if (match.start < start_pos) {
+                            self.setCursorToPos(match.start);
+                            return;
+                        }
+                    }
+                }
+                self.getCurrentView().setError("Failing I-search (regex)");
+            } else {
+                // 後方検索
+                if (re.searchBackward(content, search_from)) |match| {
+                    self.setCursorToPos(match.start);
                     return;
                 }
+                // ラップアラウンド
+                if (re.searchBackward(content, content.len)) |match| {
+                    if (match.start > start_pos) {
+                        self.setCursorToPos(match.start);
+                        return;
+                    }
+                }
+                self.getCurrentView().setError("Failing I-search backward (regex)");
             }
-            // それでも見つからない
-            self.getCurrentView().setError("Failing I-search");
         } else {
-            // 後方検索
-            if (search_from > 0) {
-                if (std.mem.lastIndexOf(u8, content[0..search_from], search_str)) |offset| {
-                    self.setCursorToPos(offset);
-                    return;
+            // リテラル検索（従来の動作）
+            if (forward) {
+                // 前方検索
+                if (search_from < content.len) {
+                    if (std.mem.indexOf(u8, content[search_from..], search_str)) |offset| {
+                        const found_pos = search_from + offset;
+                        self.setCursorToPos(found_pos);
+                        return;
+                    }
                 }
-            }
-            // 見つからなかったら末尾から検索（ラップアラウンド）
-            if (start_pos < content.len) {
-                if (std.mem.lastIndexOf(u8, content[start_pos..], search_str)) |offset| {
-                    self.setCursorToPos(start_pos + offset);
-                    return;
+                // 見つからなかったら先頭から検索（ラップアラウンド）
+                if (start_pos > 0) {
+                    if (std.mem.indexOf(u8, content[0..start_pos], search_str)) |offset| {
+                        self.setCursorToPos(offset);
+                        return;
+                    }
                 }
+                // それでも見つからない
+                self.getCurrentView().setError("Failing I-search");
+            } else {
+                // 後方検索
+                if (search_from > 0) {
+                    if (std.mem.lastIndexOf(u8, content[0..search_from], search_str)) |offset| {
+                        self.setCursorToPos(offset);
+                        return;
+                    }
+                }
+                // 見つからなかったら末尾から検索（ラップアラウンド）
+                if (start_pos < content.len) {
+                    if (std.mem.lastIndexOf(u8, content[start_pos..], search_str)) |offset| {
+                        self.setCursorToPos(start_pos + offset);
+                        return;
+                    }
+                }
+                // それでも見つからない
+                self.getCurrentView().setError("Failing I-search backward");
             }
-            // それでも見つからない
-            self.getCurrentView().setError("Failing I-search backward");
         }
     }
 
