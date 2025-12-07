@@ -46,6 +46,8 @@ const EditorMode = enum {
     query_replace_confirm, // 置換：確認中（y/n/!/qを待つ）
     shell_command, // シェルコマンド入力中（M-|）
     shell_running, // シェルコマンド実行中（C-gでキャンセル可）
+    mx_command, // M-xコマンド入力中
+    mx_key_describe, // M-x key: 次のキー入力を待っている
 };
 
 /// シェルコマンド出力先
@@ -2303,6 +2305,59 @@ pub const Editor = struct {
                 }
                 return;
             },
+            .mx_command => {
+                // M-xコマンド入力モード
+                switch (key) {
+                    .char => |c| {
+                        try self.input_buffer.append(self.allocator, c);
+                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, ": {s}", .{self.input_buffer.items}) catch null;
+                        if (self.prompt_buffer) |prompt| {
+                            self.getCurrentView().setError(prompt);
+                        }
+                    },
+                    .codepoint => |cp| {
+                        var buf: [4]u8 = undefined;
+                        const len = std.unicode.utf8Encode(cp, &buf) catch return;
+                        try self.input_buffer.appendSlice(self.allocator, buf[0..len]);
+                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, ": {s}", .{self.input_buffer.items}) catch null;
+                        if (self.prompt_buffer) |prompt| {
+                            self.getCurrentView().setError(prompt);
+                        }
+                    },
+                    .ctrl => |c| {
+                        if (c == 'g') {
+                            // C-g: キャンセル
+                            self.mode = .normal;
+                            self.input_buffer.clearRetainingCapacity();
+                            self.getCurrentView().clearError();
+                        }
+                    },
+                    .backspace => {
+                        if (self.input_buffer.items.len > 0) {
+                            _ = self.input_buffer.pop();
+                            self.prompt_buffer = std.fmt.allocPrint(self.allocator, ": {s}", .{self.input_buffer.items}) catch null;
+                            if (self.prompt_buffer) |prompt| {
+                                self.getCurrentView().setError(prompt);
+                            } else {
+                                self.getCurrentView().setError(": ");
+                            }
+                        }
+                    },
+                    .enter => {
+                        // Enter: コマンド実行
+                        try self.executeMxCommand();
+                    },
+                    else => {},
+                }
+                return;
+            },
+            .mx_key_describe => {
+                // M-x key: 次のキー入力を待っている
+                const key_desc = self.describeKey(key);
+                self.getCurrentView().setError(key_desc);
+                self.mode = .normal;
+                return;
+            },
             .normal => {},
         }
 
@@ -2398,6 +2453,12 @@ pub const Editor = struct {
                     '}' => try self.forwardParagraph(), // M-} 次の段落
                     '^' => try self.joinLine(), // M-^ 行の結合
                     ';' => try self.toggleComment(), // M-; コメント切り替え
+                    'x' => {
+                        // M-x: コマンドプロンプト
+                        self.mode = .mx_command;
+                        self.input_buffer.clearRetainingCapacity();
+                        self.getCurrentView().setError(": ");
+                    },
                     else => {},
                 }
             },
@@ -4520,6 +4581,305 @@ pub const Editor = struct {
         return .{
             .stdout = stdout,
             .stderr = stderr,
+        };
+    }
+
+    // ========================================
+    // M-x コマンド
+    // ========================================
+
+    /// M-xコマンドを実行
+    fn executeMxCommand(self: *Editor) !void {
+        const cmd_line = self.input_buffer.items;
+        self.input_buffer.clearRetainingCapacity();
+        self.mode = .normal;
+
+        if (cmd_line.len == 0) {
+            self.getCurrentView().clearError();
+            return;
+        }
+
+        // コマンドと引数を分割
+        var parts = std.mem.splitScalar(u8, cmd_line, ' ');
+        const cmd = parts.next() orelse "";
+        const arg = parts.next();
+
+        // コマンド実行
+        if (std.mem.eql(u8, cmd, "?") or std.mem.eql(u8, cmd, "help")) {
+            self.getCurrentView().setError("Commands: line tab indent mode revert key ro ?");
+        } else if (std.mem.eql(u8, cmd, "line")) {
+            try self.mxCmdLine(arg);
+        } else if (std.mem.eql(u8, cmd, "tab")) {
+            self.mxCmdTab(arg);
+        } else if (std.mem.eql(u8, cmd, "indent")) {
+            self.mxCmdIndent(arg);
+        } else if (std.mem.eql(u8, cmd, "mode")) {
+            self.mxCmdMode(arg);
+        } else if (std.mem.eql(u8, cmd, "revert")) {
+            try self.mxCmdRevert();
+        } else if (std.mem.eql(u8, cmd, "key")) {
+            self.mode = .mx_key_describe;
+            self.getCurrentView().setError("Press key: ");
+        } else if (std.mem.eql(u8, cmd, "ro")) {
+            self.mxCmdReadonly();
+        } else {
+            // 未知のコマンド
+            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Unknown command: {s}", .{cmd}) catch null;
+            if (self.prompt_buffer) |msg| {
+                self.getCurrentView().setError(msg);
+            }
+        }
+    }
+
+    /// line コマンド: 指定行へ移動
+    fn mxCmdLine(self: *Editor, arg: ?[]const u8) !void {
+        if (arg) |line_str| {
+            const line_num = std.fmt.parseInt(usize, line_str, 10) catch {
+                self.getCurrentView().setError("Invalid line number");
+                return;
+            };
+            if (line_num == 0) {
+                self.getCurrentView().setError("Line number must be >= 1");
+                return;
+            }
+            // 0-indexedに変換
+            const target_line = line_num - 1;
+            const view = self.getCurrentView();
+            const buffer = self.getCurrentBufferContent();
+            const total_lines = buffer.lineCount();
+            if (target_line >= total_lines) {
+                view.moveToBufferEnd(&self.terminal);
+            } else {
+                // 指定行の先頭に移動
+                if (buffer.getLineStart(target_line)) |pos| {
+                    self.setCursorToPos(pos);
+                }
+            }
+            self.getCurrentView().clearError();
+        } else {
+            // 引数なし: 現在の行番号を表示
+            const view = self.getCurrentView();
+            const current_line = view.top_line + view.cursor_y + 1;
+            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "line: {d}", .{current_line}) catch null;
+            if (self.prompt_buffer) |msg| {
+                self.getCurrentView().setError(msg);
+            }
+        }
+    }
+
+    /// tab コマンド: タブ幅の表示/設定
+    fn mxCmdTab(self: *Editor, arg: ?[]const u8) void {
+        if (arg) |width_str| {
+            const width = std.fmt.parseInt(u8, width_str, 10) catch {
+                self.getCurrentView().setError("Invalid tab width");
+                return;
+            };
+            if (width == 0 or width > 16) {
+                self.getCurrentView().setError("Tab width must be 1-16");
+                return;
+            }
+            self.getCurrentView().setTabWidth(width);
+            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "tab: {d}", .{width}) catch null;
+            if (self.prompt_buffer) |msg| {
+                self.getCurrentView().setError(msg);
+            }
+        } else {
+            // 引数なし: 現在のタブ幅を表示
+            const width = self.getCurrentView().getTabWidth();
+            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "tab: {d}", .{width}) catch null;
+            if (self.prompt_buffer) |msg| {
+                self.getCurrentView().setError(msg);
+            }
+        }
+    }
+
+    /// indent コマンド: インデントスタイルの表示/設定
+    fn mxCmdIndent(self: *Editor, arg: ?[]const u8) void {
+        const syntax = @import("syntax.zig");
+        if (arg) |style_str| {
+            if (std.mem.eql(u8, style_str, "space") or std.mem.eql(u8, style_str, "spaces")) {
+                self.getCurrentView().setIndentStyle(.space);
+                self.getCurrentView().setError("indent: space");
+            } else if (std.mem.eql(u8, style_str, "tab") or std.mem.eql(u8, style_str, "tabs")) {
+                self.getCurrentView().setIndentStyle(.tab);
+                self.getCurrentView().setError("indent: tab");
+            } else {
+                self.getCurrentView().setError("Usage: indent space|tab");
+            }
+        } else {
+            // 引数なし: 現在のインデントスタイルを表示
+            const style = self.getCurrentView().getIndentStyle();
+            const style_name = switch (style) {
+                .space => "space",
+                .tab => "tab",
+            };
+            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "indent: {s}", .{style_name}) catch null;
+            if (self.prompt_buffer) |msg| {
+                self.getCurrentView().setError(msg);
+            }
+        }
+        _ = syntax;
+    }
+
+    /// mode コマンド: 言語モードの表示/設定
+    fn mxCmdMode(self: *Editor, arg: ?[]const u8) void {
+        const syntax = @import("syntax.zig");
+        if (arg) |mode_str| {
+            // 部分マッチで言語を検索
+            var found: ?*const syntax.LanguageDef = null;
+            for (syntax.all_languages) |lang| {
+                // 名前の部分マッチ（大文字小文字無視）
+                if (std.ascii.indexOfIgnoreCase(lang.name, mode_str) != null) {
+                    found = lang;
+                    break;
+                }
+                // 拡張子マッチ
+                for (lang.extensions) |ext| {
+                    if (std.mem.eql(u8, ext, mode_str)) {
+                        found = lang;
+                        break;
+                    }
+                }
+                if (found != null) break;
+            }
+            if (found) |lang| {
+                self.getCurrentView().setLanguage(lang);
+                self.prompt_buffer = std.fmt.allocPrint(self.allocator, "mode: {s}", .{lang.name}) catch null;
+                if (self.prompt_buffer) |msg| {
+                    self.getCurrentView().setError(msg);
+                }
+            } else {
+                self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Unknown mode: {s}", .{mode_str}) catch null;
+                if (self.prompt_buffer) |msg| {
+                    self.getCurrentView().setError(msg);
+                }
+            }
+        } else {
+            // 引数なし: 現在のモードを表示
+            const lang = self.getCurrentView().language;
+            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "mode: {s}", .{lang.name}) catch null;
+            if (self.prompt_buffer) |msg| {
+                self.getCurrentView().setError(msg);
+            }
+        }
+    }
+
+    /// revert コマンド: ファイル再読み込み
+    fn mxCmdRevert(self: *Editor) !void {
+        const buffer_state = self.getCurrentBuffer();
+        if (buffer_state.filename == null) {
+            self.getCurrentView().setError("No file to revert");
+            return;
+        }
+        if (buffer_state.modified) {
+            self.getCurrentView().setError("Buffer modified. Save first or use C-x k");
+            return;
+        }
+
+        const filename = buffer_state.filename.?;
+        const file = std.fs.cwd().openFile(filename, .{}) catch |err| {
+            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Cannot open: {s}", .{@errorName(err)}) catch null;
+            if (self.prompt_buffer) |msg| {
+                self.getCurrentView().setError(msg);
+            }
+            return;
+        };
+        defer file.close();
+
+        const stat = try file.stat();
+        const content = try file.readToEndAlloc(self.allocator, stat.size);
+        defer self.allocator.free(content);
+
+        // バッファをクリアして再読み込み
+        const buffer = self.getCurrentBufferContent();
+        const len = buffer.len();
+        if (len > 0) {
+            try buffer.delete(0, len);
+        }
+        try buffer.insertSlice(0, content);
+        buffer_state.modified = false;
+        buffer_state.file_mtime = stat.mtime;
+
+        // カーソルを先頭に
+        self.getCurrentView().moveToBufferStart();
+        self.getCurrentView().setError("Reverted");
+    }
+
+    /// ro コマンド: 読み取り専用切り替え
+    fn mxCmdReadonly(self: *Editor) void {
+        const buffer_state = self.getCurrentBuffer();
+        buffer_state.readonly = !buffer_state.readonly;
+        if (buffer_state.readonly) {
+            self.getCurrentView().setError("[RO] Read-only enabled");
+        } else {
+            self.getCurrentView().setError("Read-only disabled");
+        }
+    }
+
+    /// キーの説明を返す
+    fn describeKey(self: *Editor, key: input.Key) []const u8 {
+        _ = self;
+        return switch (key) {
+            .ctrl => |c| switch (c) {
+                0, '@' => "C-Space/C-@: set-mark",
+                'a' => "C-a: beginning-of-line",
+                'b' => "C-b: backward-char",
+                'd' => "C-d: delete-char",
+                'e' => "C-e: end-of-line",
+                'f' => "C-f: forward-char",
+                'g' => "C-g: cancel",
+                'h' => "C-h: backspace",
+                'k' => "C-k: kill-line",
+                'l' => "C-l: recenter",
+                'n' => "C-n: next-line",
+                'p' => "C-p: previous-line",
+                'r' => "C-r: isearch-backward",
+                's' => "C-s: isearch-forward",
+                'u' => "C-u: undo",
+                'v' => "C-v: scroll-down",
+                'w' => "C-w: kill-region",
+                'x' => "C-x: prefix",
+                'y' => "C-y: yank",
+                '/' => "C-/: redo",
+                else => "Unknown key",
+            },
+            .alt => |c| switch (c) {
+                '%' => "M-%: query-replace",
+                ';' => "M-;: comment-toggle",
+                '<' => "M-<: beginning-of-buffer",
+                '>' => "M->: end-of-buffer",
+                '^' => "M-^: join-line",
+                'b' => "M-b: backward-word",
+                'd' => "M-d: kill-word",
+                'f' => "M-f: forward-word",
+                'v' => "M-v: scroll-up",
+                'w' => "M-w: copy-region",
+                'x' => "M-x: command",
+                '{' => "M-{: backward-paragraph",
+                '}' => "M-}: forward-paragraph",
+                '|' => "M-|: shell-command",
+                else => "Unknown key",
+            },
+            .enter => "Enter: newline",
+            .backspace => "Backspace: delete-backward-char",
+            .tab => "Tab: indent / insert-tab",
+            .shift_tab => "S-Tab: unindent",
+            .arrow_up => "Up: previous-line",
+            .arrow_down => "Down: next-line",
+            .arrow_left => "Left: backward-char",
+            .arrow_right => "Right: forward-char",
+            .home => "Home: beginning-of-line",
+            .end_key => "End: end-of-line",
+            .page_up => "PageUp: scroll-up",
+            .page_down => "PageDown: scroll-down",
+            .delete => "Delete: delete-char",
+            .escape => "Escape: cancel",
+            .alt_delete => "M-Delete: kill-word",
+            .alt_arrow_up => "M-Up: move-line-up",
+            .alt_arrow_down => "M-Down: move-line-down",
+            .ctrl_tab => "C-Tab: next-window",
+            .ctrl_shift_tab => "C-S-Tab: previous-window",
+            else => "Unknown key",
         };
     }
 };

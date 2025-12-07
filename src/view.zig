@@ -27,6 +27,9 @@ pub const View = struct {
     cached_line_num_width: usize,
     // 言語定義（シンタックス情報）
     language: *const syntax.LanguageDef,
+    // バッファ固有の設定（M-xコマンドで上書き可能）
+    tab_width: ?u8, // nullなら言語デフォルト
+    indent_style: ?syntax.IndentStyle, // nullなら言語デフォルト
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, buffer: *Buffer) View {
@@ -45,6 +48,8 @@ pub const View = struct {
             .search_highlight = null,
             .cached_line_num_width = 0,
             .language = &syntax.lang_text, // デフォルトはテキストモード
+            .tab_width = null, // 言語デフォルトを使用
+            .indent_style = null, // 言語デフォルトを使用
             .allocator = allocator,
         };
     }
@@ -59,6 +64,27 @@ pub const View = struct {
     pub fn setLanguage(self: *View, lang: *const syntax.LanguageDef) void {
         self.language = lang;
         self.markFullRedraw();
+    }
+
+    /// タブ幅を取得（設定値がなければ言語デフォルト）
+    pub fn getTabWidth(self: *const View) u8 {
+        return self.tab_width orelse self.language.indent_width;
+    }
+
+    /// タブ幅を設定
+    pub fn setTabWidth(self: *View, width: u8) void {
+        self.tab_width = width;
+        self.markFullRedraw();
+    }
+
+    /// インデントスタイルを取得（設定値がなければ言語デフォルト）
+    pub fn getIndentStyle(self: *const View) syntax.IndentStyle {
+        return self.indent_style orelse self.language.indent_style;
+    }
+
+    /// インデントスタイルを設定
+    pub fn setIndentStyle(self: *View, style: syntax.IndentStyle) void {
+        self.indent_style = style;
     }
 
     pub fn deinit(self: *View, allocator: std.mem.Allocator) void {
