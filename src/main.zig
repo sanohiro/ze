@@ -69,6 +69,9 @@ pub fn main() !void {
             // 新規ファイルの場合、現在のバッファにファイル名を設定
             const buffer = editor.getCurrentBuffer();
             buffer.filename = try allocator.dupe(u8, filename);
+            // 新規ファイルでも拡張子から言語検出
+            const view = editor.getCurrentView();
+            view.detectLanguage(filename, null);
         };
     }
 

@@ -920,6 +920,32 @@ pub const Buffer = struct {
         // Undo/Redo後は行キャッシュを無効化
         self.line_index.invalidate();
     }
+
+    /// バッファの先頭からmax_lenバイトのプレビューを取得（言語検出用）
+    /// 内部バッファへの直接参照を返すのでアロケーションなし
+    /// ただし、ファイルが追加バッファを跨ぐ場合はnullを返す
+    pub fn getContentPreview(self: *const Buffer, max_len: usize) ?[]const u8 {
+        if (self.pieces.items.len == 0) return null;
+
+        const first_piece = self.pieces.items[0];
+        const preview_len = @min(first_piece.length, max_len);
+
+        switch (first_piece.source) {
+            .original => {
+                const end = first_piece.start + preview_len;
+                if (end <= self.original.len) {
+                    return self.original[first_piece.start..end];
+                }
+            },
+            .add => {
+                const end = first_piece.start + preview_len;
+                if (end <= self.add_buffer.items.len) {
+                    return self.add_buffer.items[first_piece.start..end];
+                }
+            },
+        }
+        return null;
+    }
 };
 
 // 空バッファのテスト

@@ -798,6 +798,10 @@ pub const Editor = struct {
         defer file.close();
         const stat = try file.stat();
         buffer_state.file_mtime = stat.mtime;
+
+        // 言語検出（ファイル名とコンテンツ先頭から判定）
+        const content_preview = buffer_state.buffer.getContentPreview(512);
+        view.detectLanguage(path, content_preview);
     }
 
     pub fn saveFile(self: *Editor) !void {

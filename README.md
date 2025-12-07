@@ -571,8 +571,9 @@ ze/
 │   ├── view.zig           # レンダリング、画面管理
 │   ├── input.zig          # 入力処理、キーパース
 │   ├── terminal.zig       # 端末制御
-│   ├── encoding.zig       # エンコーディング検出・変換 ✨
+│   ├── encoding.zig       # エンコーディング検出・変換
 │   ├── unicode.zig        # Unicode処理（grapheme cluster等）
+│   ├── syntax.zig         # 言語定義（コメント、インデント） ✨
 │   └── config.zig         # 設定定数
 │
 │   # 将来追加予定:
@@ -868,8 +869,20 @@ pub const config = .{
   - [x] 行番号・ステータスライン常に正しく
 - [x] **コメント行の色変更** ✅ **完了**
   - [x] シンタックスハイライトよりライト（グレー表示）
-  - [x] 行頭 # / // / ; / -- を自動検出
+  - [x] 行頭 # / // / ; / -- / % / " を自動検出
   - [x] インデント付きコメントも対応
+  - [x] **ブロックコメント対応** ✨ **新規**
+    - [x] `/* */` (C, C++, Java, JavaScript, CSS等)
+    - [x] `<!-- -->` (HTML, XML)
+    - [x] `--[[ ]]` (Lua)
+    - [x] `{- -}` (Haskell)
+    - [x] `(* *)` (OCaml, F#)
+    - [x] `#| |#` (Common Lisp, Scheme)
+    - [x] 複数行にまたがるブロックコメントの正確なハイライト
+  - [x] **言語別インデント設定** ✨ **新規**
+    - [x] 48言語に対応（indent_style: tab/space, indent_width）
+    - [x] 各言語の標準的なスタイルをデフォルト設定
+    - [x] Go, Makefile はタブ、その他はスペース（言語慣習に従う）
 - [ ] **.editorconfig 対応**
   - [ ] tab_width や indent_style を反映
 - [ ] **簡易正規表現検索**

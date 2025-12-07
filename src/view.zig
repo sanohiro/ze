@@ -3,36 +3,7 @@ const Buffer = @import("buffer.zig").Buffer;
 const PieceIterator = @import("buffer.zig").PieceIterator;
 const Terminal = @import("terminal.zig").Terminal;
 const config = @import("config.zig");
-
-/// 行がコメント行かどうかを判定
-/// 行頭の空白を飛ばして # // ; --  があればコメント
-fn isCommentLine(line: []const u8) bool {
-    // 行頭の空白をスキップ
-    var i: usize = 0;
-    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) {
-        i += 1;
-    }
-
-    // 残りがなければコメントではない
-    if (i >= line.len) return false;
-
-    // コメントプレフィックスをチェック
-    const rest = line[i..];
-
-    // # (シェル、Python、Ruby、Makefileなど)
-    if (rest.len >= 1 and rest[0] == '#') return true;
-
-    // // (C, C++, Java, Go, JavaScript, Zig など)
-    if (rest.len >= 2 and rest[0] == '/' and rest[1] == '/') return true;
-
-    // ; (Lisp, Assembly, INI ファイルなど)
-    if (rest.len >= 1 and rest[0] == ';') return true;
-
-    // -- (Lua, SQL, Haskell など)
-    if (rest.len >= 2 and rest[0] == '-' and rest[1] == '-') return true;
-
-    return false;
-}
+const syntax = @import("syntax.zig");
 
 pub const View = struct {
     buffer: *Buffer,
@@ -54,6 +25,8 @@ pub const View = struct {
     search_highlight: ?[]const u8, // 検索文字列（nullならハイライトなし）
     // 行番号表示の幅キャッシュ（幅変更時に全画面再描画するため）
     cached_line_num_width: usize,
+    // 言語定義（シンタックス情報）
+    language: *const syntax.LanguageDef,
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, buffer: *Buffer) View {
@@ -71,8 +44,21 @@ pub const View = struct {
             .prev_screen = std.ArrayList(std.ArrayList(u8)).initCapacity(allocator, 0) catch unreachable,
             .search_highlight = null,
             .cached_line_num_width = 0,
+            .language = &syntax.lang_text, // デフォルトはテキストモード
             .allocator = allocator,
         };
+    }
+
+    /// ファイル名とコンテンツから言語を検出して設定
+    pub fn detectLanguage(self: *View, filename: ?[]const u8, content: ?[]const u8) void {
+        self.language = syntax.detectLanguage(filename, content);
+        self.markFullRedraw(); // 言語が変わったら再描画
+    }
+
+    /// 言語を直接設定
+    pub fn setLanguage(self: *View, lang: *const syntax.LanguageDef) void {
+        self.language = lang;
+        self.markFullRedraw();
     }
 
     pub fn deinit(self: *View, allocator: std.mem.Allocator) void {
@@ -161,13 +147,42 @@ pub const View = struct {
         self.needs_full_redraw = false;
     }
 
+    /// 指定行より前の行をスキャンして、ブロックコメント内で開始するかを判定
+    /// パフォーマンス: O(n) で n は target_line までの行数
+    fn computeBlockCommentState(self: *View, target_line: usize) bool {
+        // ブロックコメントがない言語なら常にfalse
+        if (self.language.block_comment == null) return false;
+
+        var in_block = false;
+        var iter = PieceIterator.init(self.buffer);
+        var line_buf = std.ArrayList(u8){};
+        defer line_buf.deinit(self.allocator);
+
+        var current_line: usize = 0;
+        while (current_line < target_line) : (current_line += 1) {
+            // 行を読み取る
+            line_buf.clearRetainingCapacity();
+            while (iter.next()) |ch| {
+                if (ch == '\n') break;
+                line_buf.append(self.allocator, ch) catch break;
+            }
+
+            // 行を解析
+            const analysis = self.language.analyzeLine(line_buf.items, in_block);
+            in_block = analysis.ends_in_block;
+        }
+
+        return in_block;
+    }
+
     // イテレータを再利用して行を描画（セルレベル差分描画版）
-    fn renderLineWithIter(self: *View, term: *Terminal, screen_row: usize, file_line: usize, iter: *PieceIterator, line_buffer: *std.ArrayList(u8)) !void {
-        try self.renderLineWithIterOffset(term, 0, screen_row, file_line, iter, line_buffer);
+    fn renderLineWithIter(self: *View, term: *Terminal, screen_row: usize, file_line: usize, iter: *PieceIterator, line_buffer: *std.ArrayList(u8)) !bool {
+        return self.renderLineWithIterOffset(term, 0, screen_row, file_line, iter, line_buffer, false);
     }
 
     // イテレータを再利用して行を描画（オフセット付き）
-    fn renderLineWithIterOffset(self: *View, term: *Terminal, viewport_y: usize, screen_row: usize, file_line: usize, iter: *PieceIterator, line_buffer: *std.ArrayList(u8)) !void {
+    /// 行を描画し、次の行のブロックコメント状態を返す
+    fn renderLineWithIterOffset(self: *View, term: *Terminal, viewport_y: usize, screen_row: usize, file_line: usize, iter: *PieceIterator, line_buffer: *std.ArrayList(u8), in_block: bool) !bool {
         const abs_row = viewport_y + screen_row;
         // 再利用バッファをクリア
         line_buffer.clearRetainingCapacity();
@@ -178,8 +193,8 @@ pub const View = struct {
             try line_buffer.append(term.allocator, ch);
         }
 
-        // コメント行かどうかをチェック（行頭の空白を飛ばして # // ; があればコメント）
-        const is_comment = isCommentLine(line_buffer.items);
+        // コメント範囲を解析（ブロックコメント対応）
+        const analysis = self.language.analyzeLine(line_buffer.items, in_block);
 
         // Tab展開用の一時バッファ
         var expanded_line = std.ArrayList(u8){};
@@ -194,17 +209,38 @@ pub const View = struct {
             try expanded_line.appendSlice(self.allocator, line_num_str);
         }
 
-        // コメント行なら暗めのグレーで開始
-        if (is_comment) {
-            try expanded_line.appendSlice(self.allocator, "\x1b[90m");
-        }
-
         // grapheme-aware rendering with tab expansion and horizontal scrolling
         var byte_idx: usize = 0;
         var col: usize = 0; // 論理カラム位置（行全体での位置）
         const visible_end = self.top_col + term.width; // 表示範囲の終端
+        var in_comment = false; // 現在コメント内かどうか
+        var current_span_idx: usize = 0; // 現在のコメントスパンインデックス
+
+        // 現在のコメントスパンを取得
+        var current_span: ?syntax.LanguageDef.CommentSpan = if (analysis.span_count > 0) analysis.spans[0] else null;
 
         while (byte_idx < line_buffer.items.len and col < visible_end) {
+            // コメントスパンの開始・終了をチェック
+            if (current_span) |span| {
+                if (!in_comment and byte_idx == span.start) {
+                    // コメント開始
+                    try expanded_line.appendSlice(self.allocator, "\x1b[90m");
+                    in_comment = true;
+                }
+                if (in_comment) {
+                    if (span.end) |end| {
+                        if (byte_idx == end) {
+                            // コメント終了
+                            try expanded_line.appendSlice(self.allocator, "\x1b[m");
+                            in_comment = false;
+                            // 次のスパンへ
+                            current_span_idx += 1;
+                            current_span = if (current_span_idx < analysis.span_count) analysis.spans[current_span_idx] else null;
+                        }
+                    }
+                }
+            }
+
             const ch = line_buffer.items[byte_idx];
             if (ch < config.UTF8.CONTINUATION_MASK) {
                 // ASCII
@@ -251,8 +287,8 @@ pub const View = struct {
             }
         }
 
-        // コメント行ならリセット
-        if (is_comment) {
+        // コメント内だった場合はリセット
+        if (in_comment) {
             try expanded_line.appendSlice(self.allocator, "\x1b[m");
         }
 
@@ -395,6 +431,9 @@ pub const View = struct {
             try new_prev_line.appendSlice(self.allocator, new_line);
             try self.prev_screen.append(self.allocator, new_prev_line);
         }
+
+        // 次の行がブロックコメント内で開始するかを返す
+        return analysis.ends_in_block;
     }
 
     // 空行（~）を描画（セルレベル差分版）
@@ -472,6 +511,9 @@ pub const View = struct {
             // ウィンドウの開始位置に移動
             try term.moveCursor(viewport_y, 0);
 
+            // top_lineより前の行をスキャンしてブロックコメント状態を計算
+            var in_block = self.computeBlockCommentState(self.top_line);
+
             // top_lineの開始位置を取得してイテレータを初期化
             const start_pos = self.buffer.getLineStart(self.top_line) orelse self.buffer.len();
             var iter = PieceIterator.init(self.buffer);
@@ -482,7 +524,7 @@ pub const View = struct {
             while (screen_row < max_lines) : (screen_row += 1) {
                 const file_line = self.top_line + screen_row;
                 if (file_line < self.buffer.lineCount()) {
-                    try self.renderLineWithIterOffset(term, viewport_y, screen_row, file_line, &iter, &self.line_buffer);
+                    in_block = try self.renderLineWithIterOffset(term, viewport_y, screen_row, file_line, &iter, &self.line_buffer, in_block);
                 } else {
                     try self.renderEmptyLineOffset(term, viewport_y, screen_row);
                 }
@@ -507,12 +549,15 @@ pub const View = struct {
                 var iter = PieceIterator.init(self.buffer);
                 iter.seek(start_pos);
 
+                // start_file_lineより前の行をスキャンしてブロックコメント状態を計算
+                var in_block = self.computeBlockCommentState(start_file_line);
+
                 // dirty範囲を描画 - イテレータを再利用
                 var screen_row = render_start;
                 while (screen_row < render_end) : (screen_row += 1) {
                     const file_line = self.top_line + screen_row;
                     if (file_line < self.buffer.lineCount()) {
-                        try self.renderLineWithIterOffset(term, viewport_y, screen_row, file_line, &iter, &self.line_buffer);
+                        in_block = try self.renderLineWithIterOffset(term, viewport_y, screen_row, file_line, &iter, &self.line_buffer, in_block);
                     } else {
                         try self.renderEmptyLineOffset(term, viewport_y, screen_row);
                     }
