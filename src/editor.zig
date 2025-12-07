@@ -362,6 +362,100 @@ pub const Editor = struct {
         return error.BufferNotFound;
     }
 
+    /// 現在のウィンドウを横（上下）に分割
+    pub fn splitWindowHorizontally(self: *Editor) !void {
+        const current_window = &self.windows.items[self.current_window_idx];
+
+        // ウィンドウの高さが2未満の場合は分割できない
+        if (current_window.height < 2) {
+            return error.WindowTooSmall;
+        }
+
+        // 現在のウィンドウの高さを半分にする
+        const old_height = current_window.height;
+        const new_height = old_height / 2;
+        current_window.height = new_height;
+
+        // 新しいウィンドウを下半分に作成
+        const new_window_id = self.next_window_id;
+        self.next_window_id += 1;
+
+        var new_window = Window.init(
+            new_window_id,
+            current_window.buffer_id, // 同じバッファを表示
+            current_window.x,
+            current_window.y + new_height,
+            current_window.width,
+            old_height - new_height,
+        );
+
+        // 新しいウィンドウのViewを初期化
+        const buffer_state = self.findBufferById(current_window.buffer_id).?;
+        new_window.view = View.init(self.allocator, &buffer_state.buffer);
+
+        // ウィンドウリストに追加
+        try self.windows.append(self.allocator, new_window);
+
+        // 新しいウィンドウをアクティブにする
+        self.current_window_idx = self.windows.items.len - 1;
+    }
+
+    /// 現在のウィンドウを縦（左右）に分割
+    pub fn splitWindowVertically(self: *Editor) !void {
+        const current_window = &self.windows.items[self.current_window_idx];
+
+        // ウィンドウの幅が2未満の場合は分割できない
+        if (current_window.width < 2) {
+            return error.WindowTooSmall;
+        }
+
+        // 現在のウィンドウの幅を半分にする
+        const old_width = current_window.width;
+        const new_width = old_width / 2;
+        current_window.width = new_width;
+
+        // 新しいウィンドウを右半分に作成
+        const new_window_id = self.next_window_id;
+        self.next_window_id += 1;
+
+        var new_window = Window.init(
+            new_window_id,
+            current_window.buffer_id, // 同じバッファを表示
+            current_window.x + new_width,
+            current_window.y,
+            old_width - new_width,
+            current_window.height,
+        );
+
+        // 新しいウィンドウのViewを初期化
+        const buffer_state = self.findBufferById(current_window.buffer_id).?;
+        new_window.view = View.init(self.allocator, &buffer_state.buffer);
+
+        // ウィンドウリストに追加
+        try self.windows.append(self.allocator, new_window);
+
+        // 新しいウィンドウをアクティブにする
+        self.current_window_idx = self.windows.items.len - 1;
+    }
+
+    /// 現在のウィンドウを閉じる
+    pub fn closeCurrentWindow(self: *Editor) !void {
+        // 最後のウィンドウは閉じられない
+        if (self.windows.items.len == 1) {
+            return error.CannotCloseSoleWindow;
+        }
+
+        // 現在のウィンドウを閉じる
+        var window = &self.windows.items[self.current_window_idx];
+        window.deinit(self.allocator);
+        _ = self.windows.orderedRemove(self.current_window_idx);
+
+        // current_window_idxを調整
+        if (self.current_window_idx >= self.windows.items.len) {
+            self.current_window_idx = self.windows.items.len - 1;
+        }
+    }
+
     pub fn loadFile(self: *Editor, path: []const u8) !void {
         const buffer_state = self.getCurrentBuffer();
         const view = self.getCurrentView();
@@ -1245,11 +1339,15 @@ pub const Editor = struct {
                             },
                             '2' => {
                                 // C-x 2: 横分割（上下に分割）
-                                self.getCurrentView().setError("Split window not yet implemented");
+                                self.splitWindowHorizontally() catch |err| {
+                                    self.getCurrentView().setError(@errorName(err));
+                                };
                             },
                             '3' => {
                                 // C-x 3: 縦分割（左右に分割）
-                                self.getCurrentView().setError("Split window not yet implemented");
+                                self.splitWindowVertically() catch |err| {
+                                    self.getCurrentView().setError(@errorName(err));
+                                };
                             },
                             'o' => {
                                 // C-x o: 次のウィンドウに移動
@@ -1259,11 +1357,9 @@ pub const Editor = struct {
                             },
                             '0' => {
                                 // C-x 0: 現在のウィンドウを閉じる
-                                if (self.windows.items.len > 1) {
-                                    self.getCurrentView().setError("Close window not yet implemented");
-                                } else {
-                                    self.getCurrentView().setError("Attempt to delete sole window");
-                                }
+                                self.closeCurrentWindow() catch |err| {
+                                    self.getCurrentView().setError(@errorName(err));
+                                };
                             },
                             else => {
                                 self.getCurrentView().setError("Unknown command");
