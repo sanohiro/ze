@@ -2315,10 +2315,22 @@ pub const Editor = struct {
                     },
                     'r' => {
                         // C-r インクリメンタルサーチ（後方）
-                        self.mode = .isearch_backward;
-                        self.search_start_pos = self.getCurrentView().getCursorBufferPos();
-                        self.input_buffer.clearRetainingCapacity();
-                        self.getCurrentView().setError("I-search backward: ");
+                        // 前回の検索文字列がある場合は、それを使って前の一致を検索
+                        if (self.last_search) |search_str| {
+                            // input_bufferに前回の検索文字列をコピー
+                            self.input_buffer.clearRetainingCapacity();
+                            self.input_buffer.appendSlice(self.allocator, search_str) catch {};
+                            self.getCurrentView().setSearchHighlight(search_str);
+                            try self.performSearch(false, true); // forward=false, skip_current=true で前を検索
+                            // 検索ハイライトは残すが、プロンプトはクリア（Emacs風）
+                            self.getCurrentView().clearError();
+                        } else {
+                            // 新規検索開始
+                            self.mode = .isearch_backward;
+                            self.search_start_pos = self.getCurrentView().getCursorBufferPos();
+                            self.input_buffer.clearRetainingCapacity();
+                            self.getCurrentView().setError("I-search backward: ");
+                        }
                     },
                     else => {},
                 }
