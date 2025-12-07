@@ -7,10 +7,14 @@ pub fn build(b: *std.Build) void {
     // バージョン定義（build.zig.zonと同期を保つ）
     const version = "0.5.0";
 
+    // リリースビルド時はデバッグ情報を削除
+    const strip = b.option(bool, "strip", "Strip debug info") orelse (optimize != .Debug);
+
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .strip = strip,
     });
 
     // バージョンをビルドオプションとして渡す

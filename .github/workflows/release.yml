@@ -1,0 +1,87 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          # Linux x86_64 (Ubuntu最新)
+          - os: ubuntu-24.04
+            target: x86_64-linux
+            artifact: ze-linux-x86_64
+          # Linux x86_64 (Ubuntu古め - glibc互換性のため)
+          - os: ubuntu-22.04
+            target: x86_64-linux
+            artifact: ze-linux-x86_64-ubuntu22
+          # Linux aarch64
+          - os: ubuntu-24.04
+            target: aarch64-linux
+            artifact: ze-linux-aarch64
+          # macOS x86_64
+          - os: macos-13
+            target: x86_64-macos
+            artifact: ze-macos-x86_64
+          # macOS Apple Silicon
+          - os: macos-14
+            target: aarch64-macos
+            artifact: ze-macos-aarch64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.1
+
+      - name: Build
+        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }}
+
+      - name: Create archive
+        run: |
+          cd zig-out/bin
+          tar -czvf ../../${{ matrix.artifact }}.tar.gz ze
+          cd ../..
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release files
+        run: |
+          mkdir -p release
+          find artifacts -name "*.tar.gz" -exec cp {} release/ \;
+          ls -la release/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
+          draft: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
