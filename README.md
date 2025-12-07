@@ -1,212 +1,222 @@
 # ze
 
-**Zig Editor** / **Zero-latency Editor**
+**Zero-latency Editor**
 
-SSH先でサクッと使える、設定不要の軽量で高速なモダンなエディタ。
+[日本語](README.ja.md)
+
+A lightweight, fast, modern editor that requires no configuration. Perfect for quick edits over SSH.
 
 ## Why ze?
 
-- **軽量** — 5MB以下、依存なし
-- **ゼロコンフィグ** — dotfileなし、コピーして即使用
-- **Emacsキーバインド** — Bash/Readlineユーザーに自然
-- **UTF-8完全対応** — 日本語、絵文字、どんな文字もサポートしています。
-- **シェル統合** — Unixコマンドをエディタ内からパイプできます。
+- **Lightweight** — Under 300KB, no dependencies
+- **Zero-config** — No dotfiles, just copy and use
+- **Emacs keybindings** — Natural for Bash/Readline users
+- **Full UTF-8 support** — Japanese, emoji, any character
+- **Shell integration** — Pipe Unix commands from within the editor
+
+## Requirements
+
+- Linux (x86_64, aarch64)
+- macOS (Intel, Apple Silicon)
+- WSL2
 
 ## Install
 
+Download pre-built binaries from [Releases](https://github.com/sanohiro/ze/releases), or build from source:
+
 ```bash
-# ビルド
+# Build (requires Zig 0.15+)
 zig build -Doptimize=ReleaseFast
 
-# パスを通す（任意）
+# Add to PATH (optional)
 cp ./zig-out/bin/ze ~/.local/bin/
 ```
 
 ## Quick Start
 
 ```bash
-ze file.txt          # ファイルを開く
-ze                    # 新規バッファで起動
+ze file.txt          # Open a file
+ze                    # Start with empty buffer
 ```
 
-保存して終了: `C-x C-s` → `C-x C-c`
+Save and quit: `C-x C-s` → `C-x C-c`
 
 ---
 
 ## Keybindings
 
-zeはEmacsスタイルのキーバインドを採用しています。`C-` は Ctrl、`M-` は Alt/Option。
+ze uses Emacs-style keybindings. `C-` means Ctrl, `M-` means Alt/Option.
 
-### 移動
+### Movement
 
-| キー | 動作 |
-|------|------|
-| `C-f` / `C-b` | 1文字 前進/後退 |
-| `C-n` / `C-p` | 次行/前行 |
-| `C-a` / `C-e` | 行頭/行末 |
-| `M-f` / `M-b` | 単語単位で前進/後退 |
-| `C-v` / `M-v` | ページダウン/アップ |
-| `M-<` / `M->` | バッファ先頭/末尾 |
-| `C-l` | カーソル行を画面中央に |
+| Key | Action |
+|-----|--------|
+| `C-f` / `C-b` | Forward/backward one character |
+| `C-n` / `C-p` | Next/previous line |
+| `C-a` / `C-e` | Beginning/end of line |
+| `M-f` / `M-b` | Forward/backward one word |
+| `C-v` / `M-v` | Page down/up |
+| `M-<` / `M->` | Beginning/end of buffer |
+| `C-l` | Center cursor line on screen |
 
-### 編集
+### Editing
 
-| キー | 動作 |
-|------|------|
-| `C-d` | 1文字削除 |
-| `M-d` | 単語削除 |
-| `C-k` | 行末まで削除 |
-| `C-Space` | マーク設定/解除(範囲選択開始/解除) |
-| `C-w` / `M-w` | カット/コピー |
-| `C-y` | ペースト |
+| Key | Action |
+|-----|--------|
+| `C-d` | Delete character |
+| `M-d` | Delete word |
+| `C-k` | Kill to end of line |
+| `C-Space` | Set/unset mark (start/end selection) |
+| `C-w` / `M-w` | Cut/copy |
+| `C-y` | Paste |
 | `C-u` / `C-/` | Undo/Redo |
-| `M-^` | 行を上の行と結合 |
-| `M-↑` / `M-↓` | 行を上/下に移動 |
-| `Tab` / `S-Tab` | インデント/アンインデント |
-| `M-;` | コメント切り替え |
+| `M-^` | Join line with previous |
+| `M-↑` / `M-↓` | Move line up/down |
+| `Tab` / `S-Tab` | Indent/unindent |
+| `M-;` | Toggle comment |
 
-### ファイル
+### File
 
-| キー | 動作 |
-|------|------|
-| `C-x C-f` | ファイルを開く |
-| `C-x C-s` | 保存 |
-| `C-x C-w` | 名前を付けて保存 |
-| `C-x C-c` | 終了 |
+| Key | Action |
+|-----|--------|
+| `C-x C-f` | Open file |
+| `C-x C-s` | Save |
+| `C-x C-w` | Save as |
+| `C-x C-c` | Quit |
 
-### 検索・置換
+### Search & Replace
 
-| キー | 動作 |
-|------|------|
-| `C-s` / `C-r` | 前方/後方検索 |
-| `M-%` | 対話的置換 (y/n/!/q) |
+| Key | Action |
+|-----|--------|
+| `C-s` / `C-r` | Forward/backward search |
+| `M-%` | Interactive replace (y/n/!/q) |
 
-正規表現も使えます: `\d+` で数字、`^TODO` で行頭のTODO。
+Regex supported: `\d+` for digits, `^TODO` for TODO at line start.
 
-### ウィンドウ・バッファ
+### Windows & Buffers
 
-| キー | 動作 |
-|------|------|
-| `C-x 2` / `C-x 3` | 横分割/縦分割 |
-| `C-x o` | 次のウィンドウへ |
-| `C-x 0` / `C-x 1` | ウィンドウを閉じる/他を閉じる |
-| `C-x b` | バッファ切り替え |
-| `C-x C-b` | バッファ一覧 |
-| `C-x k` | バッファを閉じる |
+| Key | Action |
+|-----|--------|
+| `C-x 2` / `C-x 3` | Split horizontal/vertical |
+| `C-x o` | Switch to next window |
+| `C-x 0` / `C-x 1` | Close window/close others |
+| `C-x b` | Switch buffer |
+| `C-x C-b` | List buffers |
+| `C-x k` | Kill buffer |
 
 ---
 
 ## Shell Integration
 
-zeは「テキストはストリーム」というUnix哲学に基づいています。
+ze follows the Unix philosophy: "Text is a stream."
 
-高度なテキスト処理は `sort`、`jq`、`awk`、`sed` など既に存在する優れたツールに任せ、zeはそれらとバッファを繋ぐパイプラインの役割に徹します。車輪の再発明はしません。
+Advanced text processing is delegated to existing tools like `sort`, `jq`, `awk`, `sed`. ze acts as the pipeline connecting these tools to your buffer. No reinventing the wheel.
 
-`M-|` でシェルコマンドを実行し、選択範囲やバッファ全体をパイプで渡せます。
+`M-|` executes shell commands, piping selection or buffer content.
 
-### 構文
+### Syntax
 
 ```
-[入力元] | コマンド [出力先]
+[source] | command [destination]
 ```
 
-### 入力元
+### Source
 
-| 記号 | 入力 |
-|------|------|
-| (なし) | 選択範囲 |
-| `%` | バッファ全体 |
-| `.` | 現在行 |
+| Symbol | Input |
+|--------|-------|
+| (none) | Selection |
+| `%` | Entire buffer |
+| `.` | Current line |
 
-### 出力先
+### Destination
 
-| 記号 | 出力 |
-|------|------|
-| (なし) | コマンドバッファに表示 |
-| `>` | 入力元を置換 |
-| `+>` | カーソル位置に挿入 |
-| `n>` | 新規バッファ |
+| Symbol | Output |
+|--------|--------|
+| (none) | Display in command buffer |
+| `>` | Replace source |
+| `+>` | Insert at cursor |
+| `n>` | New buffer |
 
-### 例
+### Examples
 
 ```bash
-| date +>              # 日付をカーソル位置に挿入
-| sort >               # 選択範囲をソートして置換
-% | jq . >             # JSON全体を整形
-. | sh >               # 現在行をシェル実行
-% | grep TODO n>       # TODO行を新規バッファに抽出
+| date +>              # Insert date at cursor
+| sort >               # Sort selection and replace
+% | jq . >             # Format entire JSON buffer
+. | sh >               # Execute current line as shell
+% | grep TODO n>       # Extract TODO lines to new buffer
 ```
 
-**C-g** でいつでもキャンセル可能。LLM呼び出しなど長時間処理もOK。
+**C-g** cancels at any time. Long-running processes (LLM calls, etc.) are fine.
 
 ---
 
 ## M-x Commands
 
-`M-x` でコマンドプロンプトが開きます。
+`M-x` opens the command prompt.
 
-| コマンド | 説明 |
-|---------|------|
-| `line 100` | 100行目へジャンプ |
-| `tab` / `tab 2` | タブ幅表示/設定 |
-| `indent` | インデントスタイル表示/設定 |
-| `revert` | ファイル再読み込み |
-| `ro` | 読み取り専用切り替え |
-| `?` | コマンド一覧 |
+| Command | Description |
+|---------|-------------|
+| `line 100` | Jump to line 100 |
+| `tab` / `tab 2` | Show/set tab width |
+| `indent` | Show/set indent style |
+| `revert` | Reload file |
+| `ro` | Toggle read-only |
+| `?` | List commands |
 
 ---
 
 ## Features
 
-### エンコーディング
+### Encoding
 
-- **UTF-8 + LF** に最適化しています。ファイル読み込み時にUTF-8+LFに変換します。UTF-8+LFの場合はmmap でゼロコピー読み込みます。
-- UTF-8(BOM付き、なし)、UTF-16(BOM付き)、Shift_JIS、EUC-JPのエンコーディングや改行コード(LF, CRLF, CR) も自動検出・変換します。
-- 保存時は元のエンコーディング、改行コードを保持します。
-> 上記以外のエンコードやzeではサポートしていません。必要な場合はiconvやnkfで変換してください。
+- Optimized for **UTF-8 + LF**. Converts to UTF-8+LF on load. Zero-copy mmap for UTF-8+LF files.
+- Auto-detects UTF-8 (with/without BOM), UTF-16 (with BOM), Shift_JIS, EUC-JP, and line endings (LF, CRLF, CR).
+- Preserves original encoding and line endings on save.
 
+> Other encodings not supported. Use iconv or nkf for conversion.
 
 ## Roadmap
 
-### 実装済み
+### Implemented
 
-- Piece Tableバッファ、Undo/Redo
-- Grapheme cluster対応（絵文字、CJK完全サポート）
-- インクリメンタル検索、正規表現、Query Replace
-- マルチバッファ、ウィンドウ分割
-- シェル統合 (M-|)
-- 48言語のコメント・インデント設定
-- カラーはコメントのみサポート
+- Piece Table buffer with Undo/Redo
+- Grapheme cluster support (emoji, CJK)
+- Incremental search, regex, Query Replace
+- Multi-buffer, window splitting
+- Shell integration (M-|)
+- Comment/indent settings for 48 languages
+- Syntax highlighting for comments only
 
-### 予定
+### Planned
 
-- [ ] アプリ内ヘルプ (`C-h ?`)
-- [ ] キーボードマクロ (`C-x (` / `)` / `e`)
+- [ ] In-app help (`C-h ?`)
+- [ ] Keyboard macros (`C-x (` / `)` / `e`)
 
-### 実装しない
+### Not Implementing
 
-- シンタックスハイライト — zeは設定ファイルエディタ、IDEではない
-- LSP — 本格的な開発はVSCodeで
-- プラグイン — シンプルさを維持
-- マウス — キーボード操作のみ
-- GUI — ターミナル専用
+- Syntax highlighting — ze is a config file editor, not an IDE
+- LSP — Use VSCode for serious development
+- Plugins — Maintaining simplicity
+- Mouse — Keyboard only
+- GUI — Terminal only
 
 ---
 
 ## Philosophy
 
-1. **Speed** — 8ms以下の応答性。ゲームレベル。
-2. **Minimal** — 一つのことを上手く行う。
-3. **Unix** — テキストはストリーム。パイプはファーストクラス。
-4. **Zero-config** — コピーして即使える。
+1. **Speed** — Sub-8ms response. Game-level latency.
+2. **Minimal** — Do one thing well.
+3. **Unix** — Text is a stream. Pipes are first-class.
+4. **Zero-config** — Copy and run.
 
 ---
 
 ## Inspiration
 
-- [mg](https://github.com/hboetes/mg) — ミニマルなEmacs
-- [kilo](https://github.com/antirez/kilo) — 1000行エディタ
-- [vis](https://github.com/martanne/vis) — 構造的正規表現
+- [mg](https://github.com/hboetes/mg) — Minimal Emacs
+- [kilo](https://github.com/antirez/kilo) — 1000-line editor
+- [vis](https://github.com/martanne/vis) — Structural regex
 
 ---
 
@@ -216,4 +226,4 @@ MIT
 
 ---
 
-*"一つのことを上手く行う。高速に。"*
+*"Do one thing well. Fast."*
