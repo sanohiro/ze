@@ -2360,12 +2360,18 @@ pub const Editor = struct {
                     '>' => self.getCurrentView().moveToBufferEnd(&self.terminal), // M-> ファイル終端
                     '{' => try self.backwardParagraph(), // M-{ 前の段落
                     '}' => try self.forwardParagraph(), // M-} 次の段落
+                    '^' => try self.joinLine(), // M-^ 行の結合
+                    ';' => try self.toggleComment(), // M-; コメント切り替え
                     else => {},
                 }
             },
 
             // M-delete
             .alt_delete => try self.deleteWord(),
+
+            // Alt+矢印（行の移動）
+            .alt_arrow_up => try self.moveLineUp(),
+            .alt_arrow_down => try self.moveLineDown(),
 
             // 矢印キー
             .arrow_up => self.getCurrentView().moveCursorUp(),
@@ -2386,8 +2392,16 @@ pub const Editor = struct {
                 try self.insertChar('\n');
             },
             .backspace => try self.backspace(),
-            .tab => try self.insertChar('\t'),
-            .shift_tab => {}, // 未使用
+            .tab => {
+                // マーク選択がある場合はインデント、なければタブ挿入
+                const window = self.getCurrentWindow();
+                if (window.mark_pos != null) {
+                    try self.indentRegion();
+                } else {
+                    try self.insertChar('\t');
+                }
+            },
+            .shift_tab => try self.unindentRegion(), // アンインデント
             .ctrl_tab => {
                 // Ctrl-Tab: 次のウィンドウに移動
                 if (self.windows.items.len > 1) {
@@ -2690,6 +2704,437 @@ pub const Editor = struct {
         }
     }
 
+    /// M-^ 行の結合 (delete-indentation)
+    /// 現在の行の先頭インデントを削除し、前の行と結合
+    fn joinLine(self: *Editor) !void {
+        const buffer_state = self.getCurrentBuffer();
+        if (buffer_state.readonly) {
+            self.getCurrentView().setError("Buffer is read-only");
+            return;
+        }
+        const buffer = self.getCurrentBufferContent();
+        const view = self.getCurrentView();
+
+        // 現在の行の先頭位置を取得
+        const current_line = self.getCurrentLine();
+        if (current_line == 0) {
+            // 最初の行では何もしない
+            return;
+        }
+
+        // 現在の行の先頭位置を取得
+        const line_start = buffer.getLineStart(current_line) orelse return;
+
+        // 先頭のインデント（空白とタブ）をスキップして最初の非空白文字を見つける
+        var iter = PieceIterator.init(buffer);
+        iter.seek(line_start);
+        var first_non_space = line_start;
+        while (iter.next()) |ch| {
+            if (ch != ' ' and ch != '\t') {
+                first_non_space = iter.global_pos - 1;
+                break;
+            }
+        }
+
+        // 前の行の末尾位置を取得（改行の位置）
+        const prev_line_end = line_start - 1; // 前の行の改行文字の位置
+
+        // 削除範囲: 前の行の改行 + 現在の行のインデント
+        const delete_start = prev_line_end;
+        const delete_len = first_non_space - prev_line_end;
+
+        if (delete_len > 0) {
+            const deleted = try self.extractText(delete_start, delete_len);
+            errdefer self.allocator.free(deleted);
+
+            try buffer.delete(delete_start, delete_len);
+            try self.recordDelete(delete_start, deleted, view.getCursorBufferPos());
+
+            // 前の行の末尾にスペースを挿入（前の行の末尾が空白でない場合）
+            var needs_space = true;
+            if (delete_start > 0) {
+                var check_iter = PieceIterator.init(buffer);
+                check_iter.seek(delete_start - 1);
+                if (check_iter.next()) |prev_char| {
+                    if (prev_char == ' ' or prev_char == '\t') {
+                        needs_space = false;
+                    }
+                }
+            }
+
+            if (needs_space and first_non_space > line_start) {
+                try buffer.insertSlice(delete_start, " ");
+                try self.recordInsert(delete_start, " ", view.getCursorBufferPos());
+            }
+
+            buffer_state.modified = true;
+            view.markDirty(current_line - 1, null);
+
+            // カーソルを結合位置に移動
+            self.setCursorToPos(delete_start);
+
+            self.allocator.free(deleted);
+        }
+    }
+
+    /// 行の複製 (duplicate-line)
+    fn duplicateLine(self: *Editor) !void {
+        const buffer_state = self.getCurrentBuffer();
+        if (buffer_state.readonly) {
+            self.getCurrentView().setError("Buffer is read-only");
+            return;
+        }
+        const buffer = self.getCurrentBufferContent();
+        const view = self.getCurrentView();
+        const current_line = self.getCurrentLine();
+
+        // 現在の行の開始・終了位置を取得
+        const line_start = buffer.getLineStart(current_line);
+        var line_end = line_start;
+        var iter = PieceIterator.init(buffer);
+        iter.seek(line_start);
+        while (iter.next()) |ch| {
+            if (ch == '\n') {
+                line_end = iter.global_pos;
+                break;
+            }
+        } else {
+            line_end = buffer.len();
+        }
+
+        // 行の内容を取得（改行を含む）
+        const line_len = line_end - line_start;
+        if (line_len == 0) return;
+
+        const line_content = try self.extractText(line_start, line_len);
+        defer self.allocator.free(line_content);
+
+        // 改行後に挿入（または行末に改行+内容を挿入）
+        const insert_pos = line_end;
+        var to_insert: []const u8 = undefined;
+        var allocated = false;
+
+        if (line_end < buffer.len()) {
+            // 改行がある場合はそのまま挿入
+            to_insert = line_content;
+        } else {
+            // ファイル末尾の場合は改行を追加
+            var with_newline = try self.allocator.alloc(u8, line_len + 1);
+            with_newline[0] = '\n';
+            @memcpy(with_newline[1..], line_content);
+            to_insert = with_newline;
+            allocated = true;
+        }
+        defer if (allocated) self.allocator.free(to_insert);
+
+        try buffer.insertSlice(insert_pos, to_insert);
+        try self.recordInsert(insert_pos, to_insert, view.getCursorBufferPos());
+
+        buffer_state.modified = true;
+        view.markDirty(current_line, null);
+
+        // カーソルを複製した行に移動
+        view.moveCursorDown(&self.terminal);
+    }
+
+    /// 行を上に移動
+    fn moveLineUp(self: *Editor) !void {
+        const buffer_state = self.getCurrentBuffer();
+        if (buffer_state.readonly) {
+            self.getCurrentView().setError("Buffer is read-only");
+            return;
+        }
+        const buffer = self.getCurrentBufferContent();
+        const view = self.getCurrentView();
+        const current_line = self.getCurrentLine();
+
+        if (current_line == 0) return; // 最初の行は移動できない
+
+        // 現在の行を取得
+        const line_start = buffer.getLineStart(current_line) orelse return;
+        var line_end = line_start;
+        var iter = PieceIterator.init(buffer);
+        iter.seek(line_start);
+        while (iter.next()) |ch| {
+            if (ch == '\n') {
+                line_end = iter.global_pos;
+                break;
+            }
+        } else {
+            line_end = buffer.len();
+        }
+
+        // 前の行の開始位置
+        const prev_line_start = buffer.getLineStart(current_line - 1) orelse return;
+
+        // 現在の行の内容を取得
+        const line_len = line_end - line_start;
+        const line_content = try self.extractText(line_start, line_len);
+        defer self.allocator.free(line_content);
+
+        // 現在の行を削除
+        try buffer.delete(line_start, line_len);
+
+        // 前の行の前に挿入
+        try buffer.insertSlice(prev_line_start, line_content);
+
+        // Undo記録（単純化のためdeleteとinsertを別々に記録）
+        try self.recordDelete(line_start, line_content, view.getCursorBufferPos());
+        try self.recordInsert(prev_line_start, line_content, view.getCursorBufferPos());
+
+        buffer_state.modified = true;
+        view.markDirty(current_line - 1, null);
+
+        // カーソルを移動した行に合わせる
+        view.moveCursorUp();
+    }
+
+    /// 行を下に移動
+    fn moveLineDown(self: *Editor) !void {
+        const buffer_state = self.getCurrentBuffer();
+        if (buffer_state.readonly) {
+            self.getCurrentView().setError("Buffer is read-only");
+            return;
+        }
+        const buffer = self.getCurrentBufferContent();
+        const view = self.getCurrentView();
+        const current_line = self.getCurrentLine();
+        const total_lines = buffer.lineCount();
+
+        if (current_line >= total_lines - 1) return; // 最後の行は移動できない
+
+        // 現在の行を取得
+        const line_start = buffer.getLineStart(current_line) orelse return;
+        var line_end = line_start;
+        var iter = PieceIterator.init(buffer);
+        iter.seek(line_start);
+        while (iter.next()) |ch| {
+            if (ch == '\n') {
+                line_end = iter.global_pos;
+                break;
+            }
+        } else {
+            line_end = buffer.len();
+        }
+
+        // 次の行の終了位置
+        var next_line_end = line_end;
+        while (iter.next()) |ch| {
+            if (ch == '\n') {
+                next_line_end = iter.global_pos;
+                break;
+            }
+        } else {
+            next_line_end = buffer.len();
+        }
+
+        // 現在の行の内容を取得
+        const line_len = line_end - line_start;
+        const line_content = try self.extractText(line_start, line_len);
+        defer self.allocator.free(line_content);
+
+        // 現在の行を削除
+        try buffer.delete(line_start, line_len);
+
+        // 次の行の後ろに挿入（削除後なので位置調整）
+        const new_insert_pos = next_line_end - line_len;
+        try buffer.insertSlice(new_insert_pos, line_content);
+
+        // Undo記録
+        try self.recordDelete(line_start, line_content, view.getCursorBufferPos());
+        try self.recordInsert(new_insert_pos, line_content, view.getCursorBufferPos());
+
+        buffer_state.modified = true;
+        view.markDirty(current_line, null);
+
+        // カーソルを移動した行に合わせる
+        view.moveCursorDown(&self.terminal);
+    }
+
+    /// インデントスタイルを検出（タブ優先かスペース優先か）
+    fn detectIndentStyle(self: *Editor) u8 {
+        const buffer = self.getCurrentBufferContent();
+        var iter = PieceIterator.init(buffer);
+
+        var tab_count: usize = 0;
+        var space_count: usize = 0;
+        var at_line_start = true;
+
+        while (iter.next()) |ch| {
+            if (ch == '\n') {
+                at_line_start = true;
+            } else if (at_line_start) {
+                if (ch == '\t') {
+                    tab_count += 1;
+                    at_line_start = false;
+                } else if (ch == ' ') {
+                    space_count += 1;
+                    // 4スペース連続でカウント
+                    if (space_count >= 4) {
+                        at_line_start = false;
+                    }
+                } else {
+                    at_line_start = false;
+                }
+            }
+        }
+
+        // タブが多ければタブ、そうでなければスペース
+        if (tab_count > space_count / 4) {
+            return '\t';
+        }
+        return ' ';
+    }
+
+    /// 選択範囲または現在行をインデント
+    fn indentRegion(self: *Editor) !void {
+        const buffer_state = self.getCurrentBuffer();
+        if (buffer_state.readonly) {
+            self.getCurrentView().setError("Buffer is read-only");
+            return;
+        }
+        const buffer = self.getCurrentBufferContent();
+        const view = self.getCurrentView();
+        const window = self.getCurrentWindow();
+
+        // インデント文字を検出
+        const indent_char = self.detectIndentStyle();
+        const indent_str: []const u8 = if (indent_char == '\t') "\t" else "    ";
+
+        // 現在行をインデント（選択範囲は将来対応）
+        const current_line = self.getCurrentLine();
+        const line_start = buffer.getLineStart(current_line) orelse return;
+
+        try buffer.insertSlice(line_start, indent_str);
+        try self.recordInsert(line_start, indent_str, view.getCursorBufferPos());
+
+        buffer_state.modified = true;
+        view.markDirty(current_line, current_line);
+
+        // マークをクリア
+        window.mark_pos = null;
+    }
+
+    /// 選択範囲または現在行をアンインデント
+    fn unindentRegion(self: *Editor) !void {
+        const buffer_state = self.getCurrentBuffer();
+        if (buffer_state.readonly) {
+            self.getCurrentView().setError("Buffer is read-only");
+            return;
+        }
+        const buffer = self.getCurrentBufferContent();
+        const view = self.getCurrentView();
+        const window = self.getCurrentWindow();
+
+        // 現在行をアンインデント（選択範囲は将来対応）
+        const current_line = self.getCurrentLine();
+        const line_start = buffer.getLineStart(current_line) orelse return;
+
+        var iter = PieceIterator.init(buffer);
+        iter.seek(line_start);
+
+        // 先頭の空白を数える
+        var spaces_to_remove: usize = 0;
+        if (iter.next()) |ch| {
+            if (ch == '\t') {
+                spaces_to_remove = 1;
+            } else if (ch == ' ') {
+                spaces_to_remove = 1;
+                // 最大4スペースまで削除
+                var count: usize = 1;
+                while (count < 4) : (count += 1) {
+                    if (iter.next()) |next_ch| {
+                        if (next_ch == ' ') {
+                            spaces_to_remove += 1;
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (spaces_to_remove > 0) {
+            const deleted = try self.extractText(line_start, spaces_to_remove);
+            defer self.allocator.free(deleted);
+
+            try buffer.delete(line_start, spaces_to_remove);
+            try self.recordDelete(line_start, deleted, view.getCursorBufferPos());
+
+            buffer_state.modified = true;
+            view.markDirty(current_line, current_line);
+        }
+
+        // マークをクリア
+        window.mark_pos = null;
+    }
+
+    /// コメント切り替え (M-;)
+    fn toggleComment(self: *Editor) !void {
+        const buffer_state = self.getCurrentBuffer();
+        if (buffer_state.readonly) {
+            self.getCurrentView().setError("Buffer is read-only");
+            return;
+        }
+        const buffer = self.getCurrentBufferContent();
+        const view = self.getCurrentView();
+        const window = self.getCurrentWindow();
+
+        const comment_str = "# ";
+
+        // 現在行を操作（選択範囲は将来対応）
+        const current_line = self.getCurrentLine();
+        const line_start = buffer.getLineStart(current_line) orelse return;
+
+        // 行がコメントかどうかをチェック
+        var iter = PieceIterator.init(buffer);
+        iter.seek(line_start);
+
+        // 空白をスキップして最初の非空白文字を見つける
+        var first_char: ?u8 = null;
+        var skip_count: usize = 0;
+        while (iter.next()) |ch| {
+            if (ch == ' ' or ch == '\t') {
+                skip_count += 1;
+            } else {
+                first_char = ch;
+                break;
+            }
+        }
+
+        if (first_char) |ch| {
+            if (ch == '#') {
+                // アンコメント: "# " または "#" を削除
+                const comment_pos = line_start + skip_count;
+
+                // # の後のスペースもチェック
+                var delete_len: usize = 1;
+                if (iter.next()) |next_ch| {
+                    if (next_ch == ' ') {
+                        delete_len = 2;
+                    }
+                }
+
+                const deleted = try self.extractText(comment_pos, delete_len);
+                defer self.allocator.free(deleted);
+
+                try buffer.delete(comment_pos, delete_len);
+                try self.recordDelete(comment_pos, deleted, view.getCursorBufferPos());
+            } else {
+                // コメント: 行の先頭に "# " を挿入
+                try buffer.insertSlice(line_start, comment_str);
+                try self.recordInsert(line_start, comment_str, view.getCursorBufferPos());
+            }
+
+            buffer_state.modified = true;
+            view.markDirty(current_line, current_line);
+        }
+
+        // マークをクリア
+        window.mark_pos = null;
+    }
 
     // マークを設定/解除（Ctrl+Space）
     fn setMark(self: *Editor) void {

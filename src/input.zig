@@ -7,6 +7,8 @@ pub const Key = union(enum) {
     ctrl: u8,
     alt: u8,
     alt_delete,
+    alt_arrow_up,
+    alt_arrow_down,
     arrow_up,
     arrow_down,
     arrow_left,
@@ -87,6 +89,16 @@ pub fn readKey(stdin: std.fs.File) !?Key {
                                 '6' => return Key.page_down,
                                 else => {},
                             }
+                        } else if (buf[2] == '1' and buf[3] == ';') {
+                            // Alt+矢印 (ESC [1;3A / ESC [1;3B)
+                            const n4 = try stdin.read(buf[4..6]);
+                            if (n4 >= 2 and buf[4] == '3') {
+                                switch (buf[5]) {
+                                    'A' => return Key.alt_arrow_up,
+                                    'B' => return Key.alt_arrow_down,
+                                    else => {},
+                                }
+                            }
                         } else if (buf[2] == '3' and buf[3] == ';') {
                             // M-delete (ESC [3;3~)
                             const n4 = try stdin.read(buf[4..6]);
@@ -146,6 +158,8 @@ pub fn keyToString(key: Key, buf: []u8) ![]const u8 {
         .ctrl => |c| try std.fmt.bufPrint(buf, "C-{c}", .{c}),
         .alt => |c| try std.fmt.bufPrint(buf, "M-{c}", .{c}),
         .alt_delete => "M-Del",
+        .alt_arrow_up => "M-↑",
+        .alt_arrow_down => "M-↓",
         .arrow_up => "↑",
         .arrow_down => "↓",
         .arrow_left => "←",

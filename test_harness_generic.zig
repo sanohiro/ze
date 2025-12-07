@@ -412,6 +412,33 @@ fn parseKeySequence(allocator: std.mem.Allocator, seq: []const u8) ![]const u8 {
         result[1] = '[';
         result[2] = 'F';
         return result;
+    } else if (std.mem.eql(u8, seq, "M-Up")) {
+        // Alt+Up (ESC [1;3A)
+        const result = try allocator.alloc(u8, 6);
+        result[0] = 0x1B;
+        result[1] = '[';
+        result[2] = '1';
+        result[3] = ';';
+        result[4] = '3';
+        result[5] = 'A';
+        return result;
+    } else if (std.mem.eql(u8, seq, "M-Down")) {
+        // Alt+Down (ESC [1;3B)
+        const result = try allocator.alloc(u8, 6);
+        result[0] = 0x1B;
+        result[1] = '[';
+        result[2] = '1';
+        result[3] = ';';
+        result[4] = '3';
+        result[5] = 'B';
+        return result;
+    } else if (std.mem.eql(u8, seq, "S-Tab")) {
+        // Shift+Tab (ESC [Z)
+        const result = try allocator.alloc(u8, 3);
+        result[0] = 0x1B;
+        result[1] = '[';
+        result[2] = 'Z';
+        return result;
     } else {
         // 通常の文字列
         return try allocator.dupe(u8, seq);
