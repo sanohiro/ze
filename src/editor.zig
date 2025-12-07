@@ -746,6 +746,32 @@ pub const Editor = struct {
         try self.recalculateWindowSizes();
     }
 
+    /// 他のウィンドウをすべて閉じる (C-x 1)
+    pub fn deleteOtherWindows(self: *Editor) !void {
+        // ウィンドウが1つしかなければ何もしない
+        if (self.windows.items.len == 1) {
+            return;
+        }
+
+        // 現在のウィンドウを保持
+        const current_window = self.windows.items[self.current_window_idx];
+
+        // 他のウィンドウをすべて解放
+        for (self.windows.items, 0..) |*window, i| {
+            if (i != self.current_window_idx) {
+                window.deinit(self.allocator);
+            }
+        }
+
+        // ウィンドウリストをクリアして現在のウィンドウだけ残す
+        self.windows.clearRetainingCapacity();
+        try self.windows.append(self.allocator, current_window);
+        self.current_window_idx = 0;
+
+        // ウィンドウサイズを再計算（フルスクリーン）
+        try self.recalculateWindowSizes();
+    }
+
     pub fn loadFile(self: *Editor, path: []const u8) !void {
         const buffer_state = self.getCurrentBuffer();
         const view = self.getCurrentView();
@@ -1710,6 +1736,12 @@ pub const Editor = struct {
                             '0' => {
                                 // C-x 0: 現在のウィンドウを閉じる
                                 self.closeCurrentWindow() catch |err| {
+                                    self.getCurrentView().setError(@errorName(err));
+                                };
+                            },
+                            '1' => {
+                                // C-x 1: 他のウィンドウをすべて閉じる
+                                self.deleteOtherWindows() catch |err| {
                                     self.getCurrentView().setError(@errorName(err));
                                 };
                             },

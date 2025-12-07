@@ -534,6 +534,7 @@ fn simdSearch(haystack: []const u8, needle: u8) ?usize {
 | `C-x 2` | 横分割 (split-window-below) ✅ |
 | `C-x 3` | 縦分割 (split-window-right) ✅ |
 | `C-x 0` | ウィンドウを閉じる (delete-window) ✅ |
+| `C-x 1` | 他のウィンドウを閉じる (delete-other-windows) ✅ |
 
 ### Search
 
