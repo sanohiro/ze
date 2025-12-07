@@ -2421,7 +2421,15 @@ pub const Editor = struct {
                         return;
                     }
                 }
+                // 自動インデント: 現在の行のインデントを取得
+                const indent = self.getCurrentLineIndent();
                 try self.insertChar('\n');
+                // インデントを挿入
+                if (indent.len > 0) {
+                    for (indent) |ch| {
+                        try self.insertChar(ch);
+                    }
+                }
             },
             .backspace => try self.backspace(),
             .tab => {
@@ -2981,6 +2989,48 @@ pub const Editor = struct {
 
         // カーソルを移動した行に合わせる
         view.moveCursorDown(&self.terminal);
+    }
+
+    /// 現在の行のインデント（先頭の空白）を取得
+    fn getCurrentLineIndent(self: *Editor) []const u8 {
+        const buffer = self.getCurrentBufferContent();
+        const current_line = self.getCurrentLine();
+        const line_start = buffer.getLineStart(current_line) orelse return "";
+
+        // 行の先頭から空白文字を収集
+        var iter = PieceIterator.init(buffer);
+        iter.seek(line_start);
+
+        var indent_end: usize = line_start;
+        while (iter.next()) |ch| {
+            if (ch == ' ' or ch == '\t') {
+                indent_end = iter.global_pos;
+            } else {
+                break;
+            }
+        }
+
+        // インデント部分をスライスとして返す（最大64文字）
+        const indent_len = indent_end - line_start;
+        if (indent_len == 0) return "";
+
+        // 静的バッファに格納して返す
+        const Static = struct {
+            var buf: [64]u8 = undefined;
+        };
+
+        var idx: usize = 0;
+        iter.seek(line_start);
+        while (iter.next()) |ch| {
+            if ((ch == ' ' or ch == '\t') and idx < Static.buf.len) {
+                Static.buf[idx] = ch;
+                idx += 1;
+            } else {
+                break;
+            }
+        }
+
+        return Static.buf[0..idx];
     }
 
     /// インデントスタイルを検出（タブ優先かスペース優先か）
