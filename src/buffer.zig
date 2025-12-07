@@ -242,6 +242,8 @@ pub const Buffer = struct {
     pieces: std.ArrayList(Piece),
     allocator: std.mem.Allocator,
     owns_original: bool,
+    is_mmap: bool, // originalがmmapされているかどうか
+    mmap_len: usize, // mmap時の実際のマッピングサイズ（munmap用）
     total_len: usize,
     line_index: LineIndex,
     detected_line_ending: encoding.LineEnding, // ファイル読み込み時に検出した改行コード
@@ -254,6 +256,8 @@ pub const Buffer = struct {
             .pieces = try std.ArrayList(Piece).initCapacity(allocator, 0),
             .allocator = allocator,
             .owns_original = false,
+            .is_mmap = false,
+            .mmap_len = 0,
             .total_len = 0,
             .line_index = LineIndex.init(allocator),
             .detected_line_ending = .LF, // デフォルトはLF
@@ -262,7 +266,11 @@ pub const Buffer = struct {
     }
 
     pub fn deinit(self: *Buffer) void {
-        if (self.owns_original) {
+        if (self.is_mmap) {
+            // mmapされたメモリを解放
+            const aligned_ptr: [*]align(std.heap.page_size_min) u8 = @alignCast(@constCast(self.original.ptr));
+            std.posix.munmap(aligned_ptr[0..self.mmap_len]);
+        } else if (self.owns_original) {
             self.allocator.free(self.original);
         }
         self.add_buffer.deinit(self.allocator);
@@ -286,24 +294,109 @@ pub const Buffer = struct {
 
         // ファイルサイズを取得
         const stat = try file.stat();
+        const file_size = stat.size;
+
+        // 空ファイルの場合は特別処理（mmapできない）
+        if (file_size == 0) {
+            return loadFromFileEmpty(allocator);
+        }
+
+        // まずmmapを試みる（読み取り専用）
+        const mmap_result = std.posix.mmap(
+            null,
+            file_size,
+            std.posix.PROT.READ,
+            .{ .TYPE = .PRIVATE },
+            file.handle,
+            0,
+        );
+
+        if (mmap_result) |mapped_ptr| {
+            const mapped: []const u8 = mapped_ptr[0..file_size];
+
+            // バイナリファイルチェック
+            if (encoding.isBinaryContent(mapped)) {
+                std.posix.munmap(mapped_ptr[0..file_size]);
+                return error.BinaryFile;
+            }
+
+            // エンコーディングと改行コードを検出
+            const detected = encoding.detectEncoding(mapped);
+
+            // UTF-8 + LF の場合 → mmapを直接使用（ゼロコピー高速パス）
+            if (detected.encoding == .UTF8 and detected.line_ending == .LF) {
+                var self = Buffer{
+                    .original = mapped,
+                    .add_buffer = try std.ArrayList(u8).initCapacity(allocator, 0),
+                    .pieces = try std.ArrayList(Piece).initCapacity(allocator, 0),
+                    .allocator = allocator,
+                    .owns_original = false,
+                    .is_mmap = true,
+                    .mmap_len = file_size,
+                    .total_len = file_size,
+                    .line_index = LineIndex.init(allocator),
+                    .detected_line_ending = .LF,
+                    .detected_encoding = .UTF8,
+                };
+
+                // 初期状態：originalファイル全体を指す1つのpiece
+                try self.pieces.append(allocator, .{
+                    .source = .original,
+                    .start = 0,
+                    .length = file_size,
+                });
+
+                // LineIndexを即座に構築
+                try self.line_index.rebuild(&self);
+
+                return self;
+            }
+
+            // UTF-8 + LF以外 → mmapを解放してフォールバックパスへ
+            std.posix.munmap(mapped_ptr[0..file_size]);
+
+            // サポート外のエンコーディングはエラー
+            if (detected.encoding != .UTF8 and
+                detected.encoding != .UTF8_BOM and
+                detected.encoding != .UTF16LE_BOM and
+                detected.encoding != .UTF16BE_BOM)
+            {
+                return error.UnsupportedEncoding;
+            }
+
+            // フォールバック: ファイルを読み直して変換
+            return loadFromFileFallback(allocator, path, detected);
+        } else |_| {
+            // mmapが失敗した場合もフォールバック
+            return loadFromFileFallbackWithDetection(allocator, path);
+        }
+    }
+
+    /// 空ファイル用の初期化
+    fn loadFromFileEmpty(allocator: std.mem.Allocator) !Buffer {
+        return Buffer{
+            .original = &[_]u8{},
+            .add_buffer = try std.ArrayList(u8).initCapacity(allocator, 0),
+            .pieces = try std.ArrayList(Piece).initCapacity(allocator, 0),
+            .allocator = allocator,
+            .owns_original = false,
+            .is_mmap = false,
+            .mmap_len = 0,
+            .total_len = 0,
+            .line_index = LineIndex.init(allocator),
+            .detected_line_ending = .LF,
+            .detected_encoding = .UTF8,
+        };
+    }
+
+    /// フォールバックパス: UTF-8+LF以外のファイルを変換して読み込む
+    fn loadFromFileFallback(allocator: std.mem.Allocator, path: []const u8, detected: encoding.DetectionResult) !Buffer {
+        var file = try std.fs.cwd().openFile(path, .{});
+        defer file.close();
+
+        const stat = try file.stat();
         const raw_content = try file.readToEndAlloc(allocator, stat.size);
         defer allocator.free(raw_content);
-
-        // バイナリファイルチェック
-        if (encoding.isBinaryContent(raw_content)) {
-            return error.BinaryFile;
-        }
-
-        // エンコーディングと改行コードを検出
-        const detected = encoding.detectEncoding(raw_content);
-
-        // サポート外のエンコーディングはエラー（Shift_JIS, EUC-JP, Unknownなど）
-        if (detected.encoding != .UTF8 and
-            detected.encoding != .UTF8_BOM and
-            detected.encoding != .UTF16LE_BOM and
-            detected.encoding != .UTF16BE_BOM) {
-            return error.UnsupportedEncoding;
-        }
 
         // UTF-8に変換（BOM削除、UTF-16デコード等）
         const utf8_content = try encoding.convertToUtf8(allocator, raw_content, detected.encoding);
@@ -318,13 +411,14 @@ pub const Buffer = struct {
             .pieces = try std.ArrayList(Piece).initCapacity(allocator, 0),
             .allocator = allocator,
             .owns_original = true,
+            .is_mmap = false,
+            .mmap_len = 0,
             .total_len = normalized.len,
             .line_index = LineIndex.init(allocator),
             .detected_line_ending = detected.line_ending,
             .detected_encoding = detected.encoding,
         };
 
-        // 初期状態：originalファイル全体を指す1つのpiece
         if (normalized.len > 0) {
             try self.pieces.append(allocator, .{
                 .source = .original,
@@ -333,9 +427,61 @@ pub const Buffer = struct {
             });
         }
 
-        // LineIndexを即座に構築
         try self.line_index.rebuild(&self);
+        return self;
+    }
 
+    /// mmapが失敗した場合のフォールバック（検出も含む）
+    fn loadFromFileFallbackWithDetection(allocator: std.mem.Allocator, path: []const u8) !Buffer {
+        var file = try std.fs.cwd().openFile(path, .{});
+        defer file.close();
+
+        const stat = try file.stat();
+        const raw_content = try file.readToEndAlloc(allocator, stat.size);
+        defer allocator.free(raw_content);
+
+        if (encoding.isBinaryContent(raw_content)) {
+            return error.BinaryFile;
+        }
+
+        const detected = encoding.detectEncoding(raw_content);
+
+        if (detected.encoding != .UTF8 and
+            detected.encoding != .UTF8_BOM and
+            detected.encoding != .UTF16LE_BOM and
+            detected.encoding != .UTF16BE_BOM)
+        {
+            return error.UnsupportedEncoding;
+        }
+
+        const utf8_content = try encoding.convertToUtf8(allocator, raw_content, detected.encoding);
+        defer allocator.free(utf8_content);
+
+        const normalized = try encoding.normalizeLineEndings(allocator, utf8_content, detected.line_ending);
+
+        var self = Buffer{
+            .original = normalized,
+            .add_buffer = try std.ArrayList(u8).initCapacity(allocator, 0),
+            .pieces = try std.ArrayList(Piece).initCapacity(allocator, 0),
+            .allocator = allocator,
+            .owns_original = true,
+            .is_mmap = false,
+            .mmap_len = 0,
+            .total_len = normalized.len,
+            .line_index = LineIndex.init(allocator),
+            .detected_line_ending = detected.line_ending,
+            .detected_encoding = detected.encoding,
+        };
+
+        if (normalized.len > 0) {
+            try self.pieces.append(allocator, .{
+                .source = .original,
+                .start = 0,
+                .length = normalized.len,
+            });
+        }
+
+        try self.line_index.rebuild(&self);
         return self;
     }
 
