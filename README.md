@@ -548,35 +548,7 @@ fn simdSearch(haystack: []const u8, needle: u8) ?usize {
 
 ---
 
-## Alias System
 
-```zig
-const aliases = .{
-    // フォーマット
-    .{ "jq",   ", | jq . > ," },
-    .{ "fmt",  ". | zig fmt - > ." },
-    .{ "py",   ", | python > +" },
-    .{ "sh",   "; | sh > +" },
-    .{ "bc",   "; | bc > +" },
-
-    // ソート
-    .{ "su",   ", | sort | uniq > ," },
-    .{ "sr",   ", | sort -r > ," },
-    .{ "sn",   ", | sort -n > ," },
-
-    // Git
-    .{ "ga",   "!git add {f}" },
-    .{ "gc",   "!git commit" },
-    .{ "gd",   "!git diff {f} | vs" },
-    .{ "gb",   "!git blame {f} | vs" },
-    .{ "gl",   "!git log --oneline | head -20" },
-
-    // その他
-    .{ "wc",   ". | wc" },
-    .{ "rev",  ". | tac > ." },
-    .{ "x",    "wq" },
-};
-```
 
 ---
 
@@ -1050,7 +1022,7 @@ zig run test_harness_generic.zig -lc -- --file=README.md "C-e" " world" "C-x" "C
 # テストデータのセットアップ (初回のみ)
 cd test_data && ./setup_test_files.sh
 
-# 統合テストスイート実行 (102テスト、21カテゴリ)
+# 統合テストスイート実行 (106テスト、22カテゴリ)
 ./run_all_tests.sh
 
 # タブ文字テスト (7テスト)
@@ -1062,9 +1034,9 @@ cd test_data && ./setup_test_files.sh
 
 **テストカバレッジ**:
 - カテゴリ 1-10: 基本機能 (編集、カーソル、ファイル、検索、日本語、絵文字、長い行、大量行、スクロール、エッジケース)
-- カテゴリ 11-21: 高度な機能 (Undo/Redo、範囲選択、単語操作、Emacs移動、削除、後方検索、複合操作、UTF-8、ファイル詳細、ストレステスト、Query Replace)
+- カテゴリ 11-22: 高度な機能 (Undo/Redo、範囲選択、単語操作、Emacs移動、削除、後方検索、複合操作、UTF-8、ファイル詳細、ストレステスト、Query Replace、検索履歴)
 - タブ文字テスト: 入力、カーソル移動、削除 (7テスト)
 - 複数バッファ/ウィンドウテスト: バッファ操作、ウィンドウ分割、同一/異なるバッファ編集、基本操作、エッジケース (19テスト)
-- 合計128個の包括的テスト、100%成功率
+- 合計132個の包括的テスト
 - 日本語・絵文字・UTF-8完全対応テスト含む
 

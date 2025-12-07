@@ -228,6 +228,13 @@ run_test "21.9 置換のUndo" --file=test_data/test_replace.txt "M-%" "foo" "Ent
 run_test "21.10 日本語の置換" --input-file=test_data/test_japanese_replace_keys.txt --file=test_data/test_replace_ja.txt
 
 echo
+echo "=== カテゴリ 22: 検索履歴 ==="
+run_test "22.1 C-s で前回パターン再利用（次へ）" --file=test_data/test_search_pages.txt "C-s" "Target" "Enter" "C-s" "C-x" "C-c"
+run_test "22.2 C-r で前回パターン再利用（前へ）" --file=test_data/test_search_pages.txt "M->" "C-s" "line" "Enter" "C-r" "C-x" "C-c"
+run_test "22.3 検索後に別の検索" --file=test_data/test_search_pages.txt "C-s" "Target" "Enter" "C-s" "C-s" "C-x" "C-c"
+run_test "22.4 C-s→C-r の切り替え" --file=test_data/test_search_pages.txt "C-s" "line" "Enter" "C-s" "C-r" "C-x" "C-c"
+
+echo
 echo "========================================="
 echo "統合テスト完了"
 echo "========================================="
