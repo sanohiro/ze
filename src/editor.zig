@@ -362,6 +362,71 @@ pub const Editor = struct {
         return error.BufferNotFound;
     }
 
+    /// バッファ一覧を表示（C-x C-b）
+    pub fn showBufferList(self: *Editor) !void {
+        // バッファ一覧のテキストを生成
+        var list_text = try std.ArrayList(u8).initCapacity(self.allocator, 0);
+        defer list_text.deinit(self.allocator);
+
+        const writer = list_text.writer(self.allocator);
+        try writer.writeAll("  MR Buffer           Size  File\n");
+        try writer.writeAll("  -- ------           ----  ----\n");
+
+        for (self.buffers.items) |buf| {
+            // 変更フラグ
+            const mod_char: u8 = if (buf.modified) '*' else '.';
+            // 読み取り専用フラグ
+            const ro_char: u8 = if (buf.readonly) '%' else '.';
+
+            // バッファ名
+            const buf_name = if (buf.filename) |fname| fname else "*scratch*";
+
+            // サイズ
+            const size = buf.buffer.total_len;
+
+            // フォーマットして追加
+            try std.fmt.format(writer, "  {c}{c} {s:<16} {d:>6}  {s}\n", .{
+                mod_char,
+                ro_char,
+                buf_name,
+                size,
+                if (buf.filename) |fname| fname else "",
+            });
+        }
+
+        // "*Buffer List*"という名前のバッファを探す
+        const buffer_list_name = "*Buffer List*";
+        var buffer_list: *BufferState = undefined;
+        var found = false;
+
+        for (self.buffers.items) |buf| {
+            if (buf.filename) |fname| {
+                if (std.mem.eql(u8, fname, buffer_list_name)) {
+                    buffer_list = buf;
+                    found = true;
+                    break;
+                }
+            }
+        }
+
+        if (!found) {
+            // 新しいバッファを作成
+            buffer_list = try self.createNewBuffer();
+            buffer_list.filename = try self.allocator.dupe(u8, buffer_list_name);
+            buffer_list.readonly = true; // バッファ一覧は読み取り専用
+        }
+
+        // バッファの内容をクリアして新しい一覧を挿入
+        if (buffer_list.buffer.total_len > 0) {
+            try buffer_list.buffer.delete(0, buffer_list.buffer.total_len);
+        }
+        try buffer_list.buffer.insertSlice(0, list_text.items);
+        buffer_list.modified = false; // バッファ一覧は変更扱いにしない
+
+        // バッファ一覧に切り替え
+        try self.switchToBuffer(buffer_list.id);
+    }
+
     /// 現在のウィンドウを横（上下）に分割
     pub fn splitWindowHorizontally(self: *Editor) !void {
         const current_window = &self.windows.items[self.current_window_idx];
@@ -1253,6 +1318,12 @@ pub const Editor = struct {
                                 // C-g: キャンセル
                                 self.getCurrentView().clearError();
                             },
+                            'b' => {
+                                // C-x C-b: バッファ一覧表示
+                                self.showBufferList() catch |err| {
+                                    self.getCurrentView().setError(@errorName(err));
+                                };
+                            },
                             'f' => {
                                 // C-x C-f: ファイルを開く
                                 self.mode = .find_file_input;
@@ -1991,9 +2062,16 @@ pub const Editor = struct {
             // 通常文字: 現在行のみdirty
             self.getCurrentView().markDirty(current_line, current_line);
 
-            // UTF-8文字の幅を計算してカーソルを移動
-            const width = Buffer.charWidth(@as(u21, ch));
-            self.getCurrentView().cursor_x += width;
+            // タブ文字の場合は文脈依存の幅を計算
+            if (ch == '\t') {
+                const TAB_WIDTH = @import("config.zig").Editor.TAB_WIDTH;
+                const next_tab_stop = (self.getCurrentView().cursor_x / TAB_WIDTH + 1) * TAB_WIDTH;
+                self.getCurrentView().cursor_x = next_tab_stop;
+            } else {
+                // UTF-8文字の幅を計算してカーソルを移動
+                const width = Buffer.charWidth(@as(u21, ch));
+                self.getCurrentView().cursor_x += width;
+            }
         }
     }
 

@@ -531,8 +531,13 @@ pub const View = struct {
             const gc = cluster.?;
             if (gc.base == '\n') break;
 
-            // 文字幅を加算（絵文字は2, 通常文字は1）
-            display_col += gc.width;
+            // タブ文字の場合は文脈依存の幅を計算
+            const char_width = if (gc.base == '\t') blk: {
+                const next_tab_stop = (display_col / config.Editor.TAB_WIDTH + 1) * config.Editor.TAB_WIDTH;
+                break :blk next_tab_stop - display_col;
+            } else gc.width;
+
+            display_col += char_width;
 
             // 目標カーソル位置を超えた場合は手前で止まる
             if (display_col > self.cursor_x) {
@@ -566,7 +571,14 @@ pub const View = struct {
             const cluster = iter.nextGraphemeCluster() catch break;
             if (cluster) |gc| {
                 if (gc.base == '\n') break;
-                line_width += gc.width;
+
+                // タブ文字の場合は文脈依存の幅を計算
+                const char_width = if (gc.base == '\t') blk: {
+                    const next_tab_stop = (line_width / config.Editor.TAB_WIDTH + 1) * config.Editor.TAB_WIDTH;
+                    break :blk next_tab_stop - line_width;
+                } else gc.width;
+
+                line_width += char_width;
             } else {
                 break;
             }
@@ -597,15 +609,24 @@ pub const View = struct {
 
             // 行内でカーソル直前のgrapheme clusterを見つける
             var last_width: usize = 1;
+            var display_col: usize = 0;
             while (iter.global_pos < pos) {
                 const cluster = iter.nextGraphemeCluster() catch {
                     _ = iter.next();
                     last_width = 1;
+                    display_col += 1;
                     continue;
                 };
                 if (cluster) |gc| {
                     if (gc.base == '\n') break;
-                    last_width = gc.width;
+
+                    // タブ文字の場合は文脈依存の幅を計算
+                    last_width = if (gc.base == '\t') blk: {
+                        const next_tab_stop = (display_col / config.Editor.TAB_WIDTH + 1) * config.Editor.TAB_WIDTH;
+                        break :blk next_tab_stop - display_col;
+                    } else gc.width;
+
+                    display_col += last_width;
                     if (iter.global_pos >= pos) break;
                 }
             }
@@ -664,8 +685,14 @@ pub const View = struct {
                 // 行移動時は水平スクロールをリセット
                 self.top_col = 0;
             } else {
+                // タブ文字の場合は文脈依存の幅を計算
+                const char_width = if (gc.base == '\t') blk: {
+                    const next_tab_stop = (self.cursor_x / config.Editor.TAB_WIDTH + 1) * config.Editor.TAB_WIDTH;
+                    break :blk next_tab_stop - self.cursor_x;
+                } else gc.width;
+
                 // grapheme clusterの幅分進める
-                self.cursor_x += gc.width;
+                self.cursor_x += char_width;
 
                 // 水平スクロール: カーソルが右端を超えた場合
                 const visible_width = term.width;
@@ -749,7 +776,12 @@ pub const View = struct {
             const cluster = iter.nextGraphemeCluster() catch break;
             if (cluster) |gc| {
                 if (gc.base == '\n') break;
-                line_width += gc.width;
+                // タブ文字の場合は文脈依存の幅を計算
+                const char_width = if (gc.base == '\t') blk: {
+                    const next_tab_stop = (line_width / config.Editor.TAB_WIDTH + 1) * config.Editor.TAB_WIDTH;
+                    break :blk next_tab_stop - line_width;
+                } else gc.width;
+                line_width += char_width;
             } else {
                 break;
             }
