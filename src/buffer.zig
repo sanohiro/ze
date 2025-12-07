@@ -890,6 +890,26 @@ pub const Buffer = struct {
         return unicode.displayWidth(codepoint);
     }
 
+    // 指定範囲のテキストを取得（新しいメモリを確保）
+    pub fn getRange(self: *const Buffer, allocator: std.mem.Allocator, start: usize, length: usize) ![]u8 {
+        if (length == 0) {
+            return try allocator.alloc(u8, 0);
+        }
+
+        const result = try allocator.alloc(u8, length);
+        errdefer allocator.free(result);
+
+        var iter = PieceIterator.init(self);
+        iter.seek(start);
+
+        var i: usize = 0;
+        while (i < length) : (i += 1) {
+            result[i] = iter.next() orelse break;
+        }
+
+        return result;
+    }
+
     // Undo/Redo用のスナップショット
     pub fn clonePieces(self: *const Buffer, allocator: std.mem.Allocator) ![]Piece {
         return try allocator.dupe(Piece, self.pieces.items);

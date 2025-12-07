@@ -133,6 +133,12 @@ pub const View = struct {
 
     // イテレータを再利用して行を描画（セルレベル差分描画版）
     fn renderLineWithIter(self: *View, term: *Terminal, screen_row: usize, file_line: usize, iter: *PieceIterator, line_buffer: *std.ArrayList(u8)) !void {
+        try self.renderLineWithIterOffset(term, 0, screen_row, file_line, iter, line_buffer);
+    }
+
+    // イテレータを再利用して行を描画（オフセット付き）
+    fn renderLineWithIterOffset(self: *View, term: *Terminal, viewport_y: usize, screen_row: usize, file_line: usize, iter: *PieceIterator, line_buffer: *std.ArrayList(u8)) !void {
+        const abs_row = viewport_y + screen_row;
         // 再利用バッファをクリア
         line_buffer.clearRetainingCapacity();
 
@@ -271,7 +277,7 @@ pub const View = struct {
                 // （ANSIシーケンスの計算が複雑なため、シンプルな実装を優先）
                 if (line_num_display_width > 0) {
                     // 行頭から全体を再描画
-                    try term.moveCursor(screen_row, 0);
+                    try term.moveCursor(abs_row, 0);
                     try term.write(config.ANSI.CLEAR_LINE);
                     try term.write(new_line);
                 } else {
@@ -320,7 +326,7 @@ pub const View = struct {
                     }
 
                     // 差分部分のみ描画
-                    try term.moveCursor(screen_row, screen_col);
+                    try term.moveCursor(abs_row, screen_col);
                     try term.write(new_line[start..]);
 
                     // 古い行の方が長い場合は残りをクリア
@@ -331,7 +337,7 @@ pub const View = struct {
             }
         } else {
             // 新しい行：全体を描画
-            try term.moveCursor(screen_row, 0);
+            try term.moveCursor(abs_row, 0);
             try term.write(config.ANSI.CLEAR_LINE);
             try term.write(new_line);
         }
@@ -350,14 +356,20 @@ pub const View = struct {
 
     // 空行（~）を描画（セルレベル差分版）
     fn renderEmptyLine(self: *View, term: *Terminal, screen_row: usize) !void {
+        try self.renderEmptyLineOffset(term, 0, screen_row);
+    }
+
+    // 空行（~）を描画（オフセット付き）
+    fn renderEmptyLineOffset(self: *View, term: *Terminal, viewport_y: usize, screen_row: usize) !void {
         const empty_line = "~";
+        const abs_row = viewport_y + screen_row;
 
         // 前フレームと比較
         if (screen_row < self.prev_screen.items.len) {
             const old_line = self.prev_screen.items[screen_row].items;
             if (old_line.len != 1 or old_line[0] != '~') {
                 // 変更あり：描画
-                try term.moveCursor(screen_row, 0);
+                try term.moveCursor(abs_row, 0);
                 try term.write(config.ANSI.CLEAR_LINE);
                 try term.write(empty_line);
 
@@ -367,7 +379,7 @@ pub const View = struct {
             }
         } else {
             // 新しい行：描画
-            try term.moveCursor(screen_row, 0);
+            try term.moveCursor(abs_row, 0);
             try term.write(config.ANSI.CLEAR_LINE);
             try term.write(empty_line);
 
@@ -378,13 +390,27 @@ pub const View = struct {
         }
     }
 
-    pub fn render(self: *View, term: *Terminal, modified: bool, readonly: bool, line_ending: anytype, filename: ?[]const u8) !void {
+    /// ウィンドウ境界内にレンダリング
+    /// viewport_y: ウィンドウのY座標（画面上端からのオフセット）
+    /// viewport_height: ウィンドウの高さ（ステータスバー含む）
+    /// is_active: アクティブウィンドウならtrue（カーソル表示）
+    pub fn renderInBounds(
+        self: *View,
+        term: *Terminal,
+        viewport_y: usize,
+        viewport_height: usize,
+        is_active: bool,
+        modified: bool,
+        readonly: bool,
+        line_ending: anytype,
+        filename: ?[]const u8,
+    ) !void {
         // 端末サイズが0の場合は何もしない
-        if (term.height == 0 or term.width == 0) return;
+        if (term.height == 0 or term.width == 0 or viewport_height == 0) return;
 
         try term.hideCursor();
 
-        const max_lines = term.height - 1;
+        const max_lines = viewport_height - 1; // ステータスバー分を引く
 
         // 画面サイズ変更を検出（prev_screenの行数が変わった場合）
         if (self.prev_screen.items.len > 0 and self.prev_screen.items.len != max_lines) {
@@ -400,7 +426,8 @@ pub const View = struct {
 
         // 全画面再描画が必要な場合
         if (self.needs_full_redraw) {
-            try term.write(config.ANSI.CURSOR_HOME); // ホーム位置
+            // ウィンドウの開始位置に移動
+            try term.moveCursor(viewport_y, 0);
 
             // top_lineの開始位置を取得してイテレータを初期化
             const start_pos = self.buffer.getLineStart(self.top_line) orelse self.buffer.len();
@@ -412,9 +439,9 @@ pub const View = struct {
             while (screen_row < max_lines) : (screen_row += 1) {
                 const file_line = self.top_line + screen_row;
                 if (file_line < self.buffer.lineCount()) {
-                    try self.renderLineWithIter(term, screen_row, file_line, &iter, &self.line_buffer);
+                    try self.renderLineWithIterOffset(term, viewport_y, screen_row, file_line, &iter, &self.line_buffer);
                 } else {
-                    try self.renderEmptyLine(term, screen_row);
+                    try self.renderEmptyLineOffset(term, viewport_y, screen_row);
                 }
             }
 
@@ -428,7 +455,7 @@ pub const View = struct {
                 const render_start = if (start > self.top_line) start - self.top_line else 0;
                 const render_end = @min(
                     if (end >= self.top_line) end - self.top_line + 1 else 0,
-                    max_lines
+                    max_lines,
                 );
 
                 // dirty範囲の開始位置を取得
@@ -442,9 +469,9 @@ pub const View = struct {
                 while (screen_row < render_end) : (screen_row += 1) {
                     const file_line = self.top_line + screen_row;
                     if (file_line < self.buffer.lineCount()) {
-                        try self.renderLineWithIter(term, screen_row, file_line, &iter, &self.line_buffer);
+                        try self.renderLineWithIterOffset(term, viewport_y, screen_row, file_line, &iter, &self.line_buffer);
                     } else {
-                        try self.renderEmptyLine(term, screen_row);
+                        try self.renderEmptyLineOffset(term, viewport_y, screen_row);
                     }
                 }
             }
@@ -453,22 +480,34 @@ pub const View = struct {
         }
 
         // ステータスバーの描画
-        try self.renderStatusBar(term, modified, readonly, line_ending, filename);
+        try self.renderStatusBarAt(term, viewport_y + viewport_height - 1, modified, readonly, line_ending, filename);
 
-        // カーソルを表示（水平スクロール+行番号を考慮、境界チェック）
-        const line_num_width = self.getLineNumberWidth();
-        var screen_cursor_x = line_num_width + (if (self.cursor_x >= self.top_col) self.cursor_x - self.top_col else 0);
-        // 端末幅を超えないようにクリップ
-        if (screen_cursor_x >= term.width) {
-            screen_cursor_x = term.width - 1;
+        // カーソルを表示（アクティブウィンドウのみ）
+        if (is_active) {
+            const line_num_width = self.getLineNumberWidth();
+            var screen_cursor_x = line_num_width + (if (self.cursor_x >= self.top_col) self.cursor_x - self.top_col else 0);
+            // 端末幅を超えないようにクリップ
+            if (screen_cursor_x >= term.width) {
+                screen_cursor_x = term.width - 1;
+            }
+            try term.moveCursor(viewport_y + self.cursor_y, screen_cursor_x);
+            try term.showCursor();
         }
-        try term.moveCursor(self.cursor_y, screen_cursor_x);
-        try term.showCursor();
         try term.flush();
     }
 
+    /// 従来のrender（後方互換性のため）- 全画面レンダリング
+    pub fn render(self: *View, term: *Terminal, modified: bool, readonly: bool, line_ending: anytype, filename: ?[]const u8) !void {
+        try self.renderInBounds(term, 0, term.height, true, modified, readonly, line_ending, filename);
+    }
+
     pub fn renderStatusBar(self: *View, term: *Terminal, modified: bool, readonly: bool, line_ending: anytype, filename: ?[]const u8) !void {
-        try term.moveCursor(term.height - 1, 0);
+        try self.renderStatusBarAt(term, term.height - 1, modified, readonly, line_ending, filename);
+    }
+
+    /// 指定行にステータスバーを描画
+    pub fn renderStatusBarAt(self: *View, term: *Terminal, row: usize, modified: bool, readonly: bool, line_ending: anytype, filename: ?[]const u8) !void {
+        try term.moveCursor(row, 0);
 
         var status_buf: [config.Editor.STATUS_BUF_SIZE]u8 = undefined;
 

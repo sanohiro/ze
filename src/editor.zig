@@ -44,6 +44,33 @@ const EditorMode = enum {
     query_replace_input_search, // 置換：検索文字列入力中
     query_replace_input_replacement, // 置換：置換文字列入力中
     query_replace_confirm, // 置換：確認中（y/n/!/qを待つ）
+    shell_command, // シェルコマンド入力中（M-|）
+    shell_running, // シェルコマンド実行中（C-gでキャンセル可）
+};
+
+/// シェルコマンド出力先
+const ShellOutputDest = enum {
+    command_buffer, // Command Bufferに表示（デフォルト）
+    replace, // 入力元を置換 (>)
+    insert, // カーソル位置に挿入 (+>)
+    new_buffer, // 新規バッファ (n>)
+};
+
+/// シェルコマンド入力元
+const ShellInputSource = enum {
+    selection, // 選択範囲（なければ空）
+    buffer_all, // バッファ全体 (%)
+    current_line, // 現在行 (.)
+};
+
+// シェルコマンドの非同期実行状態
+pub const ShellCommandState = struct {
+    child: std.process.Child,
+    input_source: ShellInputSource,
+    output_dest: ShellOutputDest,
+    stdin_data: ?[]const u8,
+    stdin_allocated: bool,
+    command: []const u8, // コマンド文字列（解放用）
 };
 
 /// 全角英数記号（U+FF01〜U+FF5E）を半角（U+0021〜U+007E）に変換
@@ -173,6 +200,9 @@ pub const Editor = struct {
     replace_current_pos: ?usize,
     replace_match_count: usize,
 
+    // シェルコマンド非同期実行状態
+    shell_state: ?*ShellCommandState,
+
     pub fn init(allocator: std.mem.Allocator) !Editor {
         // ターミナルを先に初期化（サイズ取得のため）
         const terminal = try Terminal.init(allocator);
@@ -184,8 +214,8 @@ pub const Editor = struct {
         var buffers: std.ArrayList(*BufferState) = .{};
         try buffers.append(allocator, first_buffer);
 
-        // 最初のウィンドウを作成（全画面）
-        var first_window = Window.init(0, 0, 0, 0, terminal.width, terminal.height - 1); // -1はステータスライン分
+        // 最初のウィンドウを作成（全画面、ステータスバーはheight内に含む）
+        var first_window = Window.init(0, 0, 0, 0, terminal.width, terminal.height);
         first_window.view = View.init(allocator, &first_buffer.buffer);
 
         // ウィンドウリストを作成
@@ -213,6 +243,7 @@ pub const Editor = struct {
             .replace_replacement = null,
             .replace_current_pos = null,
             .replace_match_count = 0,
+            .shell_state = null,
         };
 
         return editor;
@@ -265,6 +296,31 @@ pub const Editor = struct {
 
         // 入力バッファのクリーンアップ
         self.input_buffer.deinit(self.allocator);
+
+        // シェルコマンド状態のクリーンアップ
+        if (self.shell_state) |state| {
+            self.cleanupShellState(state);
+        }
+    }
+
+    /// シェルコマンド状態をクリーンアップ
+    fn cleanupShellState(self: *Editor, state: *ShellCommandState) void {
+        // 子プロセスがまだ実行中ならkill
+        _ = state.child.kill() catch {};
+
+        // stdin_dataを解放
+        if (state.stdin_allocated) {
+            if (state.stdin_data) |data| {
+                self.allocator.free(data);
+            }
+        }
+
+        // コマンド文字列を解放
+        self.allocator.free(state.command);
+
+        // 状態自体を解放
+        self.allocator.destroy(state);
+        self.shell_state = null;
     }
 
     // ========================================
@@ -321,6 +377,78 @@ pub const Editor = struct {
             }
         }
         return null;
+    }
+
+    /// *Command* バッファを取得または作成
+    fn getOrCreateCommandBuffer(self: *Editor) !*BufferState {
+        // 既存の *Command* バッファを探す
+        for (self.buffers.items) |buf| {
+            if (buf.filename) |name| {
+                if (std.mem.eql(u8, name, "*Command*")) return buf;
+            }
+        }
+        // なければ新規作成
+        const new_buffer = try self.createNewBuffer();
+        new_buffer.filename = try self.allocator.dupe(u8, "*Command*");
+        new_buffer.readonly = true; // コマンド出力は読み取り専用
+        return new_buffer;
+    }
+
+    /// *Command* バッファを表示するウィンドウを探す
+    fn findCommandBufferWindow(self: *Editor) ?usize {
+        for (self.windows.items, 0..) |window, idx| {
+            if (self.findBufferById(window.buffer_id)) |buf| {
+                if (buf.filename) |name| {
+                    if (std.mem.eql(u8, name, "*Command*")) return idx;
+                }
+            }
+        }
+        return null;
+    }
+
+    /// *Command* バッファウィンドウを開く（既に開いていればそれを使う）
+    fn openCommandBufferWindow(self: *Editor) !usize {
+        // 既にウィンドウがあればそれを返す
+        if (self.findCommandBufferWindow()) |idx| {
+            return idx;
+        }
+
+        // *Command* バッファを取得/作成
+        const cmd_buffer = try self.getOrCreateCommandBuffer();
+
+        // 画面下部に水平分割でウィンドウを開く
+        // 現在のウィンドウの高さを縮める
+        const current_window = &self.windows.items[self.current_window_idx];
+        const min_height: u16 = 5; // 最小高さ
+        const cmd_height: u16 = 8; // コマンドバッファの高さ
+
+        if (current_window.height < min_height + cmd_height) {
+            // 画面が小さすぎる場合は現在のウィンドウに表示
+            try self.switchToBuffer(cmd_buffer.id);
+            return self.current_window_idx;
+        }
+
+        // 現在のウィンドウを縮める
+        const old_height = current_window.height;
+        current_window.height = old_height - cmd_height;
+
+        // 新しいウィンドウを下部に作成
+        const new_window_id = self.next_window_id;
+        self.next_window_id += 1;
+
+        var new_window = Window.init(
+            new_window_id,
+            cmd_buffer.id,
+            current_window.x,
+            current_window.y + current_window.height,
+            current_window.width,
+            cmd_height,
+        );
+
+        new_window.view = View.init(self.allocator, &cmd_buffer.buffer);
+
+        try self.windows.append(self.allocator, new_window);
+        return self.windows.items.len - 1;
     }
 
     /// 現在のウィンドウを指定されたバッファに切り替え
@@ -427,6 +555,100 @@ pub const Editor = struct {
         try self.switchToBuffer(buffer_list.id);
     }
 
+    /// *Buffer List*からバッファを選択して切り替え
+    fn selectBufferFromList(self: *Editor) !void {
+        const view = self.getCurrentView();
+        const buffer = self.getCurrentBufferContent();
+
+        // 現在行を取得
+        const cursor_line = view.top_line + view.cursor_y;
+
+        // ヘッダ行（0, 1行目）は無視
+        if (cursor_line < 2) {
+            self.getCurrentView().setError("Select a buffer from the list");
+            return;
+        }
+
+        // 現在行の開始位置を取得
+        const line_start = buffer.getLineStart(cursor_line) orelse {
+            self.getCurrentView().setError("Invalid line");
+            return;
+        };
+
+        // 次の行の開始位置を取得（行の終わりを知るため）
+        const next_line_start = buffer.getLineStart(cursor_line + 1) orelse buffer.total_len;
+
+        // 行の長さを計算（改行を除く）
+        var line_len = if (next_line_start > line_start) next_line_start - line_start else 0;
+        if (line_len > 0 and next_line_start <= buffer.total_len) {
+            // 改行文字を除く
+            line_len = if (line_len > 0) line_len - 1 else 0;
+        }
+
+        if (line_len == 0) {
+            self.getCurrentView().setError("Empty line");
+            return;
+        }
+
+        // 行のテキストを取得
+        const line = try buffer.getRange(self.allocator, line_start, line_len);
+        defer self.allocator.free(line);
+
+        // バッファ名を抽出
+        // フォーマット: "  {c}{c} {s:<16} {d:>6}  {s}\n"
+        // 長いファイル名は16文字を超える場合がある
+        if (line.len < 5) {
+            self.getCurrentView().setError("Invalid line format");
+            return;
+        }
+
+        // バッファ名は位置5から始まる
+        const name_start: usize = 5;
+
+        // バッファ名の終端を探す（複数のスペース + 数字 = サイズ列の開始）
+        var name_end: usize = name_start;
+        var i: usize = name_start;
+        while (i < line.len) : (i += 1) {
+            if (line[i] == ' ') {
+                // スペースの連続を探す
+                var space_count: usize = 0;
+                var j = i;
+                while (j < line.len and line[j] == ' ') : (j += 1) {
+                    space_count += 1;
+                }
+                // スペースの後に数字があればサイズ列
+                if (space_count >= 2 and j < line.len and line[j] >= '0' and line[j] <= '9') {
+                    name_end = i;
+                    break;
+                }
+            }
+            name_end = i + 1;
+        }
+
+        var buf_name = line[name_start..name_end];
+
+        // 末尾の空白を除去
+        while (buf_name.len > 0 and buf_name[buf_name.len - 1] == ' ') {
+            buf_name = buf_name[0 .. buf_name.len - 1];
+        }
+
+        if (buf_name.len == 0) {
+            self.getCurrentView().setError("No buffer name found");
+            return;
+        }
+
+        // バッファを検索
+        for (self.buffers.items) |buf| {
+            const name = if (buf.filename) |fname| fname else "*scratch*";
+            if (std.mem.eql(u8, name, buf_name)) {
+                try self.switchToBuffer(buf.id);
+                return;
+            }
+        }
+
+        self.getCurrentView().setError("Buffer not found");
+    }
+
     /// 現在のウィンドウを横（上下）に分割
     pub fn splitWindowHorizontally(self: *Editor) !void {
         const current_window = &self.windows.items[self.current_window_idx];
@@ -519,6 +741,9 @@ pub const Editor = struct {
         if (self.current_window_idx >= self.windows.items.len) {
             self.current_window_idx = self.windows.items.len - 1;
         }
+
+        // 残ったウィンドウのサイズを再計算
+        try self.recalculateWindowSizes();
     }
 
     pub fn loadFile(self: *Editor, path: []const u8) !void {
@@ -588,22 +813,78 @@ pub const Editor = struct {
         }
     }
 
+    /// 全ウィンドウをレンダリング
+    fn renderAllWindows(self: *Editor) !void {
+        for (self.windows.items, 0..) |*window, idx| {
+            const is_active = (idx == self.current_window_idx);
+            const buffer_state = self.findBufferById(window.buffer_id) orelse continue;
+            const buffer = &buffer_state.buffer;
+
+            try window.view.renderInBounds(
+                &self.terminal,
+                window.y,
+                window.height,
+                is_active,
+                buffer_state.modified,
+                buffer_state.readonly,
+                buffer.detected_line_ending,
+                buffer_state.filename,
+            );
+        }
+    }
+
+    /// 端末サイズ変更時にウィンドウサイズを再計算
+    fn recalculateWindowSizes(self: *Editor) !void {
+        const total_height = self.terminal.height;
+
+        if (self.windows.items.len == 0) return;
+
+        // ウィンドウが1つの場合は全画面
+        if (self.windows.items.len == 1) {
+            self.windows.items[0].y = 0;
+            self.windows.items[0].height = total_height;
+            self.windows.items[0].width = self.terminal.width;
+            self.windows.items[0].view.markFullRedraw();
+            return;
+        }
+
+        // 複数ウィンドウの場合：均等分割（縦分割のみ対応）
+        const window_count = self.windows.items.len;
+        const base_height = total_height / window_count;
+        var remaining = total_height % window_count;
+        var current_y: usize = 0;
+
+        for (self.windows.items) |*window| {
+            window.y = current_y;
+            window.height = base_height + (if (remaining > 0) @as(usize, 1) else @as(usize, 0));
+            window.width = self.terminal.width;
+            window.view.markFullRedraw();
+
+            current_y += window.height;
+            if (remaining > 0) remaining -= 1;
+        }
+    }
+
     pub fn run(self: *Editor) !void {
         const stdin: std.fs.File = .{ .handle = std.posix.STDIN_FILENO };
 
         while (self.running) {
             // 端末サイズ変更をチェック
             if (try self.terminal.checkResize()) {
-                // サイズが変わったら全画面再描画をマーク
-                self.getCurrentView().markFullRedraw();
+                // サイズが変わったら全ウィンドウの再描画をマーク＆サイズ再計算
+                try self.recalculateWindowSizes();
             }
 
             // カーソル位置をバッファ範囲内にクランプ（大量削除後の対策）
             self.clampCursorPosition();
 
-            const buffer_state = self.getCurrentBuffer();
-            const buffer = self.getCurrentBufferContent();
-            try self.getCurrentView().render(&self.terminal, buffer_state.modified, buffer_state.readonly, buffer.detected_line_ending, buffer_state.filename);
+            // 全ウィンドウをレンダリング
+            try self.renderAllWindows();
+
+            // シェルコマンド実行中ならポーリング
+            if (self.mode == .shell_running) {
+                try self.pollShellCommand();
+            }
 
             if (try input.readKey(stdin)) |key| {
                 // 何かキー入力があればエラーメッセージをクリア
@@ -1907,6 +2188,85 @@ pub const Editor = struct {
                 }
                 return;
             },
+            .shell_command => {
+                // シェルコマンド入力モード
+                switch (key) {
+                    .char => |c| {
+                        try self.input_buffer.append(self.allocator, c);
+                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "| {s}", .{self.input_buffer.items}) catch null;
+                        if (self.prompt_buffer) |prompt| {
+                            self.getCurrentView().setError(prompt);
+                        }
+                    },
+                    .codepoint => |cp| {
+                        var buf: [4]u8 = undefined;
+                        const len = std.unicode.utf8Encode(cp, &buf) catch return;
+                        try self.input_buffer.appendSlice(self.allocator, buf[0..len]);
+                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "| {s}", .{self.input_buffer.items}) catch null;
+                        if (self.prompt_buffer) |prompt| {
+                            self.getCurrentView().setError(prompt);
+                        }
+                    },
+                    .ctrl => |c| {
+                        if (c == 'g') {
+                            // C-g: キャンセル
+                            self.mode = .normal;
+                            self.input_buffer.clearRetainingCapacity();
+                            self.getCurrentView().clearError();
+                        }
+                    },
+                    .backspace => {
+                        if (self.input_buffer.items.len > 0) {
+                            // UTF-8文字の境界を考慮してバックスペース
+                            var del_len: usize = 1;
+                            while (del_len < self.input_buffer.items.len) {
+                                const idx = self.input_buffer.items.len - del_len - 1;
+                                const byte = self.input_buffer.items[idx];
+                                if ((byte & 0xC0) != 0x80) break;
+                                del_len += 1;
+                            }
+                            self.input_buffer.items.len -= del_len;
+                            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "| {s}", .{self.input_buffer.items}) catch null;
+                            if (self.prompt_buffer) |prompt| {
+                                self.getCurrentView().setError(prompt);
+                            } else {
+                                self.getCurrentView().setError("| ");
+                            }
+                        }
+                    },
+                    .enter => {
+                        // Enter: コマンド実行
+                        if (self.input_buffer.items.len > 0) {
+                            try self.startShellCommand();
+                            // startShellCommandが成功すればmode = .shell_runningになる
+                            // 失敗時やコマンドが空の場合はmodeはそのまま
+                        }
+                        // shell_runningモードに移行しなかった場合は元に戻す
+                        if (self.mode != .shell_running) {
+                            self.mode = .normal;
+                            self.input_buffer.clearRetainingCapacity();
+                        }
+                    },
+                    else => {},
+                }
+                return;
+            },
+            .shell_running => {
+                // シェルコマンド実行中モード
+                switch (key) {
+                    .ctrl => |c| {
+                        if (c == 'g') {
+                            // C-g: キャンセル
+                            self.cancelShellCommand();
+                            self.input_buffer.clearRetainingCapacity();
+                        }
+                    },
+                    else => {
+                        // 他のキーは無視（実行中は操作不可）
+                    },
+                }
+                return;
+            },
             .normal => {},
         }
 
@@ -1978,6 +2338,12 @@ pub const Editor = struct {
                     'b' => try self.backwardWord(), // M-b 単語後退
                     'd' => try self.deleteWord(), // M-d 単語削除
                     'w' => try self.copyRegion(), // M-w 範囲コピー
+                    '|' => {
+                        // M-| シェルコマンド入力
+                        self.mode = .shell_command;
+                        self.input_buffer.clearRetainingCapacity();
+                        self.getCurrentView().setError("| ");
+                    },
                     '<' => self.getCurrentView().moveToBufferStart(), // M-< ファイル先頭
                     '>' => self.getCurrentView().moveToBufferEnd(&self.terminal), // M-> ファイル終端
                     '{' => try self.backwardParagraph(), // M-{ 前の段落
@@ -1996,7 +2362,17 @@ pub const Editor = struct {
             .arrow_right => self.getCurrentView().moveCursorRight(&self.terminal),
 
             // 特殊キー
-            .enter => try self.insertChar('\n'),
+            .enter => {
+                // *Buffer List* の場合は選択したバッファに切り替え
+                const buffer_state = self.getCurrentBuffer();
+                if (buffer_state.filename) |fname| {
+                    if (std.mem.eql(u8, fname, "*Buffer List*")) {
+                        try self.selectBufferFromList();
+                        return;
+                    }
+                }
+                try self.insertChar('\n');
+            },
             .backspace => try self.backspace(),
             .tab => try self.insertChar('\t'),
             .shift_tab => {}, // 未使用
@@ -2034,8 +2410,12 @@ pub const Editor = struct {
     }
 
     fn insertChar(self: *Editor, ch: u8) !void {
-        const buffer = self.getCurrentBufferContent();
         const buffer_state = self.getCurrentBuffer();
+        if (buffer_state.readonly) {
+            self.getCurrentView().setError("Buffer is read-only");
+            return;
+        }
+        const buffer = self.getCurrentBufferContent();
         const current_line = self.getCurrentLine();
         const pos = self.getCurrentView().getCursorBufferPos();
 
@@ -2076,8 +2456,12 @@ pub const Editor = struct {
     }
 
     fn insertCodepoint(self: *Editor, codepoint: u21) !void {
-        const buffer = self.getCurrentBufferContent();
         const buffer_state = self.getCurrentBuffer();
+        if (buffer_state.readonly) {
+            self.getCurrentView().setError("Buffer is read-only");
+            return;
+        }
+        const buffer = self.getCurrentBufferContent();
         const current_line = self.getCurrentLine();
 
         // UTF-8にエンコード
@@ -2116,8 +2500,12 @@ pub const Editor = struct {
     }
 
     fn deleteChar(self: *Editor) !void {
-        const buffer = self.getCurrentBufferContent();
         const buffer_state = self.getCurrentBuffer();
+        if (buffer_state.readonly) {
+            self.getCurrentView().setError("Buffer is read-only");
+            return;
+        }
+        const buffer = self.getCurrentBufferContent();
         const current_line = self.getCurrentLine();
         const pos = self.getCurrentView().getCursorBufferPos();
         if (pos >= buffer.len()) return;
@@ -2167,8 +2555,12 @@ pub const Editor = struct {
     }
 
     fn backspace(self: *Editor) !void {
-        const buffer = self.getCurrentBufferContent();
         const buffer_state = self.getCurrentBuffer();
+        if (buffer_state.readonly) {
+            self.getCurrentView().setError("Buffer is read-only");
+            return;
+        }
+        const buffer = self.getCurrentBufferContent();
         const current_line = self.getCurrentLine();
         const pos = self.getCurrentView().getCursorBufferPos();
         if (pos == 0) return;
@@ -2243,8 +2635,12 @@ pub const Editor = struct {
     }
 
     fn killLine(self: *Editor) !void {
-        const buffer = self.getCurrentBufferContent();
         const buffer_state = self.getCurrentBuffer();
+        if (buffer_state.readonly) {
+            self.getCurrentView().setError("Buffer is read-only");
+            return;
+        }
+        const buffer = self.getCurrentBufferContent();
         const current_line = self.getCurrentLine();
         const pos = self.getCurrentView().getCursorBufferPos();
 
@@ -2391,8 +2787,12 @@ pub const Editor = struct {
 
     // kill_ringの内容をペースト（C-y）
     fn yank(self: *Editor) !void {
-        const buffer = self.getCurrentBufferContent();
         const buffer_state = self.getCurrentBuffer();
+        if (buffer_state.readonly) {
+            self.getCurrentView().setError("Buffer is read-only");
+            return;
+        }
+        const buffer = self.getCurrentBufferContent();
         const current_line = self.getCurrentLine();
         const text = self.kill_ring orelse {
             self.getCurrentView().setError("Kill ring is empty");
@@ -2604,6 +3004,10 @@ pub const Editor = struct {
 
     // 矩形の貼り付け（C-x r y）
     fn yankRectangle(self: *Editor) void {
+        if (self.getCurrentBuffer().readonly) {
+            self.getCurrentView().setError("Buffer is read-only");
+            return;
+        }
         const rect = self.rectangle_ring orelse {
             self.getCurrentView().setError("No rectangle to yank");
             return;
@@ -3153,5 +3557,426 @@ pub const Editor = struct {
 
         // バッファの先頭に到達
         self.setCursorToPos(0);
+    }
+
+    // ========================================
+    // Shell Integration
+    // ========================================
+
+    /// コマンド文字列をパースしてプレフィックス/サフィックスを取り出す
+    fn parseShellCommand(cmd: []const u8) struct {
+        input_source: ShellInputSource,
+        output_dest: ShellOutputDest,
+        command: []const u8,
+    } {
+        var input_source: ShellInputSource = .selection;
+        var output_dest: ShellOutputDest = .command_buffer;
+        var start: usize = 0;
+        var end: usize = cmd.len;
+
+        // プレフィックス解析
+        if (cmd.len > 0) {
+            if (cmd[0] == '%') {
+                input_source = .buffer_all;
+                start = 1;
+                // スペースをスキップ
+                while (start < cmd.len and cmd[start] == ' ') : (start += 1) {}
+            } else if (cmd[0] == '.') {
+                input_source = .current_line;
+                start = 1;
+                while (start < cmd.len and cmd[start] == ' ') : (start += 1) {}
+            }
+        }
+
+        // パイプ記号 '|' をスキップ（構文セパレータ）
+        if (start < cmd.len and cmd[start] == '|') {
+            start += 1;
+            // パイプ後のスペースをスキップ
+            while (start < cmd.len and cmd[start] == ' ') : (start += 1) {}
+        }
+
+        // サフィックス解析（末尾から）
+        if (end > start) {
+            // 末尾の空白をスキップ
+            while (end > start and cmd[end - 1] == ' ') : (end -= 1) {}
+
+            if (end > start) {
+                // "n>" チェック
+                if (end >= 2 and cmd[end - 2] == 'n' and cmd[end - 1] == '>') {
+                    output_dest = .new_buffer;
+                    end -= 2;
+                }
+                // "+>" チェック
+                else if (end >= 2 and cmd[end - 2] == '+' and cmd[end - 1] == '>') {
+                    output_dest = .insert;
+                    end -= 2;
+                }
+                // ">" チェック（末尾が > で、その後ろに何もない場合のみ）
+                else if (cmd[end - 1] == '>') {
+                    // "> file" のようなシェルリダイレクトではないことを確認
+                    // 末尾が ">" で終わっていて、その前がスペースか行頭
+                    if (end >= 2 and cmd[end - 2] == ' ') {
+                        output_dest = .replace;
+                        end -= 1;
+                    } else if (end == 1) {
+                        output_dest = .replace;
+                        end -= 1;
+                    }
+                }
+            }
+
+            // サフィックス前の空白をスキップ
+            while (end > start and cmd[end - 1] == ' ') : (end -= 1) {}
+        }
+
+        return .{
+            .input_source = input_source,
+            .output_dest = output_dest,
+            .command = if (end > start) cmd[start..end] else "",
+        };
+    }
+
+    /// シェルコマンドを非同期で開始
+    fn startShellCommand(self: *Editor) !void {
+        const cmd_input = self.input_buffer.items;
+        if (cmd_input.len == 0) return;
+
+        // コマンドをパース
+        const parsed = parseShellCommand(cmd_input);
+
+        if (parsed.command.len == 0) {
+            self.getCurrentView().setError("No command specified");
+            return;
+        }
+
+        // 入力データを取得
+        var stdin_data: ?[]const u8 = null;
+        var stdin_allocated = false;
+
+        const window = &self.windows.items[self.current_window_idx];
+
+        switch (parsed.input_source) {
+            .selection => {
+                // 選択範囲（マークがあれば）
+                if (window.mark_pos) |mark| {
+                    const cursor_pos = self.getCurrentView().getCursorBufferPos();
+                    const start = @min(mark, cursor_pos);
+                    const end_pos = @max(mark, cursor_pos);
+                    if (end_pos > start) {
+                        stdin_data = try self.getCurrentBufferContent().getRange(self.allocator, start, end_pos - start);
+                        stdin_allocated = true;
+                    }
+                }
+                // 選択なければ stdin は空
+            },
+            .buffer_all => {
+                // バッファ全体
+                const total_len = self.getCurrentBufferContent().total_len;
+                if (total_len > 0) {
+                    stdin_data = try self.getCurrentBufferContent().getRange(self.allocator, 0, total_len);
+                    stdin_allocated = true;
+                }
+            },
+            .current_line => {
+                // 現在行
+                const line_num = self.getCurrentView().top_line + self.getCurrentView().cursor_y;
+                const line_start = self.getCurrentBufferContent().line_index.getLineStart(line_num) orelse 0;
+                const next_line_start = self.getCurrentBufferContent().line_index.getLineStart(line_num + 1);
+                const line_end = if (next_line_start) |ns| ns else self.getCurrentBufferContent().total_len;
+                if (line_end > line_start) {
+                    stdin_data = try self.getCurrentBufferContent().getRange(self.allocator, line_start, line_end - line_start);
+                    stdin_allocated = true;
+                }
+            },
+        }
+
+        // コマンドをヒープにコピー（input_bufferは再利用されるため）
+        const command_copy = try self.allocator.dupe(u8, parsed.command);
+        errdefer self.allocator.free(command_copy);
+
+        // シェルコマンド状態を作成
+        const state = try self.allocator.create(ShellCommandState);
+        errdefer self.allocator.destroy(state);
+
+        // 子プロセスを起動
+        const argv = [_][]const u8{ "/bin/sh", "-c", command_copy };
+        state.child = std.process.Child.init(&argv, self.allocator);
+        state.child.stdin_behavior = if (stdin_data != null) .Pipe else .Close;
+        state.child.stdout_behavior = .Pipe;
+        state.child.stderr_behavior = .Pipe;
+        state.input_source = parsed.input_source;
+        state.output_dest = parsed.output_dest;
+        state.stdin_data = stdin_data;
+        state.stdin_allocated = stdin_allocated;
+        state.command = command_copy;
+
+        try state.child.spawn();
+
+        // stdin にデータを書き込んで閉じる
+        if (state.child.stdin) |stdin| {
+            if (stdin_data) |data| {
+                stdin.writeAll(data) catch {};
+            }
+            // stdin を閉じないと cat などが終了しない
+            stdin.close();
+            state.child.stdin = null;
+        }
+
+        // 状態を保存してモード変更
+        self.shell_state = state;
+        self.mode = .shell_running;
+        self.getCurrentView().setError("Running... (C-g to cancel)");
+    }
+
+    /// シェルコマンドの完了をポーリング
+    fn pollShellCommand(self: *Editor) !void {
+        const state = self.shell_state orelse return;
+
+        // waitpidでプロセス終了をチェック（WNOHANG）
+        const result = std.posix.waitpid(state.child.id, std.c.W.NOHANG);
+
+        if (result.pid == 0) {
+            // プロセスはまだ実行中
+            return;
+        }
+
+        // プロセス終了 - 結果を取得して処理
+        try self.finishShellCommand();
+    }
+
+    /// シェルコマンド完了後の処理
+    fn finishShellCommand(self: *Editor) !void {
+        const state = self.shell_state orelse return;
+        defer {
+            self.cleanupShellState(state);
+            self.mode = .normal;
+        }
+
+        // stdout と stderr を読み取る（nullの場合は空文字列）
+        var stdout: []const u8 = "";
+        var stdout_allocated = false;
+        if (state.child.stdout) |stdout_file| {
+            stdout = stdout_file.readToEndAlloc(self.allocator, 1024 * 1024) catch "";
+            stdout_allocated = stdout.len > 0;
+        }
+        defer if (stdout_allocated) self.allocator.free(@constCast(stdout));
+
+        var stderr: []const u8 = "";
+        var stderr_allocated = false;
+        if (state.child.stderr) |stderr_file| {
+            stderr = stderr_file.readToEndAlloc(self.allocator, 1024 * 1024) catch "";
+            stderr_allocated = stderr.len > 0;
+        }
+        defer if (stderr_allocated) self.allocator.free(@constCast(stderr));
+
+        // 注意: waitpidで既にプロセスはreapされているので、wait()は呼ばない
+
+        // 結果を処理
+        try self.processShellResult(stdout, stderr, state.input_source, state.output_dest);
+    }
+
+    /// シェルコマンドをキャンセル
+    fn cancelShellCommand(self: *Editor) void {
+        if (self.shell_state) |state| {
+            // 子プロセスをkill
+            _ = state.child.kill() catch {};
+            self.cleanupShellState(state);
+        }
+        self.mode = .normal;
+        self.getCurrentView().setError("Cancelled");
+    }
+
+    /// シェル実行結果を処理
+    fn processShellResult(self: *Editor, stdout: []const u8, stderr: []const u8, input_source: ShellInputSource, output_dest: ShellOutputDest) !void {
+        const window = &self.windows.items[self.current_window_idx];
+
+        // 結果を処理
+        switch (output_dest) {
+            .command_buffer => {
+                // *Command* バッファに出力を表示
+                const output = if (stderr.len > 0) stderr else stdout;
+                if (output.len == 0) {
+                    self.getCurrentView().setError("(no output)");
+                    return;
+                }
+
+                // コマンドバッファを取得/作成
+                const cmd_buffer = try self.getOrCreateCommandBuffer();
+
+                // バッファをクリアして新しい内容を設定
+                if (cmd_buffer.buffer.total_len > 0) {
+                    cmd_buffer.buffer.delete(0, cmd_buffer.buffer.total_len) catch {};
+                }
+
+                // 出力を挿入
+                cmd_buffer.buffer.insertSlice(0, output) catch {};
+
+                // *Command* バッファがどこかのウィンドウに表示されているか確認
+                var cmd_window_idx: ?usize = null;
+                for (self.windows.items, 0..) |win, idx| {
+                    if (win.buffer_id == cmd_buffer.id) {
+                        cmd_window_idx = idx;
+                        break;
+                    }
+                }
+
+                if (cmd_window_idx) |idx| {
+                    // 既に表示されている：そのウィンドウを更新
+                    self.windows.items[idx].view.markFullRedraw();
+                    self.windows.items[idx].view.cursor_x = 0;
+                    self.windows.items[idx].view.cursor_y = 0;
+                    self.windows.items[idx].view.top_line = 0;
+                    self.windows.items[idx].view.top_col = 0;
+                } else {
+                    // 表示されていない：ウィンドウを分割して下に *Command* を表示
+                    const new_win_idx = try self.openCommandBufferWindow();
+                    // 新しいウィンドウのビューを更新（バッファが更新されているため）
+                    self.windows.items[new_win_idx].view.buffer = &cmd_buffer.buffer;
+                    self.windows.items[new_win_idx].view.markFullRedraw();
+                    self.windows.items[new_win_idx].view.cursor_x = 0;
+                    self.windows.items[new_win_idx].view.cursor_y = 0;
+                    self.windows.items[new_win_idx].view.top_line = 0;
+                    self.windows.items[new_win_idx].view.top_col = 0;
+                }
+
+                // カレントウィンドウはそのまま（移動しない）
+                // stderrの場合はエラー表示
+                if (stderr.len > 0) {
+                    self.getCurrentView().setError("Command failed (see below)");
+                } else {
+                    self.getCurrentView().setError("Command output below");
+                }
+            },
+            .replace => {
+                // 入力元を置換
+                switch (input_source) {
+                    .selection => {
+                        if (window.mark_pos) |mark| {
+                            const cursor_pos = self.getCurrentView().getCursorBufferPos();
+                            const start = @min(mark, cursor_pos);
+                            const end_pos = @max(mark, cursor_pos);
+                            if (end_pos > start) {
+                                // 削除してから挿入
+                                const buf = self.getCurrentBufferContent();
+                                const deleted = try buf.getRange(self.allocator, start, end_pos - start);
+                                defer self.allocator.free(deleted);
+                                try buf.delete(start, end_pos - start);
+                                try self.recordDelete(start, deleted, cursor_pos);
+
+                                if (stdout.len > 0) {
+                                    try buf.insertSlice(start, stdout);
+                                    try self.recordInsert(start, stdout, start);
+                                }
+                                self.getCurrentBuffer().modified = true;
+                                self.setCursorToPos(start);
+                                self.windows.items[self.current_window_idx].mark_pos = null; // マークをクリア
+                                self.getCurrentView().markDirty(0, null);
+                            }
+                        } else {
+                            self.getCurrentView().setError("No selection");
+                        }
+                    },
+                    .buffer_all => {
+                        // バッファ全体を置換
+                        const buf = self.getCurrentBufferContent();
+                        const total_len = buf.total_len;
+                        if (total_len > 0) {
+                            const old_content = try buf.getRange(self.allocator, 0, total_len);
+                            defer self.allocator.free(old_content);
+                            try buf.delete(0, total_len);
+                            try self.recordDelete(0, old_content, self.getCurrentView().getCursorBufferPos());
+                        }
+                        if (stdout.len > 0) {
+                            try buf.insertSlice(0, stdout);
+                            try self.recordInsert(0, stdout, 0);
+                        }
+                        self.getCurrentBuffer().modified = true;
+                        self.setCursorToPos(0);
+                        self.getCurrentView().markDirty(0, null);
+                    },
+                    .current_line => {
+                        // 現在行を置換
+                        const line_num = self.getCurrentView().top_line + self.getCurrentView().cursor_y;
+                        const line_start = self.getCurrentBufferContent().line_index.getLineStart(line_num) orelse 0;
+                        const next_line_start = self.getCurrentBufferContent().line_index.getLineStart(line_num + 1);
+                        const line_end = if (next_line_start) |ns| ns else self.getCurrentBufferContent().total_len;
+                        const buf = self.getCurrentBufferContent();
+                        if (line_end > line_start) {
+                            const old_line = try buf.getRange(self.allocator, line_start, line_end - line_start);
+                            defer self.allocator.free(old_line);
+                            try buf.delete(line_start, line_end - line_start);
+                            try self.recordDelete(line_start, old_line, self.getCurrentView().getCursorBufferPos());
+                        }
+                        if (stdout.len > 0) {
+                            try buf.insertSlice(line_start, stdout);
+                            try self.recordInsert(line_start, stdout, line_start);
+                        }
+                        self.getCurrentBuffer().modified = true;
+                        self.setCursorToPos(line_start);
+                        self.getCurrentView().markDirty(line_num, null);
+                    },
+                }
+            },
+            .insert => {
+                // カーソル位置に挿入
+                if (stdout.len > 0) {
+                    const pos = self.getCurrentView().getCursorBufferPos();
+                    const buf = self.getCurrentBufferContent();
+                    try buf.insertSlice(pos, stdout);
+                    try self.recordInsert(pos, stdout, pos);
+                    self.getCurrentBuffer().modified = true;
+                    self.getCurrentView().markDirty(0, null);
+                }
+            },
+            .new_buffer => {
+                // 新規バッファに出力
+                if (stdout.len > 0) {
+                    const new_buffer = try self.createNewBuffer();
+                    try new_buffer.buffer.insertSlice(0, stdout);
+                    new_buffer.filename = try self.allocator.dupe(u8, "*shell output*");
+                    try self.switchToBuffer(new_buffer.id);
+                } else if (stderr.len > 0) {
+                    const new_buffer = try self.createNewBuffer();
+                    try new_buffer.buffer.insertSlice(0, stderr);
+                    new_buffer.filename = try self.allocator.dupe(u8, "*shell error*");
+                    try self.switchToBuffer(new_buffer.id);
+                }
+            },
+        }
+    }
+
+    /// シェルコマンドを実行して結果を返す
+    fn runShellCommand(self: *Editor, command: []const u8, stdin_data: ?[]const u8) !struct {
+        stdout: []const u8,
+        stderr: []const u8,
+    } {
+        const argv = [_][]const u8{ "/bin/sh", "-c", command };
+
+        var child = std.process.Child.init(&argv, self.allocator);
+        child.stdin_behavior = if (stdin_data != null) .Pipe else .Close;
+        child.stdout_behavior = .Pipe;
+        child.stderr_behavior = .Pipe;
+
+        try child.spawn();
+
+        // stdin にデータを書き込む
+        if (stdin_data) |data| {
+            if (child.stdin) |stdin| {
+                stdin.writeAll(data) catch {};
+                stdin.close();
+                child.stdin = null;
+            }
+        }
+
+        // stdout と stderr を読み取る
+        const stdout = try child.stdout.?.readToEndAlloc(self.allocator, 1024 * 1024);
+        const stderr = try child.stderr.?.readToEndAlloc(self.allocator, 1024 * 1024);
+
+        _ = try child.wait();
+
+        return .{
+            .stdout = stdout,
+            .stderr = stderr,
+        };
     }
 };
