@@ -137,6 +137,8 @@ run_test "12.3 ペースト (C-y)" --file=test_data/test_region.txt "C-Space" "E
 run_test "12.4 複数行の範囲選択" --file=test_data/test_region.txt "C-Space" "Down" "End" "M-w" "C-x" "C-c"
 run_test "12.5 マーク解除" --file=test_data/test_region.txt "C-Space" "C-Space" "C-x" "C-c"
 run_test "12.6 範囲カット後にペースト" --file=test_data/test_region.txt "C-Space" "Right" "Right" "Right" "Right" "C-w" "End" "C-y" "C-x" "C-c" "n"
+run_test "12.7 矩形削除 (C-x r k)" --file=test_data/test_region.txt "C-Space" "Down" "Right" "Right" "C-x" "r" "k" "C-x" "C-c" "n"
+run_test "12.8 矩形ヤンク (C-x r y)" --file=test_data/test_region.txt "C-Space" "Right" "Right" "Right" "C-x" "r" "k" "Down" "C-x" "r" "y" "C-x" "C-c" "n"
 
 echo
 echo "=== カテゴリ 13: 単語移動と削除 ==="
@@ -162,6 +164,11 @@ run_test "14.3 C-n (次行)" --file=test_data/test_cursor_input.txt "C-n" "X" "C
 run_test "14.4 C-p (前行)" --file=test_data/test_cursor_input.txt "Down" "C-p" "X" "C-x" "C-c" "n"
 run_test "14.5 C-a (行頭)" --file=test_data/test_cursor_input.txt "End" "C-a" "X" "C-x" "C-c" "n"
 run_test "14.6 C-e (行末)" --file=test_data/test_cursor_input.txt "C-e" "X" "C-x" "C-c" "n"
+run_test "14.7 C-v (ページダウン)" --file=test_data/test_page_scroll.txt "C-v" "C-x" "C-c"
+run_test "14.8 M-v (ページアップ)" --file=test_data/test_page_scroll.txt "C-v" "M-v" "C-x" "C-c"
+run_test "14.9 C-l (recenter)" --file=test_data/test_page_scroll.txt "PageDown" "C-l" "C-x" "C-c"
+run_test "14.10 M-< (バッファ先頭)" --file=test_data/test_page_scroll.txt "PageDown" "M-<" "C-x" "C-c"
+run_test "14.11 M-> (バッファ末尾)" --file=test_data/test_page_scroll.txt "M->" "C-x" "C-c"
 
 echo
 echo "=== カテゴリ 15: 削除操作 ==="
@@ -204,6 +211,9 @@ run_test "19.2 ファイル名入力でBackspace" "test" "C-x" "C-s" "abc" "Back
 run_test "19.3 保存確認でキャンセル (c)" --file=test_data/test_nums.txt "test" "C-x" "C-c" "c" "C-x" "C-c" "n"
 run_test "19.4 変更なしでC-x C-s" --file=test_data/test_nums.txt "C-x" "C-s" "C-x" "C-c"
 run_test "19.5 複数回保存" --file=test_data/test_nums.txt "a" "C-x" "C-s" "b" "C-x" "C-s" "C-x" "C-c"
+run_test "19.6 名前を付けて保存 (C-x C-w)" --file=test_data/test_nums.txt "test" "C-x" "C-w" "/tmp/ze_test_saveas.txt" "Enter" "C-x" "C-c"
+run_test "19.7 C-x k (バッファを閉じる)" --file=test_data/test_buffer1.txt "C-x" "C-f" "/tmp/ze_test_data/test_buffer2.txt" "Enter" "C-x" "k" "C-x" "C-c"
+run_test "19.8 C-x h (全選択)" --file=test_data/test_cursor_input.txt "C-x" "h" "C-w" "C-x" "C-c" "n"
 
 echo
 echo "=== カテゴリ 20: ストレステストと境界値 ==="
@@ -289,6 +299,23 @@ run_test "27.3 分割ウィンドウで検索" --file=test_data/test_buffer1.txt
 run_test "27.4 分割でバッファ切り替え" --file=test_data/test_buffer1.txt "C-x" "2" "C-x" "C-f" "/tmp/ze_test_data/test_buffer2.txt" "Enter" "C-x" "C-c"
 run_test "27.5 3分割" --file=test_data/test_multiwin.txt "C-x" "2" "C-x" "2" "C-x" "C-c"
 run_test "27.6 縦横混合分割" --file=test_data/test_multiwin.txt "C-x" "2" "C-x" "3" "C-x" "C-c"
+
+echo
+echo "=== カテゴリ 28: 追加のEmacsキーバインド ==="
+# M-^ (join-line) - 現在行を上の行と結合
+run_test "28.1 行結合 (M-^)" --file=test_data/test_cursor_input.txt "Down" "M-^" "C-x" "C-c" "n"
+# M-Up/M-Down (行移動)
+run_test "28.2 行を上に移動 (M-Up)" --file=test_data/test_cursor_input.txt "Down" "Down" "M-Up" "C-x" "C-c" "n"
+run_test "28.3 行を下に移動 (M-Down)" --file=test_data/test_cursor_input.txt "M-Down" "C-x" "C-c" "n"
+# S-Tab (unindent)
+run_test "28.4 アンインデント (S-Tab)" --file=test_data/test_tab.txt "S-Tab" "C-x" "C-c" "n"
+# M-; (toggle comment)
+run_test "28.5 コメント切り替え (M-;)" --file=test_data/test_cursor_input.txt "M-;" "C-x" "C-c" "n"
+# C-Tab (次のウィンドウ - ターミナル依存だがテスト可能)
+run_test "28.6 ウィンドウ切り替え (C-Tab)" --file=test_data/test_multiwin.txt "C-x" "2" "C-Tab" "C-x" "C-c"
+# C-v / M-v ページスクロール (既にテストあるが明示的テスト)
+run_test "28.7 C-v ページダウン" --file=test_data/test_page_scroll.txt "C-v" "C-x" "C-c"
+run_test "28.8 M-v ページアップ" --file=test_data/test_page_scroll.txt "C-v" "M-v" "C-x" "C-c"
 
 echo
 echo "========================================="

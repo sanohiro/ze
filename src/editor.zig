@@ -1664,6 +1664,13 @@ pub const Editor = struct {
                                     try self.saveFile();
                                 }
                             },
+                            'w' => {
+                                // C-x C-w: 名前を付けて保存（save-as）
+                                self.mode = .filename_input;
+                                self.quit_after_save = false;
+                                self.input_buffer.clearRetainingCapacity();
+                                self.getCurrentView().setError("Write file: ");
+                            },
                             'c' => {
                                 // C-x C-c: 終了
                                 const buffer_state = self.getCurrentBuffer();
@@ -2392,6 +2399,30 @@ pub const Editor = struct {
                     'g' => self.getCurrentView().clearError(), // C-g キャンセル
                     'u' => try self.undo(), // C-u Undo
                     31, '/' => try self.redo(), // C-/ または C-_ Redo
+                    'v' => {
+                        // C-v PageDown (Emacs風)
+                        const view = self.getCurrentView();
+                        const page_size = if (self.terminal.height >= 3) self.terminal.height - 2 else 1;
+                        var i: usize = 0;
+                        while (i < page_size) : (i += 1) {
+                            view.moveCursorDown(&self.terminal);
+                        }
+                    },
+                    'l' => {
+                        // C-l recenter（カーソルを画面中央に）
+                        const view = self.getCurrentView();
+                        const visible_lines = if (self.terminal.height >= 2) self.terminal.height - 2 else 1;
+                        const center = visible_lines / 2;
+                        const current_line = view.top_line + view.cursor_y;
+                        // top_lineを調整してカーソルが中央に来るようにする
+                        if (current_line >= center) {
+                            view.top_line = current_line - center;
+                        } else {
+                            view.top_line = 0;
+                        }
+                        // cursor_yも調整
+                        view.cursor_y = if (current_line >= view.top_line) current_line - view.top_line else 0;
+                    },
                     's' => {
                         // C-s インクリメンタルサーチ（前方）
                         // 前回の検索文字列がある場合は、それを使って次の一致を検索
@@ -2460,6 +2491,15 @@ pub const Editor = struct {
                     '}' => try self.forwardParagraph(), // M-} 次の段落
                     '^' => try self.joinLine(), // M-^ 行の結合
                     ';' => try self.toggleComment(), // M-; コメント切り替え
+                    'v' => {
+                        // M-v PageUp (Emacs風)
+                        const view = self.getCurrentView();
+                        const page_size = if (self.terminal.height >= 3) self.terminal.height - 2 else 1;
+                        var i: usize = 0;
+                        while (i < page_size) : (i += 1) {
+                            view.moveCursorUp();
+                        }
+                    },
                     'x' => {
                         // M-x: コマンドプロンプト
                         self.mode = .mx_command;
@@ -2530,6 +2570,31 @@ pub const Editor = struct {
                     }
                 }
             },
+
+            // ページスクロール
+            .page_down => {
+                // PageDown: 1画面分下にスクロール
+                const view = self.getCurrentView();
+                const page_size = if (self.terminal.height >= 3) self.terminal.height - 2 else 1; // ステータスバー分を引く
+                var i: usize = 0;
+                while (i < page_size) : (i += 1) {
+                    view.moveCursorDown(&self.terminal);
+                }
+            },
+            .page_up => {
+                // PageUp: 1画面分上にスクロール
+                const view = self.getCurrentView();
+                const page_size = if (self.terminal.height >= 3) self.terminal.height - 2 else 1; // ステータスバー分を引く
+                var i: usize = 0;
+                while (i < page_size) : (i += 1) {
+                    view.moveCursorUp();
+                }
+            },
+
+            // Home/Endキー
+            .home => self.getCurrentView().moveToLineStart(),
+            .end_key => self.getCurrentView().moveToLineEnd(),
+            .delete => try self.deleteChar(),
 
             // 通常の文字 (ASCII)
             .char => |c| {

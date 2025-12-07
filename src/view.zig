@@ -620,42 +620,73 @@ pub const View = struct {
     }
 
     /// 指定行にステータスバーを描画
+    /// 新デザイン: " *filename                          L42 C8  UTF-8(LF)  Zig"
     pub fn renderStatusBarAt(self: *View, term: *Terminal, row: usize, modified: bool, readonly: bool, line_ending: anytype, filename: ?[]const u8) !void {
         try term.moveCursor(row, 0);
 
-        var status_buf: [config.Editor.STATUS_BUF_SIZE]u8 = undefined;
+        // メッセージがあればそれを優先表示（従来通り）
+        if (self.error_msg) |msg| {
+            try term.write(config.ANSI.INVERT);
+            var msg_buf: [config.Editor.STATUS_BUF_SIZE]u8 = undefined;
+            const status = try std.fmt.bufPrint(&msg_buf, " {s}", .{msg});
+            const display_status = if (status.len > term.width) status[0..term.width] else status;
+            try term.write(display_status);
+            const padding = if (display_status.len < term.width) term.width - display_status.len else 0;
+            for (0..padding) |_| {
+                try term.write(" ");
+            }
+            try term.write(config.ANSI.RESET);
+            return;
+        }
 
-        // メッセージがあればそれを優先表示
-        const status = if (self.error_msg) |msg|
-            try std.fmt.bufPrint(&status_buf, " {s}", .{msg})
-        else blk: {
-            const lines = self.buffer.lineCount();
+        // 左側: ファイル名（変更/読み取り専用フラグ付き）
+        var left_buf: [256]u8 = undefined;
+        const modified_char: u8 = if (modified) '*' else ' ';
+        const readonly_str = if (readonly) "[RO] " else "";
+        const fname = if (filename) |f| f else "[No Name]";
+        const left_part = try std.fmt.bufPrint(&left_buf, " {c}{s}{s}", .{ modified_char, readonly_str, fname });
 
-            // ステータスフラグを構築
-            const modified_flag = if (modified) "[+]" else "";
-            const readonly_flag = if (readonly) "[RO]" else "";
-            const le_str = if (@as(u32, @intFromEnum(line_ending)) == 0) "LF" else "CRLF";
-            const fname = if (filename) |f| f else "[No Name]";
+        // 右側: 位置 | エンコード(改行)
+        var right_buf: [64]u8 = undefined;
+        const current_line = self.top_line + self.cursor_y + 1;
+        const current_col = self.cursor_x + 1;
+        const le_str = if (@as(u32, @intFromEnum(line_ending)) == 0) "LF" else "CRLF";
+        const right_part = try std.fmt.bufPrint(&right_buf, "L{d} C{d}  UTF-8({s}) ", .{ current_line, current_col, le_str });
 
-            break :blk try std.fmt.bufPrint(
-                &status_buf,
-                " {s}{s} {s} | Line {d}/{d} | {d},{d} | {s} | UTF-8",
-                .{ modified_flag, readonly_flag, fname, self.top_line + self.cursor_y + 1, lines, self.cursor_y + 1, self.cursor_x + 1, le_str },
-            );
-        };
-
-        // ステータスバーを反転表示
+        // ステータスバーを反転表示で開始
         try term.write(config.ANSI.INVERT);
 
-        // ステータスが端末幅を超える場合は切り捨て
-        const display_status = if (status.len > term.width) status[0..term.width] else status;
-        try term.write(display_status);
+        // 左側を表示
+        const left_len = left_part.len;
+        const right_len = right_part.len;
+        const total_content = left_len + right_len;
 
-        // 残りの部分を空白で埋める（underflow防止）
-        const padding = if (display_status.len < term.width) term.width - display_status.len else 0;
-        for (0..padding) |_| {
-            try term.write(" ");
+        if (total_content >= term.width) {
+            // 幅が足りない場合は左側を優先して切り捨て
+            const max_left = if (term.width > right_len) term.width - right_len else term.width;
+            const display_left = if (left_len > max_left) left_part[0..max_left] else left_part;
+            try term.write(display_left);
+            // 右側は表示できる分だけ
+            if (term.width > display_left.len) {
+                const remaining = term.width - display_left.len;
+                const display_right = if (right_len > remaining) right_part[0..remaining] else right_part;
+                // パディング
+                const pad = remaining - display_right.len;
+                for (0..pad) |_| {
+                    try term.write(" ");
+                }
+                try term.write(display_right);
+            }
+        } else {
+            // 通常表示: 左 + パディング + 右
+            try term.write(left_part);
+            const padding = term.width - total_content;
+            for (0..padding) |_| {
+                try term.write(" ");
+            }
+            try term.write(right_part);
         }
+
         try term.write(config.ANSI.RESET);
     }
 
