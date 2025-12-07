@@ -1,0 +1,3 @@
+Buffer 2 content
+Second buffer line 2
+Second buffer line 3

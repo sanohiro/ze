@@ -1,0 +1,7 @@
+line1: hello123world
+line2: test456end
+line3: foo789bar
+TODO: fix this bug
+TODO: add feature
+error: something went wrong
+warning: check this

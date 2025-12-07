@@ -235,6 +235,62 @@ run_test "22.3 検索後に別の検索" --file=test_data/test_search_pages.txt 
 run_test "22.4 C-s→C-r の切り替え" --file=test_data/test_search_pages.txt "C-s" "line" "Enter" "C-s" "C-r" "C-x" "C-c"
 
 echo
+echo "=== カテゴリ 23: 正規表現検索 ==="
+run_test "23.1 数字の検索 (\\d+)" --file=test_data/test_regex.txt "C-s" "\\" "d" "+" "Enter" "C-x" "C-c"
+run_test "23.2 行頭マッチ (^TODO)" --file=test_data/test_regex.txt "C-s" "^" "T" "O" "D" "O" "Enter" "C-x" "C-c"
+run_test "23.3 行末マッチ (bar$)" --file=test_data/test_regex.txt "C-s" "b" "a" "r" "$" "Enter" "C-x" "C-c"
+run_test "23.4 任意文字 (l.ne)" --file=test_data/test_regex.txt "C-s" "l" "." "n" "e" "Enter" "C-x" "C-c"
+run_test "23.5 文字クラス ([a-z]+)" --file=test_data/test_regex.txt "C-s" "[" "a" "-" "z" "]" "+" "Enter" "C-x" "C-c"
+run_test "23.6 否定文字クラス ([^0-9]+)" --file=test_data/test_regex.txt "C-s" "[" "^" "0" "-" "9" "]" "+" "Enter" "C-x" "C-c"
+run_test "23.7 単語文字 (\\w+)" --file=test_data/test_regex.txt "C-s" "\\" "w" "+" "Enter" "C-x" "C-c"
+run_test "23.8 正規表現後方検索" --file=test_data/test_regex.txt "C-e" "C-r" "\\" "d" "+" "Enter" "C-x" "C-c"
+
+echo
+echo "=== カテゴリ 24: M-xコマンド ==="
+run_test "24.1 M-x line (行番号表示)" --file=test_data/test_multiwin.txt "M-x" "l" "i" "n" "e" "Enter" "C-x" "C-c"
+run_test "24.2 M-x line 3 (行移動)" --file=test_data/test_multiwin.txt "M-x" "l" "i" "n" "e" " " "3" "Enter" "C-x" "C-c"
+run_test "24.3 M-x tab (タブ幅表示)" --file=test_data/test_multiwin.txt "M-x" "t" "a" "b" "Enter" "C-x" "C-c"
+run_test "24.4 M-x tab 4 (タブ幅設定)" --file=test_data/test_multiwin.txt "M-x" "t" "a" "b" " " "4" "Enter" "C-x" "C-c"
+run_test "24.5 M-x indent (インデント表示)" --file=test_data/test_multiwin.txt "M-x" "i" "n" "d" "e" "n" "t" "Enter" "C-x" "C-c"
+run_test "24.6 M-x mode (モード表示)" --file=test_data/test_multiwin.txt "M-x" "m" "o" "d" "e" "Enter" "C-x" "C-c"
+run_test "24.7 M-x ? (ヘルプ)" --file=test_data/test_multiwin.txt "M-x" "?" "Enter" "C-x" "C-c"
+run_test "24.8 M-x ro (読み取り専用トグル)" --file=test_data/test_multiwin.txt "M-x" "r" "o" "Enter" "C-x" "C-c"
+run_test "24.9 M-x コマンドキャンセル" --file=test_data/test_multiwin.txt "M-x" "l" "i" "n" "C-g" "C-x" "C-c"
+
+echo
+echo "=== カテゴリ 25: マルチウィンドウ操作 ==="
+run_test "25.1 横分割 (C-x 2)" --file=test_data/test_multiwin.txt "C-x" "2" "C-x" "C-c"
+run_test "25.2 縦分割 (C-x 3)" --file=test_data/test_multiwin.txt "C-x" "3" "C-x" "C-c"
+run_test "25.3 ウィンドウ切り替え (C-x o)" --file=test_data/test_multiwin.txt "C-x" "2" "C-x" "o" "C-x" "C-c"
+run_test "25.4 ウィンドウを閉じる (C-x 0)" --file=test_data/test_multiwin.txt "C-x" "2" "C-x" "0" "C-x" "C-c"
+run_test "25.5 他のウィンドウを閉じる (C-x 1)" --file=test_data/test_multiwin.txt "C-x" "2" "C-x" "1" "C-x" "C-c"
+run_test "25.6 分割後に編集" --file=test_data/test_multiwin.txt "C-x" "2" "test" "C-x" "C-c" "n"
+run_test "25.7 分割後に検索" --file=test_data/test_multiwin.txt "C-x" "2" "C-s" "L" "i" "n" "e" "Enter" "C-x" "C-c"
+run_test "25.8 ウィンドウ間移動と編集" --file=test_data/test_multiwin.txt "C-x" "2" "C-x" "o" "hello" "C-x" "C-c" "n"
+# 注: C-TabはESC [27;5;9~ 形式で送信されるが、ターミナルによってサポートが異なるためC-x oでテスト
+run_test "25.9 ウィンドウ切り替え繰り返し" --file=test_data/test_multiwin.txt "C-x" "2" "C-x" "o" "C-x" "o" "C-x" "C-c"
+
+echo
+echo "=== カテゴリ 26: マルチバッファ操作 ==="
+run_test "26.1 ファイルを開く (C-x C-f)" --file=test_data/test_buffer1.txt "C-x" "C-f" "/tmp/ze_test_data/test_buffer2.txt" "Enter" "C-x" "C-c"
+# バッファ切り替えは以前のバッファに戻るため、まずbuffer2を開いてからC-x bでbuffer1に戻る
+run_test "26.2 バッファ切り替え (C-x b)" --file=test_data/test_buffer1.txt "C-x" "C-f" "/tmp/ze_test_data/test_buffer2.txt" "Enter" "C-x" "b" "/tmp/ze_test_data/test_buffer1.txt" "Enter" "C-x" "C-c"
+run_test "26.3 バッファ間でkill ring共有" --file=test_data/test_buffer1.txt "C-k" "C-x" "C-f" "/tmp/ze_test_data/test_buffer2.txt" "Enter" "C-y" "C-x" "C-c" "n"
+run_test "26.4 複数バッファで保存" --file=test_data/test_buffer1.txt "test" "C-x" "C-f" "/tmp/ze_test_data/test_buffer2.txt" "Enter" "data" "C-x" "C-c" "n" "n"
+run_test "26.5 バッファ一覧表示" --file=test_data/test_buffer1.txt "C-x" "C-f" "/tmp/ze_test_data/test_buffer2.txt" "Enter" "C-x" "C-b" "C-x" "C-c"
+
+echo
+echo "=== カテゴリ 27: ウィンドウ+バッファ複合操作 ==="
+run_test "27.1 分割して別ファイル" --file=test_data/test_buffer1.txt "C-x" "2" "C-x" "C-f" "/tmp/ze_test_data/test_buffer2.txt" "Enter" "C-x" "C-c"
+run_test "27.2 分割ウィンドウで両方編集" --file=test_data/test_buffer1.txt "C-x" "2" "edit1" "C-x" "o" "edit2" "C-x" "C-c" "n"
+# 分割ウィンドウでそれぞれのウィンドウで検索（シンプル化）
+run_test "27.3 分割ウィンドウで検索" --file=test_data/test_buffer1.txt "C-x" "2" "C-s" "B" "u" "f" "Enter" "C-x" "C-c"
+# 分割ウィンドウで異なるバッファを表示（シンプル化）
+run_test "27.4 分割でバッファ切り替え" --file=test_data/test_buffer1.txt "C-x" "2" "C-x" "C-f" "/tmp/ze_test_data/test_buffer2.txt" "Enter" "C-x" "C-c"
+run_test "27.5 3分割" --file=test_data/test_multiwin.txt "C-x" "2" "C-x" "2" "C-x" "C-c"
+run_test "27.6 縦横混合分割" --file=test_data/test_multiwin.txt "C-x" "2" "C-x" "3" "C-x" "C-c"
+
+echo
 echo "========================================="
 echo "統合テスト完了"
 echo "========================================="
