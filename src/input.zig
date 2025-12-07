@@ -42,6 +42,11 @@ pub fn readKey(stdin: std.fs.File) !?Key {
         return Key{ .ctrl = ch + 'a' - 1 };
     }
 
+    // Ctrl+/ (C-_) = ASCII 31 (0x1F) をRedoとして認識
+    if (ch == 31) {
+        return Key{ .ctrl = 31 };
+    }
+
     // ESC シーケンス
     if (ch == config.Input.ESC) {
         // さらに読み込んでエスケープシーケンスを判定
