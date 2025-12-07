@@ -540,6 +540,8 @@ cmd         := builtin | external | alias
 | `C-x k` | バッファを閉じる (kill-buffer) ✅ |
 | `C-x h` | 全選択 (mark-whole-buffer) ✅ |
 | `C-x o` | 次のウィンドウに移動 (other-window) ✅ |
+| `C-Tab` | 次のウィンドウに移動（高速切り替え） ✅ |
+| `C-S-Tab` | 前のウィンドウに移動（高速切り替え） ✅ |
 | `C-x 2` | 横分割 (split-window-below) ✅ |
 | `C-x 3` | 縦分割 (split-window-right) ✅ |
 | `C-x 0` | ウィンドウを閉じる (delete-window) ✅ |

@@ -1928,6 +1928,23 @@ pub const Editor = struct {
             .enter => try self.insertChar('\n'),
             .backspace => try self.backspace(),
             .tab => try self.insertChar('\t'),
+            .shift_tab => {}, // 未使用
+            .ctrl_tab => {
+                // Ctrl-Tab: 次のウィンドウに移動
+                if (self.windows.items.len > 1) {
+                    self.current_window_idx = (self.current_window_idx + 1) % self.windows.items.len;
+                }
+            },
+            .ctrl_shift_tab => {
+                // Ctrl-Shift-Tab: 前のウィンドウに移動
+                if (self.windows.items.len > 1) {
+                    if (self.current_window_idx == 0) {
+                        self.current_window_idx = self.windows.items.len - 1;
+                    } else {
+                        self.current_window_idx -= 1;
+                    }
+                }
+            },
 
             // 通常の文字 (ASCII)
             .char => |c| {

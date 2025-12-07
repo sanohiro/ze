@@ -20,6 +20,9 @@ pub const Key = union(enum) {
     enter,
     escape,
     tab,
+    shift_tab,
+    ctrl_tab,
+    ctrl_shift_tab,
 };
 
 pub fn readKey(stdin: std.fs.File) !?Key {
@@ -71,6 +74,7 @@ pub fn readKey(stdin: std.fs.File) !?Key {
                 'D' => return Key.arrow_left,
                 'H' => return Key.home,
                 'F' => return Key.end_key,
+                'Z' => return Key.shift_tab,
                 '1'...'9' => {
                     const n3 = try stdin.read(buf[3..4]);
                     if (n3 > 0) {
@@ -88,6 +92,16 @@ pub fn readKey(stdin: std.fs.File) !?Key {
                             const n4 = try stdin.read(buf[4..6]);
                             if (n4 >= 2 and buf[4] == '3' and buf[5] == '~') {
                                 return Key.alt_delete;
+                            }
+                        } else if (buf[2] == '2' and buf[3] == '7') {
+                            // Ctrl-Tab or Ctrl-Shift-Tab (ESC [27;5;9~ or ESC [27;6;9~)
+                            const n4 = try stdin.read(buf[4..9]);
+                            if (n4 >= 5 and buf[4] == ';' and buf[6] == ';' and buf[7] == '9' and buf[8] == '~') {
+                                if (buf[5] == '5') {
+                                    return Key.ctrl_tab;
+                                } else if (buf[5] == '6') {
+                                    return Key.ctrl_shift_tab;
+                                }
                             }
                         }
                     }
@@ -145,6 +159,9 @@ pub fn keyToString(key: Key, buf: []u8) ![]const u8 {
         .enter => "Enter",
         .escape => "Esc",
         .tab => "Tab",
+        .shift_tab => "S-Tab",
+        .ctrl_tab => "C-Tab",
+        .ctrl_shift_tab => "C-S-Tab",
         .codepoint => "UTF8",
     };
 }

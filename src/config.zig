@@ -76,7 +76,7 @@ pub const Editor = struct {
 /// 入力処理の定数
 pub const Input = struct {
     /// 入力バッファサイズ
-    pub const BUF_SIZE: usize = 8;
+    pub const BUF_SIZE: usize = 16;
 
     /// Escapeキー
     pub const ESC: u8 = 27;
