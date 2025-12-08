@@ -26,6 +26,7 @@ const PieceIterator = @import("buffer.zig").PieceIterator;
 const Terminal = @import("terminal.zig").Terminal;
 const config = @import("config.zig");
 const syntax = @import("syntax.zig");
+const encoding = @import("encoding.zig");
 
 pub const View = struct {
     buffer: *Buffer,
@@ -52,6 +53,9 @@ pub const View = struct {
     // バッファ固有の設定（M-xコマンドで上書き可能）
     tab_width: ?u8, // nullなら言語デフォルト
     indent_style: ?syntax.IndentStyle, // nullなら言語デフォルト
+    // ブロックコメント状態キャッシュ（O(n²)を避けるため）
+    cached_block_state: ?bool, // top_lineでのブロックコメント状態
+    cached_block_top_line: usize, // キャッシュが有効な行
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, buffer: *Buffer) View {
@@ -72,6 +76,8 @@ pub const View = struct {
             .language = &syntax.lang_text, // デフォルトはテキストモード
             .tab_width = null, // 言語デフォルトを使用
             .indent_style = null, // 言語デフォルトを使用
+            .cached_block_state = null, // キャッシュ無効
+            .cached_block_top_line = 0,
             .allocator = allocator,
         };
     }
@@ -175,6 +181,12 @@ pub const View = struct {
             // null が渡されたら dirty_end も null (EOF まで)
             self.dirty_end = null;
         }
+
+        // ブロックコメントキャッシュの無効化
+        // 変更がキャッシュ対象行より前なら無効化
+        if (self.cached_block_state != null and start_line < self.cached_block_top_line) {
+            self.cached_block_state = null;
+        }
     }
 
     pub fn markFullRedraw(self: *View) void {
@@ -196,11 +208,19 @@ pub const View = struct {
     }
 
     /// 指定行より前の行をスキャンして、ブロックコメント内で開始するかを判定
-    /// パフォーマンス: O(n) で n は target_line までの行数
+    /// キャッシュを使用してO(n)からO(1)に最適化（top_lineが変わらない場合）
     fn computeBlockCommentState(self: *View, target_line: usize) bool {
         // ブロックコメントがない言語なら常にfalse
         if (self.language.block_comment == null) return false;
 
+        // キャッシュヒット: 同じ行の状態がキャッシュされている
+        if (self.cached_block_state) |cached_state| {
+            if (self.cached_block_top_line == target_line) {
+                return cached_state;
+            }
+        }
+
+        // キャッシュミス: 再計算
         var in_block = false;
         var iter = PieceIterator.init(self.buffer);
         var line_buf = std.ArrayList(u8){};
@@ -219,6 +239,10 @@ pub const View = struct {
             const analysis = self.language.analyzeLine(line_buf.items, in_block);
             in_block = analysis.ends_in_block;
         }
+
+        // キャッシュを更新
+        self.cached_block_state = in_block;
+        self.cached_block_top_line = target_line;
 
         return in_block;
     }
@@ -242,7 +266,11 @@ pub const View = struct {
         }
 
         // コメント範囲を解析（ブロックコメント対応）
-        const analysis = self.language.analyzeLine(line_buffer.items, in_block);
+        // コメントがない言語では解析をスキップ（最適化）
+        const analysis = if (self.language.hasComments() or in_block)
+            self.language.analyzeLine(line_buffer.items, in_block)
+        else
+            syntax.LanguageDef.LineAnalysis.init();
 
         // Tab展開用の一時バッファ
         var expanded_line = std.ArrayList(u8){};
@@ -260,7 +288,7 @@ pub const View = struct {
         // grapheme-aware rendering with tab expansion and horizontal scrolling
         var byte_idx: usize = 0;
         var col: usize = 0; // 論理カラム位置（行全体での位置）
-        const visible_end = self.top_col + term.width; // 表示範囲の終端
+        const visible_end = self.top_col + (term.width - line_num_width); // 表示範囲の終端（行番号幅を除く）
         var in_comment = false; // 現在コメント内かどうか
         var current_span_idx: usize = 0; // 現在のコメントスパンインデックス
 
@@ -294,7 +322,7 @@ pub const View = struct {
                 // ASCII
                 if (ch == '\t') {
                     // Tabを空白に展開
-                    const next_tab_stop = (col / config.Editor.TAB_WIDTH + 1) * config.Editor.TAB_WIDTH;
+                    const next_tab_stop = (col / self.getTabWidth() + 1) * self.getTabWidth();
                     const spaces_needed = next_tab_stop - col;
                     var i: usize = 0;
                     while (i < spaces_needed) : (i += 1) {
@@ -533,6 +561,7 @@ pub const View = struct {
         modified: bool,
         readonly: bool,
         line_ending: anytype,
+        file_encoding: encoding.Encoding,
         filename: ?[]const u8,
     ) !void {
         // 端末サイズが0の場合は何もしない
@@ -616,7 +645,7 @@ pub const View = struct {
         }
 
         // ステータスバーの描画
-        try self.renderStatusBarAt(term, viewport_y + viewport_height - 1, modified, readonly, line_ending, filename);
+        try self.renderStatusBarAt(term, viewport_y + viewport_height - 1, modified, readonly, line_ending, file_encoding, filename);
 
         // カーソルを表示（アクティブウィンドウのみ）
         if (is_active) {
@@ -629,21 +658,21 @@ pub const View = struct {
             try term.moveCursor(viewport_y + self.cursor_y, screen_cursor_x);
             try term.showCursor();
         }
-        try term.flush();
+        // 注意: flush()は呼び出し元で一括して行う（複数ウィンドウ時の効率化のため）
     }
 
     /// 従来のrender（後方互換性のため）- 全画面レンダリング
-    pub fn render(self: *View, term: *Terminal, modified: bool, readonly: bool, line_ending: anytype, filename: ?[]const u8) !void {
-        try self.renderInBounds(term, 0, term.height, true, modified, readonly, line_ending, filename);
+    pub fn render(self: *View, term: *Terminal, modified: bool, readonly: bool, line_ending: anytype, file_encoding: encoding.Encoding, filename: ?[]const u8) !void {
+        try self.renderInBounds(term, 0, term.height, true, modified, readonly, line_ending, file_encoding, filename);
     }
 
-    pub fn renderStatusBar(self: *View, term: *Terminal, modified: bool, readonly: bool, line_ending: anytype, filename: ?[]const u8) !void {
-        try self.renderStatusBarAt(term, term.height - 1, modified, readonly, line_ending, filename);
+    pub fn renderStatusBar(self: *View, term: *Terminal, modified: bool, readonly: bool, line_ending: anytype, file_encoding: encoding.Encoding, filename: ?[]const u8) !void {
+        try self.renderStatusBarAt(term, term.height - 1, modified, readonly, line_ending, file_encoding, filename);
     }
 
     /// 指定行にステータスバーを描画
     /// 新デザイン: " *filename                          L42 C8  UTF-8(LF)  Zig"
-    pub fn renderStatusBarAt(self: *View, term: *Terminal, row: usize, modified: bool, readonly: bool, line_ending: anytype, filename: ?[]const u8) !void {
+    pub fn renderStatusBarAt(self: *View, term: *Terminal, row: usize, modified: bool, readonly: bool, line_ending: anytype, file_encoding: encoding.Encoding, filename: ?[]const u8) !void {
         try term.moveCursor(row, 0);
 
         // メッセージがあればそれを優先表示（従来通り）
@@ -673,7 +702,8 @@ pub const View = struct {
         const current_line = self.top_line + self.cursor_y + 1;
         const current_col = self.cursor_x + 1;
         const le_str = if (@as(u32, @intFromEnum(line_ending)) == 0) "LF" else "CRLF";
-        const right_part = try std.fmt.bufPrint(&right_buf, "L{d} C{d}  UTF-8({s}) ", .{ current_line, current_col, le_str });
+        const enc_str = file_encoding.toString();
+        const right_part = try std.fmt.bufPrint(&right_buf, "L{d} C{d}  {s}({s}) ", .{ current_line, current_col, enc_str, le_str });
 
         // ステータスバーを反転表示で開始
         try term.write(config.ANSI.INVERT);
@@ -739,7 +769,7 @@ pub const View = struct {
 
             // タブ文字の場合は文脈依存の幅を計算
             const char_width = if (gc.base == '\t') blk: {
-                const next_tab_stop = (display_col / config.Editor.TAB_WIDTH + 1) * config.Editor.TAB_WIDTH;
+                const next_tab_stop = (display_col / self.getTabWidth() + 1) * self.getTabWidth();
                 break :blk next_tab_stop - display_col;
             } else gc.width;
 
@@ -780,7 +810,7 @@ pub const View = struct {
 
                 // タブ文字の場合は文脈依存の幅を計算
                 const char_width = if (gc.base == '\t') blk: {
-                    const next_tab_stop = (line_width / config.Editor.TAB_WIDTH + 1) * config.Editor.TAB_WIDTH;
+                    const next_tab_stop = (line_width / self.getTabWidth() + 1) * self.getTabWidth();
                     break :blk next_tab_stop - line_width;
                 } else gc.width;
 
@@ -828,7 +858,7 @@ pub const View = struct {
 
                     // タブ文字の場合は文脈依存の幅を計算
                     last_width = if (gc.base == '\t') blk: {
-                        const next_tab_stop = (display_col / config.Editor.TAB_WIDTH + 1) * config.Editor.TAB_WIDTH;
+                        const next_tab_stop = (display_col / self.getTabWidth() + 1) * self.getTabWidth();
                         break :blk next_tab_stop - display_col;
                     } else gc.width;
 
@@ -893,15 +923,15 @@ pub const View = struct {
             } else {
                 // タブ文字の場合は文脈依存の幅を計算
                 const char_width = if (gc.base == '\t') blk: {
-                    const next_tab_stop = (self.cursor_x / config.Editor.TAB_WIDTH + 1) * config.Editor.TAB_WIDTH;
+                    const next_tab_stop = (self.cursor_x / self.getTabWidth() + 1) * self.getTabWidth();
                     break :blk next_tab_stop - self.cursor_x;
                 } else gc.width;
 
                 // grapheme clusterの幅分進める
                 self.cursor_x += char_width;
 
-                // 水平スクロール: カーソルが右端を超えた場合
-                const visible_width = term.width;
+                // 水平スクロール: カーソルが右端を超えた場合（行番号幅を除く）
+                const visible_width = term.width - self.getLineNumberWidth();
                 if (self.cursor_x >= self.top_col + visible_width) {
                     self.top_col = self.cursor_x - visible_width + 1;
                     self.markFullRedraw();
@@ -984,7 +1014,7 @@ pub const View = struct {
                 if (gc.base == '\n') break;
                 // タブ文字の場合は文脈依存の幅を計算
                 const char_width = if (gc.base == '\t') blk: {
-                    const next_tab_stop = (line_width / config.Editor.TAB_WIDTH + 1) * config.Editor.TAB_WIDTH;
+                    const next_tab_stop = (line_width / self.getTabWidth() + 1) * self.getTabWidth();
                     break :blk next_tab_stop - line_width;
                 } else gc.width;
                 line_width += char_width;

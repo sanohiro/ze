@@ -93,10 +93,21 @@ pub const LanguageDef = struct {
         }
     };
 
+    /// コメント定義があるかどうか
+    pub fn hasComments(self: *const LanguageDef) bool {
+        return self.line_comment != null or self.block_comment != null;
+    }
+
     /// 行を解析してコメント範囲を検出
     /// in_block: この行がブロックコメント内で始まるかどうか
     pub fn analyzeLine(self: *const LanguageDef, line: []const u8, in_block: bool) LineAnalysis {
         var result = LineAnalysis.init();
+
+        // コメントがない言語なら即座に終了（最適化）
+        if (!in_block and self.line_comment == null and self.block_comment == null) {
+            return result;
+        }
+
         var i: usize = 0;
         var currently_in_block = in_block;
 

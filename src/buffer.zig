@@ -635,33 +635,51 @@ pub const Buffer = struct {
                         try file.writeAll(data);
                     }
                 } else if (self.detected_line_ending == .CRLF) {
-                    // CRLF モード: LF を CRLF に変換
+                    // CRLF モード: LF を CRLF に変換（チャンク書き込みで高速化）
                     for (self.pieces.items) |piece| {
                         const data = switch (piece.source) {
                             .original => self.original[piece.start .. piece.start + piece.length],
                             .add => self.add_buffer.items[piece.start .. piece.start + piece.length],
                         };
-                        for (data) |byte| {
+                        var chunk_start: usize = 0;
+                        for (data, 0..) |byte, i| {
                             if (byte == '\n') {
+                                // \n の前までを書き込み
+                                if (i > chunk_start) {
+                                    try file.writeAll(data[chunk_start..i]);
+                                }
+                                // \r\n を書き込み
                                 try file.writeAll("\r\n");
-                            } else {
-                                try file.writeAll(&[_]u8{byte});
+                                chunk_start = i + 1;
                             }
+                        }
+                        // 残りのチャンクを書き込み
+                        if (chunk_start < data.len) {
+                            try file.writeAll(data[chunk_start..]);
                         }
                     }
                 } else if (self.detected_line_ending == .CR) {
-                    // CR モード: LF を CR に変換
+                    // CR モード: LF を CR に変換（チャンク書き込みで高速化）
                     for (self.pieces.items) |piece| {
                         const data = switch (piece.source) {
                             .original => self.original[piece.start .. piece.start + piece.length],
                             .add => self.add_buffer.items[piece.start .. piece.start + piece.length],
                         };
-                        for (data) |byte| {
+                        var chunk_start: usize = 0;
+                        for (data, 0..) |byte, i| {
                             if (byte == '\n') {
+                                // \n の前までを書き込み
+                                if (i > chunk_start) {
+                                    try file.writeAll(data[chunk_start..i]);
+                                }
+                                // \r を書き込み
                                 try file.writeAll("\r");
-                            } else {
-                                try file.writeAll(&[_]u8{byte});
+                                chunk_start = i + 1;
                             }
+                        }
+                        // 残りのチャンクを書き込み
+                        if (chunk_start < data.len) {
+                            try file.writeAll(data[chunk_start..]);
                         }
                     }
                 }

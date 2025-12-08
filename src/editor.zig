@@ -162,6 +162,7 @@ pub const BufferState = struct {
     file_mtime: ?i128, // ファイルの最終更新時刻
     undo_stack: std.ArrayList(UndoEntry), // Undoスタック
     redo_stack: std.ArrayList(UndoEntry), // Redoスタック
+    undo_save_point: ?usize, // 保存時のundoスタック深さ（nullなら一度も保存されていない）
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, id: usize) !*BufferState {
@@ -175,6 +176,7 @@ pub const BufferState = struct {
             .file_mtime = null,
             .undo_stack = undefined, // 後で初期化
             .redo_stack = undefined, // 後で初期化
+            .undo_save_point = 0, // 初期状態は保存済み扱い
             .allocator = allocator,
         };
         // ArrayListは構造体リテラル内で初期化できないため、後で初期化
@@ -182,6 +184,21 @@ pub const BufferState = struct {
         self.undo_stack = .{};
         self.redo_stack = .{};
         return self;
+    }
+
+    /// 現在の状態がディスク上のファイルと一致するかを判定
+    pub fn isModified(self: *const BufferState) bool {
+        if (self.undo_save_point) |save_point| {
+            return self.undo_stack.items.len != save_point;
+        }
+        // 一度も保存されていない場合、何か変更があればmodified
+        return self.undo_stack.items.len > 0;
+    }
+
+    /// 現在の状態を保存済みとしてマーク
+    pub fn markSaved(self: *BufferState) void {
+        self.undo_save_point = self.undo_stack.items.len;
+        self.modified = false;
     }
 
     pub fn deinit(self: *BufferState) void {
@@ -881,6 +898,10 @@ pub const Editor = struct {
         window.view.deinit(self.allocator);
         window.view = View.init(self.allocator, &buffer_state.buffer);
         window.buffer_id = buffer_id;
+
+        // 言語検出（新しいViewに言語設定を適用）
+        const content_preview = buffer_state.buffer.getContentPreview(512);
+        window.view.detectLanguage(buffer_state.filename, content_preview);
     }
 
     /// 指定されたバッファを閉じる（削除）
@@ -1108,6 +1129,10 @@ pub const Editor = struct {
         const buffer_state = self.findBufferById(current_window.buffer_id) orelse unreachable;
         new_window.view = View.init(self.allocator, &buffer_state.buffer);
 
+        // 言語検出（新しいViewに言語設定を適用）
+        const content_preview = buffer_state.buffer.getContentPreview(512);
+        new_window.view.detectLanguage(buffer_state.filename, content_preview);
+
         // ウィンドウリストに追加
         try self.windows.append(self.allocator, new_window);
 
@@ -1150,6 +1175,10 @@ pub const Editor = struct {
         // buffer_idは現在のウィンドウから取得しているため、必ず存在する
         const buffer_state = self.findBufferById(current_window.buffer_id) orelse unreachable;
         new_window.view = View.init(self.allocator, &buffer_state.buffer);
+
+        // 言語検出（新しいViewに言語設定を適用）
+        const content_preview = buffer_state.buffer.getContentPreview(512);
+        new_window.view.detectLanguage(buffer_state.filename, content_preview);
 
         // ウィンドウリストに追加
         try self.windows.append(self.allocator, new_window);
@@ -1209,13 +1238,24 @@ pub const Editor = struct {
         const buffer_state = self.getCurrentBuffer();
         const view = self.getCurrentView();
 
+        // 新しいバッファを先にロード（失敗しても古いバッファは残る）
+        var new_buffer = try Buffer.loadFromFile(self.allocator, path);
+        errdefer new_buffer.deinit();
+
+        // ファイル名を先に複製（失敗したら新バッファを解放して終了）
+        const new_filename = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(new_filename);
+
+        // ここから先は失敗しない操作のみ
+
         // 古いバッファを解放
         buffer_state.buffer.deinit();
-        buffer_state.buffer = try Buffer.loadFromFile(self.allocator, path);
+        buffer_state.buffer = new_buffer;
         view.buffer = &buffer_state.buffer;
 
         // View状態をリセット（新しいファイルを開いた時に前のカーソル位置が残らないように）
         view.top_line = 0;
+        view.top_col = 0;
         view.cursor_x = 0;
         view.cursor_y = 0;
 
@@ -1223,18 +1263,35 @@ pub const Editor = struct {
         if (buffer_state.filename) |old_name| {
             self.allocator.free(old_name);
         }
-        buffer_state.filename = try self.allocator.dupe(u8, path);
-        buffer_state.modified = false;
+        buffer_state.filename = new_filename;
 
-        // ファイルの最終更新時刻を記録（外部変更検知用）
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
-        const stat = try file.stat();
-        buffer_state.file_mtime = stat.mtime;
+        // Undo/Redoスタックをクリア
+        for (buffer_state.undo_stack.items) |*entry| {
+            entry.deinit(self.allocator);
+        }
+        buffer_state.undo_stack.clearRetainingCapacity();
+        for (buffer_state.redo_stack.items) |*entry| {
+            entry.deinit(self.allocator);
+        }
+        buffer_state.redo_stack.clearRetainingCapacity();
+        buffer_state.undo_save_point = 0; // ロード直後は保存済み状態
+        buffer_state.modified = false;
 
         // 言語検出（ファイル名とコンテンツ先頭から判定）
         const content_preview = buffer_state.buffer.getContentPreview(512);
         view.detectLanguage(path, content_preview);
+
+        // ファイルの最終更新時刻を記録（外部変更検知用）
+        const file = std.fs.cwd().openFile(path, .{}) catch {
+            buffer_state.file_mtime = null;
+            return;
+        };
+        defer file.close();
+        const stat = file.stat() catch {
+            buffer_state.file_mtime = null;
+            return;
+        };
+        buffer_state.file_mtime = stat.mtime;
     }
 
     pub fn saveFile(self: *Editor) !void {
@@ -1266,7 +1323,7 @@ pub const Editor = struct {
             }
 
             try buffer_state.buffer.saveToFile(path);
-            buffer_state.modified = false;
+            buffer_state.markSaved(); // 保存時点を記録
 
             // 保存後に新しい mtime を記録
             const file = try std.fs.cwd().openFile(path, .{});
@@ -1291,9 +1348,12 @@ pub const Editor = struct {
                 buffer_state.modified,
                 buffer_state.readonly,
                 buffer.detected_line_ending,
+                buffer.detected_encoding,
                 buffer_state.filename,
             );
         }
+        // 全ウィンドウの描画後に一括でflush（複数回のwrite()を避ける）
+        try self.terminal.flush();
     }
 
     /// 端末サイズ変更時にウィンドウサイズを再計算
@@ -1624,12 +1684,8 @@ pub const Editor = struct {
             },
         }
 
-        // Undoスタックが空になったら元の状態に戻ったのでmodified=false
-        if (buffer_state.undo_stack.items.len == 0) {
-            buffer_state.modified = false;
-        } else {
-            buffer_state.modified = true;
-        }
+        // 保存時点と現在のスタック深さを比較してmodifiedを更新
+        buffer_state.modified = buffer_state.isModified();
 
         // 画面全体を再描画
         self.getCurrentView().markFullRedraw();
@@ -1670,9 +1726,8 @@ pub const Editor = struct {
             },
         }
 
-        // Undoスタックが空でなければ変更されている
-        // （Redoによって変更が再適用されたため）
-        buffer_state.modified = (buffer_state.undo_stack.items.len > 0);
+        // 保存時点と現在のスタック深さを比較してmodifiedを更新
+        buffer_state.modified = buffer_state.isModified();
 
         // 画面全体を再描画
         self.getCurrentView().markFullRedraw();
@@ -3027,9 +3082,10 @@ pub const Editor = struct {
 
             // タブ文字の場合は文脈依存の幅を計算
             if (ch == '\t') {
-                const TAB_WIDTH = @import("config.zig").Editor.TAB_WIDTH;
-                const next_tab_stop = (self.getCurrentView().cursor_x / TAB_WIDTH + 1) * TAB_WIDTH;
-                self.getCurrentView().cursor_x = next_tab_stop;
+                const view = self.getCurrentView();
+                const tab_width = view.getTabWidth();
+                const next_tab_stop = (view.cursor_x / tab_width + 1) * tab_width;
+                view.cursor_x = next_tab_stop;
             } else {
                 // UTF-8文字の幅を計算してカーソルを移動
                 const width = Buffer.charWidth(@as(u21, ch));
@@ -3600,15 +3656,35 @@ pub const Editor = struct {
         const indent_char = self.detectIndentStyle();
         const indent_str: []const u8 = if (indent_char == '\t') "\t" else "    ";
 
-        // 現在行をインデント（選択範囲は将来対応）
-        const current_line = self.getCurrentLine();
-        const line_start = buffer.getLineStart(current_line) orelse return;
+        // 選択範囲があればその行全体をインデント、なければ現在行のみ
+        const start_line: usize, const end_line: usize = if (window.mark_pos) |mark| blk: {
+            const cursor_pos = view.getCursorBufferPos();
+            const sel_start = @min(mark, cursor_pos);
+            const sel_end = @max(mark, cursor_pos);
+            const line1 = buffer.findLineByPos(sel_start);
+            var line2 = buffer.findLineByPos(sel_end);
+            // sel_endが行頭にあり、範囲が行をまたいでいる場合は前の行までとする
+            if (sel_end > sel_start) {
+                if (buffer.getLineStart(line2)) |ls| {
+                    if (sel_end == ls and line2 > line1) {
+                        line2 -= 1;
+                    }
+                }
+            }
+            break :blk .{ line1, line2 };
+        } else .{ self.getCurrentLine(), self.getCurrentLine() };
 
-        try buffer.insertSlice(line_start, indent_str);
-        try self.recordInsert(line_start, indent_str, view.getCursorBufferPos());
+        // 行ごとにインデント（後ろから処理してバイト位置がずれないようにする）
+        var line = end_line + 1;
+        while (line > start_line) {
+            line -= 1;
+            const line_start = buffer.getLineStart(line) orelse continue;
+            try buffer.insertSlice(line_start, indent_str);
+            try self.recordInsert(line_start, indent_str, view.getCursorBufferPos());
+        }
 
         buffer_state.modified = true;
-        view.markDirty(current_line, current_line);
+        view.markDirty(start_line, end_line);
 
         // マークをクリア
         window.mark_pos = null;
@@ -3625,45 +3701,71 @@ pub const Editor = struct {
         const view = self.getCurrentView();
         const window = self.getCurrentWindow();
 
-        // 現在行をアンインデント（選択範囲は将来対応）
-        const current_line = self.getCurrentLine();
-        const line_start = buffer.getLineStart(current_line) orelse return;
-
-        var iter = PieceIterator.init(buffer);
-        iter.seek(line_start);
-
-        // 先頭の空白を数える
-        var spaces_to_remove: usize = 0;
-        if (iter.next()) |ch| {
-            if (ch == '\t') {
-                spaces_to_remove = 1;
-            } else if (ch == ' ') {
-                spaces_to_remove = 1;
-                // 最大4スペースまで削除
-                var count: usize = 1;
-                while (count < 4) : (count += 1) {
-                    if (iter.next()) |next_ch| {
-                        if (next_ch == ' ') {
-                            spaces_to_remove += 1;
-                        } else {
-                            break;
-                        }
-                    } else {
-                        break;
+        // 選択範囲があればその行全体をアンインデント、なければ現在行のみ
+        const start_line: usize, const end_line: usize = if (window.mark_pos) |mark| blk: {
+            const cursor_pos = view.getCursorBufferPos();
+            const sel_start = @min(mark, cursor_pos);
+            const sel_end = @max(mark, cursor_pos);
+            const line1 = buffer.findLineByPos(sel_start);
+            var line2 = buffer.findLineByPos(sel_end);
+            // sel_endが行頭にあり、範囲が行をまたいでいる場合は前の行までとする
+            if (sel_end > sel_start) {
+                if (buffer.getLineStart(line2)) |ls| {
+                    if (sel_end == ls and line2 > line1) {
+                        line2 -= 1;
                     }
                 }
             }
+            break :blk .{ line1, line2 };
+        } else .{ self.getCurrentLine(), self.getCurrentLine() };
+
+        var any_modified = false;
+
+        // 行ごとにアンインデント（後ろから処理してバイト位置がずれないようにする）
+        var line = end_line + 1;
+        while (line > start_line) {
+            line -= 1;
+            const line_start = buffer.getLineStart(line) orelse continue;
+
+            var iter = PieceIterator.init(buffer);
+            iter.seek(line_start);
+
+            // 先頭の空白を数える
+            var spaces_to_remove: usize = 0;
+            if (iter.next()) |ch| {
+                if (ch == '\t') {
+                    spaces_to_remove = 1;
+                } else if (ch == ' ') {
+                    spaces_to_remove = 1;
+                    // 最大4スペースまで削除
+                    var count: usize = 1;
+                    while (count < 4) : (count += 1) {
+                        if (iter.next()) |next_ch| {
+                            if (next_ch == ' ') {
+                                spaces_to_remove += 1;
+                            } else {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (spaces_to_remove > 0) {
+                const deleted = try self.extractText(line_start, spaces_to_remove);
+                defer self.allocator.free(deleted);
+
+                try buffer.delete(line_start, spaces_to_remove);
+                try self.recordDelete(line_start, deleted, view.getCursorBufferPos());
+                any_modified = true;
+            }
         }
 
-        if (spaces_to_remove > 0) {
-            const deleted = try self.extractText(line_start, spaces_to_remove);
-            defer self.allocator.free(deleted);
-
-            try buffer.delete(line_start, spaces_to_remove);
-            try self.recordDelete(line_start, deleted, view.getCursorBufferPos());
-
+        if (any_modified) {
             buffer_state.modified = true;
-            view.markDirty(current_line, current_line);
+            view.markDirty(start_line, end_line);
         }
 
         // マークをクリア
@@ -3681,55 +3783,59 @@ pub const Editor = struct {
         const view = self.getCurrentView();
         const window = self.getCurrentWindow();
 
-        const comment_str = "# ";
+        // 言語定義からコメント文字列を取得（なければ # を使用）
+        const line_comment = view.language.line_comment orelse "#";
+        var comment_buf: [64]u8 = undefined;
+        const comment_str = std.fmt.bufPrint(&comment_buf, "{s} ", .{line_comment}) catch "# ";
 
         // 現在行を操作（選択範囲は将来対応）
         const current_line = self.getCurrentLine();
         const line_start = buffer.getLineStart(current_line) orelse return;
 
-        // 行がコメントかどうかをチェック
+        // 行の内容を取得
+        const line_range = buffer.getLineRange(current_line) orelse return;
+        var line_buf: [1024]u8 = undefined;
+        var line_len: usize = 0;
         var iter = PieceIterator.init(buffer);
-        iter.seek(line_start);
-
-        // 空白をスキップして最初の非空白文字を見つける
-        var first_char: ?u8 = null;
-        var skip_count: usize = 0;
+        iter.seek(line_range.start);
         while (iter.next()) |ch| {
-            if (ch == ' ' or ch == '\t') {
-                skip_count += 1;
-            } else {
-                first_char = ch;
-                break;
+            if (ch == '\n') break;
+            if (line_len < line_buf.len) {
+                line_buf[line_len] = ch;
+                line_len += 1;
             }
         }
+        const line_content = line_buf[0..line_len];
 
-        if (first_char) |ch| {
-            if (ch == '#') {
-                // アンコメント: "# " または "#" を削除
-                const comment_pos = line_start + skip_count;
+        // コメント行かどうかを言語定義でチェック
+        const is_comment = view.language.isCommentLine(line_content);
 
-                // # の後のスペースもチェック
-                var delete_len: usize = 1;
-                if (iter.next()) |next_ch| {
-                    if (next_ch == ' ') {
-                        delete_len = 2;
-                    }
-                }
+        if (is_comment) {
+            // アンコメント: コメント文字列を削除
+            const comment_start = view.language.findCommentStart(line_content) orelse return;
+            const comment_pos = line_start + comment_start;
 
-                const deleted = try self.extractText(comment_pos, delete_len);
-                defer self.allocator.free(deleted);
-
-                try buffer.delete(comment_pos, delete_len);
-                try self.recordDelete(comment_pos, deleted, view.getCursorBufferPos());
-            } else {
-                // コメント: 行の先頭に "# " を挿入
-                try buffer.insertSlice(line_start, comment_str);
-                try self.recordInsert(line_start, comment_str, view.getCursorBufferPos());
+            // コメント文字とその後のスペースの長さを計算
+            var delete_len: usize = line_comment.len;
+            if (comment_start + line_comment.len < line_content.len and
+                line_content[comment_start + line_comment.len] == ' ')
+            {
+                delete_len += 1;
             }
 
-            buffer_state.modified = true;
-            view.markDirty(current_line, current_line);
+            const deleted = try self.extractText(comment_pos, delete_len);
+            defer self.allocator.free(deleted);
+
+            try buffer.delete(comment_pos, delete_len);
+            try self.recordDelete(comment_pos, deleted, view.getCursorBufferPos());
+        } else {
+            // コメント: 行の先頭に "comment_str " を挿入
+            try buffer.insertSlice(line_start, comment_str);
+            try self.recordInsert(line_start, comment_str, view.getCursorBufferPos());
         }
+
+        buffer_state.modified = true;
+        view.markDirty(current_line, current_line);
 
         // マークをクリア
         window.mark_pos = null;

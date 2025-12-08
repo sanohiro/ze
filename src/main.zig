@@ -62,45 +62,8 @@ pub fn main() !void {
             printHelp();
             return;
         } else {
-            // ファイル名として扱う
-            // ファイルが存在する場合のみバイナリチェック
-            const maybe_file = std.fs.cwd().openFile(arg, .{}) catch |err| blk: {
-                if (err == error.FileNotFound) {
-                    // 新規ファイルとして扱う
-                    checked_filename = arg;
-                    break :blk null;
-                } else {
-                    return err;
-                }
-            };
-
-            if (maybe_file) |f| {
-                defer f.close();
-
-                const stat = try f.stat();
-                const content = try f.readToEndAlloc(allocator, stat.size);
-                defer allocator.free(content);
-
-                // バイナリファイルチェック
-                const check_size = @min(content.len, 8192);
-                var is_binary = false;
-                for (content[0..check_size]) |byte| {
-                    if (byte == 0) {
-                        is_binary = true;
-                        break;
-                    }
-                }
-
-                if (is_binary) {
-                    const stderr_file: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
-                    var buf: [256]u8 = undefined;
-                    const msg = try std.fmt.bufPrint(&buf, "エラー: バイナリファイルは開けません: {s}\n", .{arg});
-                    _ = try stderr_file.write(msg);
-                    return;
-                }
-
-                checked_filename = arg;
-            }
+            // ファイル名として扱う（バイナリチェックはloadFile内で行う）
+            checked_filename = arg;
             break; // 最初のファイル名のみ処理
         }
     }
@@ -109,18 +72,25 @@ pub fn main() !void {
     defer editor.deinit();
 
     if (checked_filename) |filename| {
-        // ファイルを開く（既にバイナリチェック済み）
+        // ファイルを開く（バイナリチェックはloadFile内で行う）
         editor.loadFile(filename) catch |err| {
-            // ファイルが存在しない場合は新規作成として扱う
-            if (err != error.FileNotFound) {
+            if (err == error.BinaryFile) {
+                // バイナリファイルはエラー終了
+                const stderr_file: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
+                var buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "エラー: バイナリファイルは開けません: {s}\n", .{filename}) catch return;
+                stderr_file.writeAll(msg) catch {};
+                return;
+            } else if (err == error.FileNotFound) {
+                // 新規ファイルの場合、現在のバッファにファイル名を設定
+                const buffer = editor.getCurrentBuffer();
+                buffer.filename = try allocator.dupe(u8, filename);
+                // 新規ファイルでも拡張子から言語検出
+                const view = editor.getCurrentView();
+                view.detectLanguage(filename, null);
+            } else {
                 return err;
             }
-            // 新規ファイルの場合、現在のバッファにファイル名を設定
-            const buffer = editor.getCurrentBuffer();
-            buffer.filename = try allocator.dupe(u8, filename);
-            // 新規ファイルでも拡張子から言語検出
-            const view = editor.getCurrentView();
-            view.detectLanguage(filename, null);
         };
     }
 
