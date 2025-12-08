@@ -1596,7 +1596,7 @@ pub const Editor = struct {
         }
 
         // Redoスタックをクリア
-        for (buffer_state.redo_stack.items) |entry| {
+        for (buffer_state.redo_stack.items) |*entry| {
             entry.deinit(self.allocator);
         }
         buffer_state.redo_stack.clearRetainingCapacity();
@@ -1646,7 +1646,7 @@ pub const Editor = struct {
         }
 
         // Redoスタックをクリア
-        for (buffer_state.redo_stack.items) |entry| {
+        for (buffer_state.redo_stack.items) |*entry| {
             entry.deinit(self.allocator);
         }
         buffer_state.redo_stack.clearRetainingCapacity();
