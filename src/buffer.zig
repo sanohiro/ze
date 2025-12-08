@@ -422,16 +422,17 @@ pub const Buffer = struct {
                 return self;
             }
 
-            // UTF-8 + LF以外 → mmapを解放してフォールバックパスへ
-            std.posix.munmap(mapped_ptr[0..file_size]);
-
+            // UTF-8 + LF以外 → mmapデータを直接変換（再読み込み不要）
             // サポート外のエンコーディングはエラー
             if (detected.encoding == .Unknown) {
+                std.posix.munmap(mapped_ptr[0..file_size]);
                 return error.UnsupportedEncoding;
             }
 
-            // フォールバック: ファイルを読み直して変換
-            return loadFromFileFallback(allocator, path, detected);
+            // mmapデータから直接変換（I/O削減）
+            const result = loadFromMappedContent(allocator, mapped, detected);
+            std.posix.munmap(mapped_ptr[0..file_size]);
+            return result;
         } else |_| {
             // mmapが失敗した場合もフォールバック
             return loadFromFileFallbackWithDetection(allocator, path);
@@ -455,15 +456,8 @@ pub const Buffer = struct {
         };
     }
 
-    /// フォールバックパス: UTF-8+LF以外のファイルを変換して読み込む
-    fn loadFromFileFallback(allocator: std.mem.Allocator, path: []const u8, detected: encoding.DetectionResult) !Buffer {
-        var file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
-
-        const stat = try file.stat();
-        const raw_content = try file.readToEndAlloc(allocator, stat.size);
-        defer allocator.free(raw_content);
-
+    /// mmapデータから直接変換（I/O削減版）
+    fn loadFromMappedContent(allocator: std.mem.Allocator, raw_content: []const u8, detected: encoding.DetectionResult) !Buffer {
         // UTF-8に変換（BOM削除、UTF-16デコード等）
         const utf8_content = try encoding.convertToUtf8(allocator, raw_content, detected.encoding);
         defer allocator.free(utf8_content);
@@ -495,6 +489,18 @@ pub const Buffer = struct {
 
         try self.line_index.rebuild(&self);
         return self;
+    }
+
+    /// フォールバックパス: UTF-8+LF以外のファイルを変換して読み込む（mmapが使えない場合）
+    fn loadFromFileFallback(allocator: std.mem.Allocator, path: []const u8, detected: encoding.DetectionResult) !Buffer {
+        var file = try std.fs.cwd().openFile(path, .{});
+        defer file.close();
+
+        const stat = try file.stat();
+        const raw_content = try file.readToEndAlloc(allocator, stat.size);
+        defer allocator.free(raw_content);
+
+        return loadFromMappedContent(allocator, raw_content, detected);
     }
 
     /// mmapが失敗した場合のフォールバック（検出も含む）

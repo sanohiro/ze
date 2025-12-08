@@ -68,6 +68,7 @@ const EditOp = union(enum) {
 const UndoEntry = struct {
     op: EditOp,
     cursor_pos: usize, // 操作前のカーソルバイト位置
+    timestamp: i64, // 操作時のタイムスタンプ（ミリ秒）
 
     fn deinit(self: *const UndoEntry, allocator: std.mem.Allocator) void {
         switch (self.op) {
@@ -136,6 +137,7 @@ pub const ShellCommandState = struct {
     output_dest: ShellOutputDest, // 出力先（表示/置換/挿入/新規）
     stdin_data: ?[]const u8, // 子プロセスに渡すデータ
     stdin_allocated: bool, // stdin_dataを解放する必要があるか
+    stdin_write_pos: usize, // stdinへの書き込み済み位置（ストリーミング書き込み用）
     command: []const u8, // コマンド文字列（解放用）
     stdout_buffer: std.ArrayList(u8), // 蓄積された標準出力
     stderr_buffer: std.ArrayList(u8), // 蓄積された標準エラー
@@ -1246,6 +1248,15 @@ pub const Editor = struct {
         const buffer_state = self.getCurrentBuffer();
         const view = self.getCurrentView();
 
+        // 読み込み中メッセージを表示（大きなファイルでのフィードバック）
+        {
+            var msg_buf: [config.Editor.STATUS_BUF_SIZE]u8 = undefined;
+            const msg = std.fmt.bufPrint(&msg_buf, "Loading {s}...", .{path}) catch "Loading...";
+            view.setError(msg);
+            // メッセージを即座に表示するため、ステータスバーを描画してフラッシュ
+            try self.renderAllWindows();
+        }
+
         // 新しいバッファを先にロード（失敗しても古いバッファは残る）
         var new_buffer = try Buffer.loadFromFile(self.allocator, path);
         errdefer new_buffer.deinit();
@@ -1474,6 +1485,8 @@ pub const Editor = struct {
     /// running が false になるまで繰り返し（C-x C-c で終了）
     pub fn run(self: *Editor) !void {
         const stdin: std.fs.File = .{ .handle = std.posix.STDIN_FILENO };
+        // バッファ付き入力リーダー（ペースト時等の大量入力でシステムコールを削減）
+        var input_reader = input.InputReader.init(stdin);
 
         while (self.running) {
             // 端末サイズ変更をチェック
@@ -1505,7 +1518,7 @@ pub const Editor = struct {
                 try self.pollShellCommand();
             }
 
-            if (try input.readKey(stdin)) |key| {
+            if (try input.readKeyFromReader(&input_reader)) |key| {
                 // 何かキー入力があればエラーメッセージをクリア
                 self.getCurrentView().clearError();
 
@@ -1592,15 +1605,25 @@ pub const Editor = struct {
     // Undoスタックの最大エントリ数
     const MAX_UNDO_ENTRIES = config.Editor.MAX_UNDO_ENTRIES;
 
+    // 現在時刻をミリ秒で取得
+    fn getCurrentTimeMs() i64 {
+        return @divFloor(std.time.milliTimestamp(), 1);
+    }
+
     // 編集操作を記録（差分ベース、連続挿入はマージ）
     fn recordInsert(self: *Editor, pos: usize, text: []const u8, cursor_pos_before_edit: usize) !void {
         const buffer_state = self.getCurrentBuffer();
         const cursor_pos = cursor_pos_before_edit;
+        const now = getCurrentTimeMs();
 
         // 連続挿入のコアレッシング: 直前の操作が連続する挿入ならマージ
+        // ただし、タイムアウト経過後は新しいundoグループを開始
         if (buffer_state.undo_stack.items.len > 0) {
             const last = &buffer_state.undo_stack.items[buffer_state.undo_stack.items.len - 1];
-            if (last.op == .insert) {
+            const time_diff: u64 = @intCast(@max(0, now - last.timestamp));
+            const within_timeout = time_diff < config.Editor.UNDO_COALESCE_TIMEOUT_MS;
+
+            if (within_timeout and last.op == .insert) {
                 const last_ins = last.op.insert;
                 // 直前の挿入の直後に続く挿入ならマージ
                 if (last_ins.pos + last_ins.text.len == pos) {
@@ -1608,6 +1631,7 @@ pub const Editor = struct {
                     errdefer self.allocator.free(new_text); // concat成功後の保護
                     self.allocator.free(last_ins.text);
                     last.op.insert.text = new_text;
+                    last.timestamp = now; // タイムスタンプ更新
                     // cursor_posは最初の操作のものを保持
                     return;
                 }
@@ -1618,6 +1642,7 @@ pub const Editor = struct {
         try buffer_state.undo_stack.append(self.allocator, .{
             .op = .{ .insert = .{ .pos = pos, .text = text_copy } },
             .cursor_pos = cursor_pos,
+            .timestamp = now,
         });
 
         // Undoスタックが上限を超えたら古いエントリを削除
@@ -1636,11 +1661,16 @@ pub const Editor = struct {
     fn recordDelete(self: *Editor, pos: usize, text: []const u8, cursor_pos_before_edit: usize) !void {
         const buffer_state = self.getCurrentBuffer();
         const cursor_pos = cursor_pos_before_edit;
+        const now = getCurrentTimeMs();
 
         // 連続削除のコアレッシング: 直前の操作が連続する削除ならマージ
+        // ただし、タイムアウト経過後は新しいundoグループを開始
         if (buffer_state.undo_stack.items.len > 0) {
             const last = &buffer_state.undo_stack.items[buffer_state.undo_stack.items.len - 1];
-            if (last.op == .delete) {
+            const time_diff: u64 = @intCast(@max(0, now - last.timestamp));
+            const within_timeout = time_diff < config.Editor.UNDO_COALESCE_TIMEOUT_MS;
+
+            if (within_timeout and last.op == .delete) {
                 const last_del = last.op.delete;
                 // Backspace: 削除位置が前に移動（pos == last_pos - text.len）
                 if (pos + text.len == last_del.pos) {
@@ -1649,6 +1679,7 @@ pub const Editor = struct {
                     self.allocator.free(last_del.text);
                     last.op.delete.text = new_text;
                     last.op.delete.pos = pos;
+                    last.timestamp = now; // タイムスタンプ更新
                     // cursor_posは最初の操作のものを保持
                     return;
                 }
@@ -1658,6 +1689,7 @@ pub const Editor = struct {
                     errdefer self.allocator.free(new_text);
                     self.allocator.free(last_del.text);
                     last.op.delete.text = new_text;
+                    last.timestamp = now; // タイムスタンプ更新
                     // cursor_posは最初の操作のものを保持
                     return;
                 }
@@ -1668,6 +1700,7 @@ pub const Editor = struct {
         try buffer_state.undo_stack.append(self.allocator, .{
             .op = .{ .delete = .{ .pos = pos, .text = text_copy } },
             .cursor_pos = cursor_pos,
+            .timestamp = now,
         });
 
         // Undoスタックが上限を超えたら古いエントリを削除
@@ -1694,6 +1727,7 @@ pub const Editor = struct {
         const saved_cursor = entry.cursor_pos;
 
         // 逆操作を実行してredoスタックに保存
+        const now = getCurrentTimeMs();
         switch (entry.op) {
             .insert => |ins| {
                 // insertの取り消し: deleteする
@@ -1702,6 +1736,7 @@ pub const Editor = struct {
                 try buffer_state.redo_stack.append(self.allocator, .{
                     .op = .{ .insert = .{ .pos = ins.pos, .text = text_copy } },
                     .cursor_pos = self.getCurrentView().getCursorBufferPos(),
+                    .timestamp = now,
                 });
             },
             .delete => |del| {
@@ -1711,6 +1746,7 @@ pub const Editor = struct {
                 try buffer_state.redo_stack.append(self.allocator, .{
                     .op = .{ .delete = .{ .pos = del.pos, .text = text_copy } },
                     .cursor_pos = self.getCurrentView().getCursorBufferPos(),
+                    .timestamp = now,
                 });
             },
         }
@@ -1736,6 +1772,7 @@ pub const Editor = struct {
         const saved_cursor = entry.cursor_pos;
 
         // 逆操作を実行してundoスタックに保存
+        const now = getCurrentTimeMs();
         switch (entry.op) {
             .insert => |ins| {
                 // redoのinsert: もう一度insertする
@@ -1744,6 +1781,7 @@ pub const Editor = struct {
                 try buffer_state.undo_stack.append(self.allocator, .{
                     .op = .{ .insert = .{ .pos = ins.pos, .text = text_copy } },
                     .cursor_pos = self.getCurrentView().getCursorBufferPos(),
+                    .timestamp = now,
                 });
             },
             .delete => |del| {
@@ -1753,6 +1791,7 @@ pub const Editor = struct {
                 try buffer_state.undo_stack.append(self.allocator, .{
                     .op = .{ .delete = .{ .pos = del.pos, .text = text_copy } },
                     .cursor_pos = self.getCurrentView().getCursorBufferPos(),
+                    .timestamp = now,
                 });
             },
         }
@@ -4885,13 +4924,14 @@ pub const Editor = struct {
         state.output_dest = parsed.output_dest;
         state.stdin_data = stdin_data;
         state.stdin_allocated = stdin_allocated;
+        state.stdin_write_pos = 0;
         state.command = command_copy;
         state.stdout_buffer = .{};
         state.stderr_buffer = .{};
 
         try state.child.spawn();
 
-        // stdout/stderrをノンブロッキングに設定
+        // stdout/stderr/stdinをノンブロッキングに設定
         // O_NONBLOCKの値はPOSIXで0x0004 (macOS/BSD)または0x800 (Linux)
         const O_NONBLOCK: usize = if (builtin.os.tag == .macos or builtin.os.tag == .freebsd)
             0x0004
@@ -4906,15 +4946,20 @@ pub const Editor = struct {
             const flags = std.posix.fcntl(stderr_file.handle, std.posix.F.GETFL, 0) catch 0;
             _ = std.posix.fcntl(stderr_file.handle, std.posix.F.SETFL, flags | O_NONBLOCK) catch {};
         }
+        // stdinもノンブロッキングに設定（ストリーミング書き込み用）
+        if (state.child.stdin) |stdin_file| {
+            const flags = std.posix.fcntl(stdin_file.handle, std.posix.F.GETFL, 0) catch 0;
+            _ = std.posix.fcntl(stdin_file.handle, std.posix.F.SETFL, flags | O_NONBLOCK) catch {};
+        }
 
-        // stdin にデータを書き込んで閉じる
-        if (state.child.stdin) |stdin| {
-            if (stdin_data) |data| {
-                stdin.writeAll(data) catch {};
+        // stdin への書き込みは pollShellCommand() でインクリメンタルに行う
+        // （大きなデータでもブロックしないように）
+        // stdinデータがない場合のみここで閉じる
+        if (stdin_data == null) {
+            if (state.child.stdin) |stdin| {
+                stdin.close();
+                state.child.stdin = null;
             }
-            // stdin を閉じないと cat などが終了しない
-            stdin.close();
-            state.child.stdin = null;
         }
 
         // 状態を保存してモード変更
@@ -4952,6 +4997,32 @@ pub const Editor = struct {
                 };
                 if (bytes_read == 0) break;
                 try state.stderr_buffer.appendSlice(self.allocator, read_buf[0..bytes_read]);
+            }
+        }
+
+        // stdin へのストリーミング書き込み（デッドロック防止）
+        if (state.child.stdin) |stdin_file| {
+            if (state.stdin_data) |data| {
+                const remaining = data.len - state.stdin_write_pos;
+                if (remaining > 0) {
+                    // 最大8KBずつ書き込み（パイプバッファサイズに合わせる）
+                    const chunk_size = @min(remaining, 8192);
+                    const chunk = data[state.stdin_write_pos .. state.stdin_write_pos + chunk_size];
+                    const bytes_written = stdin_file.write(chunk) catch |err| switch (err) {
+                        error.WouldBlock => 0, // バッファが満杯、次回リトライ
+                        else => blk: {
+                            // エラー発生、stdinを閉じる
+                            stdin_file.close();
+                            state.child.stdin = null;
+                            break :blk 0;
+                        },
+                    };
+                    state.stdin_write_pos += bytes_written;
+                } else {
+                    // すべて書き込み完了、stdinを閉じる
+                    stdin_file.close();
+                    state.child.stdin = null;
+                }
             }
         }
 

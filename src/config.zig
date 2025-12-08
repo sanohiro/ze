@@ -60,6 +60,10 @@ pub const Editor = struct {
     /// Undo/Redoスタックの最大エントリ数
     pub const MAX_UNDO_ENTRIES: usize = 1000;
 
+    /// Undoコアレッシングのタイムアウト（ミリ秒）
+    /// この時間以上間隔があいた操作は別のundoグループになる
+    pub const UNDO_COALESCE_TIMEOUT_MS: u64 = 500;
+
     /// スクロールマージン（上下の余白行数）
     pub const SCROLL_MARGIN: usize = 3;
 
@@ -75,8 +79,11 @@ pub const Editor = struct {
 
 /// 入力処理の定数
 pub const Input = struct {
-    /// 入力バッファサイズ
+    /// 入力バッファサイズ（1回の読み取り用）
     pub const BUF_SIZE: usize = 16;
+
+    /// リングバッファサイズ（ペースト時等の大量入力に対応）
+    pub const RING_BUF_SIZE: usize = 4096;
 
     /// Escapeキー
     pub const ESC: u8 = 27;

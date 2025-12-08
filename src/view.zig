@@ -56,6 +56,9 @@ pub const View = struct {
     // ブロックコメント状態キャッシュ（O(n²)を避けるため）
     cached_block_state: ?bool, // top_lineでのブロックコメント状態
     cached_block_top_line: usize, // キャッシュが有効な行
+    // レンダリング用スクラッチバッファ（毎行のalloc/freeを避ける）
+    expanded_line: std.ArrayList(u8),
+    highlighted_line: std.ArrayList(u8),
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, buffer: *Buffer) View {
@@ -78,6 +81,8 @@ pub const View = struct {
             .indent_style = null, // 言語デフォルトを使用
             .cached_block_state = null, // キャッシュ無効
             .cached_block_top_line = 0,
+            .expanded_line = std.ArrayList(u8).initCapacity(allocator, 256) catch .{},
+            .highlighted_line = std.ArrayList(u8).initCapacity(allocator, 256) catch .{},
             .allocator = allocator,
         };
     }
@@ -122,6 +127,9 @@ pub const View = struct {
             line.deinit(allocator);
         }
         self.prev_screen.deinit(allocator);
+        // レンダリング用スクラッチバッファのクリーンアップ
+        self.expanded_line.deinit(allocator);
+        self.highlighted_line.deinit(allocator);
     }
 
     // エラーメッセージを設定
@@ -183,9 +191,12 @@ pub const View = struct {
         }
 
         // ブロックコメントキャッシュの無効化
-        // 変更がキャッシュ対象行より前なら無効化
-        if (self.cached_block_state != null and start_line < self.cached_block_top_line) {
-            self.cached_block_state = null;
+        // ブロックコメントがない言語ではキャッシュ不要、無効化もスキップ
+        if (self.language.block_comment != null) {
+            // 変更がキャッシュ対象行より前なら無効化
+            if (self.cached_block_state != null and start_line < self.cached_block_top_line) {
+                self.cached_block_state = null;
+            }
         }
     }
 
@@ -272,9 +283,8 @@ pub const View = struct {
         else
             syntax.LanguageDef.LineAnalysis.init();
 
-        // Tab展開用の一時バッファ
-        var expanded_line = std.ArrayList(u8){};
-        defer expanded_line.deinit(self.allocator);
+        // Tab展開用スクラッチバッファをクリアして再利用
+        self.expanded_line.clearRetainingCapacity();
 
         // 行番号を先に追加（グレー表示 + スペース2個）
         const line_num_width = self.getLineNumberWidth();
@@ -282,36 +292,39 @@ pub const View = struct {
             var num_buf: [64]u8 = undefined;
             // グレー(\x1b[90m) + 右詰め行番号 + リセット(\x1b[m) + スペース2個
             const line_num_str = std.fmt.bufPrint(&num_buf, "\x1b[90m{d: >[1]}\x1b[m  ", .{ file_line + 1, line_num_width - 2 }) catch "";
-            try expanded_line.appendSlice(self.allocator, line_num_str);
+            try self.expanded_line.appendSlice(self.allocator, line_num_str);
         }
 
         // grapheme-aware rendering with tab expansion and horizontal scrolling
         var byte_idx: usize = 0;
         var col: usize = 0; // 論理カラム位置（行全体での位置）
         const visible_end = self.top_col + (term.width - line_num_width); // 表示範囲の終端（行番号幅を除く）
+
+        // コメントスパンがある場合のみ追跡（最適化：span_count==0なら完全スキップ）
+        const has_spans = analysis.span_count > 0;
         var in_comment = false; // 現在コメント内かどうか
         var current_span_idx: usize = 0; // 現在のコメントスパンインデックス
-
-        // 現在のコメントスパンを取得
-        var current_span: ?syntax.LanguageDef.CommentSpan = if (analysis.span_count > 0) analysis.spans[0] else null;
+        var current_span: ?syntax.LanguageDef.CommentSpan = if (has_spans) analysis.spans[0] else null;
 
         while (byte_idx < line_buffer.items.len and col < visible_end) {
-            // コメントスパンの開始・終了をチェック
-            if (current_span) |span| {
-                if (!in_comment and byte_idx == span.start) {
-                    // コメント開始
-                    try expanded_line.appendSlice(self.allocator, "\x1b[90m");
-                    in_comment = true;
-                }
-                if (in_comment) {
-                    if (span.end) |end| {
-                        if (byte_idx == end) {
-                            // コメント終了
-                            try expanded_line.appendSlice(self.allocator, "\x1b[m");
-                            in_comment = false;
-                            // 次のスパンへ
-                            current_span_idx += 1;
-                            current_span = if (current_span_idx < analysis.span_count) analysis.spans[current_span_idx] else null;
+            // コメントスパンの開始・終了をチェック（スパンがある場合のみ）
+            if (has_spans) {
+                if (current_span) |span| {
+                    if (!in_comment and byte_idx == span.start) {
+                        // コメント開始
+                        try self.expanded_line.appendSlice(self.allocator, "\x1b[90m");
+                        in_comment = true;
+                    }
+                    if (in_comment) {
+                        if (span.end) |end| {
+                            if (byte_idx == end) {
+                                // コメント終了
+                                try self.expanded_line.appendSlice(self.allocator, "\x1b[m");
+                                in_comment = false;
+                                // 次のスパンへ
+                                current_span_idx += 1;
+                                current_span = if (current_span_idx < analysis.span_count) analysis.spans[current_span_idx] else null;
+                            }
                         }
                     }
                 }
@@ -328,7 +341,7 @@ pub const View = struct {
                     while (i < spaces_needed) : (i += 1) {
                         // 水平スクロール範囲内なら追加
                         if (col + i >= self.top_col and col + i < visible_end) {
-                            try expanded_line.append(self.allocator, ' ');
+                            try self.expanded_line.append(self.allocator, ' ');
                         }
                     }
                     col = next_tab_stop;
@@ -336,7 +349,7 @@ pub const View = struct {
                 } else {
                     // 通常のASCII文字
                     if (col >= self.top_col) {
-                        try expanded_line.append(self.allocator, ch);
+                        try self.expanded_line.append(self.allocator, ch);
                     }
                     byte_idx += 1;
                     col += 1;
@@ -355,7 +368,7 @@ pub const View = struct {
                     // UTF-8文字をそのままコピー
                     var i: usize = 0;
                     while (i < len) : (i += 1) {
-                        try expanded_line.append(self.allocator, line_buffer.items[byte_idx + i]);
+                        try self.expanded_line.append(self.allocator, line_buffer.items[byte_idx + i]);
                     }
                 }
                 byte_idx += len;
@@ -363,16 +376,15 @@ pub const View = struct {
             }
         }
 
-        // コメント内だった場合はリセット
-        if (in_comment) {
-            try expanded_line.appendSlice(self.allocator, "\x1b[m");
+        // コメント内だった場合はリセット（スパンがある場合のみチェック）
+        if (has_spans and in_comment) {
+            try self.expanded_line.appendSlice(self.allocator, "\x1b[m");
         }
 
-        var new_line = expanded_line.items;
+        var new_line = self.expanded_line.items;
 
-        // 検索ハイライトの適用
-        var highlighted_line = std.ArrayList(u8){};
-        defer highlighted_line.deinit(self.allocator);
+        // 検索ハイライト用スクラッチバッファをクリアして再利用
+        self.highlighted_line.clearRetainingCapacity();
 
         if (self.search_highlight) |search_str| {
             if (search_str.len > 0 and new_line.len > 0) {
@@ -382,22 +394,22 @@ pub const View = struct {
                     if (std.mem.indexOf(u8, new_line[pos..], search_str)) |match_offset| {
                         const match_pos = pos + match_offset;
                         // マッチ前の部分をコピー
-                        try highlighted_line.appendSlice(self.allocator, new_line[pos..match_pos]);
+                        try self.highlighted_line.appendSlice(self.allocator, new_line[pos..match_pos]);
                         // 反転表示開始
-                        try highlighted_line.appendSlice(self.allocator, "\x1b[7m");
+                        try self.highlighted_line.appendSlice(self.allocator, "\x1b[7m");
                         // マッチ部分をコピー
-                        try highlighted_line.appendSlice(self.allocator, new_line[match_pos..match_pos + search_str.len]);
+                        try self.highlighted_line.appendSlice(self.allocator, new_line[match_pos..match_pos + search_str.len]);
                         // 反転表示終了
-                        try highlighted_line.appendSlice(self.allocator, "\x1b[27m");
+                        try self.highlighted_line.appendSlice(self.allocator, "\x1b[27m");
                         // 次の検索位置へ
                         pos = match_pos + search_str.len;
                     } else {
                         // これ以上マッチなし：残りをコピー
-                        try highlighted_line.appendSlice(self.allocator, new_line[pos..]);
+                        try self.highlighted_line.appendSlice(self.allocator, new_line[pos..]);
                         break;
                     }
                 }
-                new_line = highlighted_line.items;
+                new_line = self.highlighted_line.items;
             }
         }
 
