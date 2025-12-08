@@ -816,6 +816,10 @@ pub const Buffer = struct {
         }
 
         // pieceの中間に挿入する場合：pieceを分割
+        // 1 pieceを3 pieceに分割するので、2つ分の追加容量が必要
+        // 先に容量を確保することで、insert時のOOMによる不整合を防ぐ
+        try self.pieces.ensureTotalCapacity(self.allocator, self.pieces.items.len + 2);
+
         const left_piece = Piece{
             .source = piece.source,
             .start = piece.start,
@@ -828,11 +832,12 @@ pub const Buffer = struct {
             .length = piece.length - location.offset,
         };
 
-        // 元のpieceを削除して3つに分割（全てのinsertが成功してからtotal_len更新）
+        // 元のpieceを削除して3つに分割
+        // 容量は確保済みなので、以降のinsertは失敗しない
         _ = self.pieces.orderedRemove(location.piece_idx);
-        try self.pieces.insert(self.allocator, location.piece_idx, right_piece);
-        try self.pieces.insert(self.allocator, location.piece_idx, new_piece);
-        try self.pieces.insert(self.allocator, location.piece_idx, left_piece);
+        self.pieces.insertAssumeCapacity(location.piece_idx, right_piece);
+        self.pieces.insertAssumeCapacity(location.piece_idx, new_piece);
+        self.pieces.insertAssumeCapacity(location.piece_idx, left_piece);
         self.total_len += text.len;
         self.line_index.invalidate();
     }
@@ -903,6 +908,9 @@ pub const Buffer = struct {
             }
 
             // pieceの中間から削除：2つに分割
+            // 1 pieceを2 pieceに分割するので、1つ分の追加容量が必要
+            try self.pieces.ensureTotalCapacity(self.allocator, self.pieces.items.len + 1);
+
             const left_piece = Piece{
                 .source = piece.source,
                 .start = piece.start,
@@ -915,9 +923,10 @@ pub const Buffer = struct {
                 .length = piece.length - end_loc.offset,
             };
 
+            // 容量は確保済みなので、以降のinsertは失敗しない
             _ = self.pieces.orderedRemove(start_loc.piece_idx);
-            try self.pieces.insert(self.allocator, start_loc.piece_idx, right_piece);
-            try self.pieces.insert(self.allocator, start_loc.piece_idx, left_piece);
+            self.pieces.insertAssumeCapacity(start_loc.piece_idx, right_piece);
+            self.pieces.insertAssumeCapacity(start_loc.piece_idx, left_piece);
             self.line_index.invalidate();
             return;
         }

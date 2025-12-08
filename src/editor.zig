@@ -447,10 +447,12 @@ pub const Editor = struct {
 
     /// シェルコマンド状態をクリーンアップ
     fn cleanupShellState(self: *Editor, state: *ShellCommandState) void {
-        // 子プロセスがまだ実行中（回収されていない）場合のみkill
+        // 子プロセスがまだ実行中（回収されていない）場合のみkillとwait
         // 回収済みの場合、PIDが再利用されて無関係のプロセスをkillする可能性がある
         if (!state.child_reaped) {
             _ = state.child.kill() catch {};
+            // ゾンビプロセスを防ぐためwaitで回収
+            _ = state.child.wait() catch {};
         }
 
         // パイプのファイルディスクリプタを閉じる（FDリーク防止）
