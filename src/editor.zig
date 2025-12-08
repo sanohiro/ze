@@ -493,7 +493,7 @@ pub const Editor = struct {
 
     /// 指定されたバッファを閉じる（削除）
     pub fn closeBuffer(self: *Editor, buffer_id: usize) !void {
-        // 最後のバッファは閉じられない
+        // 最後のバッファは閉じられない（この後 len >= 2 が保証される）
         if (self.buffers.items.len == 1) return error.CannotCloseLastBuffer;
 
         // バッファを検索して削除
@@ -503,6 +503,7 @@ pub const Editor = struct {
                 for (self.windows.items) |*window| {
                     if (window.buffer_id == buffer_id) {
                         // 次のバッファに切り替え（削除するバッファ以外）
+                        // len >= 2 が保証されているので、i==0 なら items[1] が、i>0 なら items[i-1] が存在
                         const next_buffer = if (i > 0) self.buffers.items[i - 1] else self.buffers.items[1];
                         window.view.deinit(self.allocator);
                         window.view = View.init(self.allocator, &next_buffer.buffer);
@@ -553,35 +554,36 @@ pub const Editor = struct {
 
         // "*Buffer List*"という名前のバッファを探す
         const buffer_list_name = "*Buffer List*";
-        var buffer_list: *BufferState = undefined;
-        var found = false;
+        var buffer_list: ?*BufferState = null;
 
         for (self.buffers.items) |buf| {
             if (buf.filename) |fname| {
                 if (std.mem.eql(u8, fname, buffer_list_name)) {
                     buffer_list = buf;
-                    found = true;
                     break;
                 }
             }
         }
 
-        if (!found) {
+        if (buffer_list == null) {
             // 新しいバッファを作成
-            buffer_list = try self.createNewBuffer();
-            buffer_list.filename = try self.allocator.dupe(u8, buffer_list_name);
-            buffer_list.readonly = true; // バッファ一覧は読み取り専用
+            const new_buffer = try self.createNewBuffer();
+            new_buffer.filename = try self.allocator.dupe(u8, buffer_list_name);
+            new_buffer.readonly = true; // バッファ一覧は読み取り専用
+            buffer_list = new_buffer;
         }
+
+        const buf = buffer_list.?; // ここでは必ず値が設定されている
 
         // バッファの内容をクリアして新しい一覧を挿入
-        if (buffer_list.buffer.total_len > 0) {
-            try buffer_list.buffer.delete(0, buffer_list.buffer.total_len);
+        if (buf.buffer.total_len > 0) {
+            try buf.buffer.delete(0, buf.buffer.total_len);
         }
-        try buffer_list.buffer.insertSlice(0, list_text.items);
-        buffer_list.modified = false; // バッファ一覧は変更扱いにしない
+        try buf.buffer.insertSlice(0, list_text.items);
+        buf.modified = false; // バッファ一覧は変更扱いにしない
 
         // バッファ一覧に切り替え
-        try self.switchToBuffer(buffer_list.id);
+        try self.switchToBuffer(buf.id);
     }
 
     /// *Buffer List*からバッファを選択して切り替え
@@ -710,7 +712,8 @@ pub const Editor = struct {
         new_window.split_parent_id = current_window.id;
 
         // 新しいウィンドウのViewを初期化
-        const buffer_state = self.findBufferById(current_window.buffer_id).?;
+        // buffer_idは現在のウィンドウから取得しているため、必ず存在する
+        const buffer_state = self.findBufferById(current_window.buffer_id) orelse unreachable;
         new_window.view = View.init(self.allocator, &buffer_state.buffer);
 
         // ウィンドウリストに追加
@@ -752,7 +755,8 @@ pub const Editor = struct {
         new_window.split_parent_id = current_window.id;
 
         // 新しいウィンドウのViewを初期化
-        const buffer_state = self.findBufferById(current_window.buffer_id).?;
+        // buffer_idは現在のウィンドウから取得しているため、必ず存在する
+        const buffer_state = self.findBufferById(current_window.buffer_id) orelse unreachable;
         new_window.view = View.init(self.allocator, &buffer_state.buffer);
 
         // ウィンドウリストに追加
@@ -4780,41 +4784,6 @@ pub const Editor = struct {
                 }
             },
         }
-    }
-
-    /// シェルコマンドを実行して結果を返す
-    fn runShellCommand(self: *Editor, command: []const u8, stdin_data: ?[]const u8) !struct {
-        stdout: []const u8,
-        stderr: []const u8,
-    } {
-        const argv = [_][]const u8{ "/bin/sh", "-c", command };
-
-        var child = std.process.Child.init(&argv, self.allocator);
-        child.stdin_behavior = if (stdin_data != null) .Pipe else .Close;
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Pipe;
-
-        try child.spawn();
-
-        // stdin にデータを書き込む
-        if (stdin_data) |data| {
-            if (child.stdin) |stdin| {
-                stdin.writeAll(data) catch {};
-                stdin.close();
-                child.stdin = null;
-            }
-        }
-
-        // stdout と stderr を読み取る
-        const stdout = try child.stdout.?.readToEndAlloc(self.allocator, 1024 * 1024);
-        const stderr = try child.stderr.?.readToEndAlloc(self.allocator, 1024 * 1024);
-
-        _ = try child.wait();
-
-        return .{
-            .stdout = stdout,
-            .stderr = stderr,
-        };
     }
 
     // ========================================

@@ -182,7 +182,8 @@ pub const LineIndex = struct {
 
     pub fn init(allocator: std.mem.Allocator) LineIndex {
         return .{
-            .line_starts = std.ArrayList(usize).initCapacity(allocator, 0) catch unreachable,
+            // 空のArrayListを初期化（容量0なのでアロケーションなし）
+            .line_starts = .{},
             .valid = false,
             .allocator = allocator,
         };
@@ -198,10 +199,7 @@ pub const LineIndex = struct {
 
     pub fn rebuild(self: *LineIndex, buffer: *const Buffer) !void {
         self.line_starts.clearRetainingCapacity();
-        errdefer {
-            self.valid = false;
-            self.line_starts.clearRetainingCapacity();
-        }
+        errdefer self.valid = false;
 
         // 空バッファの場合は line_starts = [0] （1行とカウント）
         try self.line_starts.append(self.allocator, 0);
