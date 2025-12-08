@@ -1383,7 +1383,7 @@ pub const Editor = struct {
                 const maybe_file = std.fs.cwd().openFile(path, .{}) catch |err| blk: {
                     // ファイルが存在しない場合は外部で削除された
                     if (err == error.FileNotFound) {
-                        view.error_msg = "Warning: file deleted externally";
+                        view.setError("Warning: file deleted externally");
                         // 続行して保存する（再作成）
                         break :blk null;
                     } else {
@@ -1395,7 +1395,7 @@ pub const Editor = struct {
                     defer f.close();
                     const stat = try f.stat();
                     if (stat.mtime != original_mtime) {
-                        view.error_msg = "Warning: file modified externally!";
+                        view.setError("Warning: file modified externally!");
                         // 続行して上書きする（ユーザーの編集を優先）
                     }
                 }
@@ -1601,8 +1601,15 @@ pub const Editor = struct {
     // PieceIterator.seekを使ってO(pieces + len)で効率的に取得
     fn extractText(self: *Editor, pos: usize, len: usize) ![]u8 {
         const buffer = self.getCurrentBufferContent();
+        const buf_len = buffer.len();
+
+        // posがバッファ末尾を超えている場合は空の配列を返す（アンダーフロー防止）
+        if (pos >= buf_len) {
+            return try self.allocator.alloc(u8, 0);
+        }
+
         // 実際に読み取れるバイト数を計算（buffer末尾を超えないように）
-        const actual_len = @min(len, buffer.len() - pos);
+        const actual_len = @min(len, buf_len - pos);
         var result = try self.allocator.alloc(u8, actual_len);
         errdefer self.allocator.free(result);
 
@@ -2371,15 +2378,30 @@ pub const Editor = struct {
                             },
                             'c' => {
                                 // C-x C-c: 終了
-                                const buffer_state = self.getCurrentBuffer();
-                                if (buffer_state.modified) {
-                                    if (buffer_state.filename) |name| {
-                                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Save changes to {s}? (y/n/c): ", .{name}) catch null;
-                                        if (self.prompt_buffer) |prompt| {
-                                            self.getCurrentView().setError(prompt);
-                                        } else {
-                                            self.getCurrentView().setError("Save changes? (y/n/c): ");
+                                // 全バッファの変更をチェック（現在のバッファだけでなく）
+                                var modified_count: usize = 0;
+                                var first_modified_name: ?[]const u8 = null;
+                                for (self.buffers.items) |buf| {
+                                    if (buf.modified) {
+                                        modified_count += 1;
+                                        if (first_modified_name == null) {
+                                            first_modified_name = buf.filename;
                                         }
+                                    }
+                                }
+
+                                if (modified_count > 0) {
+                                    if (modified_count == 1) {
+                                        if (first_modified_name) |name| {
+                                            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Save changes to {s}? (y/n/c): ", .{name}) catch null;
+                                        } else {
+                                            self.prompt_buffer = null;
+                                        }
+                                    } else {
+                                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "{d} buffers modified; exit anyway? (y/n): ", .{modified_count}) catch null;
+                                    }
+                                    if (self.prompt_buffer) |prompt| {
+                                        self.getCurrentView().setError(prompt);
                                     } else {
                                         self.getCurrentView().setError("Save changes? (y/n/c): ");
                                     }
@@ -5339,6 +5361,8 @@ pub const Editor = struct {
             // 子プロセスをkill（まだ回収されていない場合のみ）
             if (!state.child_reaped) {
                 _ = state.child.kill() catch {};
+                // ゾンビプロセスを防ぐためwaitで回収
+                _ = state.child.wait() catch {};
             }
             self.cleanupShellState(state);
         }

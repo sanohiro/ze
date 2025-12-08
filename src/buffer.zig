@@ -695,6 +695,9 @@ pub const Buffer = struct {
             if (original_mode) |mode| {
                 try file.chmod(mode);
             }
+
+            // データをディスクに同期（クラッシュ時のデータ破損を防止）
+            try file.sync();
         }
 
         // 成功したら rename で置き換え（アトミック操作）

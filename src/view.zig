@@ -40,8 +40,9 @@ pub const View = struct {
     needs_full_redraw: bool,
     // レンダリング用の再利用バッファ（メモリ確保を減らす）
     line_buffer: std.ArrayList(u8),
-    // エラーメッセージ表示用
-    error_msg: ?[]const u8,
+    // エラーメッセージ表示用（固定バッファでダングリングポインタを防止）
+    error_msg_buf: [256]u8,
+    error_msg_len: usize,
     // セルレベル差分描画用: 前フレームの画面状態
     prev_screen: std.ArrayList(std.ArrayList(u8)),
     // 検索ハイライト用
@@ -84,7 +85,8 @@ pub const View = struct {
             .dirty_end = null,
             .needs_full_redraw = true,
             .line_buffer = line_buffer,
-            .error_msg = null,
+            .error_msg_buf = undefined,
+            .error_msg_len = 0,
             .prev_screen = prev_screen,
             .search_highlight = null,
             .cached_line_num_width = 0,
@@ -144,14 +146,22 @@ pub const View = struct {
         self.highlighted_line.deinit(allocator);
     }
 
-    // エラーメッセージを設定
+    // エラーメッセージを設定（固定バッファにコピー）
     pub fn setError(self: *View, msg: []const u8) void {
-        self.error_msg = msg;
+        const len = @min(msg.len, self.error_msg_buf.len);
+        @memcpy(self.error_msg_buf[0..len], msg[0..len]);
+        self.error_msg_len = len;
+    }
+
+    // エラーメッセージを取得
+    pub fn getError(self: *const View) ?[]const u8 {
+        if (self.error_msg_len == 0) return null;
+        return self.error_msg_buf[0..self.error_msg_len];
     }
 
     // エラーメッセージをクリア
     pub fn clearError(self: *View) void {
-        self.error_msg = null;
+        self.error_msg_len = 0;
     }
 
     // 検索ハイライトを設定
@@ -705,7 +715,7 @@ pub const View = struct {
         try term.moveCursor(row, 0);
 
         // メッセージがあればそれを優先表示（従来通り）
-        if (self.error_msg) |msg| {
+        if (self.getError()) |msg| {
             try term.write(config.ANSI.INVERT);
             var msg_buf: [config.Editor.STATUS_BUF_SIZE]u8 = undefined;
             const status = try std.fmt.bufPrint(&msg_buf, " {s}", .{msg});
