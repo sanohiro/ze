@@ -286,7 +286,7 @@ pub const View = struct {
     }
 
     // 行番号の表示幅を計算（999行まで固定、1000行以上で動的拡張）
-    fn getLineNumberWidth(self: *View) usize {
+    pub fn getLineNumberWidth(self: *View) usize {
         if (!config.Editor.SHOW_LINE_NUMBERS) return 0;
 
         const total_lines = self.buffer.lineCount();
@@ -1191,6 +1191,19 @@ pub const View = struct {
         }
 
         self.cursor_x = line_width;
+
+        // 水平スクロール: カーソルが可視領域外なら調整
+        const line_num_width = self.getLineNumberWidth();
+        const visible_width = if (self.viewport_width > line_num_width) self.viewport_width - line_num_width else 1;
+        if (self.cursor_x >= self.top_col + visible_width) {
+            // カーソルが右端を超えたらスクロール
+            self.top_col = if (self.cursor_x >= visible_width) self.cursor_x - visible_width + 1 else 0;
+            self.markFullRedraw();
+        } else if (self.cursor_x < self.top_col) {
+            // カーソルが左端より左なら左にスクロール（短い行の場合）
+            self.top_col = self.cursor_x;
+            self.markFullRedraw();
+        }
     }
 
     // M-< (beginning-of-buffer): ファイルの先頭に移動

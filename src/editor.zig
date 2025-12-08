@@ -1670,10 +1670,11 @@ pub const Editor = struct {
         const total_lines = buffer.lineCount();
         if (total_lines == 0) return;
 
-        // 端末サイズが0の場合は何もしない
-        if (self.terminal.height == 0) return;
+        // ビューポート高さが0の場合は何もしない
+        if (view.viewport_height == 0) return;
 
-        const max_screen_lines = self.terminal.height - 1; // ステータスバー分を引く
+        // ビューポートの表示可能行数（ステータスバー分を引く）
+        const max_screen_lines = if (view.viewport_height >= 1) view.viewport_height - 1 else 0;
 
         // top_lineが範囲外の場合は調整
         if (view.top_line >= total_lines) {
@@ -1980,8 +1981,8 @@ pub const Editor = struct {
         const line = buffer.findLineByPos(clamped_pos);
         const line_start = buffer.getLineStart(line) orelse 0;
 
-        // 画面内の行位置を計算
-        const max_screen_lines = if (self.terminal.height >= 1) self.terminal.height - 1 else 0;
+        // 画面内の行位置を計算（ビューポート高さを使用）
+        const max_screen_lines = if (view.viewport_height >= 1) view.viewport_height - 1 else 0;
         if (max_screen_lines == 0 or line < max_screen_lines) {
             view.top_line = 0;
             view.cursor_y = line;
@@ -2010,6 +2011,18 @@ pub const Editor = struct {
         }
 
         view.cursor_x = display_col;
+
+        // 水平スクロールを調整
+        const line_num_width = view.getLineNumberWidth();
+        const visible_width = if (view.viewport_width > line_num_width) view.viewport_width - line_num_width else 1;
+        if (view.cursor_x >= view.top_col + visible_width) {
+            // カーソルが右端を超えている
+            view.top_col = view.cursor_x - visible_width + 1;
+        } else if (view.cursor_x < view.top_col) {
+            // カーソルが左端より左
+            view.top_col = view.cursor_x;
+        }
+        view.markFullRedraw();
     }
 
     // エイリアス: restoreCursorPosはsetCursorToPosと同じ
@@ -3128,7 +3141,7 @@ pub const Editor = struct {
                     'v' => {
                         // C-v PageDown (Emacs風)
                         const view = self.getCurrentView();
-                        const page_size = if (self.terminal.height >= 3) self.terminal.height - 2 else 1;
+                        const page_size = if (view.viewport_height >= 3) view.viewport_height - 2 else 1;
                         var i: usize = 0;
                         while (i < page_size) : (i += 1) {
                             view.moveCursorDown();
@@ -3137,7 +3150,7 @@ pub const Editor = struct {
                     'l' => {
                         // C-l recenter（カーソルを画面中央に）
                         const view = self.getCurrentView();
-                        const visible_lines = if (self.terminal.height >= 2) self.terminal.height - 2 else 1;
+                        const visible_lines = if (view.viewport_height >= 2) view.viewport_height - 2 else 1;
                         const center = visible_lines / 2;
                         const current_line = view.top_line + view.cursor_y;
                         // top_lineを調整してカーソルが中央に来るようにする
@@ -3228,7 +3241,7 @@ pub const Editor = struct {
                     'v' => {
                         // M-v PageUp (Emacs風)
                         const view = self.getCurrentView();
-                        const page_size = if (self.terminal.height >= 3) self.terminal.height - 2 else 1;
+                        const page_size = if (view.viewport_height >= 3) view.viewport_height - 2 else 1;
                         var i: usize = 0;
                         while (i < page_size) : (i += 1) {
                             view.moveCursorUp();
@@ -3311,7 +3324,7 @@ pub const Editor = struct {
             .page_down => {
                 // PageDown: 1画面分下にスクロール
                 const view = self.getCurrentView();
-                const page_size = if (self.terminal.height >= 3) self.terminal.height - 2 else 1; // ステータスバー分を引く
+                const page_size = if (view.viewport_height >= 3) view.viewport_height - 2 else 1; // ステータスバー分を引く
                 var i: usize = 0;
                 while (i < page_size) : (i += 1) {
                     view.moveCursorDown();
@@ -3320,7 +3333,7 @@ pub const Editor = struct {
             .page_up => {
                 // PageUp: 1画面分上にスクロール
                 const view = self.getCurrentView();
-                const page_size = if (self.terminal.height >= 3) self.terminal.height - 2 else 1; // ステータスバー分を引く
+                const page_size = if (view.viewport_height >= 3) view.viewport_height - 2 else 1; // ステータスバー分を引く
                 var i: usize = 0;
                 while (i < page_size) : (i += 1) {
                     view.moveCursorUp();
@@ -3366,31 +3379,41 @@ pub const Editor = struct {
 
         if (ch == '\n') {
             // 改行: 現在行以降すべてdirty
-            self.getCurrentView().markDirty(current_line, null); // EOF まで再描画
+            const view = self.getCurrentView();
+            view.markDirty(current_line, null); // EOF まで再描画
 
-            // 次の行の先頭に移動
-            const max_screen_line = self.terminal.height - 2; // ステータスバー分を引く
-            if (self.getCurrentView().cursor_y < max_screen_line) {
-                self.getCurrentView().cursor_y += 1;
+            // 次の行の先頭に移動（ビューポート高さを使用）
+            const max_screen_line = if (view.viewport_height >= 2) view.viewport_height - 2 else 0;
+            if (view.cursor_y < max_screen_line) {
+                view.cursor_y += 1;
             } else {
                 // 画面の最下部の場合はスクロール
-                self.getCurrentView().top_line += 1;
+                view.top_line += 1;
             }
-            self.getCurrentView().cursor_x = 0;
+            view.cursor_x = 0;
+            view.top_col = 0; // 水平スクロールもリセット
         } else {
             // 通常文字: 現在行のみdirty
-            self.getCurrentView().markDirty(current_line, current_line);
+            const view = self.getCurrentView();
+            view.markDirty(current_line, current_line);
 
             // タブ文字の場合は文脈依存の幅を計算
             if (ch == '\t') {
-                const view = self.getCurrentView();
                 const tab_width = view.getTabWidth();
                 const next_tab_stop = (view.cursor_x / tab_width + 1) * tab_width;
                 view.cursor_x = next_tab_stop;
             } else {
                 // UTF-8文字の幅を計算してカーソルを移動
                 const width = Buffer.charWidth(@as(u21, ch));
-                self.getCurrentView().cursor_x += width;
+                view.cursor_x += width;
+            }
+
+            // 水平スクロール: カーソルが右端を超えた場合
+            const line_num_width = view.getLineNumberWidth();
+            const visible_width = if (view.viewport_width > line_num_width) view.viewport_width - line_num_width else 1;
+            if (view.cursor_x >= view.top_col + visible_width) {
+                view.top_col = view.cursor_x - visible_width + 1;
+                view.markFullRedraw();
             }
         }
     }
@@ -3418,24 +3441,35 @@ pub const Editor = struct {
 
         if (codepoint == '\n') {
             // 改行: 現在行以降すべてdirty
-            self.getCurrentView().markDirty(current_line, null);
+            const view = self.getCurrentView();
+            view.markDirty(current_line, null);
 
-            // 次の行の先頭に移動
-            const max_screen_line = self.terminal.height - 2; // ステータスバー分を引く
-            if (self.getCurrentView().cursor_y < max_screen_line) {
-                self.getCurrentView().cursor_y += 1;
+            // 次の行の先頭に移動（ビューポート高さを使用）
+            const max_screen_line = if (view.viewport_height >= 2) view.viewport_height - 2 else 0;
+            if (view.cursor_y < max_screen_line) {
+                view.cursor_y += 1;
             } else {
                 // 画面の最下部の場合はスクロール
-                self.getCurrentView().top_line += 1;
+                view.top_line += 1;
             }
-            self.getCurrentView().cursor_x = 0;
+            view.cursor_x = 0;
+            view.top_col = 0; // 水平スクロールもリセット
         } else {
             // 通常文字: 現在行のみdirty
-            self.getCurrentView().markDirty(current_line, current_line);
+            const view = self.getCurrentView();
+            view.markDirty(current_line, current_line);
 
             // UTF-8文字の幅を計算してカーソルを移動
             const width = Buffer.charWidth(codepoint);
-            self.getCurrentView().cursor_x += width;
+            view.cursor_x += width;
+
+            // 水平スクロール: カーソルが右端を超えた場合
+            const line_num_width = view.getLineNumberWidth();
+            const visible_width = if (view.viewport_width > line_num_width) view.viewport_width - line_num_width else 1;
+            if (view.cursor_x >= view.top_col + visible_width) {
+                view.top_col = view.cursor_x - visible_width + 1;
+                view.markFullRedraw();
+            }
         }
     }
 
@@ -3545,15 +3579,21 @@ pub const Editor = struct {
         self.allocator.free(deleted);
 
         // カーソル移動
-        if (self.getCurrentView().cursor_x >= char_width) {
-            self.getCurrentView().cursor_x -= char_width;
-        } else if (self.getCurrentView().cursor_y > 0) {
-            self.getCurrentView().cursor_y -= 1;
+        const view = self.getCurrentView();
+        if (view.cursor_x >= char_width) {
+            view.cursor_x -= char_width;
+            // 水平スクロール: カーソルが左端より左に行った場合
+            if (view.cursor_x < view.top_col) {
+                view.top_col = view.cursor_x;
+                view.markFullRedraw();
+            }
+        } else if (view.cursor_y > 0) {
+            view.cursor_y -= 1;
             if (is_newline) {
                 // 改行削除の場合、削除位置（char_start）が新しいカーソル位置
                 // そこまでの行内の表示幅を計算
                 const new_line = self.getCurrentLine();
-                if (buffer.getLineStart(self.getCurrentView().top_line + new_line)) |line_start| {
+                if (buffer.getLineStart(view.top_line + new_line)) |line_start| {
                     var x: usize = 0;
                     var width_iter = PieceIterator.init(buffer);
                     width_iter.seek(line_start);
@@ -3566,10 +3606,19 @@ pub const Editor = struct {
                             break;
                         }
                     }
-                    self.getCurrentView().cursor_x = x;
+                    view.cursor_x = x;
+                    // 水平スクロールを調整（xが大きくても小さくても対応）
+                    const line_num_width = view.getLineNumberWidth();
+                    const visible_width = if (view.viewport_width > line_num_width) view.viewport_width - line_num_width else 1;
+                    if (view.cursor_x >= view.top_col + visible_width) {
+                        view.top_col = view.cursor_x - visible_width + 1;
+                    } else if (view.cursor_x < view.top_col) {
+                        view.top_col = view.cursor_x;
+                    }
+                    view.markFullRedraw();
                 }
             } else {
-                self.getCurrentView().moveToLineEnd();
+                view.moveToLineEnd();
             }
         }
     }
