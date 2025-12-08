@@ -1954,10 +1954,8 @@ pub const Editor = struct {
                                     }
                                 }
 
+                                // switchToBuffer内でView初期化とdetectLanguageが行われる
                                 try self.switchToBuffer(new_buffer.id);
-                                self.getCurrentView().buffer = &new_buffer.buffer;
-                                const content_preview = new_buffer.buffer.getContentPreview(512);
-                                self.getCurrentView().detectLanguage(filename_copy, content_preview);
                             }
 
                             self.mode = .normal;
@@ -5402,6 +5400,10 @@ pub const Editor = struct {
 
         // Viewのバッファ参照を更新
         self.getCurrentView().buffer = &buffer_state.buffer;
+
+        // 言語検出を再実行（ファイル内容が変わった可能性があるため）
+        const content_preview = buffer_state.buffer.getContentPreview(512);
+        self.getCurrentView().detectLanguage(buffer_state.filename, content_preview);
 
         // カーソルを先頭に
         self.getCurrentView().moveToBufferStart();
