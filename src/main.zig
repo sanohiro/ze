@@ -13,12 +13,12 @@ fn printHelp() void {
         \\Usage: ze [options] [file]
         \\
         \\Options:
-        \\  --help     このヘルプを表示
-        \\  --version  バージョンを表示
+        \\  --help     Show this help message
+        \\  --version  Show version
         \\
         \\Examples:
-        \\  ze file.txt    ファイルを開く
-        \\  ze             新規バッファで起動
+        \\  ze file.txt    Open a file
+        \\  ze             Start with empty buffer
         \\
     ) catch {};
 }
@@ -54,7 +54,7 @@ pub fn main() !void {
             // 未知のオプション
             const stderr_file: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
             var buf: [256]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "不明なオプション: {s}\n", .{arg}) catch {
+            const msg = std.fmt.bufPrint(&buf, "Unknown option: {s}\n", .{arg}) catch {
                 printHelp();
                 return;
             };
