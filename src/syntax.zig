@@ -1190,7 +1190,7 @@ test "findCommentStart - string skip" {
     // エスケープされた引用符
     // "char* s = \"test\\\"\"; // comment"
     //  0         1         2
-    //  012345678901234567890123456789
-    // 文字列は "test\"" で、位置19から "//" が始まる
-    try testing.expectEqual(@as(?usize, 19), lang_cpp.findCommentStart("char* s = \"test\\\"\"; // comment"));
+    //  01234567890123456789012345678901
+    // 文字列は "test\"" で、位置20から "//" が始まる
+    try testing.expectEqual(@as(?usize, 20), lang_cpp.findCommentStart("char* s = \"test\\\"\"; // comment"));
 }

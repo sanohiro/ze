@@ -95,7 +95,7 @@ ze uses Emacs-style keybindings. `C-` means Ctrl, `M-` means Alt/Option.
 | `M-%` | Query replace |
 | `C-Space` | Start selection |
 | `C-w` / `M-w` / `C-y` | Cut/copy/paste |
-| `C-x 2` / `C-x 3` | Split window |
+| `C-x 2` / `C-x 3` | Split window (horizontal/vertical) |
 | `C-x b` | Switch buffer |
 | `C-x C-s` | Save |
 | `C-x C-c` | Quit |
@@ -128,11 +128,9 @@ ze highlights comments only. This is intentional:
 ### Encoding
 
 - Optimized for **UTF-8 + LF**. Zero-copy mmap for UTF-8+LF files.
-- Auto-detects UTF-8 (with/without BOM), UTF-16 (with BOM), Shift_JIS, EUC-JP
+- Auto-detects and converts: UTF-8 (with/without BOM), UTF-16 (with BOM), Shift_JIS, EUC-JP
 - Auto-detects line endings (LF, CRLF, CR)
-- Preserves original encoding and line endings on save
-
-> Other encodings not supported. Use iconv or nkf for conversion.
+- **Saves in original encoding** (encoding, BOM, and line endings are preserved)
 
 ### M-x Commands
 

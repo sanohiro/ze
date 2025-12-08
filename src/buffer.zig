@@ -499,48 +499,87 @@ pub const Buffer = struct {
             }
             defer file.close();
 
-            // BOM付きUTF-8の場合は先頭にBOMを書き込み
-            if (self.detected_encoding == .UTF8_BOM) {
-                try file.writeAll(&[_]u8{ 0xEF, 0xBB, 0xBF });
-            }
+            // UTF-16やレガシーエンコーディングの場合は一括変換が必要
+            if (self.detected_encoding == .UTF16LE_BOM or
+                self.detected_encoding == .UTF16BE_BOM or
+                self.detected_encoding == .SHIFT_JIS or
+                self.detected_encoding == .EUC_JP)
+            {
+                // Step 1: コンテンツをUTF-8で収集
+                var utf8_content = try std.ArrayList(u8).initCapacity(self.allocator, self.total_len);
+                defer utf8_content.deinit(self.allocator);
 
-            // 改行コード変換しながら書き込み
-            if (self.detected_line_ending == .LF) {
-                // LF モードはそのまま書き込み
                 for (self.pieces.items) |piece| {
                     const data = switch (piece.source) {
                         .original => self.original[piece.start .. piece.start + piece.length],
                         .add => self.add_buffer.items[piece.start .. piece.start + piece.length],
                     };
-                    try file.writeAll(data);
+                    try utf8_content.appendSlice(self.allocator, data);
                 }
-            } else if (self.detected_line_ending == .CRLF) {
-                // CRLF モード: LF を CRLF に変換
-                for (self.pieces.items) |piece| {
-                    const data = switch (piece.source) {
-                        .original => self.original[piece.start .. piece.start + piece.length],
-                        .add => self.add_buffer.items[piece.start .. piece.start + piece.length],
-                    };
-                    for (data) |byte| {
-                        if (byte == '\n') {
-                            try file.writeAll("\r\n");
-                        } else {
-                            try file.writeAll(&[_]u8{byte});
+
+                // Step 2: 改行コード変換（LF → CRLF/CR）
+                const line_converted = try encoding.convertLineEndings(
+                    self.allocator,
+                    utf8_content.items,
+                    self.detected_line_ending,
+                );
+                defer self.allocator.free(line_converted);
+
+                // Step 3: エンコーディング変換
+                const encoded = try encoding.convertFromUtf8(
+                    self.allocator,
+                    line_converted,
+                    self.detected_encoding,
+                );
+                defer self.allocator.free(encoded);
+
+                // Step 4: ファイルに書き込み
+                try file.writeAll(encoded);
+            } else {
+                // UTF-8/UTF-8_BOM: 従来通りストリーミング書き込み
+                // BOM付きUTF-8の場合は先頭にBOMを書き込み
+                if (self.detected_encoding == .UTF8_BOM) {
+                    try file.writeAll(&[_]u8{ 0xEF, 0xBB, 0xBF });
+                }
+
+                // 改行コード変換しながら書き込み
+                if (self.detected_line_ending == .LF) {
+                    // LF モードはそのまま書き込み
+                    for (self.pieces.items) |piece| {
+                        const data = switch (piece.source) {
+                            .original => self.original[piece.start .. piece.start + piece.length],
+                            .add => self.add_buffer.items[piece.start .. piece.start + piece.length],
+                        };
+                        try file.writeAll(data);
+                    }
+                } else if (self.detected_line_ending == .CRLF) {
+                    // CRLF モード: LF を CRLF に変換
+                    for (self.pieces.items) |piece| {
+                        const data = switch (piece.source) {
+                            .original => self.original[piece.start .. piece.start + piece.length],
+                            .add => self.add_buffer.items[piece.start .. piece.start + piece.length],
+                        };
+                        for (data) |byte| {
+                            if (byte == '\n') {
+                                try file.writeAll("\r\n");
+                            } else {
+                                try file.writeAll(&[_]u8{byte});
+                            }
                         }
                     }
-                }
-            } else if (self.detected_line_ending == .CR) {
-                // CR モード: LF を CR に変換
-                for (self.pieces.items) |piece| {
-                    const data = switch (piece.source) {
-                        .original => self.original[piece.start .. piece.start + piece.length],
-                        .add => self.add_buffer.items[piece.start .. piece.start + piece.length],
-                    };
-                    for (data) |byte| {
-                        if (byte == '\n') {
-                            try file.writeAll("\r");
-                        } else {
-                            try file.writeAll(&[_]u8{byte});
+                } else if (self.detected_line_ending == .CR) {
+                    // CR モード: LF を CR に変換
+                    for (self.pieces.items) |piece| {
+                        const data = switch (piece.source) {
+                            .original => self.original[piece.start .. piece.start + piece.length],
+                            .add => self.add_buffer.items[piece.start .. piece.start + piece.length],
+                        };
+                        for (data) |byte| {
+                            if (byte == '\n') {
+                                try file.writeAll("\r");
+                            } else {
+                                try file.writeAll(&[_]u8{byte});
+                            }
                         }
                     }
                 }

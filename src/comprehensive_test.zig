@@ -1,6 +1,8 @@
 const std = @import("std");
 const testing = std.testing;
-const Buffer = @import("buffer.zig").Buffer;
+const buffer_mod = @import("buffer.zig");
+const Buffer = buffer_mod.Buffer;
+const PieceIterator = buffer_mod.PieceIterator;
 const View = @import("view.zig").View;
 const unicode = @import("unicode.zig");
 
@@ -23,7 +25,7 @@ test "Unicode: ASCII characters" {
         defer buffer.deinit();
         try buffer.insertSlice(0, t.char);
 
-        var iter = buffer.PieceIterator.init(&buffer);
+        var iter = PieceIterator.init(&buffer);
         const cluster = try iter.nextGraphemeCluster();
         try testing.expect(cluster != null);
         try testing.expectEqual(t.width, cluster.?.width);
@@ -43,7 +45,7 @@ test "Unicode: Basic emoji (single codepoint)" {
         defer buffer.deinit();
         try buffer.insertSlice(0, emoji);
 
-        var iter = buffer.PieceIterator.init(&buffer);
+        var iter = PieceIterator.init(&buffer);
         const cluster = try iter.nextGraphemeCluster();
         try testing.expect(cluster != null);
         try testing.expectEqual(@as(usize, 2), cluster.?.width);
@@ -64,7 +66,7 @@ test "Unicode: Emoji with variation selectors" {
         defer buffer.deinit();
         try buffer.insertSlice(0, t.emoji);
 
-        var iter = buffer.PieceIterator.init(&buffer);
+        var iter = PieceIterator.init(&buffer);
         var count: usize = 0;
         while (try iter.nextGraphemeCluster()) |cluster| {
             count += 1;
@@ -87,7 +89,7 @@ test "Unicode: Emoji with ZWJ sequences" {
         defer buffer.deinit();
         try buffer.insertSlice(0, seq);
 
-        var iter = buffer.PieceIterator.init(&buffer);
+        var iter = PieceIterator.init(&buffer);
         const cluster = try iter.nextGraphemeCluster();
         try testing.expect(cluster != null);
         // ZWJ sequences should be treated as one grapheme cluster
@@ -110,7 +112,7 @@ test "Unicode: Emoji with skin tone modifiers" {
         defer buffer.deinit();
         try buffer.insertSlice(0, emoji);
 
-        var iter = buffer.PieceIterator.init(&buffer);
+        var iter = PieceIterator.init(&buffer);
         const cluster = try iter.nextGraphemeCluster();
         try testing.expect(cluster != null);
         try testing.expectEqual(@as(usize, 2), cluster.?.width);
@@ -135,7 +137,7 @@ test "Unicode: Regional Indicator pairs (flags)" {
         defer buffer.deinit();
         try buffer.insertSlice(0, flag);
 
-        var iter = buffer.PieceIterator.init(&buffer);
+        var iter = PieceIterator.init(&buffer);
         const cluster = try iter.nextGraphemeCluster();
         try testing.expect(cluster != null);
         try testing.expectEqual(@as(usize, 2), cluster.?.width);
@@ -160,7 +162,7 @@ test "Unicode: CJK characters (width 2)" {
         defer buffer.deinit();
         try buffer.insertSlice(0, char);
 
-        var iter = buffer.PieceIterator.init(&buffer);
+        var iter = PieceIterator.init(&buffer);
         const cluster = try iter.nextGraphemeCluster();
         try testing.expect(cluster != null);
         try testing.expectEqual(@as(usize, 2), cluster.?.width);
@@ -180,7 +182,7 @@ test "Unicode: Combining marks" {
         defer buffer.deinit();
         try buffer.insertSlice(0, text);
 
-        var iter = buffer.PieceIterator.init(&buffer);
+        var iter = PieceIterator.init(&buffer);
         const cluster = try iter.nextGraphemeCluster();
         try testing.expect(cluster != null);
         // Base character should determine width
@@ -199,7 +201,7 @@ test "Unicode: Fullwidth forms" {
         defer buffer.deinit();
         try buffer.insertSlice(0, char);
 
-        var iter = buffer.PieceIterator.init(&buffer);
+        var iter = PieceIterator.init(&buffer);
         const cluster = try iter.nextGraphemeCluster();
         try testing.expect(cluster != null);
         try testing.expectEqual(@as(usize, 2), cluster.?.width);
@@ -221,7 +223,7 @@ test "Cursor movement: Complex emoji sequences" {
     const family = "👨‍👩‍👧‍👦";
     try buffer.insertSlice(0, family);
 
-    var view = View.init(&buffer);
+    var view = View.init(allocator, &buffer);
     var dummy_term = DummyTerminal{};
 
     // Should move over entire family as one unit
@@ -248,7 +250,7 @@ test "Cursor movement: Multiple flags in sequence" {
     const flags = "🇯🇵🇺🇸🇬🇧";
     try buffer.insertSlice(0, flags);
 
-    var view = View.init(&buffer);
+    var view = View.init(allocator, &buffer);
     var dummy_term = DummyTerminal{};
 
     // Move through each flag
@@ -286,7 +288,7 @@ test "Cursor movement: Mixed ASCII, CJK, and emoji" {
     const mixed = "Hi日本🌍";
     try buffer.insertSlice(0, mixed);
 
-    var view = View.init(&buffer);
+    var view = View.init(allocator, &buffer);
     var dummy_term = DummyTerminal{};
 
     // H (width 1)
@@ -312,7 +314,8 @@ test "Cursor movement: Mixed ASCII, CJK, and emoji" {
 
 test "Grapheme break algorithm: All break rules" {
     // GB3: CR × LF
-    try testing.expect(!unicode.graphemeBreak('\r', '\n', &unicode.State{}));
+    var initial_state = unicode.State{};
+    try testing.expect(!unicode.graphemeBreak('\r', '\n', &initial_state));
 
     // GB4: (Control | CR | LF) ÷
     var state = unicode.State{};
@@ -413,7 +416,7 @@ test "Stress test: Long line with mixed content" {
     const line = "Hello世界😀Test日本語🌍ASCII文字🇯🇵Flag";
     try buffer.insertSlice(0, line);
 
-    var view = View.init(&buffer);
+    var view = View.init(allocator, &buffer);
     const DummyTerminal = struct {
         width: usize = 80,
         height: usize = 24,

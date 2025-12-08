@@ -399,10 +399,10 @@ pub fn convertFromUtf8(allocator: std.mem.Allocator, content: []const u8, encodi
             try result.appendSlice(allocator, content);
             break :blk try result.toOwnedSlice(allocator);
         },
-        .UTF16LE_BOM => return error.UnsupportedEncoding, // TODO: 実装予定
-        .UTF16BE_BOM => return error.UnsupportedEncoding, // TODO: 実装予定
-        .SHIFT_JIS => return error.UnsupportedEncoding, // TODO: 実装予定
-        .EUC_JP => return error.UnsupportedEncoding, // TODO: 実装予定
+        .UTF16LE_BOM => try convertUtf8ToUtf16le(allocator, content),
+        .UTF16BE_BOM => try convertUtf8ToUtf16be(allocator, content),
+        .SHIFT_JIS => try convertUtf8ToShiftJis(allocator, content),
+        .EUC_JP => try convertUtf8ToEucJp(allocator, content),
         .Unknown => return error.UnsupportedEncoding,
     };
 }
@@ -895,5 +895,623 @@ fn lookupKanji(ku: u8, ten: u8) ?u21 {
     }
 
     // テーブルにない漢字は null
+    return null;
+}
+
+// ============================================
+// UTF-8 → 他エンコーディング変換（保存用）
+// ============================================
+
+/// UTF-8 → UTF-16LE (BOM付き) 変換
+fn convertUtf8ToUtf16le(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
+    var result = try std.ArrayList(u8).initCapacity(allocator, content.len * 2 + 2);
+    errdefer result.deinit(allocator);
+
+    // BOMを追加（LE: 0xFF 0xFE）
+    try result.appendSlice(allocator, &[_]u8{ 0xFF, 0xFE });
+
+    // UTF-8をデコードしてUTF-16LEにエンコード
+    var i: usize = 0;
+    while (i < content.len) {
+        const codepoint = blk: {
+            const byte = content[i];
+
+            // ASCII
+            if (byte < 0x80) {
+                i += 1;
+                break :blk @as(u21, byte);
+            }
+
+            // 2バイト
+            if (byte >= 0xC0 and byte <= 0xDF) {
+                if (i + 1 >= content.len) return error.InvalidUtf8;
+                const cp = (@as(u21, byte & 0x1F) << 6) |
+                    @as(u21, content[i + 1] & 0x3F);
+                i += 2;
+                break :blk cp;
+            }
+
+            // 3バイト
+            if (byte >= 0xE0 and byte <= 0xEF) {
+                if (i + 2 >= content.len) return error.InvalidUtf8;
+                const cp = (@as(u21, byte & 0x0F) << 12) |
+                    (@as(u21, content[i + 1] & 0x3F) << 6) |
+                    @as(u21, content[i + 2] & 0x3F);
+                i += 3;
+                break :blk cp;
+            }
+
+            // 4バイト
+            if (byte >= 0xF0 and byte <= 0xF7) {
+                if (i + 3 >= content.len) return error.InvalidUtf8;
+                const cp = (@as(u21, byte & 0x07) << 18) |
+                    (@as(u21, content[i + 1] & 0x3F) << 12) |
+                    (@as(u21, content[i + 2] & 0x3F) << 6) |
+                    @as(u21, content[i + 3] & 0x3F);
+                i += 4;
+                break :blk cp;
+            }
+
+            return error.InvalidUtf8;
+        };
+
+        // UTF-16にエンコード
+        if (codepoint < 0x10000) {
+            // BMPの文字: 1つのu16
+            const u16_val: u16 = @intCast(codepoint);
+            try result.append(allocator, @intCast(u16_val & 0xFF)); // 下位バイト
+            try result.append(allocator, @intCast(u16_val >> 8)); // 上位バイト
+        } else {
+            // サロゲートペア（U+10000以上）
+            const adjusted = codepoint - 0x10000;
+            const high: u16 = @intCast(0xD800 + (adjusted >> 10));
+            const low: u16 = @intCast(0xDC00 + (adjusted & 0x3FF));
+            // High surrogate (LE)
+            try result.append(allocator, @intCast(high & 0xFF));
+            try result.append(allocator, @intCast(high >> 8));
+            // Low surrogate (LE)
+            try result.append(allocator, @intCast(low & 0xFF));
+            try result.append(allocator, @intCast(low >> 8));
+        }
+    }
+
+    return try result.toOwnedSlice(allocator);
+}
+
+/// UTF-8 → UTF-16BE (BOM付き) 変換
+fn convertUtf8ToUtf16be(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
+    var result = try std.ArrayList(u8).initCapacity(allocator, content.len * 2 + 2);
+    errdefer result.deinit(allocator);
+
+    // BOMを追加（BE: 0xFE 0xFF）
+    try result.appendSlice(allocator, &[_]u8{ 0xFE, 0xFF });
+
+    // UTF-8をデコードしてUTF-16BEにエンコード
+    var i: usize = 0;
+    while (i < content.len) {
+        const codepoint = blk: {
+            const byte = content[i];
+
+            // ASCII
+            if (byte < 0x80) {
+                i += 1;
+                break :blk @as(u21, byte);
+            }
+
+            // 2バイト
+            if (byte >= 0xC0 and byte <= 0xDF) {
+                if (i + 1 >= content.len) return error.InvalidUtf8;
+                const cp = (@as(u21, byte & 0x1F) << 6) |
+                    @as(u21, content[i + 1] & 0x3F);
+                i += 2;
+                break :blk cp;
+            }
+
+            // 3バイト
+            if (byte >= 0xE0 and byte <= 0xEF) {
+                if (i + 2 >= content.len) return error.InvalidUtf8;
+                const cp = (@as(u21, byte & 0x0F) << 12) |
+                    (@as(u21, content[i + 1] & 0x3F) << 6) |
+                    @as(u21, content[i + 2] & 0x3F);
+                i += 3;
+                break :blk cp;
+            }
+
+            // 4バイト
+            if (byte >= 0xF0 and byte <= 0xF7) {
+                if (i + 3 >= content.len) return error.InvalidUtf8;
+                const cp = (@as(u21, byte & 0x07) << 18) |
+                    (@as(u21, content[i + 1] & 0x3F) << 12) |
+                    (@as(u21, content[i + 2] & 0x3F) << 6) |
+                    @as(u21, content[i + 3] & 0x3F);
+                i += 4;
+                break :blk cp;
+            }
+
+            return error.InvalidUtf8;
+        };
+
+        // UTF-16にエンコード（Big Endian）
+        if (codepoint < 0x10000) {
+            // BMPの文字: 1つのu16
+            const u16_val: u16 = @intCast(codepoint);
+            try result.append(allocator, @intCast(u16_val >> 8)); // 上位バイト
+            try result.append(allocator, @intCast(u16_val & 0xFF)); // 下位バイト
+        } else {
+            // サロゲートペア（U+10000以上）
+            const adjusted = codepoint - 0x10000;
+            const high: u16 = @intCast(0xD800 + (adjusted >> 10));
+            const low: u16 = @intCast(0xDC00 + (adjusted & 0x3FF));
+            // High surrogate (BE)
+            try result.append(allocator, @intCast(high >> 8));
+            try result.append(allocator, @intCast(high & 0xFF));
+            // Low surrogate (BE)
+            try result.append(allocator, @intCast(low >> 8));
+            try result.append(allocator, @intCast(low & 0xFF));
+        }
+    }
+
+    return try result.toOwnedSlice(allocator);
+}
+
+/// UTF-8 → Shift_JIS 変換
+fn convertUtf8ToShiftJis(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
+    var result = try std.ArrayList(u8).initCapacity(allocator, content.len);
+    errdefer result.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < content.len) {
+        const codepoint = blk: {
+            const byte = content[i];
+
+            // ASCII
+            if (byte < 0x80) {
+                i += 1;
+                break :blk @as(u21, byte);
+            }
+
+            // 2バイト
+            if (byte >= 0xC0 and byte <= 0xDF) {
+                if (i + 1 >= content.len) return error.InvalidUtf8;
+                const cp = (@as(u21, byte & 0x1F) << 6) |
+                    @as(u21, content[i + 1] & 0x3F);
+                i += 2;
+                break :blk cp;
+            }
+
+            // 3バイト
+            if (byte >= 0xE0 and byte <= 0xEF) {
+                if (i + 2 >= content.len) return error.InvalidUtf8;
+                const cp = (@as(u21, byte & 0x0F) << 12) |
+                    (@as(u21, content[i + 1] & 0x3F) << 6) |
+                    @as(u21, content[i + 2] & 0x3F);
+                i += 3;
+                break :blk cp;
+            }
+
+            // 4バイト
+            if (byte >= 0xF0 and byte <= 0xF7) {
+                if (i + 3 >= content.len) return error.InvalidUtf8;
+                const cp = (@as(u21, byte & 0x07) << 18) |
+                    (@as(u21, content[i + 1] & 0x3F) << 12) |
+                    (@as(u21, content[i + 2] & 0x3F) << 6) |
+                    @as(u21, content[i + 3] & 0x3F);
+                i += 4;
+                break :blk cp;
+            }
+
+            return error.InvalidUtf8;
+        };
+
+        // ASCII
+        if (codepoint < 0x80) {
+            try result.append(allocator, @intCast(codepoint));
+            continue;
+        }
+
+        // 半角カナ (U+FF61-U+FF9F) → 0xA1-0xDF
+        if (codepoint >= 0xFF61 and codepoint <= 0xFF9F) {
+            try result.append(allocator, @intCast(codepoint - 0xFF61 + 0xA1));
+            continue;
+        }
+
+        // Unicode → Shift_JIS変換
+        if (unicodeToShiftJis(codepoint)) |sjis| {
+            try result.append(allocator, sjis.byte1);
+            if (sjis.byte2) |b2| {
+                try result.append(allocator, b2);
+            }
+        } else {
+            // 変換できない文字は '?' に
+            try result.append(allocator, '?');
+        }
+    }
+
+    return try result.toOwnedSlice(allocator);
+}
+
+/// UTF-8 → EUC-JP 変換
+fn convertUtf8ToEucJp(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
+    var result = try std.ArrayList(u8).initCapacity(allocator, content.len);
+    errdefer result.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < content.len) {
+        const codepoint = blk: {
+            const byte = content[i];
+
+            // ASCII
+            if (byte < 0x80) {
+                i += 1;
+                break :blk @as(u21, byte);
+            }
+
+            // 2バイト
+            if (byte >= 0xC0 and byte <= 0xDF) {
+                if (i + 1 >= content.len) return error.InvalidUtf8;
+                const cp = (@as(u21, byte & 0x1F) << 6) |
+                    @as(u21, content[i + 1] & 0x3F);
+                i += 2;
+                break :blk cp;
+            }
+
+            // 3バイト
+            if (byte >= 0xE0 and byte <= 0xEF) {
+                if (i + 2 >= content.len) return error.InvalidUtf8;
+                const cp = (@as(u21, byte & 0x0F) << 12) |
+                    (@as(u21, content[i + 1] & 0x3F) << 6) |
+                    @as(u21, content[i + 2] & 0x3F);
+                i += 3;
+                break :blk cp;
+            }
+
+            // 4バイト
+            if (byte >= 0xF0 and byte <= 0xF7) {
+                if (i + 3 >= content.len) return error.InvalidUtf8;
+                const cp = (@as(u21, byte & 0x07) << 18) |
+                    (@as(u21, content[i + 1] & 0x3F) << 12) |
+                    (@as(u21, content[i + 2] & 0x3F) << 6) |
+                    @as(u21, content[i + 3] & 0x3F);
+                i += 4;
+                break :blk cp;
+            }
+
+            return error.InvalidUtf8;
+        };
+
+        // ASCII
+        if (codepoint < 0x80) {
+            try result.append(allocator, @intCast(codepoint));
+            continue;
+        }
+
+        // 半角カナ (U+FF61-U+FF9F) → 0x8E + 0xA1-0xDF
+        if (codepoint >= 0xFF61 and codepoint <= 0xFF9F) {
+            try result.append(allocator, 0x8E);
+            try result.append(allocator, @intCast(codepoint - 0xFF61 + 0xA1));
+            continue;
+        }
+
+        // Unicode → EUC-JP変換
+        if (unicodeToEucJp(codepoint)) |eucjp| {
+            try result.append(allocator, eucjp.byte1);
+            if (eucjp.byte2) |b2| {
+                try result.append(allocator, b2);
+            }
+        } else {
+            // 変換できない文字は '?' に
+            try result.append(allocator, '?');
+        }
+    }
+
+    return try result.toOwnedSlice(allocator);
+}
+
+/// Shift_JISバイト列
+const ShiftJisBytes = struct {
+    byte1: u8,
+    byte2: ?u8,
+};
+
+/// EUC-JPバイト列
+const EucJpBytes = struct {
+    byte1: u8,
+    byte2: ?u8,
+};
+
+/// Unicode → Shift_JIS 変換（逆引きテーブル）
+fn unicodeToShiftJis(codepoint: u21) ?ShiftJisBytes {
+    // ひらがな (U+3041-U+3093) → 4区
+    if (codepoint >= 0x3041 and codepoint <= 0x3093) {
+        const ten: u8 = @intCast(codepoint - 0x3041 + 1);
+        const sjis = jisToShiftJis(4, ten);
+        return .{ .byte1 = sjis.byte1, .byte2 = sjis.byte2 };
+    }
+
+    // カタカナ (U+30A1-U+30F6) → 5区
+    if (codepoint >= 0x30A1 and codepoint <= 0x30F6) {
+        const ten: u8 = @intCast(codepoint - 0x30A1 + 1);
+        const sjis = jisToShiftJis(5, ten);
+        return .{ .byte1 = sjis.byte1, .byte2 = sjis.byte2 };
+    }
+
+    // 全角数字 (U+FF10-U+FF19) → 3区17-26
+    if (codepoint >= 0xFF10 and codepoint <= 0xFF19) {
+        const ten: u8 = @intCast(codepoint - 0xFF10 + 17);
+        const sjis = jisToShiftJis(3, ten);
+        return .{ .byte1 = sjis.byte1, .byte2 = sjis.byte2 };
+    }
+
+    // 全角大文字 (U+FF21-U+FF3A) → 3区33-58
+    if (codepoint >= 0xFF21 and codepoint <= 0xFF3A) {
+        const ten: u8 = @intCast(codepoint - 0xFF21 + 33);
+        const sjis = jisToShiftJis(3, ten);
+        return .{ .byte1 = sjis.byte1, .byte2 = sjis.byte2 };
+    }
+
+    // 全角小文字 (U+FF41-U+FF5A) → 3区65-90
+    if (codepoint >= 0xFF41 and codepoint <= 0xFF5A) {
+        const ten: u8 = @intCast(codepoint - 0xFF41 + 65);
+        const sjis = jisToShiftJis(3, ten);
+        return .{ .byte1 = sjis.byte1, .byte2 = sjis.byte2 };
+    }
+
+    // 1区の記号
+    if (unicodeToKu1Ten(codepoint)) |ten| {
+        const sjis = jisToShiftJis(1, ten);
+        return .{ .byte1 = sjis.byte1, .byte2 = sjis.byte2 };
+    }
+
+    // 漢字の逆引き
+    if (unicodeToKanjiKuTen(codepoint)) |ku_ten| {
+        const sjis = jisToShiftJis(ku_ten.ku, ku_ten.ten);
+        return .{ .byte1 = sjis.byte1, .byte2 = sjis.byte2 };
+    }
+
+    return null;
+}
+
+/// Unicode → EUC-JP 変換（逆引きテーブル）
+fn unicodeToEucJp(codepoint: u21) ?EucJpBytes {
+    // ひらがな (U+3041-U+3093) → 4区
+    if (codepoint >= 0x3041 and codepoint <= 0x3093) {
+        const ten: u8 = @intCast(codepoint - 0x3041 + 1);
+        return .{ .byte1 = 4 + 0xA0, .byte2 = ten + 0xA0 };
+    }
+
+    // カタカナ (U+30A1-U+30F6) → 5区
+    if (codepoint >= 0x30A1 and codepoint <= 0x30F6) {
+        const ten: u8 = @intCast(codepoint - 0x30A1 + 1);
+        return .{ .byte1 = 5 + 0xA0, .byte2 = ten + 0xA0 };
+    }
+
+    // 全角数字 (U+FF10-U+FF19) → 3区17-26
+    if (codepoint >= 0xFF10 and codepoint <= 0xFF19) {
+        const ten: u8 = @intCast(codepoint - 0xFF10 + 17);
+        return .{ .byte1 = 3 + 0xA0, .byte2 = ten + 0xA0 };
+    }
+
+    // 全角大文字 (U+FF21-U+FF3A) → 3区33-58
+    if (codepoint >= 0xFF21 and codepoint <= 0xFF3A) {
+        const ten: u8 = @intCast(codepoint - 0xFF21 + 33);
+        return .{ .byte1 = 3 + 0xA0, .byte2 = ten + 0xA0 };
+    }
+
+    // 全角小文字 (U+FF41-U+FF5A) → 3区65-90
+    if (codepoint >= 0xFF41 and codepoint <= 0xFF5A) {
+        const ten: u8 = @intCast(codepoint - 0xFF41 + 65);
+        return .{ .byte1 = 3 + 0xA0, .byte2 = ten + 0xA0 };
+    }
+
+    // 1区の記号
+    if (unicodeToKu1Ten(codepoint)) |ten| {
+        return .{ .byte1 = 1 + 0xA0, .byte2 = ten + 0xA0 };
+    }
+
+    // 漢字の逆引き
+    if (unicodeToKanjiKuTen(codepoint)) |ku_ten| {
+        return .{ .byte1 = ku_ten.ku + 0xA0, .byte2 = ku_ten.ten + 0xA0 };
+    }
+
+    return null;
+}
+
+/// JIS区点番号 → Shift_JIS バイト列
+fn jisToShiftJis(ku: u8, ten: u8) ShiftJisBytes {
+    var byte1: u8 = undefined;
+    var byte2: u8 = undefined;
+
+    // 第1バイト計算
+    if (ku <= 62) {
+        byte1 = ((ku + 1) / 2) + 0x80;
+        if (byte1 >= 0xA0) byte1 += 0x40;
+    } else {
+        byte1 = ((ku - 62 + 1) / 2) + 0xDF;
+    }
+
+    // 第2バイト計算
+    if (ku % 2 == 1) {
+        // 奇数区
+        if (ten <= 63) {
+            byte2 = ten + 0x3F;
+        } else {
+            byte2 = ten + 0x40;
+        }
+    } else {
+        // 偶数区
+        byte2 = ten + 0x9E;
+    }
+
+    return .{ .byte1 = byte1, .byte2 = byte2 };
+}
+
+/// Unicode → 1区の点番号（記号）
+fn unicodeToKu1Ten(codepoint: u21) ?u8 {
+    // 1区の記号テーブル（逆引き用）
+    const table = [_]struct { unicode: u21, ten: u8 }{
+        .{ .unicode = 0x3000, .ten = 1 }, //
+        .{ .unicode = 0x3001, .ten = 2 }, // 、
+        .{ .unicode = 0x3002, .ten = 3 }, // 。
+        .{ .unicode = 0xFF0C, .ten = 4 }, // ，
+        .{ .unicode = 0xFF0E, .ten = 5 }, // ．
+        .{ .unicode = 0x30FB, .ten = 6 }, // ・
+        .{ .unicode = 0xFF1A, .ten = 7 }, // ：
+        .{ .unicode = 0xFF1B, .ten = 8 }, // ；
+        .{ .unicode = 0xFF1F, .ten = 9 }, // ？
+        .{ .unicode = 0xFF01, .ten = 10 }, // ！
+        .{ .unicode = 0x309B, .ten = 11 }, // ゛
+        .{ .unicode = 0x309C, .ten = 12 }, // ゜
+        .{ .unicode = 0x30FC, .ten = 28 }, // ー
+        .{ .unicode = 0x2015, .ten = 29 }, // ―
+        .{ .unicode = 0x2010, .ten = 30 }, // ‐
+        .{ .unicode = 0xFF0F, .ten = 31 }, // ／
+        .{ .unicode = 0xFF5E, .ten = 33 }, // ～
+        .{ .unicode = 0x2225, .ten = 34 }, // ‖
+        .{ .unicode = 0xFF5C, .ten = 35 }, // ｜
+        .{ .unicode = 0x2026, .ten = 36 }, // …
+        .{ .unicode = 0xFF08, .ten = 42 }, // （
+        .{ .unicode = 0xFF09, .ten = 43 }, // ）
+        .{ .unicode = 0xFF3B, .ten = 46 }, // ［
+        .{ .unicode = 0xFF3D, .ten = 47 }, // ］
+        .{ .unicode = 0xFF5B, .ten = 48 }, // ｛
+        .{ .unicode = 0xFF5D, .ten = 49 }, // ｝
+        .{ .unicode = 0x300C, .ten = 54 }, // 「
+        .{ .unicode = 0x300D, .ten = 55 }, // 」
+        .{ .unicode = 0x300E, .ten = 56 }, // 『
+        .{ .unicode = 0x300F, .ten = 57 }, // 』
+        .{ .unicode = 0xFF0B, .ten = 60 }, // ＋
+        .{ .unicode = 0xFF0D, .ten = 61 }, // －
+        .{ .unicode = 0xFF1D, .ten = 65 }, // ＝
+        .{ .unicode = 0xFF1C, .ten = 67 }, // ＜
+        .{ .unicode = 0xFF1E, .ten = 68 }, // ＞
+        .{ .unicode = 0xFFE5, .ten = 79 }, // ￥
+        .{ .unicode = 0xFF04, .ten = 80 }, // ＄
+        .{ .unicode = 0xFF05, .ten = 83 }, // ％
+        .{ .unicode = 0xFF03, .ten = 84 }, // ＃
+        .{ .unicode = 0xFF06, .ten = 85 }, // ＆
+        .{ .unicode = 0xFF0A, .ten = 86 }, // ＊
+        .{ .unicode = 0xFF20, .ten = 87 }, // ＠
+    };
+
+    for (table) |entry| {
+        if (entry.unicode == codepoint) {
+            return entry.ten;
+        }
+    }
+    return null;
+}
+
+/// 区点番号
+const KuTen = struct {
+    ku: u8,
+    ten: u8,
+};
+
+/// Unicode → 漢字の区点番号（逆引き）
+fn unicodeToKanjiKuTen(codepoint: u21) ?KuTen {
+    // 漢字テーブルの逆引き（よく使われる漢字のみ）
+    const kanji_reverse = [_]struct { unicode: u21, ku: u8, ten: u8 }{
+        // 16区の漢字
+        .{ .unicode = 0x4E9C, .ku = 16, .ten = 1 }, // 亜
+        .{ .unicode = 0x5516, .ku = 16, .ten = 2 }, // 唖
+        .{ .unicode = 0x5A03, .ku = 16, .ten = 3 }, // 娃
+        .{ .unicode = 0x963F, .ku = 16, .ten = 4 }, // 阿
+        .{ .unicode = 0x54C0, .ku = 16, .ten = 5 }, // 哀
+        .{ .unicode = 0x611B, .ku = 16, .ten = 6 }, // 愛
+        .{ .unicode = 0x6328, .ku = 16, .ten = 7 }, // 挨
+        .{ .unicode = 0x59F6, .ku = 16, .ten = 8 }, // 姶
+        .{ .unicode = 0x9022, .ku = 16, .ten = 9 }, // 逢
+        .{ .unicode = 0x8475, .ku = 16, .ten = 10 }, // 葵
+        .{ .unicode = 0x831C, .ku = 16, .ten = 11 }, // 茜
+        .{ .unicode = 0x7A50, .ku = 16, .ten = 12 }, // 穐
+        .{ .unicode = 0x60AA, .ku = 16, .ten = 13 }, // 悪
+        .{ .unicode = 0x63E1, .ku = 16, .ten = 14 }, // 握
+        .{ .unicode = 0x6E25, .ku = 16, .ten = 15 }, // 渥
+        .{ .unicode = 0x65ED, .ku = 16, .ten = 16 }, // 旭
+        .{ .unicode = 0x8466, .ku = 16, .ten = 17 }, // 葦
+        .{ .unicode = 0x82A6, .ku = 16, .ten = 18 }, // 芦
+        .{ .unicode = 0x9BC9, .ku = 16, .ten = 19 }, // 鯵
+        .{ .unicode = 0x6893, .ku = 16, .ten = 20 }, // 梓
+        .{ .unicode = 0x5727, .ku = 16, .ten = 21 }, // 圧
+        .{ .unicode = 0x65A1, .ku = 16, .ten = 22 }, // 斡
+        .{ .unicode = 0x6271, .ku = 16, .ten = 23 }, // 扱
+        .{ .unicode = 0x5B9B, .ku = 16, .ten = 24 }, // 宛
+        .{ .unicode = 0x59D0, .ku = 16, .ten = 25 }, // 姐
+        .{ .unicode = 0x867B, .ku = 16, .ten = 26 }, // 虻
+        .{ .unicode = 0x98F4, .ku = 16, .ten = 27 }, // 飴
+        .{ .unicode = 0x7D62, .ku = 16, .ten = 28 }, // 絢
+        .{ .unicode = 0x7DBE, .ku = 16, .ten = 29 }, // 綾
+        .{ .unicode = 0x9B8E, .ku = 16, .ten = 30 }, // 鮎
+        .{ .unicode = 0x6216, .ku = 16, .ten = 31 }, // 或
+        .{ .unicode = 0x7C9F, .ku = 16, .ten = 32 }, // 粟
+        .{ .unicode = 0x88B7, .ku = 16, .ten = 33 }, // 袷
+        .{ .unicode = 0x5B89, .ku = 16, .ten = 34 }, // 安
+        .{ .unicode = 0x5EB5, .ku = 16, .ten = 35 }, // 庵
+        .{ .unicode = 0x6309, .ku = 16, .ten = 36 }, // 按
+        .{ .unicode = 0x6697, .ku = 16, .ten = 37 }, // 暗
+        .{ .unicode = 0x6848, .ku = 16, .ten = 38 }, // 案
+        .{ .unicode = 0x95C7, .ku = 16, .ten = 39 }, // 闇
+        .{ .unicode = 0x978D, .ku = 16, .ten = 40 }, // 鞍
+        .{ .unicode = 0x674F, .ku = 16, .ten = 41 }, // 杏
+        .{ .unicode = 0x4EE5, .ku = 16, .ten = 42 }, // 以
+        .{ .unicode = 0x4F0A, .ku = 16, .ten = 43 }, // 伊
+        .{ .unicode = 0x4F4D, .ku = 16, .ten = 44 }, // 位
+        .{ .unicode = 0x4F9D, .ku = 16, .ten = 45 }, // 依
+        .{ .unicode = 0x5049, .ku = 16, .ten = 46 }, // 偉
+        .{ .unicode = 0x56F2, .ku = 16, .ten = 47 }, // 囲
+        .{ .unicode = 0x5937, .ku = 16, .ten = 48 }, // 夷
+        .{ .unicode = 0x59D4, .ku = 16, .ten = 49 }, // 委
+        .{ .unicode = 0x5A01, .ku = 16, .ten = 50 }, // 威
+        .{ .unicode = 0x5C09, .ku = 16, .ten = 51 }, // 尉
+        .{ .unicode = 0x60DF, .ku = 16, .ten = 52 }, // 惟
+        .{ .unicode = 0x610F, .ku = 16, .ten = 53 }, // 意
+        .{ .unicode = 0x6170, .ku = 16, .ten = 54 }, // 慰
+        .{ .unicode = 0x6613, .ku = 16, .ten = 55 }, // 易
+        .{ .unicode = 0x6905, .ku = 16, .ten = 56 }, // 椅
+        .{ .unicode = 0x70BA, .ku = 16, .ten = 57 }, // 為
+        .{ .unicode = 0x754F, .ku = 16, .ten = 58 }, // 畏
+        .{ .unicode = 0x7570, .ku = 16, .ten = 59 }, // 異
+        .{ .unicode = 0x79FB, .ku = 16, .ten = 60 }, // 移
+        .{ .unicode = 0x7DAD, .ku = 16, .ten = 61 }, // 維
+        .{ .unicode = 0x7DEF, .ku = 16, .ten = 62 }, // 緯
+        .{ .unicode = 0x80C3, .ku = 16, .ten = 63 }, // 胃
+        .{ .unicode = 0x840E, .ku = 16, .ten = 64 }, // 萎
+        .{ .unicode = 0x8863, .ku = 16, .ten = 65 }, // 衣
+        .{ .unicode = 0x8B02, .ku = 16, .ten = 66 }, // 謂
+        .{ .unicode = 0x9055, .ku = 16, .ten = 67 }, // 違
+        .{ .unicode = 0x907A, .ku = 16, .ten = 68 }, // 遺
+        .{ .unicode = 0x533B, .ku = 16, .ten = 69 }, // 医
+        .{ .unicode = 0x4E95, .ku = 16, .ten = 70 }, // 井
+        .{ .unicode = 0x4EA5, .ku = 16, .ten = 71 }, // 亥
+        .{ .unicode = 0x57DF, .ku = 16, .ten = 72 }, // 域
+        .{ .unicode = 0x80B2, .ku = 16, .ten = 73 }, // 育
+        .{ .unicode = 0x90C1, .ku = 16, .ten = 74 }, // 郁
+        .{ .unicode = 0x78EF, .ku = 16, .ten = 75 }, // 磯
+        .{ .unicode = 0x4E00, .ku = 16, .ten = 76 }, // 一
+        .{ .unicode = 0x58F1, .ku = 16, .ten = 77 }, // 壱
+        .{ .unicode = 0x6EA2, .ku = 16, .ten = 78 }, // 溢
+        .{ .unicode = 0x9038, .ku = 16, .ten = 79 }, // 逸
+        .{ .unicode = 0x7A32, .ku = 16, .ten = 80 }, // 稲
+        .{ .unicode = 0x8328, .ku = 16, .ten = 81 }, // 茨
+        .{ .unicode = 0x828B, .ku = 16, .ten = 82 }, // 芋
+        .{ .unicode = 0x9C2F, .ku = 16, .ten = 83 }, // 鰯
+        .{ .unicode = 0x5141, .ku = 16, .ten = 84 }, // 允
+        .{ .unicode = 0x5370, .ku = 16, .ten = 85 }, // 印
+        .{ .unicode = 0x54BD, .ku = 16, .ten = 86 }, // 咽
+        .{ .unicode = 0x54E1, .ku = 16, .ten = 87 }, // 員
+        .{ .unicode = 0x56E0, .ku = 16, .ten = 88 }, // 因
+        .{ .unicode = 0x59FB, .ku = 16, .ten = 89 }, // 姻
+        .{ .unicode = 0x5F15, .ku = 16, .ten = 90 }, // 引
+        .{ .unicode = 0x98F2, .ku = 16, .ten = 91 }, // 飲
+        .{ .unicode = 0x6DEB, .ku = 16, .ten = 92 }, // 淫
+        .{ .unicode = 0x80E4, .ku = 16, .ten = 93 }, // 胤
+        .{ .unicode = 0x852D, .ku = 16, .ten = 94 }, // 蔭
+    };
+
+    for (kanji_reverse) |entry| {
+        if (entry.unicode == codepoint) {
+            return .{ .ku = entry.ku, .ten = entry.ten };
+        }
+    }
     return null;
 }

@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Buffer = @import("buffer.zig").Buffer;
 const Piece = @import("buffer.zig").Piece;
 const PieceIterator = @import("buffer.zig").PieceIterator;
@@ -40,6 +41,7 @@ const EditorMode = enum {
     filename_input, // ファイル名入力中（保存）
     find_file_input, // ファイル名入力中（開く）
     buffer_switch_input, // バッファ名入力中（切り替え）
+    kill_buffer_confirm, // バッファ閉じる確認中（y/nを待つ）
     isearch_forward, // インクリメンタルサーチ（前方）
     isearch_backward, // インクリメンタルサーチ（後方）
     query_replace_input_search, // 置換：検索文字列入力中
@@ -74,6 +76,8 @@ pub const ShellCommandState = struct {
     stdin_data: ?[]const u8,
     stdin_allocated: bool,
     command: []const u8, // コマンド文字列（解放用）
+    stdout_buffer: std.ArrayList(u8), // 蓄積された標準出力
+    stderr_buffer: std.ArrayList(u8), // 蓄積された標準エラー
 };
 
 /// 全角英数記号（U+FF01〜U+FF5E）を半角（U+0021〜U+007E）に変換
@@ -139,6 +143,13 @@ pub const BufferState = struct {
 // ========================================
 // Window: 画面上の表示領域
 // ========================================
+/// ウィンドウの分割タイプ
+pub const SplitType = enum {
+    none, // 分割なし（単一ウィンドウまたは最初のウィンドウ）
+    horizontal, // 横分割（上下に分割）で作られたウィンドウ
+    vertical, // 縦分割（左右に分割）で作られたウィンドウ
+};
+
 pub const Window = struct {
     id: usize, // ウィンドウID
     buffer_id: usize, // 表示しているバッファのID
@@ -148,6 +159,9 @@ pub const Window = struct {
     width: usize, // ウィンドウの幅
     height: usize, // ウィンドウの高さ
     mark_pos: ?usize, // 範囲選択のマーク位置
+    split_type: SplitType, // このウィンドウがどの分割で作られたか
+    // 分割元ウィンドウのID（リサイズ時のグループ化に使用）
+    split_parent_id: ?usize,
 
     pub fn init(id: usize, buffer_id: usize, x: usize, y: usize, width: usize, height: usize) Window {
         return Window{
@@ -159,6 +173,8 @@ pub const Window = struct {
             .width = width,
             .height = height,
             .mark_pos = null,
+            .split_type = .none,
+            .split_parent_id = null,
         };
     }
 
@@ -326,6 +342,10 @@ pub const Editor = struct {
 
         // コマンド文字列を解放
         self.allocator.free(state.command);
+
+        // 蓄積されたバッファを解放
+        state.stdout_buffer.deinit(self.allocator);
+        state.stderr_buffer.deinit(self.allocator);
 
         // 状態自体を解放
         self.allocator.destroy(state);
@@ -685,6 +705,10 @@ pub const Editor = struct {
             old_height - new_height,
         );
 
+        // 分割情報を設定
+        new_window.split_type = .horizontal;
+        new_window.split_parent_id = current_window.id;
+
         // 新しいウィンドウのViewを初期化
         const buffer_state = self.findBufferById(current_window.buffer_id).?;
         new_window.view = View.init(self.allocator, &buffer_state.buffer);
@@ -700,8 +724,8 @@ pub const Editor = struct {
     pub fn splitWindowVertically(self: *Editor) !void {
         const current_window = &self.windows.items[self.current_window_idx];
 
-        // ウィンドウの幅が2未満の場合は分割できない
-        if (current_window.width < 2) {
+        // ウィンドウの幅が最小幅未満の場合は分割できない（最低10列は必要）
+        if (current_window.width < 20) {
             return error.WindowTooSmall;
         }
 
@@ -722,6 +746,10 @@ pub const Editor = struct {
             old_width - new_width,
             current_window.height,
         );
+
+        // 分割情報を設定
+        new_window.split_type = .vertical;
+        new_window.split_parent_id = current_window.id;
 
         // 新しいウィンドウのViewを初期化
         const buffer_state = self.findBufferById(current_window.buffer_id).?;
@@ -873,34 +901,77 @@ pub const Editor = struct {
     }
 
     /// 端末サイズ変更時にウィンドウサイズを再計算
+    /// ウィンドウの現在のレイアウト（比率）を維持しつつ新しいサイズに調整
     fn recalculateWindowSizes(self: *Editor) !void {
+        const total_width = self.terminal.width;
         const total_height = self.terminal.height;
 
         if (self.windows.items.len == 0) return;
 
         // ウィンドウが1つの場合は全画面
         if (self.windows.items.len == 1) {
+            self.windows.items[0].x = 0;
             self.windows.items[0].y = 0;
+            self.windows.items[0].width = total_width;
             self.windows.items[0].height = total_height;
-            self.windows.items[0].width = self.terminal.width;
             self.windows.items[0].view.markFullRedraw();
             return;
         }
 
-        // 複数ウィンドウの場合：均等分割（縦分割のみ対応）
-        const window_count = self.windows.items.len;
-        const base_height = total_height / window_count;
-        var remaining = total_height % window_count;
-        var current_y: usize = 0;
+        // 複数ウィンドウの場合：レイアウトを分析して再計算
+        // 現在の相対的な位置とサイズを計算してから新しいサイズに適用
 
+        // まず現在の全体サイズを取得（旧サイズ）
+        var old_total_width: usize = 0;
+        var old_total_height: usize = 0;
+        for (self.windows.items) |window| {
+            old_total_width = @max(old_total_width, window.x + window.width);
+            old_total_height = @max(old_total_height, window.y + window.height);
+        }
+
+        // 旧サイズが0の場合はデフォルト値を使用
+        if (old_total_width == 0) old_total_width = total_width;
+        if (old_total_height == 0) old_total_height = total_height;
+
+        // 各ウィンドウの比率を維持してリサイズ
         for (self.windows.items) |*window| {
-            window.y = current_y;
-            window.height = base_height + (if (remaining > 0) @as(usize, 1) else @as(usize, 0));
-            window.width = self.terminal.width;
-            window.view.markFullRedraw();
+            // X座標と幅を新しい幅に比例してスケール
+            const new_x = (window.x * total_width) / old_total_width;
+            const new_right = ((window.x + window.width) * total_width) / old_total_width;
+            window.x = new_x;
+            window.width = if (new_right > new_x) new_right - new_x else 1;
 
-            current_y += window.height;
-            if (remaining > 0) remaining -= 1;
+            // Y座標と高さを新しい高さに比例してスケール
+            const new_y = (window.y * total_height) / old_total_height;
+            const new_bottom = ((window.y + window.height) * total_height) / old_total_height;
+            window.y = new_y;
+            window.height = if (new_bottom > new_y) new_bottom - new_y else 1;
+
+            // 最小サイズを保証
+            if (window.width < 10) window.width = 10;
+            if (window.height < 3) window.height = 3;
+
+            window.view.markFullRedraw();
+        }
+
+        // 境界調整：ウィンドウが画面からはみ出ないようにする
+        for (self.windows.items) |*window| {
+            if (window.x + window.width > total_width) {
+                if (window.x >= total_width) {
+                    window.x = 0;
+                    window.width = total_width;
+                } else {
+                    window.width = total_width - window.x;
+                }
+            }
+            if (window.y + window.height > total_height) {
+                if (window.y >= total_height) {
+                    window.y = 0;
+                    window.height = total_height;
+                } else {
+                    window.height = total_height - window.y;
+                }
+            }
         }
     }
 
@@ -1383,11 +1454,13 @@ pub const Editor = struct {
                                 // 既に開かれている場合は、そのバッファに切り替え
                                 try self.switchToBuffer(buf.id);
                             } else {
-                                // 新しいバッファを作成
+                                // 新しいバッファを作成してファイルを読み込む
                                 const new_buffer = try self.createNewBuffer();
+                                const filename_copy = try self.allocator.dupe(u8, filename);
 
-                                // ファイルを読み込む
-                                const file = std.fs.cwd().openFile(filename, .{}) catch |err| {
+                                // Buffer.loadFromFileを使用（エンコーディング・改行コード処理を含む）
+                                const loaded_buffer = Buffer.loadFromFile(self.allocator, filename_copy) catch |err| {
+                                    self.allocator.free(filename_copy);
                                     if (err == error.FileNotFound) {
                                         // 新規ファイルとして扱う
                                         new_buffer.filename = try self.allocator.dupe(u8, filename);
@@ -1396,46 +1469,46 @@ pub const Editor = struct {
                                         self.input_buffer.clearRetainingCapacity();
                                         self.getCurrentView().clearError();
                                         return;
+                                    } else if (err == error.BinaryFile) {
+                                        _ = try self.closeBuffer(new_buffer.id);
+                                        self.getCurrentView().setError("Cannot open binary file");
+                                        self.mode = .normal;
+                                        self.input_buffer.clearRetainingCapacity();
+                                        return;
                                     } else {
+                                        _ = try self.closeBuffer(new_buffer.id);
                                         self.getCurrentView().setError(@errorName(err));
                                         self.mode = .normal;
                                         self.input_buffer.clearRetainingCapacity();
                                         return;
                                     }
                                 };
-                                defer file.close();
 
-                                const stat = try file.stat();
-                                const content = try file.readToEndAlloc(self.allocator, stat.size);
-                                defer self.allocator.free(content);
+                                // 古いバッファを解放して新しいバッファに置き換え
+                                new_buffer.buffer.deinit();
+                                new_buffer.buffer = loaded_buffer;
+                                new_buffer.filename = filename_copy;
+                                new_buffer.modified = false;
 
-                                // バイナリファイルチェック
-                                const check_size = @min(content.len, 8192);
-                                var is_binary = false;
-                                for (content[0..check_size]) |byte| {
-                                    if (byte == 0) {
-                                        is_binary = true;
-                                        break;
+                                // ファイルの最終更新時刻を記録
+                                const file = std.fs.cwd().openFile(filename_copy, .{}) catch null;
+                                if (file) |f| {
+                                    defer f.close();
+                                    const stat = f.stat() catch null;
+                                    if (stat) |s| {
+                                        new_buffer.file_mtime = s.mtime;
                                     }
                                 }
 
-                                if (is_binary) {
-                                    // バイナリファイルはバッファを削除して拒否
-                                    _ = try self.closeBuffer(new_buffer.id);
-                                    self.getCurrentView().setError("Cannot open binary file");
-                                    self.mode = .normal;
-                                    self.input_buffer.clearRetainingCapacity();
-                                    return;
-                                }
-
-                                // ファイル内容をバッファに挿入
-                                try new_buffer.buffer.insertSlice(0, content);
-                                new_buffer.filename = try self.allocator.dupe(u8, filename);
-                                new_buffer.modified = false;
-                                new_buffer.file_mtime = stat.mtime;
-
                                 // バッファに切り替え
                                 try self.switchToBuffer(new_buffer.id);
+
+                                // Viewのバッファ参照を更新
+                                self.getCurrentView().buffer = &new_buffer.buffer;
+
+                                // 言語検出
+                                const content_preview = new_buffer.buffer.getContentPreview(512);
+                                self.getCurrentView().detectLanguage(filename_copy, content_preview);
                             }
 
                             self.mode = .normal;
@@ -1714,7 +1787,7 @@ pub const Editor = struct {
                                 // C-x k: バッファを閉じる
                                 const buffer_state = self.getCurrentBuffer();
                                 if (buffer_state.modified) {
-                                    // 変更がある場合は確認
+                                    // 変更がある場合は確認モードに入る
                                     if (buffer_state.filename) |name| {
                                         self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Buffer {s} modified; kill anyway? (y/n): ", .{name}) catch null;
                                         if (self.prompt_buffer) |prompt| {
@@ -1723,10 +1796,9 @@ pub const Editor = struct {
                                             self.getCurrentView().setError("Buffer modified; kill anyway? (y/n): ");
                                         }
                                     } else {
-                                        self.getCurrentView().setError("Buffer modified; kill anyway? (y/n): ");
+                                        self.getCurrentView().setError("Buffer *scratch* modified; kill anyway? (y/n): ");
                                     }
-                                    // TODO: 確認モードを実装
-                                    self.getCurrentView().setError("Kill buffer not yet fully implemented");
+                                    self.mode = .kill_buffer_confirm;
                                 } else {
                                     // 変更がない場合は直接閉じる
                                     const buffer_id = buffer_state.id;
@@ -1857,6 +1929,62 @@ pub const Editor = struct {
                             self.mode = .normal;
                             self.getCurrentView().clearError();
                         }
+                    },
+                    else => {},
+                }
+                return;
+            },
+            .kill_buffer_confirm => {
+                // バッファ閉じる確認モード：y/nのみ受け付ける
+                switch (key) {
+                    .char => |c| {
+                        switch (c) {
+                            'y', 'Y' => {
+                                // 閉じる
+                                const buffer_id = self.getCurrentBuffer().id;
+                                self.closeBuffer(buffer_id) catch |err| {
+                                    self.getCurrentView().setError(@errorName(err));
+                                };
+                                self.mode = .normal;
+                            },
+                            'n', 'N' => {
+                                // キャンセル
+                                self.mode = .normal;
+                                self.getCurrentView().clearError();
+                            },
+                            else => {
+                                self.getCurrentView().setError("Please answer: (y)es or (n)o");
+                            },
+                        }
+                    },
+                    .codepoint => |cp| {
+                        const normalized = normalizeCodepoint(cp);
+                        switch (normalized) {
+                            'y', 'Y' => {
+                                const buffer_id = self.getCurrentBuffer().id;
+                                self.closeBuffer(buffer_id) catch |err| {
+                                    self.getCurrentView().setError(@errorName(err));
+                                };
+                                self.mode = .normal;
+                            },
+                            'n', 'N' => {
+                                self.mode = .normal;
+                                self.getCurrentView().clearError();
+                            },
+                            else => {
+                                self.getCurrentView().setError("Please answer: (y)es or (n)o");
+                            },
+                        }
+                    },
+                    .ctrl => |c| {
+                        if (c == 'g') {
+                            self.mode = .normal;
+                            self.getCurrentView().clearError();
+                        }
+                    },
+                    .escape => {
+                        self.mode = .normal;
+                        self.getCurrentView().clearError();
                     },
                     else => {},
                 }
@@ -4341,11 +4469,12 @@ pub const Editor = struct {
             .current_line => {
                 // 現在行
                 const line_num = self.getCurrentView().top_line + self.getCurrentView().cursor_y;
-                const line_start = self.getCurrentBufferContent().line_index.getLineStart(line_num) orelse 0;
-                const next_line_start = self.getCurrentBufferContent().line_index.getLineStart(line_num + 1);
-                const line_end = if (next_line_start) |ns| ns else self.getCurrentBufferContent().total_len;
+                var buffer = self.getCurrentBufferContent();
+                const line_start = buffer.getLineStart(line_num) orelse 0;
+                const next_line_start = buffer.getLineStart(line_num + 1);
+                const line_end = if (next_line_start) |ns| ns else buffer.total_len;
                 if (line_end > line_start) {
-                    stdin_data = try self.getCurrentBufferContent().getRange(self.allocator, line_start, line_end - line_start);
+                    stdin_data = try buffer.getRange(self.allocator, line_start, line_end - line_start);
                     stdin_allocated = true;
                 }
             },
@@ -4370,8 +4499,26 @@ pub const Editor = struct {
         state.stdin_data = stdin_data;
         state.stdin_allocated = stdin_allocated;
         state.command = command_copy;
+        state.stdout_buffer = .{};
+        state.stderr_buffer = .{};
 
         try state.child.spawn();
+
+        // stdout/stderrをノンブロッキングに設定
+        // O_NONBLOCKの値はPOSIXで0x0004 (macOS/BSD)または0x800 (Linux)
+        const O_NONBLOCK: usize = if (builtin.os.tag == .macos or builtin.os.tag == .freebsd)
+            0x0004
+        else
+            0x800;
+
+        if (state.child.stdout) |stdout_file| {
+            const flags = std.posix.fcntl(stdout_file.handle, std.posix.F.GETFL, 0) catch 0;
+            _ = std.posix.fcntl(stdout_file.handle, std.posix.F.SETFL, flags | O_NONBLOCK) catch {};
+        }
+        if (state.child.stderr) |stderr_file| {
+            const flags = std.posix.fcntl(stderr_file.handle, std.posix.F.GETFL, 0) catch 0;
+            _ = std.posix.fcntl(stderr_file.handle, std.posix.F.SETFL, flags | O_NONBLOCK) catch {};
+        }
 
         // stdin にデータを書き込んで閉じる
         if (state.child.stdin) |stdin| {
@@ -4390,8 +4537,36 @@ pub const Editor = struct {
     }
 
     /// シェルコマンドの完了をポーリング
+    /// パイプから増分読み取りを行い、64KB以上の出力でもデッドロックしないようにする
     fn pollShellCommand(self: *Editor) !void {
-        const state = self.shell_state orelse return;
+        var state = self.shell_state orelse return;
+
+        // パイプから利用可能なデータを読み取る（ノンブロッキング）
+        var read_buf: [8192]u8 = undefined;
+
+        // stdout から読み取り
+        if (state.child.stdout) |stdout_file| {
+            while (true) {
+                const bytes_read = stdout_file.read(&read_buf) catch |err| switch (err) {
+                    error.WouldBlock => break, // ノンブロッキングで読み取れるデータがない
+                    else => break,
+                };
+                if (bytes_read == 0) break; // EOF
+                try state.stdout_buffer.appendSlice(self.allocator, read_buf[0..bytes_read]);
+            }
+        }
+
+        // stderr から読み取り
+        if (state.child.stderr) |stderr_file| {
+            while (true) {
+                const bytes_read = stderr_file.read(&read_buf) catch |err| switch (err) {
+                    error.WouldBlock => break,
+                    else => break,
+                };
+                if (bytes_read == 0) break;
+                try state.stderr_buffer.appendSlice(self.allocator, read_buf[0..bytes_read]);
+            }
+        }
 
         // waitpidでプロセス終了をチェック（WNOHANG）
         const result = std.posix.waitpid(state.child.id, std.c.W.NOHANG);
@@ -4401,7 +4576,23 @@ pub const Editor = struct {
             return;
         }
 
-        // プロセス終了 - 結果を取得して処理
+        // プロセス終了 - 残りのデータを読み取って処理
+        // 終了後に残っているデータを読み取る
+        if (state.child.stdout) |stdout_file| {
+            while (true) {
+                const bytes_read = stdout_file.read(&read_buf) catch break;
+                if (bytes_read == 0) break;
+                try state.stdout_buffer.appendSlice(self.allocator, read_buf[0..bytes_read]);
+            }
+        }
+        if (state.child.stderr) |stderr_file| {
+            while (true) {
+                const bytes_read = stderr_file.read(&read_buf) catch break;
+                if (bytes_read == 0) break;
+                try state.stderr_buffer.appendSlice(self.allocator, read_buf[0..bytes_read]);
+            }
+        }
+
         try self.finishShellCommand();
     }
 
@@ -4413,24 +4604,9 @@ pub const Editor = struct {
             self.mode = .normal;
         }
 
-        // stdout と stderr を読み取る（nullの場合は空文字列）
-        var stdout: []const u8 = "";
-        var stdout_allocated = false;
-        if (state.child.stdout) |stdout_file| {
-            stdout = stdout_file.readToEndAlloc(self.allocator, 1024 * 1024) catch "";
-            stdout_allocated = stdout.len > 0;
-        }
-        defer if (stdout_allocated) self.allocator.free(@constCast(stdout));
-
-        var stderr: []const u8 = "";
-        var stderr_allocated = false;
-        if (state.child.stderr) |stderr_file| {
-            stderr = stderr_file.readToEndAlloc(self.allocator, 1024 * 1024) catch "";
-            stderr_allocated = stderr.len > 0;
-        }
-        defer if (stderr_allocated) self.allocator.free(@constCast(stderr));
-
-        // 注意: waitpidで既にプロセスはreapされているので、wait()は呼ばない
+        // 蓄積されたバッファからデータを取得
+        const stdout = state.stdout_buffer.items;
+        const stderr = state.stderr_buffer.items;
 
         // 結果を処理
         try self.processShellResult(stdout, stderr, state.input_source, state.output_dest);
@@ -4558,10 +4734,10 @@ pub const Editor = struct {
                     .current_line => {
                         // 現在行を置換
                         const line_num = self.getCurrentView().top_line + self.getCurrentView().cursor_y;
-                        const line_start = self.getCurrentBufferContent().line_index.getLineStart(line_num) orelse 0;
-                        const next_line_start = self.getCurrentBufferContent().line_index.getLineStart(line_num + 1);
-                        const line_end = if (next_line_start) |ns| ns else self.getCurrentBufferContent().total_len;
-                        const buf = self.getCurrentBufferContent();
+                        var buf = self.getCurrentBufferContent();
+                        const line_start = buf.getLineStart(line_num) orelse 0;
+                        const next_line_start = buf.getLineStart(line_num + 1);
+                        const line_end = if (next_line_start) |ns| ns else buf.total_len;
                         if (line_end > line_start) {
                             const old_line = try buf.getRange(self.allocator, line_start, line_end - line_start);
                             defer self.allocator.free(old_line);
@@ -4834,28 +5010,33 @@ pub const Editor = struct {
         }
 
         const filename = buffer_state.filename.?;
-        const file = std.fs.cwd().openFile(filename, .{}) catch |err| {
+
+        // Buffer.loadFromFileを使用（エンコーディング・改行コード処理を含む）
+        const loaded_buffer = Buffer.loadFromFile(self.allocator, filename) catch |err| {
             self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Cannot open: {s}", .{@errorName(err)}) catch null;
             if (self.prompt_buffer) |msg| {
                 self.getCurrentView().setError(msg);
             }
             return;
         };
-        defer file.close();
 
-        const stat = try file.stat();
-        const content = try file.readToEndAlloc(self.allocator, stat.size);
-        defer self.allocator.free(content);
-
-        // バッファをクリアして再読み込み
-        const buffer = self.getCurrentBufferContent();
-        const len = buffer.len();
-        if (len > 0) {
-            try buffer.delete(0, len);
-        }
-        try buffer.insertSlice(0, content);
+        // 古いバッファを解放して新しいバッファに置き換え
+        buffer_state.buffer.deinit();
+        buffer_state.buffer = loaded_buffer;
         buffer_state.modified = false;
-        buffer_state.file_mtime = stat.mtime;
+
+        // ファイルの最終更新時刻を記録
+        const file = std.fs.cwd().openFile(filename, .{}) catch null;
+        if (file) |f| {
+            defer f.close();
+            const stat = f.stat() catch null;
+            if (stat) |s| {
+                buffer_state.file_mtime = s.mtime;
+            }
+        }
+
+        // Viewのバッファ参照を更新
+        self.getCurrentView().buffer = &buffer_state.buffer;
 
         // カーソルを先頭に
         self.getCurrentView().moveToBufferStart();

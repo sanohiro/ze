@@ -54,7 +54,8 @@ Regex supported: `\d+` for digits, `^TODO` for TODO at line start.
 
 | Key | Action |
 |-----|--------|
-| `C-x 2` / `C-x 3` | Split horizontal/vertical |
+| `C-x 2` | Split horizontal |
+| `C-x 3` | Split vertical |
 | `C-x o` | Switch to next window |
 | `C-x 0` / `C-x 1` | Close window/close others |
 | `C-x b` | Switch buffer |

@@ -4,8 +4,8 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // バージョン定義（build.zig.zonと同期を保つ）
-    const version = "0.5.0";
+    // バージョンはbuild.zig.zonから取得（単一ソースオブトルース）
+    const version = @import("build.zig.zon").version;
 
     // リリースビルド時はデバッグ情報を削除
     const strip = b.option(bool, "strip", "Strip debug info") orelse (optimize != .Debug);
