@@ -128,20 +128,27 @@ pub fn readKey(stdin: std.fs.File) !?Key {
     // UTF-8マルチバイト文字の処理
     if (ch >= config.UTF8.CONTINUATION_MASK) {
         const len = std.unicode.utf8ByteSequenceLength(ch) catch {
-            // 無効なUTF-8は無視
+            // 無効なUTF-8先頭バイトは無視
             return Key{ .char = ch };
         };
 
         if (len > 1) {
             // 残りのバイトを読み取る
             buf[0] = ch;
-            const remaining = try stdin.read(buf[1..len]);
-            if (remaining == len - 1) {
+            var total_read: usize = 0;
+            while (total_read < len - 1) {
+                const remaining = try stdin.read(buf[1 + total_read .. len]);
+                if (remaining == 0) break; // タイムアウトまたはEOF
+                total_read += remaining;
+            }
+
+            if (total_read == len - 1) {
                 const codepoint = std.unicode.utf8Decode(buf[0..len]) catch {
                     return Key{ .char = ch };
                 };
                 return Key{ .codepoint = codepoint };
             }
+            // 不完全なUTF-8シーケンス：最初のバイトだけ返す
         }
     }
 

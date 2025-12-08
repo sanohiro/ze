@@ -3604,25 +3604,6 @@ pub const Editor = struct {
         }
     }
 
-    // カーソルの現在のバイト位置を取得
-    fn getCursorPos(self: *Editor) usize {
-        const view = self.getCurrentView();
-        const buffer = self.getCurrentBufferContent();
-        const line_num = view.top_line + view.cursor_y;
-        const line_start = buffer.getLineStart(line_num) orelse 0;
-
-        // 行の開始位置から cursor_x グラフェムクラスタ分進む
-        var iter = PieceIterator.init(buffer);
-        iter.seek(line_start);
-
-        var col: usize = 0;
-        while (col < view.cursor_x) : (col += 1) {
-            _ = iter.nextGraphemeCluster() catch break;
-        }
-
-        return iter.global_pos;
-    }
-
     // 矩形領域の削除（C-x r k）
     fn killRectangle(self: *Editor) void {
         const window = self.getCurrentWindow();
@@ -3631,7 +3612,7 @@ pub const Editor = struct {
             return;
         };
 
-        const cursor = self.getCursorPos();
+        const cursor = self.getCurrentView().getCursorBufferPos();
         const buffer = self.getCurrentBufferContent();
 
         // マークとカーソルの位置から矩形の範囲を決定
@@ -3749,7 +3730,7 @@ pub const Editor = struct {
         }
 
         // 現在のカーソル位置を取得
-        const cursor_pos = self.getCursorPos();
+        const cursor_pos = self.getCurrentView().getCursorBufferPos();
         const buffer = self.getCurrentBufferContent();
         const cursor_line = buffer.findLineByPos(cursor_pos);
         const cursor_col = buffer.findColumnByPos(cursor_pos);
@@ -3934,72 +3915,39 @@ pub const Editor = struct {
     fn forwardWord(self: *Editor) !void {
         const buffer = self.getCurrentBufferContent();
         const start_pos = self.getCurrentView().getCursorBufferPos();
-        const buf_len = buffer.len();
-        if (start_pos >= buf_len) return;
+        if (start_pos >= buffer.len()) return;
 
         var iter = PieceIterator.init(buffer);
         iter.seek(start_pos);
 
-        var pos = start_pos;
         var prev_type: ?CharType = null;
 
-        // 現在位置の文字種を取得
-        while (iter.next()) |byte| {
-            const cp = blk: {
-                if (byte < 0x80) {
-                    // ASCII
-                    break :blk @as(u21, byte);
-                } else {
-                    // UTF-8マルチバイト
-                    var utf8_buf: [4]u8 = undefined;
-                    utf8_buf[0] = byte;
-                    var utf8_len: usize = 1;
-
-                    // 残りのバイトを読む
-                    const expected_len = std.unicode.utf8ByteSequenceLength(byte) catch {
-                        pos += 1;
-                        continue;
-                    };
-
-                    while (utf8_len < expected_len) : (utf8_len += 1) {
-                        const next_byte = iter.next() orelse break;
-                        utf8_buf[utf8_len] = next_byte;
-                    }
-
-                    if (utf8_len != expected_len) {
-                        pos += utf8_len;
-                        continue;
-                    }
-
-                    break :blk std.unicode.utf8Decode(utf8_buf[0..expected_len]) catch {
-                        pos += expected_len;
-                        continue;
-                    };
-                }
-            };
-
+        // PieceIterator.nextCodepoint()を使ってUTF-8をデコード
+        while (iter.nextCodepoint() catch null) |cp| {
             const current_type = getCharType(cp);
 
             if (prev_type) |pt| {
                 // 文字種が変わったら停止（ただし空白は飛ばす）
                 if (current_type != .space and pt != .space and current_type != pt) {
-                    break;
+                    // 今読んだ文字の前に戻る
+                    const cp_len = std.unicode.utf8CodepointSequenceLength(cp) catch 1;
+                    self.setCursorToPos(iter.global_pos - cp_len);
+                    return;
                 }
             }
 
             prev_type = current_type;
-            pos += if (cp < 0x80) 1 else std.unicode.utf8CodepointSequenceLength(cp) catch 1;
 
             // 空白から非空白に変わる場合、その位置で停止
             if (prev_type == .space and current_type != .space) {
-                break;
+                const cp_len = std.unicode.utf8CodepointSequenceLength(cp) catch 1;
+                self.setCursorToPos(iter.global_pos - cp_len);
+                return;
             }
         }
 
-        // カーソル位置を更新
-        if (pos > start_pos) {
-            self.setCursorToPos(pos);
-        }
+        // EOFに到達
+        self.setCursorToPos(iter.global_pos);
     }
 
     /// 後方の単語へ移動（M-b）
@@ -4014,46 +3962,13 @@ pub const Editor = struct {
         var found_non_space = false;
 
         while (pos > 0) {
-            // 1文字戻る（UTF-8考慮）
-            const char_start = blk: {
-                var test_pos = if (pos > 0) pos - 1 else 0;
-                while (test_pos > 0) : (test_pos -= 1) {
-                    var iter = PieceIterator.init(buffer);
-                    iter.seek(test_pos);
-                    const byte = iter.next() orelse break;
-                    // UTF-8の先頭バイトかチェック
-                    if (byte < 0x80 or (byte & 0xC0) == 0xC0) {
-                        break :blk test_pos;
-                    }
-                }
-                break :blk 0;
-            };
+            // 1文字戻る（UTF-8先頭バイトを探す）
+            const char_start = findUtf8CharStart(buffer, pos);
 
             // 文字を読み取る
             var iter = PieceIterator.init(buffer);
             iter.seek(char_start);
-            const first_byte = iter.next() orelse break;
-
-            const cp = blk: {
-                if (first_byte < 0x80) {
-                    break :blk @as(u21, first_byte);
-                } else {
-                    var utf8_buf: [4]u8 = undefined;
-                    utf8_buf[0] = first_byte;
-                    var utf8_len: usize = 1;
-
-                    const expected_len = std.unicode.utf8ByteSequenceLength(first_byte) catch break :blk @as(u21, first_byte);
-
-                    while (utf8_len < expected_len) : (utf8_len += 1) {
-                        const next_byte = iter.next() orelse break;
-                        utf8_buf[utf8_len] = next_byte;
-                    }
-
-                    if (utf8_len != expected_len) break :blk @as(u21, first_byte);
-
-                    break :blk std.unicode.utf8Decode(utf8_buf[0..expected_len]) catch @as(u21, first_byte);
-                }
-            };
+            const cp = iter.nextCodepoint() catch break orelse break;
 
             const current_type = getCharType(cp);
 
@@ -4080,6 +3995,22 @@ pub const Editor = struct {
         if (pos < start_pos) {
             self.setCursorToPos(pos);
         }
+    }
+
+    /// UTF-8文字の先頭バイト位置を探す（後方移動用）
+    fn findUtf8CharStart(buffer: *Buffer, pos: usize) usize {
+        if (pos == 0) return 0;
+        var test_pos = pos - 1;
+        while (test_pos > 0) : (test_pos -= 1) {
+            var iter = PieceIterator.init(buffer);
+            iter.seek(test_pos);
+            const byte = iter.next() orelse break;
+            // UTF-8の先頭バイトかチェック（ASCII or マルチバイト先頭）
+            if (byte < 0x80 or (byte & 0xC0) == 0xC0) {
+                return test_pos;
+            }
+        }
+        return 0;
     }
 
     /// カーソル位置から次の単語までを削除（M-d）

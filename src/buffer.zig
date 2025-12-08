@@ -747,28 +747,11 @@ pub const Buffer = struct {
         }
 
         // 複数pieceにまたがる削除
+        // 後ろから削除するため、降順でインデックスを収集
         var pieces_to_remove = try std.ArrayList(usize).initCapacity(self.allocator, 0);
         defer pieces_to_remove.deinit(self.allocator);
 
-        // 中間のpieceをすべて削除対象に
-        var i = start_loc.piece_idx + 1;
-        while (i < end_loc.piece_idx) : (i += 1) {
-            try pieces_to_remove.append(self.allocator, i);
-        }
-
-        // 開始pieceの処理
-        const start_piece = self.pieces.items[start_loc.piece_idx];
-        if (start_loc.offset == 0) {
-            try pieces_to_remove.append(self.allocator, start_loc.piece_idx);
-        } else {
-            self.pieces.items[start_loc.piece_idx] = .{
-                .source = start_piece.source,
-                .start = start_piece.start,
-                .length = start_loc.offset,
-            };
-        }
-
-        // 終了pieceの処理
+        // 終了pieceの処理（最初に追加=最大インデックス）
         const end_piece = self.pieces.items[end_loc.piece_idx];
         if (end_loc.offset == end_piece.length) {
             try pieces_to_remove.append(self.allocator, end_loc.piece_idx);
@@ -780,9 +763,27 @@ pub const Buffer = struct {
             };
         }
 
-        // 後ろから削除（インデックスがずれないように）
-        // インデックスを降順にソートしてから削除
-        std.mem.sort(usize, pieces_to_remove.items, {}, comptime std.sort.desc(usize));
+        // 中間のpieceを降順で追加
+        if (end_loc.piece_idx > start_loc.piece_idx + 1) {
+            var i = end_loc.piece_idx - 1;
+            while (i > start_loc.piece_idx) : (i -= 1) {
+                try pieces_to_remove.append(self.allocator, i);
+            }
+        }
+
+        // 開始pieceの処理（最後に追加=最小インデックス）
+        const start_piece = self.pieces.items[start_loc.piece_idx];
+        if (start_loc.offset == 0) {
+            try pieces_to_remove.append(self.allocator, start_loc.piece_idx);
+        } else {
+            self.pieces.items[start_loc.piece_idx] = .{
+                .source = start_piece.source,
+                .start = start_piece.start,
+                .length = start_loc.offset,
+            };
+        }
+
+        // 既に降順なのでソート不要、そのまま削除
         for (pieces_to_remove.items) |idx| {
             _ = self.pieces.orderedRemove(idx);
         }
@@ -856,6 +857,24 @@ pub const Buffer = struct {
 
         // leftは pos より大きい最初の行、なので left - 1 が pos を含む行
         return if (left > 0) left - 1 else 0;
+    }
+
+    /// 指定行の開始位置と終了位置を取得（終了位置は改行の直前または EOF）
+    /// 戻り値: { .start = 行開始バイト位置, .end = 行終了バイト位置（改行含まない） }
+    pub fn getLineRange(self: *Buffer, line_num: usize) ?struct { start: usize, end: usize } {
+        const line_start = self.getLineStart(line_num) orelse return null;
+
+        // 行末を探す
+        var iter = PieceIterator.init(self);
+        iter.seek(line_start);
+
+        while (iter.next()) |ch| {
+            if (ch == '\n') {
+                return .{ .start = line_start, .end = iter.global_pos - 1 };
+            }
+        }
+        // 改行なし（最終行またはEOF）
+        return .{ .start = line_start, .end = iter.global_pos };
     }
 
     // バイト位置から列番号を計算（グラフェムクラスタ数）

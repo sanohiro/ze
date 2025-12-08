@@ -10,9 +10,9 @@ A lightweight, fast, modern editor that requires no configuration. Perfect for q
 
 - **Lightweight** — Under 300KB, no dependencies
 - **Zero-config** — No dotfiles, just copy and use
-- **Emacs keybindings** — Natural for Bash/Readline users
-- **Full UTF-8 support** — Japanese, emoji, any character
-- **Shell integration** — Pipe Unix commands from within the editor
+- **Emacs-style editing** — Not just keybindings: multi-buffer, window splitting, the whole editing model
+- **Shell integration** — Pipe to sort, jq, awk directly from the editor
+- **Full UTF-8 support** — Japanese, emoji, grapheme clusters
 
 ## Requirements
 
@@ -43,69 +43,6 @@ Save and quit: `C-x C-s` → `C-x C-c`
 
 ---
 
-## Keybindings
-
-ze uses Emacs-style keybindings. `C-` means Ctrl, `M-` means Alt/Option.
-
-### Movement
-
-| Key | Action |
-|-----|--------|
-| `C-f` / `C-b` | Forward/backward one character |
-| `C-n` / `C-p` | Next/previous line |
-| `C-a` / `C-e` | Beginning/end of line |
-| `M-f` / `M-b` | Forward/backward one word |
-| `C-v` / `M-v` | Page down/up |
-| `M-<` / `M->` | Beginning/end of buffer |
-| `C-l` | Center cursor line on screen |
-
-### Editing
-
-| Key | Action |
-|-----|--------|
-| `C-d` | Delete character |
-| `M-d` | Delete word |
-| `C-k` | Kill to end of line |
-| `C-Space` | Set/unset mark (start/end selection) |
-| `C-w` / `M-w` | Cut/copy |
-| `C-y` | Paste |
-| `C-u` / `C-/` | Undo/Redo |
-| `M-^` | Join line with previous |
-| `M-↑` / `M-↓` | Move line up/down |
-| `Tab` / `S-Tab` | Indent/unindent |
-| `M-;` | Toggle comment |
-
-### File
-
-| Key | Action |
-|-----|--------|
-| `C-x C-f` | Open file |
-| `C-x C-s` | Save |
-| `C-x C-w` | Save as |
-| `C-x C-c` | Quit |
-
-### Search & Replace
-
-| Key | Action |
-|-----|--------|
-| `C-s` / `C-r` | Forward/backward search |
-| `M-%` | Interactive replace (y/n/!/q) |
-
-Regex supported: `\d+` for digits, `^TODO` for TODO at line start.
-
-### Windows & Buffers
-
-| Key | Action |
-|-----|--------|
-| `C-x 2` / `C-x 3` | Split horizontal/vertical |
-| `C-x o` | Switch to next window |
-| `C-x 0` / `C-x 1` | Close window/close others |
-| `C-x b` | Switch buffer |
-| `C-x C-b` | List buffers |
-| `C-x k` | Kill buffer |
-
----
-
 ## Shell Integration
 
 ze follows the Unix philosophy: "Text is a stream."
@@ -120,18 +57,14 @@ Advanced text processing is delegated to existing tools like `sort`, `jq`, `awk`
 [source] | command [destination]
 ```
 
-### Source
-
-| Symbol | Input |
+| Source | Input |
 |--------|-------|
 | (none) | Selection |
 | `%` | Entire buffer |
 | `.` | Current line |
 
-### Destination
-
-| Symbol | Output |
-|--------|--------|
+| Destination | Output |
+|-------------|--------|
 | (none) | Display in command buffer |
 | `>` | Replace source |
 | `+>` | Insert at cursor |
@@ -151,18 +84,42 @@ Advanced text processing is delegated to existing tools like `sort`, `jq`, `awk`
 
 ---
 
-## M-x Commands
+## Keybindings
 
-`M-x` opens the command prompt.
+ze uses Emacs-style keybindings. `C-` means Ctrl, `M-` means Alt/Option.
 
-| Command | Description |
-|---------|-------------|
-| `line 100` | Jump to line 100 |
-| `tab` / `tab 2` | Show/set tab width |
-| `indent` | Show/set indent style |
-| `revert` | Reload file |
-| `ro` | Toggle read-only |
-| `?` | List commands |
+| Key | Action |
+|-----|--------|
+| `C-f` / `C-b` / `C-n` / `C-p` | Move cursor |
+| `C-s` / `C-r` | Search forward/backward |
+| `M-%` | Query replace |
+| `C-Space` | Start selection |
+| `C-w` / `M-w` / `C-y` | Cut/copy/paste |
+| `C-x 2` / `C-x 3` | Split window |
+| `C-x b` | Switch buffer |
+| `C-x C-s` | Save |
+| `C-x C-c` | Quit |
+
+**Full keybindings:** [KEYBINDINGS.md](KEYBINDINGS.md)
+
+---
+
+## Design Choices
+
+### Comment-only syntax highlighting
+
+ze highlights comments only. This is intentional:
+
+- **Readability** — Comments stand out in config files
+- **Not an IDE** — Full syntax highlighting adds complexity without benefit for ze's use case
+- **Speed** — Minimal parsing overhead
+
+### What ze won't do
+
+- **Syntax highlighting** — ze is for config files, not coding
+- **LSP** — Use VSCode for serious development
+- **Plugins** — Simplicity over extensibility
+- **Mouse / GUI** — Keyboard and terminal only
 
 ---
 
@@ -170,11 +127,25 @@ Advanced text processing is delegated to existing tools like `sort`, `jq`, `awk`
 
 ### Encoding
 
-- Optimized for **UTF-8 + LF**. Converts to UTF-8+LF on load. Zero-copy mmap for UTF-8+LF files.
-- Auto-detects UTF-8 (with/without BOM), UTF-16 (with BOM), Shift_JIS, EUC-JP, and line endings (LF, CRLF, CR).
-- Preserves original encoding and line endings on save.
+- Optimized for **UTF-8 + LF**. Zero-copy mmap for UTF-8+LF files.
+- Auto-detects UTF-8 (with/without BOM), UTF-16 (with BOM), Shift_JIS, EUC-JP
+- Auto-detects line endings (LF, CRLF, CR)
+- Preserves original encoding and line endings on save
 
 > Other encodings not supported. Use iconv or nkf for conversion.
+
+### M-x Commands
+
+| Command | Description |
+|---------|-------------|
+| `line N` | Jump to line N |
+| `tab` / `tab N` | Show/set tab width |
+| `indent` | Show/set indent style |
+| `revert` | Reload file |
+| `ro` | Toggle read-only |
+| `?` | List commands |
+
+---
 
 ## Roadmap
 
@@ -186,20 +157,11 @@ Advanced text processing is delegated to existing tools like `sort`, `jq`, `awk`
 - Multi-buffer, window splitting
 - Shell integration (M-|)
 - Comment/indent settings for 48 languages
-- Syntax highlighting for comments only
 
 ### Planned
 
 - [ ] In-app help (`C-h ?`)
 - [ ] Keyboard macros (`C-x (` / `)` / `e`)
-
-### Not Implementing
-
-- Syntax highlighting — ze is a config file editor, not an IDE
-- LSP — Use VSCode for serious development
-- Plugins — Maintaining simplicity
-- Mouse — Keyboard only
-- GUI — Terminal only
 
 ---
 
