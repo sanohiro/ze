@@ -262,7 +262,7 @@ pub const View = struct {
         // 行末まで読み取る
         while (iter.next()) |ch| {
             if (ch == '\n') break;
-            try line_buffer.append(term.allocator, ch);
+            try line_buffer.append(self.allocator, ch);
         }
 
         // コメント範囲を解析（ブロックコメント対応）
