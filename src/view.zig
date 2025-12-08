@@ -119,9 +119,9 @@ pub const View = struct {
         self.line_buffer.deinit(allocator);
         // 前フレームバッファのクリーンアップ
         for (self.prev_screen.items) |*line| {
-            line.deinit(self.allocator);
+            line.deinit(allocator);
         }
-        self.prev_screen.deinit(self.allocator);
+        self.prev_screen.deinit(allocator);
     }
 
     // エラーメッセージを設定
