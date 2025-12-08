@@ -921,6 +921,9 @@ pub const Editor = struct {
                         window.view.deinit(self.allocator);
                         window.view = View.init(self.allocator, &next_buffer.buffer);
                         window.buffer_id = next_buffer.id;
+                        // 言語検出（コメント強調・タブ幅など）
+                        const content_preview = next_buffer.buffer.getContentPreview(512);
+                        window.view.detectLanguage(next_buffer.filename, content_preview);
                     }
                 }
 
@@ -1335,6 +1338,14 @@ pub const Editor = struct {
 
     /// 全ウィンドウをレンダリング
     fn renderAllWindows(self: *Editor) !void {
+        // 描画中はカーソルを非表示（ちらつき防止）
+        try self.terminal.hideCursor();
+
+        // アクティブウィンドウの情報を保存（後でカーソル表示に使用）
+        var active_cursor_row: usize = 0;
+        var active_cursor_col: usize = 0;
+        var has_active: bool = false;
+
         for (self.windows.items, 0..) |*window, idx| {
             const is_active = (idx == self.current_window_idx);
             const buffer_state = self.findBufferById(window.buffer_id) orelse continue;
@@ -1351,7 +1362,22 @@ pub const Editor = struct {
                 buffer.detected_encoding,
                 buffer_state.filename,
             );
+
+            // アクティブウィンドウのカーソル位置を記録
+            if (is_active) {
+                const pos = window.view.getCursorScreenPosition(window.y, self.terminal.width);
+                active_cursor_row = pos.row;
+                active_cursor_col = pos.col;
+                has_active = true;
+            }
         }
+
+        // アクティブウィンドウのカーソルを表示
+        if (has_active) {
+            try self.terminal.moveCursor(active_cursor_row, active_cursor_col);
+            try self.terminal.showCursor();
+        }
+
         // 全ウィンドウの描画後に一括でflush（複数回のwrite()を避ける）
         try self.terminal.flush();
     }
@@ -5347,6 +5373,17 @@ pub const Editor = struct {
         buffer_state.buffer.deinit();
         buffer_state.buffer = loaded_buffer;
         buffer_state.modified = false;
+
+        // Undo/Redoスタックをクリア（リロード前の編集履歴は無効）
+        for (buffer_state.undo_stack.items) |*entry| {
+            entry.deinit(self.allocator);
+        }
+        buffer_state.undo_stack.clearRetainingCapacity();
+        for (buffer_state.redo_stack.items) |*entry| {
+            entry.deinit(self.allocator);
+        }
+        buffer_state.redo_stack.clearRetainingCapacity();
+        buffer_state.undo_save_point = 0;
 
         // ファイルの最終更新時刻を記録
         const file = std.fs.cwd().openFile(filename, .{}) catch null;

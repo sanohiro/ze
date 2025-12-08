@@ -567,7 +567,8 @@ pub const View = struct {
         // 端末サイズが0の場合は何もしない
         if (term.height == 0 or term.width == 0 or viewport_height == 0) return;
 
-        try term.hideCursor();
+        // 注意: hideCursor/showCursorは呼び出し元（renderAllWindows）で一括管理
+        _ = is_active; // カーソル表示は呼び出し元で処理
 
         const max_lines = viewport_height - 1; // ステータスバー分を引く
 
@@ -646,19 +647,18 @@ pub const View = struct {
 
         // ステータスバーの描画
         try self.renderStatusBarAt(term, viewport_y + viewport_height - 1, modified, readonly, line_ending, file_encoding, filename);
+        // 注意: flush()とカーソル表示は呼び出し元で一括して行う（複数ウィンドウ時の効率化のため）
+    }
 
-        // カーソルを表示（アクティブウィンドウのみ）
-        if (is_active) {
-            const line_num_width = self.getLineNumberWidth();
-            var screen_cursor_x = line_num_width + (if (self.cursor_x >= self.top_col) self.cursor_x - self.top_col else 0);
-            // 端末幅を超えないようにクリップ
-            if (screen_cursor_x >= term.width) {
-                screen_cursor_x = term.width - 1;
-            }
-            try term.moveCursor(viewport_y + self.cursor_y, screen_cursor_x);
-            try term.showCursor();
+    /// アクティブウィンドウ用のカーソル位置を計算
+    pub fn getCursorScreenPosition(self: *View, viewport_y: usize, term_width: usize) struct { row: usize, col: usize } {
+        const line_num_width = self.getLineNumberWidth();
+        var screen_cursor_x = line_num_width + (if (self.cursor_x >= self.top_col) self.cursor_x - self.top_col else 0);
+        // 端末幅を超えないようにクリップ
+        if (screen_cursor_x >= term_width) {
+            screen_cursor_x = term_width - 1;
         }
-        // 注意: flush()は呼び出し元で一括して行う（複数ウィンドウ時の効率化のため）
+        return .{ .row = viewport_y + self.cursor_y, .col = screen_cursor_x };
     }
 
     /// 従来のrender（後方互換性のため）- 全画面レンダリング
@@ -701,7 +701,7 @@ pub const View = struct {
         var right_buf: [64]u8 = undefined;
         const current_line = self.top_line + self.cursor_y + 1;
         const current_col = self.cursor_x + 1;
-        const le_str = if (@as(u32, @intFromEnum(line_ending)) == 0) "LF" else "CRLF";
+        const le_str = line_ending.toString(); // LF, CRLF, CR を正しく表示
         const enc_str = file_encoding.toString();
         const right_part = try std.fmt.bufPrint(&right_buf, "L{d} C{d}  {s}({s}) ", .{ current_line, current_col, enc_str, le_str });
 

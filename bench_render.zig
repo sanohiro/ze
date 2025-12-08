@@ -2,6 +2,7 @@ const std = @import("std");
 const Buffer = @import("src/buffer.zig").Buffer;
 const View = @import("src/view.zig").View;
 const Terminal = @import("src/terminal.zig").Terminal;
+const encoding = @import("src/encoding.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -38,16 +39,23 @@ pub fn main() !void {
     std.debug.print("行数: {}\n", .{buffer.lineCount()});
     std.debug.print("ターミナルサイズ: {}x{}\n\n", .{ terminal.width, terminal.height });
 
+    // ベンチマーク用のダミーパラメータ
+    const modified = false;
+    const readonly = false;
+    const line_ending = buffer.detected_line_ending;
+    const file_encoding = buffer.detected_encoding;
+    const filename: ?[]const u8 = "/tmp/bench_test.txt";
+
     // 初回レンダリング（全画面描画）
     view.markFullRedraw();
-    try view.render(&terminal);
+    try view.render(&terminal, modified, readonly, line_ending, file_encoding, filename);
     const initial_output = terminal.buf.items.len;
     terminal.buf.clearRetainingCapacity();
 
     std.debug.print("初回レンダリング出力: {} バイト\n", .{initial_output});
 
     // 2回目レンダリング（変更なし、差分描画）
-    try view.render(&terminal);
+    try view.render(&terminal, modified, readonly, line_ending, file_encoding, filename);
     const second_output = terminal.buf.items.len;
     terminal.buf.clearRetainingCapacity();
 
@@ -56,7 +64,7 @@ pub fn main() !void {
 
     // 小さな変更（1文字変更）をシミュレート
     view.markDirty(0, 0);
-    try view.render(&terminal);
+    try view.render(&terminal, modified, readonly, line_ending, file_encoding, filename);
     const dirty_output = terminal.buf.items.len;
     terminal.buf.clearRetainingCapacity();
 
@@ -69,7 +77,7 @@ pub fn main() !void {
 
     var timer = try std.time.Timer.start();
     for (0..iterations) |_| {
-        try view.render(&terminal);
+        try view.render(&terminal, modified, readonly, line_ending, file_encoding, filename);
         total_output += terminal.buf.items.len;
         terminal.buf.clearRetainingCapacity();
     }
