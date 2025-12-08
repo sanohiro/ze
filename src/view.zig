@@ -28,6 +28,22 @@ const config = @import("config.zig");
 const syntax = @import("syntax.zig");
 const encoding = @import("encoding.zig");
 
+/// UTF-8文字列をバイト数制限内でトランケート（文字境界を守る）
+/// 日本語などマルチバイト文字を途中で切らないようにする
+fn truncateUtf8(str: []const u8, max_bytes: usize) []const u8 {
+    if (str.len <= max_bytes) return str;
+    if (max_bytes == 0) return str[0..0];
+
+    // max_bytesから後ろに戻って、継続バイト(10xxxxxx)でない位置を見つける
+    var end = max_bytes;
+    while (end > 0) {
+        // UTF-8継続バイトは0x80-0xBF (10xxxxxx)
+        if ((str[end] & 0xC0) != 0x80) break;
+        end -= 1;
+    }
+    return str[0..end];
+}
+
 pub const View = struct {
     buffer: *Buffer,
     top_line: usize,
@@ -719,7 +735,7 @@ pub const View = struct {
             try term.write(config.ANSI.INVERT);
             var msg_buf: [config.Editor.STATUS_BUF_SIZE]u8 = undefined;
             const status = try std.fmt.bufPrint(&msg_buf, " {s}", .{msg});
-            const display_status = if (status.len > term.width) status[0..term.width] else status;
+            const display_status = truncateUtf8(status, term.width);
             try term.write(display_status);
             const padding = if (display_status.len < term.width) term.width - display_status.len else 0;
             for (0..padding) |_| {
@@ -755,12 +771,12 @@ pub const View = struct {
         if (total_content >= term.width) {
             // 幅が足りない場合は左側を優先して切り捨て
             const max_left = if (term.width > right_len) term.width - right_len else term.width;
-            const display_left = if (left_len > max_left) left_part[0..max_left] else left_part;
+            const display_left = truncateUtf8(left_part, max_left);
             try term.write(display_left);
             // 右側は表示できる分だけ
             if (term.width > display_left.len) {
                 const remaining = term.width - display_left.len;
-                const display_right = if (right_len > remaining) right_part[0..remaining] else right_part;
+                const display_right = truncateUtf8(right_part, remaining);
                 // パディング
                 const pad = remaining - display_right.len;
                 for (0..pad) |_| {
