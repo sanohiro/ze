@@ -46,6 +46,7 @@
 | Key | Action |
 |-----|--------|
 | `C-s` / `C-r` | Search forward/backward |
+| `C-p` / `C-n` | Previous/next search history (in search mode) |
 | `M-%` | Query replace (y/n/!/q) |
 
 Regex supported: `\d+` for digits, `^TODO` for TODO at line start.
@@ -67,6 +68,7 @@ Regex supported: `\d+` for digits, `^TODO` for TODO at line start.
 | Key | Action |
 |-----|--------|
 | `M-\|` | Pipe to shell command |
+| `C-p` / `C-n` | Previous/next command history |
 | `C-g` | Cancel |
 
 ### Syntax
@@ -113,3 +115,10 @@ Regex supported: `\d+` for digits, `^TODO` for TODO at line start.
 |-----|--------|
 | `C-g` | Cancel current operation |
 | `Escape` | Cancel / close prompt |
+
+## Data Files
+
+ze stores history in `~/.ze/`:
+
+- `shell_history` — M-| command history
+- `search_history` — C-s/C-r search history

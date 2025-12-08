@@ -168,7 +168,7 @@ ze highlights comments only. This is intentional:
 1. **Speed** — Sub-8ms response. Game-level latency.
 2. **Minimal** — Do one thing well.
 3. **Unix** — Text is a stream. Pipes are first-class.
-4. **Zero-config** — Copy and run.
+4. **Zero-config** — Copy and run. (History stored in `~/.ze/`)
 
 ---
 

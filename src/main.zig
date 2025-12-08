@@ -78,7 +78,7 @@ pub fn main() !void {
                 // バイナリファイルはエラー終了
                 const stderr_file: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
                 var buf: [256]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, "エラー: バイナリファイルは開けません: {s}\n", .{filename}) catch return;
+                const msg = std.fmt.bufPrint(&buf, "Error: cannot open binary file: {s}\n", .{filename}) catch return;
                 stderr_file.writeAll(msg) catch {};
                 return;
             } else if (err == error.FileNotFound) {

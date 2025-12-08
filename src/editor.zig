@@ -35,6 +35,8 @@ const Terminal = @import("terminal.zig").Terminal;
 const input = @import("input.zig");
 const config = @import("config.zig");
 const regex = @import("regex.zig");
+const History = @import("history.zig").History;
+const HistoryType = @import("history.zig").HistoryType;
 
 // ============================================================================
 // Undo/Redo システム - 差分ログベース
@@ -305,6 +307,10 @@ pub const Editor = struct {
     // シェルコマンド非同期実行状態
     shell_state: ?*ShellCommandState,
 
+    // 履歴（~/.ze/ に保存）
+    shell_history: History,
+    search_history: History,
+
     pub fn init(allocator: std.mem.Allocator) !Editor {
         // ターミナルを先に初期化（サイズ取得のため）
         const terminal = try Terminal.init(allocator);
@@ -325,6 +331,12 @@ pub const Editor = struct {
         // ウィンドウリストを作成
         var windows: std.ArrayList(Window) = .{};
         try windows.append(allocator, first_window);
+
+        // 履歴を初期化してロード
+        var shell_history = History.init(allocator);
+        shell_history.load(.shell) catch {}; // エラーは無視（ファイルがなければ空）
+        var search_history = History.init(allocator);
+        search_history.load(.search) catch {};
 
         const editor = Editor{
             .terminal = terminal,
@@ -351,6 +363,8 @@ pub const Editor = struct {
             .replace_current_pos = null,
             .replace_match_count = 0,
             .shell_state = null,
+            .shell_history = shell_history,
+            .search_history = search_history,
         };
 
         return editor;
@@ -412,6 +426,12 @@ pub const Editor = struct {
         if (self.shell_state) |state| {
             self.cleanupShellState(state);
         }
+
+        // 履歴を保存して解放
+        self.shell_history.save(.shell) catch {};
+        self.search_history.save(.search) catch {};
+        self.shell_history.deinit();
+        self.search_history.deinit();
     }
 
     /// シェルコマンド状態をクリーンアップ
@@ -1323,7 +1343,7 @@ pub const Editor = struct {
                 const maybe_file = std.fs.cwd().openFile(path, .{}) catch |err| blk: {
                     // ファイルが存在しない場合は外部で削除された
                     if (err == error.FileNotFound) {
-                        view.error_msg = "警告: ファイルが外部で削除されています";
+                        view.error_msg = "Warning: file deleted externally";
                         // 続行して保存する（再作成）
                         break :blk null;
                     } else {
@@ -1335,7 +1355,7 @@ pub const Editor = struct {
                     defer f.close();
                     const stat = try f.stat();
                     if (stat.mtime != original_mtime) {
-                        view.error_msg = "警告: ファイルが外部で変更されています！";
+                        view.error_msg = "Warning: file modified externally!";
                         // 続行して上書きする（ユーザーの編集を優先）
                     }
                 }
@@ -2097,6 +2117,7 @@ pub const Editor = struct {
                                 }
                                 self.mode = .normal;
                                 self.input_buffer.clearRetainingCapacity();
+                                self.search_history.resetNavigation();
                                 self.getCurrentView().setSearchHighlight(null); // ハイライトクリア
                                 self.getCurrentView().clearError();
                             },
@@ -2114,8 +2135,24 @@ pub const Editor = struct {
                                     try self.performSearch(false, true);
                                 }
                             },
+                            'p' => {
+                                // C-p: 前の検索履歴
+                                try self.navigateSearchHistory(true, is_forward);
+                            },
+                            'n' => {
+                                // C-n: 次の検索履歴
+                                try self.navigateSearchHistory(false, is_forward);
+                            },
                             else => {},
                         }
+                    },
+                    .arrow_up => {
+                        // Up: 前の検索履歴
+                        try self.navigateSearchHistory(true, is_forward);
+                    },
+                    .arrow_down => {
+                        // Down: 次の検索履歴
+                        try self.navigateSearchHistory(false, is_forward);
                     },
                     .backspace => {
                         // バックスペース：検索文字列の最後の文字を削除
@@ -2150,6 +2187,8 @@ pub const Editor = struct {
                         // Enter: 検索確定（現在位置で確定）
                         // 検索文字列を保存
                         if (self.input_buffer.items.len > 0) {
+                            // 履歴に追加
+                            try self.search_history.add(self.input_buffer.items);
                             if (self.last_search) |old_search| {
                                 self.allocator.free(old_search);
                             }
@@ -2157,6 +2196,7 @@ pub const Editor = struct {
                         }
                         self.mode = .normal;
                         self.input_buffer.clearRetainingCapacity();
+                        self.search_history.resetNavigation();
                         self.getCurrentView().setSearchHighlight(null); // ハイライトクリア
                         self.getCurrentView().clearError();
                     },
@@ -2786,21 +2826,49 @@ pub const Editor = struct {
                 // シェルコマンド入力モード
                 switch (key) {
                     .ctrl => |c| {
-                        if (c == 'g') {
-                            self.mode = .normal;
-                            self.clearInputBuffer();
-                            self.getCurrentView().clearError();
-                            return;
+                        switch (c) {
+                            'g' => {
+                                self.mode = .normal;
+                                self.clearInputBuffer();
+                                self.shell_history.resetNavigation();
+                                self.getCurrentView().clearError();
+                                return;
+                            },
+                            'p' => {
+                                // C-p: 前の履歴
+                                try self.navigateShellHistory(true);
+                                return;
+                            },
+                            'n' => {
+                                // C-n: 次の履歴
+                                try self.navigateShellHistory(false);
+                                return;
+                            },
+                            else => {},
                         }
+                    },
+                    .arrow_up => {
+                        // Up: 前の履歴
+                        try self.navigateShellHistory(true);
+                        return;
+                    },
+                    .arrow_down => {
+                        // Down: 次の履歴
+                        try self.navigateShellHistory(false);
+                        return;
                     },
                     .escape => {
                         self.mode = .normal;
                         self.clearInputBuffer();
+                        self.shell_history.resetNavigation();
                         self.getCurrentView().clearError();
                         return;
                     },
                     .enter => {
                         if (self.input_buffer.items.len > 0) {
+                            // 履歴に追加
+                            try self.shell_history.add(self.input_buffer.items);
+                            self.shell_history.resetNavigation();
                             try self.startShellCommand();
                         }
                         if (self.mode != .shell_running) {
@@ -4849,6 +4917,58 @@ pub const Editor = struct {
             .output_dest = output_dest,
             .command = if (end > start) cmd[start..end] else "",
         };
+    }
+
+    /// シェルコマンド履歴をナビゲート
+    fn navigateShellHistory(self: *Editor, prev: bool) !void {
+        // 最初のナビゲーションなら現在の入力を保存
+        if (self.shell_history.current_index == null) {
+            try self.shell_history.startNavigation(self.input_buffer.items);
+        }
+
+        const entry = if (prev) self.shell_history.prev() else self.shell_history.next();
+        if (entry) |text| {
+            // 入力バッファを履歴エントリで置き換え
+            self.input_buffer.clearRetainingCapacity();
+            try self.input_buffer.appendSlice(self.allocator, text);
+            self.input_cursor = self.input_buffer.items.len;
+            self.updateMinibufferPrompt("| ");
+        }
+    }
+
+    /// 検索履歴をナビゲート
+    fn navigateSearchHistory(self: *Editor, prev: bool, is_forward: bool) !void {
+        // 最初のナビゲーションなら現在の入力を保存
+        if (self.search_history.current_index == null) {
+            try self.search_history.startNavigation(self.input_buffer.items);
+        }
+
+        const entry = if (prev) self.search_history.prev() else self.search_history.next();
+        if (entry) |text| {
+            // 入力バッファを履歴エントリで置き換え
+            self.input_buffer.clearRetainingCapacity();
+            try self.input_buffer.appendSlice(self.allocator, text);
+            self.input_cursor = self.input_buffer.items.len;
+
+            // プロンプトを更新
+            const prefix = if (is_forward) "I-search: " else "I-search backward: ";
+            if (self.prompt_buffer) |old| {
+                self.allocator.free(old);
+            }
+            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ prefix, text }) catch null;
+            if (self.prompt_buffer) |prompt| {
+                self.getCurrentView().setError(prompt);
+            }
+
+            // 検索を実行
+            if (text.len > 0) {
+                self.getCurrentView().setSearchHighlight(text);
+                if (self.search_start_pos) |start_pos| {
+                    self.setCursorToPos(start_pos);
+                }
+                try self.performSearch(is_forward, false);
+            }
+        }
     }
 
     /// シェルコマンドを非同期で開始
