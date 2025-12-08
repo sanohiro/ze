@@ -61,8 +61,9 @@ pub const View = struct {
     error_msg_len: usize,
     // セルレベル差分描画用: 前フレームの画面状態
     prev_screen: std.ArrayList(std.ArrayList(u8)),
-    // 検索ハイライト用
-    search_highlight: ?[]const u8, // 検索文字列（nullならハイライトなし）
+    // 検索ハイライト用（固定バッファでダングリングポインタを防止）
+    search_highlight_buf: [256]u8,
+    search_highlight_len: usize,
     // 行番号表示の幅キャッシュ（幅変更時に全画面再描画するため）
     cached_line_num_width: usize,
     // 言語定義（シンタックス情報）
@@ -104,7 +105,8 @@ pub const View = struct {
             .error_msg_buf = undefined,
             .error_msg_len = 0,
             .prev_screen = prev_screen,
-            .search_highlight = null,
+            .search_highlight_buf = undefined,
+            .search_highlight_len = 0,
             .cached_line_num_width = 0,
             .language = &syntax.lang_text, // デフォルトはテキストモード
             .tab_width = null, // 言語デフォルトを使用
@@ -180,11 +182,23 @@ pub const View = struct {
         self.error_msg_len = 0;
     }
 
-    // 検索ハイライトを設定
+    // 検索ハイライトを設定（固定バッファにコピー）
     pub fn setSearchHighlight(self: *View, search_str: ?[]const u8) void {
-        self.search_highlight = search_str;
+        if (search_str) |str| {
+            const len = @min(str.len, self.search_highlight_buf.len);
+            @memcpy(self.search_highlight_buf[0..len], str[0..len]);
+            self.search_highlight_len = len;
+        } else {
+            self.search_highlight_len = 0;
+        }
         // ハイライトが変わったので全画面再描画
         self.markFullRedraw();
+    }
+
+    // 検索ハイライト文字列を取得
+    pub fn getSearchHighlight(self: *const View) ?[]const u8 {
+        if (self.search_highlight_len == 0) return null;
+        return self.search_highlight_buf[0..self.search_highlight_len];
     }
 
     // 行番号の表示幅を計算（999行まで固定、1000行以上で動的拡張）
@@ -427,7 +441,7 @@ pub const View = struct {
         // 検索ハイライト用スクラッチバッファをクリアして再利用
         self.highlighted_line.clearRetainingCapacity();
 
-        if (self.search_highlight) |search_str| {
+        if (self.getSearchHighlight()) |search_str| {
             if (search_str.len > 0 and new_line.len > 0) {
                 // 行内で検索文字列を探してハイライト
                 var pos: usize = 0;

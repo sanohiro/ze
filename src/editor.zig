@@ -4066,20 +4066,19 @@ pub const Editor = struct {
         const current_line = self.getCurrentLine();
         const line_start = buffer.getLineStart(current_line) orelse return;
 
-        // 行の内容を取得
+        // 行の内容を取得（動的割り当てで任意長の行に対応）
         const line_range = buffer.getLineRange(current_line) orelse return;
-        var line_buf: [1024]u8 = undefined;
-        var line_len: usize = 0;
+        const max_line_len = if (line_range.end > line_range.start) line_range.end - line_range.start else 0;
+        var line_list = try std.ArrayList(u8).initCapacity(self.allocator, max_line_len);
+        defer line_list.deinit(self.allocator);
+
         var iter = PieceIterator.init(buffer);
         iter.seek(line_range.start);
         while (iter.next()) |ch| {
             if (ch == '\n') break;
-            if (line_len < line_buf.len) {
-                line_buf[line_len] = ch;
-                line_len += 1;
-            }
+            try line_list.append(self.allocator, ch);
         }
-        const line_content = line_buf[0..line_len];
+        const line_content = line_list.items;
 
         // コメント行かどうかを言語定義でチェック
         const is_comment = view.language.isCommentLine(line_content);
