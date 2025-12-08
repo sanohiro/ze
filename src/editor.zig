@@ -263,8 +263,10 @@ pub const Editor = struct {
     // エディタ状態
     mode: EditorMode,
     input_buffer: std.ArrayList(u8), // ミニバッファ入力用
+    input_cursor: usize, // ミニバッファ内のカーソル位置（バイト単位）
     quit_after_save: bool,
     prompt_buffer: ?[]const u8, // allocPrintで作成したプロンプト文字列
+    prompt_prefix_len: usize, // プロンプト文字列のプレフィックス長（カーソル位置計算用）
 
     // グローバルバッファ（全バッファで共有）
     kill_ring: ?[]const u8,
@@ -314,8 +316,10 @@ pub const Editor = struct {
             .next_window_id = 1,
             .mode = .normal,
             .input_buffer = .{},
+            .input_cursor = 0,
             .quit_after_save = false,
             .prompt_buffer = null,
+            .prompt_prefix_len = 0,
             .kill_ring = null,
             .rectangle_ring = null,
             .search_start_pos = null,
@@ -467,6 +471,333 @@ pub const Editor = struct {
             }
         }
         return null;
+    }
+
+    // ========================================
+    // ミニバッファ（ステータスバー入力）操作
+    // ========================================
+
+    /// ミニバッファをクリア
+    fn clearInputBuffer(self: *Editor) void {
+        self.input_buffer.clearRetainingCapacity();
+        self.input_cursor = 0;
+    }
+
+    /// ミニバッファのカーソル位置に文字を挿入
+    fn insertAtInputCursor(self: *Editor, text: []const u8) !void {
+        if (text.len == 0) return;
+        // カーソル位置に挿入
+        try self.input_buffer.insertSlice(self.allocator, self.input_cursor, text);
+        self.input_cursor += text.len;
+    }
+
+    /// ミニバッファのカーソル前の1文字（グラフェム）を削除（バックスペース）
+    fn backspaceAtInputCursor(self: *Editor) void {
+        if (self.input_cursor == 0) return;
+
+        // UTF-8で前の文字の開始位置を見つける
+        const prev_pos = self.findPrevGraphemeStart(self.input_buffer.items, self.input_cursor);
+        const delete_len = self.input_cursor - prev_pos;
+
+        // 削除
+        const items = self.input_buffer.items;
+        std.mem.copyForwards(u8, items[prev_pos..], items[self.input_cursor..]);
+        self.input_buffer.shrinkRetainingCapacity(items.len - delete_len);
+        self.input_cursor = prev_pos;
+    }
+
+    /// ミニバッファのカーソル位置の1文字（グラフェム）を削除（デリート）
+    fn deleteAtInputCursor(self: *Editor) void {
+        if (self.input_cursor >= self.input_buffer.items.len) return;
+
+        // UTF-8で次の文字の終了位置を見つける
+        const next_pos = self.findNextGraphemeEnd(self.input_buffer.items, self.input_cursor);
+        const delete_len = next_pos - self.input_cursor;
+
+        // 削除
+        const items = self.input_buffer.items;
+        std.mem.copyForwards(u8, items[self.input_cursor..], items[next_pos..]);
+        self.input_buffer.shrinkRetainingCapacity(items.len - delete_len);
+    }
+
+    /// ミニバッファでカーソルを1文字左に移動
+    fn moveInputCursorLeft(self: *Editor) void {
+        if (self.input_cursor == 0) return;
+        self.input_cursor = self.findPrevGraphemeStart(self.input_buffer.items, self.input_cursor);
+    }
+
+    /// ミニバッファでカーソルを1文字右に移動
+    fn moveInputCursorRight(self: *Editor) void {
+        if (self.input_cursor >= self.input_buffer.items.len) return;
+        self.input_cursor = self.findNextGraphemeEnd(self.input_buffer.items, self.input_cursor);
+    }
+
+    /// ミニバッファでカーソルを先頭に移動
+    fn moveInputCursorToStart(self: *Editor) void {
+        self.input_cursor = 0;
+    }
+
+    /// ミニバッファでカーソルを末尾に移動
+    fn moveInputCursorToEnd(self: *Editor) void {
+        self.input_cursor = self.input_buffer.items.len;
+    }
+
+    /// ミニバッファでカーソルを1単語前に移動
+    fn moveInputCursorWordBackward(self: *Editor) void {
+        if (self.input_cursor == 0) return;
+        const items = self.input_buffer.items;
+        var pos = self.input_cursor;
+
+        // まず空白をスキップ
+        while (pos > 0) {
+            const prev = self.findPrevGraphemeStart(items, pos);
+            if (!self.isWhitespaceAt(items, prev)) break;
+            pos = prev;
+        }
+        // 単語文字をスキップ
+        while (pos > 0) {
+            const prev = self.findPrevGraphemeStart(items, pos);
+            if (self.isWhitespaceAt(items, prev)) break;
+            pos = prev;
+        }
+        self.input_cursor = pos;
+    }
+
+    /// ミニバッファでカーソルを1単語後に移動
+    fn moveInputCursorWordForward(self: *Editor) void {
+        const items = self.input_buffer.items;
+        if (self.input_cursor >= items.len) return;
+        var pos = self.input_cursor;
+
+        // まず単語文字をスキップ
+        while (pos < items.len) {
+            if (self.isWhitespaceAt(items, pos)) break;
+            pos = self.findNextGraphemeEnd(items, pos);
+        }
+        // 空白をスキップ
+        while (pos < items.len) {
+            if (!self.isWhitespaceAt(items, pos)) break;
+            pos = self.findNextGraphemeEnd(items, pos);
+        }
+        self.input_cursor = pos;
+    }
+
+    /// ミニバッファで前の単語を削除（M-Backspace）
+    fn deleteInputWordBackward(self: *Editor) void {
+        if (self.input_cursor == 0) return;
+        const start_pos = self.input_cursor;
+        self.moveInputCursorWordBackward();
+        const delete_len = start_pos - self.input_cursor;
+        if (delete_len > 0) {
+            const items = self.input_buffer.items;
+            std.mem.copyForwards(u8, items[self.input_cursor..], items[start_pos..]);
+            self.input_buffer.shrinkRetainingCapacity(items.len - delete_len);
+        }
+    }
+
+    /// ミニバッファで次の単語を削除（M-d）
+    fn deleteInputWordForward(self: *Editor) void {
+        const items = self.input_buffer.items;
+        if (self.input_cursor >= items.len) return;
+        const start_pos = self.input_cursor;
+
+        // 削除終了位置を計算
+        var end_pos = start_pos;
+        // まず単語文字をスキップ
+        while (end_pos < items.len) {
+            if (self.isWhitespaceAt(items, end_pos)) break;
+            end_pos = self.findNextGraphemeEnd(items, end_pos);
+        }
+        // 空白をスキップ
+        while (end_pos < items.len) {
+            if (!self.isWhitespaceAt(items, end_pos)) break;
+            end_pos = self.findNextGraphemeEnd(items, end_pos);
+        }
+
+        const delete_len = end_pos - start_pos;
+        if (delete_len > 0) {
+            std.mem.copyForwards(u8, items[start_pos..], items[end_pos..]);
+            self.input_buffer.shrinkRetainingCapacity(items.len - delete_len);
+        }
+    }
+
+    /// UTF-8で前のグラフェムの開始位置を見つける
+    fn findPrevGraphemeStart(_: *Editor, text: []const u8, pos: usize) usize {
+        if (pos == 0) return 0;
+        var p = pos - 1;
+        // UTF-8継続バイト（10xxxxxx）をスキップ
+        while (p > 0 and (text[p] & 0xC0) == 0x80) {
+            p -= 1;
+        }
+        return p;
+    }
+
+    /// UTF-8で次のグラフェムの終了位置を見つける
+    fn findNextGraphemeEnd(_: *Editor, text: []const u8, pos: usize) usize {
+        if (pos >= text.len) return text.len;
+        const first_byte = text[pos];
+        // UTF-8バイト長を判定
+        const len: usize = if (first_byte < 0x80) 1 else if (first_byte < 0xE0) 2 else if (first_byte < 0xF0) 3 else 4;
+        return @min(pos + len, text.len);
+    }
+
+    /// 指定位置が空白文字かどうか
+    fn isWhitespaceAt(_: *Editor, text: []const u8, pos: usize) bool {
+        if (pos >= text.len) return false;
+        const c = text[pos];
+        return c == ' ' or c == '\t' or c == '\n' or c == '\r';
+    }
+
+    /// ミニバッファ入力モードかどうか
+    fn isMinibufferMode(self: *Editor) bool {
+        return switch (self.mode) {
+            .filename_input,
+            .find_file_input,
+            .buffer_switch_input,
+            .isearch_forward,
+            .isearch_backward,
+            .query_replace_input_search,
+            .query_replace_input_replacement,
+            .shell_command,
+            .mx_command,
+            => true,
+            else => false,
+        };
+    }
+
+    /// ミニバッファの共通キー処理
+    /// カーソル移動、削除、文字入力などを処理
+    /// 戻り値: キーが処理されたかどうか
+    fn handleMinibufferKey(self: *Editor, key: input.Key) !bool {
+        switch (key) {
+            .char => |c| {
+                try self.insertAtInputCursor(&[_]u8{c});
+                return true;
+            },
+            .codepoint => |cp| {
+                var buf: [4]u8 = undefined;
+                const len = std.unicode.utf8Encode(cp, &buf) catch return false;
+                try self.insertAtInputCursor(buf[0..len]);
+                return true;
+            },
+            .ctrl => |c| {
+                switch (c) {
+                    'f' => {
+                        self.moveInputCursorRight();
+                        return true;
+                    },
+                    'b' => {
+                        self.moveInputCursorLeft();
+                        return true;
+                    },
+                    'a' => {
+                        self.moveInputCursorToStart();
+                        return true;
+                    },
+                    'e' => {
+                        self.moveInputCursorToEnd();
+                        return true;
+                    },
+                    'd' => {
+                        self.deleteAtInputCursor();
+                        return true;
+                    },
+                    'k' => {
+                        // カーソルから末尾まで削除
+                        self.input_buffer.shrinkRetainingCapacity(self.input_cursor);
+                        return true;
+                    },
+                    else => return false,
+                }
+            },
+            .alt => |c| {
+                switch (c) {
+                    'f' => {
+                        self.moveInputCursorWordForward();
+                        return true;
+                    },
+                    'b' => {
+                        self.moveInputCursorWordBackward();
+                        return true;
+                    },
+                    'd' => {
+                        self.deleteInputWordForward();
+                        return true;
+                    },
+                    else => return false,
+                }
+            },
+            .alt_delete => {
+                self.deleteInputWordBackward();
+                return true;
+            },
+            .arrow_left => {
+                self.moveInputCursorLeft();
+                return true;
+            },
+            .arrow_right => {
+                self.moveInputCursorRight();
+                return true;
+            },
+            .backspace => {
+                self.backspaceAtInputCursor();
+                return true;
+            },
+            .delete => {
+                self.deleteAtInputCursor();
+                return true;
+            },
+            .home => {
+                self.moveInputCursorToStart();
+                return true;
+            },
+            .end_key => {
+                self.moveInputCursorToEnd();
+                return true;
+            },
+            else => return false,
+        }
+    }
+
+    /// ミニバッファのプロンプトを更新（カーソル位置も保持）
+    fn updateMinibufferPrompt(self: *Editor, prefix: []const u8) void {
+        self.prompt_prefix_len = prefix.len;
+        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ prefix, self.input_buffer.items }) catch null;
+        if (self.prompt_buffer) |prompt| {
+            self.getCurrentView().setError(prompt);
+        }
+    }
+
+    /// ミニバッファのカーソル位置を表示幅（列数）で計算
+    fn getMinibufferCursorColumn(self: *Editor) usize {
+        const items = self.input_buffer.items;
+        var col: usize = 0;
+        var pos: usize = 0;
+
+        while (pos < self.input_cursor and pos < items.len) {
+            const first_byte = items[pos];
+            if (first_byte < 0x80) {
+                // ASCII
+                if (first_byte == '\t') {
+                    col += 8 - (col % 8); // タブ展開
+                } else {
+                    col += 1;
+                }
+                pos += 1;
+            } else {
+                // UTF-8マルチバイト
+                const len: usize = if (first_byte < 0xE0) 2 else if (first_byte < 0xF0) 3 else 4;
+                const cp = std.unicode.utf8Decode(items[pos..@min(pos + len, items.len)]) catch {
+                    col += 1;
+                    pos += 1;
+                    continue;
+                };
+                // 全角文字は2カラム、それ以外は1カラム
+                col += if (cp >= 0x1100) Buffer.charWidth(cp) else 1;
+                pos += len;
+            }
+        }
+        return col;
     }
 
     /// *Command* バッファを取得または作成
@@ -1066,6 +1397,18 @@ pub const Editor = struct {
             // 全ウィンドウをレンダリング
             try self.renderAllWindows();
 
+            // ミニバッファモードの場合、カーソルをステータスバーに移動
+            // （IME入力がステータスバー位置で行われるように）
+            if (self.isMinibufferMode()) {
+                // カーソル位置を計算: プロンプト長 + 入力位置（表示幅）
+                const cursor_col = self.prompt_prefix_len + self.getMinibufferCursorColumn();
+                // ステータスバーの行（最下行）にカーソルを移動
+                const status_row = self.terminal.height - 1;
+                try self.terminal.moveCursor(status_row, cursor_col);
+                try self.terminal.showCursor();
+                try self.terminal.flush();
+            }
+
             // シェルコマンド実行中ならポーリング
             if (self.mode == .shell_running) {
                 try self.pollShellCommand();
@@ -1409,128 +1752,69 @@ pub const Editor = struct {
         // モード別に処理を分岐
         switch (self.mode) {
             .filename_input => {
-                // ファイル名入力モード：文字とバックスペース、Enter、C-gのみ受け付ける
+                // ファイル名入力モード
+                // モード固有キーを先に処理
                 switch (key) {
-                    .char => |c| {
-                        // 入力バッファに文字を追加
-                        try self.input_buffer.append(self.allocator, c);
-                        // プロンプトを更新
-                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Write file: {s}", .{self.input_buffer.items}) catch null;
-                        if (self.prompt_buffer) |prompt| {
-                            self.getCurrentView().setError(prompt);
-                        } else {
-                            self.getCurrentView().setError("Write file: ");
-                        }
-                    },
-                    .codepoint => |cp| {
-                        // UTF-8マルチバイト文字を処理
-                        var buf: [4]u8 = undefined;
-                        const len = std.unicode.utf8Encode(cp, &buf) catch return;
-                        try self.input_buffer.appendSlice(self.allocator, buf[0..len]);
-                        // プロンプトを更新
-                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Write file: {s}", .{self.input_buffer.items}) catch null;
-                        if (self.prompt_buffer) |prompt| {
-                            self.getCurrentView().setError(prompt);
-                        } else {
-                            self.getCurrentView().setError("Write file: ");
-                        }
-                    },
                     .ctrl => |c| {
-                        switch (c) {
-                            'g' => {
-                                // C-g: キャンセル
-                                self.mode = .normal;
-                                self.quit_after_save = false; // フラグをリセット
-                                self.input_buffer.clearRetainingCapacity();
-                                self.getCurrentView().clearError();
-                            },
-                            else => {},
-                        }
-                    },
-                    .backspace => {
-                        // バックスペース：最後の文字を削除
-                        if (self.input_buffer.items.len > 0) {
-                            _ = self.input_buffer.pop();
-                            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Write file: {s}", .{self.input_buffer.items}) catch null;
-                            if (self.prompt_buffer) |prompt| {
-                                self.getCurrentView().setError(prompt);
-                            } else {
-                                self.getCurrentView().setError("Write file: ");
-                            }
+                        if (c == 'g') {
+                            // C-g: キャンセル
+                            self.mode = .normal;
+                            self.quit_after_save = false;
+                            self.clearInputBuffer();
+                            self.getCurrentView().clearError();
+                            return;
                         }
                     },
                     .enter => {
                         // Enter: ファイル名確定
                         if (self.input_buffer.items.len > 0) {
-                            // 既存のfilenameがあれば解放
                             const buffer_state = self.getCurrentBuffer();
                             if (buffer_state.filename) |old| {
                                 self.allocator.free(old);
                             }
-                            // 新しいfilenameを設定
                             buffer_state.filename = try self.allocator.dupe(u8, self.input_buffer.items);
-                            self.input_buffer.clearRetainingCapacity();
-
-                            // ファイルを保存
+                            self.clearInputBuffer();
                             try self.saveFile();
                             self.mode = .normal;
-
-                            // quit_after_saveフラグが立っている場合は終了
                             if (self.quit_after_save) {
                                 self.quit_after_save = false;
                                 self.running = false;
                             }
                         }
+                        return;
+                    },
+                    .escape => {
+                        // ESC: キャンセル
+                        self.mode = .normal;
+                        self.quit_after_save = false;
+                        self.clearInputBuffer();
+                        self.getCurrentView().clearError();
+                        return;
                     },
                     else => {},
                 }
+                // 共通のミニバッファキー処理
+                _ = try self.handleMinibufferKey(key);
+                // プロンプトを更新
+                self.updateMinibufferPrompt("Write file: ");
                 return;
             },
             .find_file_input => {
                 // ファイルを開くためのファイル名入力モード
                 switch (key) {
-                    .char => |c| {
-                        // 通常文字を入力バッファに追加
-                        try self.input_buffer.append(self.allocator, c);
-                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Find file: {s}", .{self.input_buffer.items}) catch null;
-                        if (self.prompt_buffer) |prompt| {
-                            self.getCurrentView().setError(prompt);
-                        } else {
-                            self.getCurrentView().setError("Find file: ");
-                        }
-                    },
-                    .codepoint => |cp| {
-                        // UTF-8マルチバイト文字を処理
-                        var buf: [4]u8 = undefined;
-                        const len = std.unicode.utf8Encode(cp, &buf) catch return;
-                        try self.input_buffer.appendSlice(self.allocator, buf[0..len]);
-                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Find file: {s}", .{self.input_buffer.items}) catch null;
-                        if (self.prompt_buffer) |prompt| {
-                            self.getCurrentView().setError(prompt);
-                        }
-                    },
                     .ctrl => |c| {
-                        switch (c) {
-                            'g' => {
-                                // C-g: キャンセル
-                                self.mode = .normal;
-                                self.input_buffer.clearRetainingCapacity();
-                                self.getCurrentView().clearError();
-                            },
-                            else => {},
+                        if (c == 'g') {
+                            self.mode = .normal;
+                            self.clearInputBuffer();
+                            self.getCurrentView().clearError();
+                            return;
                         }
                     },
-                    .backspace => {
-                        // バックスペース：最後の文字を削除
-                        if (self.input_buffer.items.len > 0) {
-                            _ = self.input_buffer.pop();
-                            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Find file: {s}", .{self.input_buffer.items}) catch null;
-                            if (self.prompt_buffer) |prompt| {
-                                self.getCurrentView().setError(prompt);
-                            } else {
-                                self.getCurrentView().setError("Find file: ");
-                            }
-                        }
+                    .escape => {
+                        self.mode = .normal;
+                        self.clearInputBuffer();
+                        self.getCurrentView().clearError();
+                        return;
                     },
                     .enter => {
                         // Enter: ファイル名確定
@@ -1540,46 +1824,41 @@ pub const Editor = struct {
                             // 既存のバッファでこのファイルが開かれているか検索
                             const existing_buffer = self.findBufferByFilename(filename);
                             if (existing_buffer) |buf| {
-                                // 既に開かれている場合は、そのバッファに切り替え
                                 try self.switchToBuffer(buf.id);
                             } else {
                                 // 新しいバッファを作成してファイルを読み込む
                                 const new_buffer = try self.createNewBuffer();
                                 const filename_copy = try self.allocator.dupe(u8, filename);
 
-                                // Buffer.loadFromFileを使用（エンコーディング・改行コード処理を含む）
                                 const loaded_buffer = Buffer.loadFromFile(self.allocator, filename_copy) catch |err| {
                                     self.allocator.free(filename_copy);
                                     if (err == error.FileNotFound) {
-                                        // 新規ファイルとして扱う
                                         new_buffer.filename = try self.allocator.dupe(u8, filename);
                                         try self.switchToBuffer(new_buffer.id);
                                         self.mode = .normal;
-                                        self.input_buffer.clearRetainingCapacity();
+                                        self.clearInputBuffer();
                                         self.getCurrentView().clearError();
                                         return;
                                     } else if (err == error.BinaryFile) {
                                         _ = try self.closeBuffer(new_buffer.id);
                                         self.getCurrentView().setError("Cannot open binary file");
                                         self.mode = .normal;
-                                        self.input_buffer.clearRetainingCapacity();
+                                        self.clearInputBuffer();
                                         return;
                                     } else {
                                         _ = try self.closeBuffer(new_buffer.id);
                                         self.getCurrentView().setError(@errorName(err));
                                         self.mode = .normal;
-                                        self.input_buffer.clearRetainingCapacity();
+                                        self.clearInputBuffer();
                                         return;
                                     }
                                 };
 
-                                // 古いバッファを解放して新しいバッファに置き換え
                                 new_buffer.buffer.deinit();
                                 new_buffer.buffer = loaded_buffer;
                                 new_buffer.filename = filename_copy;
                                 new_buffer.modified = false;
 
-                                // ファイルの最終更新時刻を記録
                                 const file = std.fs.cwd().openFile(filename_copy, .{}) catch null;
                                 if (file) |f| {
                                     defer f.close();
@@ -1589,94 +1868,63 @@ pub const Editor = struct {
                                     }
                                 }
 
-                                // バッファに切り替え
                                 try self.switchToBuffer(new_buffer.id);
-
-                                // Viewのバッファ参照を更新
                                 self.getCurrentView().buffer = &new_buffer.buffer;
-
-                                // 言語検出
                                 const content_preview = new_buffer.buffer.getContentPreview(512);
                                 self.getCurrentView().detectLanguage(filename_copy, content_preview);
                             }
 
                             self.mode = .normal;
-                            self.input_buffer.clearRetainingCapacity();
+                            self.clearInputBuffer();
                             self.getCurrentView().clearError();
                         }
+                        return;
                     },
                     else => {},
                 }
+                // 共通のミニバッファキー処理
+                _ = try self.handleMinibufferKey(key);
+                self.updateMinibufferPrompt("Find file: ");
                 return;
             },
             .buffer_switch_input => {
                 // バッファ切り替えのための入力モード
                 switch (key) {
-                    .char => |c| {
-                        // 通常文字を入力バッファに追加
-                        try self.input_buffer.append(self.allocator, c);
-                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Switch to buffer: {s}", .{self.input_buffer.items}) catch null;
-                        if (self.prompt_buffer) |prompt| {
-                            self.getCurrentView().setError(prompt);
-                        } else {
-                            self.getCurrentView().setError("Switch to buffer: ");
-                        }
-                    },
-                    .codepoint => |cp| {
-                        // UTF-8マルチバイト文字を処理
-                        var buf: [4]u8 = undefined;
-                        const len = std.unicode.utf8Encode(cp, &buf) catch return;
-                        try self.input_buffer.appendSlice(self.allocator, buf[0..len]);
-                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Switch to buffer: {s}", .{self.input_buffer.items}) catch null;
-                        if (self.prompt_buffer) |prompt| {
-                            self.getCurrentView().setError(prompt);
-                        }
-                    },
                     .ctrl => |c| {
-                        switch (c) {
-                            'g' => {
-                                // C-g: キャンセル
-                                self.mode = .normal;
-                                self.input_buffer.clearRetainingCapacity();
-                                self.getCurrentView().clearError();
-                            },
-                            else => {},
+                        if (c == 'g') {
+                            self.mode = .normal;
+                            self.clearInputBuffer();
+                            self.getCurrentView().clearError();
+                            return;
                         }
                     },
-                    .backspace => {
-                        // バックスペース：最後の文字を削除
-                        if (self.input_buffer.items.len > 0) {
-                            _ = self.input_buffer.pop();
-                            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Switch to buffer: {s}", .{self.input_buffer.items}) catch null;
-                            if (self.prompt_buffer) |prompt| {
-                                self.getCurrentView().setError(prompt);
-                            } else {
-                                self.getCurrentView().setError("Switch to buffer: ");
-                            }
-                        }
+                    .escape => {
+                        self.mode = .normal;
+                        self.clearInputBuffer();
+                        self.getCurrentView().clearError();
+                        return;
                     },
                     .enter => {
-                        // Enter: バッファ名確定
                         if (self.input_buffer.items.len > 0) {
                             const buffer_name = self.input_buffer.items;
-
-                            // バッファをファイル名で検索
                             const found_buffer = self.findBufferByFilename(buffer_name);
                             if (found_buffer) |buf| {
                                 try self.switchToBuffer(buf.id);
                                 self.mode = .normal;
-                                self.input_buffer.clearRetainingCapacity();
+                                self.clearInputBuffer();
                                 self.getCurrentView().clearError();
                             } else {
-                                // バッファが見つからない場合
                                 self.getCurrentView().setError("No such buffer");
                                 self.mode = .normal;
-                                self.input_buffer.clearRetainingCapacity();
+                                self.clearInputBuffer();
                             }
                         }
+                        return;
                     },
                     else => {},
                 }
+                _ = try self.handleMinibufferKey(key);
+                self.updateMinibufferPrompt("Switch to buffer: ");
                 return;
             },
             .isearch_forward, .isearch_backward => {
@@ -1686,6 +1934,7 @@ pub const Editor = struct {
                     .char => |c| {
                         // 検索文字列に文字を追加
                         try self.input_buffer.append(self.allocator, c);
+                        self.input_cursor = self.input_buffer.items.len;
                         // プロンプトを更新して検索実行
                         const prefix = if (is_forward) "I-search: " else "I-search backward: ";
                         self.prompt_buffer = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ prefix, self.input_buffer.items }) catch null;
@@ -1703,6 +1952,7 @@ pub const Editor = struct {
                         var buf: [4]u8 = undefined;
                         const len = std.unicode.utf8Encode(cp, &buf) catch return;
                         try self.input_buffer.appendSlice(self.allocator, buf[0..len]);
+                        self.input_cursor = self.input_buffer.items.len;
                         // プロンプトを更新して検索実行
                         const prefix = if (is_forward) "I-search: " else "I-search backward: ";
                         self.prompt_buffer = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ prefix, self.input_buffer.items }) catch null;
@@ -1748,6 +1998,7 @@ pub const Editor = struct {
                         // バックスペース：検索文字列の最後の文字を削除
                         if (self.input_buffer.items.len > 0) {
                             _ = self.input_buffer.pop();
+                            self.input_cursor = self.input_buffer.items.len;
                             const prefix = if (is_forward) "I-search: " else "I-search backward: ";
                             self.prompt_buffer = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ prefix, self.input_buffer.items }) catch null;
                             if (self.prompt_buffer) |prompt| {
@@ -1810,6 +2061,8 @@ pub const Editor = struct {
                                 // C-x C-f: ファイルを開く
                                 self.mode = .find_file_input;
                                 self.input_buffer.clearRetainingCapacity();
+                                self.input_cursor = 0;
+                                self.prompt_prefix_len = 12; // " Find file: "
                                 self.getCurrentView().setError("Find file: ");
                             },
                             's' => {
@@ -1820,6 +2073,8 @@ pub const Editor = struct {
                                     self.mode = .filename_input;
                                     self.quit_after_save = false; // 保存後は終了しない
                                     self.input_buffer.clearRetainingCapacity();
+                                    self.input_cursor = 0;
+                                    self.prompt_prefix_len = 13; // " Write file: "
                                     self.getCurrentView().setError("Write file: ");
                                 } else {
                                     // 既存ファイル：そのまま保存
@@ -1831,6 +2086,8 @@ pub const Editor = struct {
                                 self.mode = .filename_input;
                                 self.quit_after_save = false;
                                 self.input_buffer.clearRetainingCapacity();
+                                self.input_cursor = 0;
+                                self.prompt_prefix_len = 13; // " Write file: "
                                 self.getCurrentView().setError("Write file: ");
                             },
                             'c' => {
@@ -1870,6 +2127,8 @@ pub const Editor = struct {
                                 // C-x b: バッファ切り替え
                                 self.mode = .buffer_switch_input;
                                 self.input_buffer.clearRetainingCapacity();
+                                self.input_cursor = 0;
+                                self.prompt_prefix_len = 19; // " Switch to buffer: "
                                 self.getCurrentView().setError("Switch to buffer: ");
                             },
                             'k' => {
@@ -2113,136 +2372,68 @@ pub const Editor = struct {
             .query_replace_input_search => {
                 // 置換：検索文字列入力モード
                 switch (key) {
-                    .char => |c| {
-                        // 入力バッファに文字を追加
-                        try self.input_buffer.append(self.allocator, c);
-                        // プロンプトを更新
-                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace: {s}", .{self.input_buffer.items}) catch null;
-                        if (self.prompt_buffer) |prompt| {
-                            self.getCurrentView().setError(prompt);
-                        } else {
-                            self.getCurrentView().setError("Query replace: ");
-                        }
-                    },
-                    .codepoint => |cp| {
-                        // UTF-8マルチバイト文字を処理
-                        var buf: [4]u8 = undefined;
-                        const len = std.unicode.utf8Encode(cp, &buf) catch return;
-                        try self.input_buffer.appendSlice(self.allocator, buf[0..len]);
-                        // プロンプトを更新
-                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace: {s}", .{self.input_buffer.items}) catch null;
-                        if (self.prompt_buffer) |prompt| {
-                            self.getCurrentView().setError(prompt);
-                        } else {
-                            self.getCurrentView().setError("Query replace: ");
-                        }
-                    },
                     .ctrl => |c| {
-                        switch (c) {
-                            'g' => {
-                                // C-g: キャンセル
-                                self.mode = .normal;
-                                self.input_buffer.clearRetainingCapacity();
-                                self.getCurrentView().clearError();
-                            },
-                            else => {},
+                        if (c == 'g') {
+                            self.mode = .normal;
+                            self.clearInputBuffer();
+                            self.getCurrentView().clearError();
+                            return;
                         }
                     },
-                    .backspace => {
-                        // バックスペース：最後の文字を削除
-                        if (self.input_buffer.items.len > 0) {
-                            _ = self.input_buffer.pop();
-                            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace: {s}", .{self.input_buffer.items}) catch null;
-                            if (self.prompt_buffer) |prompt| {
-                                self.getCurrentView().setError(prompt);
-                            } else {
-                                self.getCurrentView().setError("Query replace: ");
-                            }
-                        }
+                    .escape => {
+                        self.mode = .normal;
+                        self.clearInputBuffer();
+                        self.getCurrentView().clearError();
+                        return;
                     },
                     .enter => {
-                        // Enter: 検索文字列確定、置換文字列入力へ
                         if (self.input_buffer.items.len > 0) {
-                            // 検索文字列を保存
                             if (self.replace_search) |old| {
                                 self.allocator.free(old);
                             }
                             self.replace_search = try self.allocator.dupe(u8, self.input_buffer.items);
-                            self.input_buffer.clearRetainingCapacity();
-
-                            // 置換文字列入力モードへ
+                            self.clearInputBuffer();
                             self.mode = .query_replace_input_replacement;
                             self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace {s} with: ", .{self.replace_search.?}) catch null;
                             if (self.prompt_buffer) |prompt| {
                                 self.getCurrentView().setError(prompt);
-                            } else {
-                                self.getCurrentView().setError("Query replace with: ");
+                                // " Query replace {search} with: " のプレフィックス長を計算
+                                // 1 (space) + "Query replace ".len + search.len + " with: ".len
+                                self.prompt_prefix_len = 1 + 14 + self.replace_search.?.len + 7;
                             }
                         }
+                        return;
                     },
                     else => {},
                 }
+                _ = try self.handleMinibufferKey(key);
+                self.updateMinibufferPrompt("Query replace: ");
                 return;
             },
             .query_replace_input_replacement => {
                 // 置換：置換文字列入力モード
                 switch (key) {
-                    .char => |c| {
-                        // 入力バッファに文字を追加
-                        try self.input_buffer.append(self.allocator, c);
-                        // プロンプトを更新
-                        if (self.replace_search) |search| {
-                            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace {s} with: {s}", .{search, self.input_buffer.items}) catch null;
-                        } else {
-                            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace with: {s}", .{self.input_buffer.items}) catch null;
-                        }
-                        if (self.prompt_buffer) |prompt| {
-                            self.getCurrentView().setError(prompt);
-                        }
-                    },
-                    .codepoint => |cp| {
-                        // UTF-8マルチバイト文字を処理
-                        var buf: [4]u8 = undefined;
-                        const len = std.unicode.utf8Encode(cp, &buf) catch return;
-                        try self.input_buffer.appendSlice(self.allocator, buf[0..len]);
-                        // プロンプトを更新
-                        if (self.replace_search) |search| {
-                            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace {s} with: {s}", .{search, self.input_buffer.items}) catch null;
-                        } else {
-                            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace with: {s}", .{self.input_buffer.items}) catch null;
-                        }
-                        if (self.prompt_buffer) |prompt| {
-                            self.getCurrentView().setError(prompt);
-                        }
-                    },
                     .ctrl => |c| {
-                        switch (c) {
-                            'g' => {
-                                // C-g: キャンセル
-                                self.mode = .normal;
-                                self.input_buffer.clearRetainingCapacity();
-                                if (self.replace_search) |search| {
-                                    self.allocator.free(search);
-                                    self.replace_search = null;
-                                }
-                                self.getCurrentView().clearError();
-                            },
-                            else => {},
+                        if (c == 'g') {
+                            self.mode = .normal;
+                            self.clearInputBuffer();
+                            if (self.replace_search) |search| {
+                                self.allocator.free(search);
+                                self.replace_search = null;
+                            }
+                            self.getCurrentView().clearError();
+                            return;
                         }
                     },
-                    .backspace => {
-                        // バックスペース：最後の文字を削除
-                        if (self.input_buffer.items.len > 0) {
-                            _ = self.input_buffer.pop();
-                            if (self.replace_search) |search| {
-                                self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace {s} with: {s}", .{search, self.input_buffer.items}) catch null;
-                            } else {
-                                self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace with: {s}", .{self.input_buffer.items}) catch null;
-                            }
-                            if (self.prompt_buffer) |prompt| {
-                                self.getCurrentView().setError(prompt);
-                            }
+                    .escape => {
+                        self.mode = .normal;
+                        self.clearInputBuffer();
+                        if (self.replace_search) |search| {
+                            self.allocator.free(search);
+                            self.replace_search = null;
                         }
+                        self.getCurrentView().clearError();
+                        return;
                     },
                     .enter => {
                         // Enter: 置換文字列確定、最初の一致を検索
@@ -2275,8 +2466,19 @@ pub const Editor = struct {
                             self.mode = .normal;
                             self.getCurrentView().setError("No search string");
                         }
+                        return;
                     },
                     else => {},
+                }
+                _ = try self.handleMinibufferKey(key);
+                // プロンプトを更新（検索文字列を含む）
+                if (self.replace_search) |search| {
+                    self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace {s} with: {s}", .{ search, self.input_buffer.items }) catch null;
+                } else {
+                    self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace with: {s}", .{self.input_buffer.items}) catch null;
+                }
+                if (self.prompt_buffer) |prompt| {
+                    self.getCurrentView().setError(prompt);
                 }
                 return;
             },
@@ -2460,64 +2662,34 @@ pub const Editor = struct {
             .shell_command => {
                 // シェルコマンド入力モード
                 switch (key) {
-                    .char => |c| {
-                        try self.input_buffer.append(self.allocator, c);
-                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "| {s}", .{self.input_buffer.items}) catch null;
-                        if (self.prompt_buffer) |prompt| {
-                            self.getCurrentView().setError(prompt);
-                        }
-                    },
-                    .codepoint => |cp| {
-                        var buf: [4]u8 = undefined;
-                        const len = std.unicode.utf8Encode(cp, &buf) catch return;
-                        try self.input_buffer.appendSlice(self.allocator, buf[0..len]);
-                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "| {s}", .{self.input_buffer.items}) catch null;
-                        if (self.prompt_buffer) |prompt| {
-                            self.getCurrentView().setError(prompt);
-                        }
-                    },
                     .ctrl => |c| {
                         if (c == 'g') {
-                            // C-g: キャンセル
                             self.mode = .normal;
-                            self.input_buffer.clearRetainingCapacity();
+                            self.clearInputBuffer();
                             self.getCurrentView().clearError();
+                            return;
                         }
                     },
-                    .backspace => {
-                        if (self.input_buffer.items.len > 0) {
-                            // UTF-8文字の境界を考慮してバックスペース
-                            var del_len: usize = 1;
-                            while (del_len < self.input_buffer.items.len) {
-                                const idx = self.input_buffer.items.len - del_len - 1;
-                                const byte = self.input_buffer.items[idx];
-                                if ((byte & 0xC0) != 0x80) break;
-                                del_len += 1;
-                            }
-                            self.input_buffer.items.len -= del_len;
-                            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "| {s}", .{self.input_buffer.items}) catch null;
-                            if (self.prompt_buffer) |prompt| {
-                                self.getCurrentView().setError(prompt);
-                            } else {
-                                self.getCurrentView().setError("| ");
-                            }
-                        }
+                    .escape => {
+                        self.mode = .normal;
+                        self.clearInputBuffer();
+                        self.getCurrentView().clearError();
+                        return;
                     },
                     .enter => {
-                        // Enter: コマンド実行
                         if (self.input_buffer.items.len > 0) {
                             try self.startShellCommand();
-                            // startShellCommandが成功すればmode = .shell_runningになる
-                            // 失敗時やコマンドが空の場合はmodeはそのまま
                         }
-                        // shell_runningモードに移行しなかった場合は元に戻す
                         if (self.mode != .shell_running) {
                             self.mode = .normal;
-                            self.input_buffer.clearRetainingCapacity();
+                            self.clearInputBuffer();
                         }
+                        return;
                     },
                     else => {},
                 }
+                _ = try self.handleMinibufferKey(key);
+                self.updateMinibufferPrompt("| ");
                 return;
             },
             .shell_running => {
@@ -2539,47 +2711,28 @@ pub const Editor = struct {
             .mx_command => {
                 // M-xコマンド入力モード
                 switch (key) {
-                    .char => |c| {
-                        try self.input_buffer.append(self.allocator, c);
-                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, ": {s}", .{self.input_buffer.items}) catch null;
-                        if (self.prompt_buffer) |prompt| {
-                            self.getCurrentView().setError(prompt);
-                        }
-                    },
-                    .codepoint => |cp| {
-                        var buf: [4]u8 = undefined;
-                        const len = std.unicode.utf8Encode(cp, &buf) catch return;
-                        try self.input_buffer.appendSlice(self.allocator, buf[0..len]);
-                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, ": {s}", .{self.input_buffer.items}) catch null;
-                        if (self.prompt_buffer) |prompt| {
-                            self.getCurrentView().setError(prompt);
-                        }
-                    },
                     .ctrl => |c| {
                         if (c == 'g') {
-                            // C-g: キャンセル
                             self.mode = .normal;
-                            self.input_buffer.clearRetainingCapacity();
+                            self.clearInputBuffer();
                             self.getCurrentView().clearError();
+                            return;
                         }
                     },
-                    .backspace => {
-                        if (self.input_buffer.items.len > 0) {
-                            _ = self.input_buffer.pop();
-                            self.prompt_buffer = std.fmt.allocPrint(self.allocator, ": {s}", .{self.input_buffer.items}) catch null;
-                            if (self.prompt_buffer) |prompt| {
-                                self.getCurrentView().setError(prompt);
-                            } else {
-                                self.getCurrentView().setError(": ");
-                            }
-                        }
+                    .escape => {
+                        self.mode = .normal;
+                        self.clearInputBuffer();
+                        self.getCurrentView().clearError();
+                        return;
                     },
                     .enter => {
-                        // Enter: コマンド実行
                         try self.executeMxCommand();
+                        return;
                     },
                     else => {},
                 }
+                _ = try self.handleMinibufferKey(key);
+                self.updateMinibufferPrompt(": ");
                 return;
             },
             .mx_key_describe => {
@@ -2656,6 +2809,8 @@ pub const Editor = struct {
                             self.mode = .isearch_forward;
                             self.search_start_pos = self.getCurrentView().getCursorBufferPos();
                             self.input_buffer.clearRetainingCapacity();
+                            self.input_cursor = 0;
+                            self.prompt_prefix_len = 11; // " I-search: "
                             self.getCurrentView().setError("I-search: ");
                         }
                     },
@@ -2675,6 +2830,8 @@ pub const Editor = struct {
                             self.mode = .isearch_backward;
                             self.search_start_pos = self.getCurrentView().getCursorBufferPos();
                             self.input_buffer.clearRetainingCapacity();
+                            self.input_cursor = 0;
+                            self.prompt_prefix_len = 20; // " I-search backward: "
                             self.getCurrentView().setError("I-search backward: ");
                         }
                     },
@@ -2689,6 +2846,8 @@ pub const Editor = struct {
                         // M-% : query-replace
                         self.mode = .query_replace_input_search;
                         self.input_buffer.clearRetainingCapacity();
+                        self.input_cursor = 0;
+                        self.prompt_prefix_len = 16; // " Query replace: "
                         self.replace_match_count = 0;
                         self.getCurrentView().setError("Query replace: ");
                     },
@@ -2700,6 +2859,8 @@ pub const Editor = struct {
                         // M-| シェルコマンド入力
                         self.mode = .shell_command;
                         self.input_buffer.clearRetainingCapacity();
+                        self.input_cursor = 0;
+                        self.prompt_prefix_len = 3; // " | "
                         self.getCurrentView().setError("| ");
                     },
                     '<' => self.getCurrentView().moveToBufferStart(), // M-< ファイル先頭
@@ -2721,6 +2882,8 @@ pub const Editor = struct {
                         // M-x: コマンドプロンプト
                         self.mode = .mx_command;
                         self.input_buffer.clearRetainingCapacity();
+                        self.input_cursor = 0;
+                        self.prompt_prefix_len = 3; // " : "
                         self.getCurrentView().setError(": ");
                     },
                     else => {},
