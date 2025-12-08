@@ -50,6 +50,9 @@ pub const View = struct {
     top_col: usize, // 水平スクロールオフセット
     cursor_x: usize,
     cursor_y: usize,
+    // ビューポートサイズ（ウィンドウ分割時に使用）
+    viewport_width: usize,
+    viewport_height: usize,
     // Dirty範囲追跡（差分描画用）
     dirty_start: ?usize,
     dirty_end: ?usize,
@@ -98,6 +101,8 @@ pub const View = struct {
             .top_col = 0,
             .cursor_x = 0,
             .cursor_y = 0,
+            .viewport_width = 80, // デフォルト、setViewportで更新
+            .viewport_height = 24, // デフォルト、setViewportで更新
             .dirty_start = null,
             .dirty_end = null,
             .needs_full_redraw = true,
@@ -129,6 +134,35 @@ pub const View = struct {
     pub fn setLanguage(self: *View, lang: *const syntax.LanguageDef) void {
         self.language = lang;
         self.markFullRedraw();
+    }
+
+    /// ビューポートサイズを設定し、カーソルを制約
+    pub fn setViewport(self: *View, width: usize, height: usize) void {
+        self.viewport_width = width;
+        self.viewport_height = height;
+        // カーソルがビューポート外にならないよう制約
+        self.constrainCursor();
+        self.markFullRedraw();
+    }
+
+    /// カーソルをビューポート内に制約
+    pub fn constrainCursor(self: *View) void {
+        // ステータスバー分を除いた最大行
+        const max_cursor_y = if (self.viewport_height >= 2) self.viewport_height - 2 else 0;
+        if (self.cursor_y > max_cursor_y) {
+            // カーソルがビューポート外なら、スクロールして見えるようにする
+            const overshoot = self.cursor_y - max_cursor_y;
+            self.top_line += overshoot;
+            self.cursor_y = max_cursor_y;
+        }
+
+        // 水平方向も制約（行番号幅を除いた可視幅）
+        const line_num_width = self.getLineNumberWidth();
+        const visible_width = if (self.viewport_width > line_num_width) self.viewport_width - line_num_width else 1;
+        if (self.cursor_x >= self.top_col + visible_width) {
+            // カーソルが右端を超えたらスクロール
+            self.top_col = if (self.cursor_x >= visible_width) self.cursor_x - visible_width + 1 else 0;
+        }
     }
 
     /// タブ幅を取得（設定値がなければ言語デフォルト）
@@ -1021,7 +1055,7 @@ pub const View = struct {
         }
     }
 
-    pub fn moveCursorRight(self: *View, term: *Terminal) void {
+    pub fn moveCursorRight(self: *View) void {
         const pos = self.getCursorBufferPos();
         if (pos >= self.buffer.len()) return;
 
@@ -1034,10 +1068,13 @@ pub const View = struct {
             return;
         };
 
+        // ステータスバー分を除いた最大行
+        const max_cursor_y = if (self.viewport_height >= 2) self.viewport_height - 2 else 0;
+
         if (cluster) |gc| {
             if (gc.base == '\n') {
                 // 改行の場合は次の行の先頭へ
-                if (self.cursor_y < term.height - 2 and self.top_line + self.cursor_y + 1 < self.buffer.lineCount()) {
+                if (self.cursor_y < max_cursor_y and self.top_line + self.cursor_y + 1 < self.buffer.lineCount()) {
                     self.cursor_y += 1;
                     self.cursor_x = 0;
                 } else if (self.top_line + self.cursor_y + 1 < self.buffer.lineCount()) {
@@ -1058,7 +1095,10 @@ pub const View = struct {
                 self.cursor_x += char_width;
 
                 // 水平スクロール: カーソルが右端を超えた場合（行番号幅を除く）
-                const visible_width = term.width - self.getLineNumberWidth();
+                const visible_width = if (self.viewport_width > self.getLineNumberWidth())
+                    self.viewport_width - self.getLineNumberWidth()
+                else
+                    1;
                 if (self.cursor_x >= self.top_col + visible_width) {
                     self.top_col = self.cursor_x - visible_width + 1;
                     self.markFullRedraw();
@@ -1090,8 +1130,8 @@ pub const View = struct {
         }
     }
 
-    pub fn moveCursorDown(self: *View, term: *Terminal) void {
-        const max_cursor_y = if (term.height >= 2) term.height - 2 else 0;
+    pub fn moveCursorDown(self: *View) void {
+        const max_cursor_y = if (self.viewport_height >= 2) self.viewport_height - 2 else 0;
         if (self.cursor_y < max_cursor_y and self.top_line + self.cursor_y + 1 < self.buffer.lineCount()) {
             self.cursor_y += 1;
         } else if (self.top_line + self.cursor_y + 1 < self.buffer.lineCount()) {
@@ -1163,7 +1203,7 @@ pub const View = struct {
     }
 
     // M-> (end-of-buffer): ファイルの終端に移動
-    pub fn moveToBufferEnd(self: *View, term: *Terminal) void {
+    pub fn moveToBufferEnd(self: *View) void {
         const total_lines = self.buffer.lineCount();
         if (total_lines == 0) {
             self.cursor_x = 0;
@@ -1177,8 +1217,8 @@ pub const View = struct {
         // 最終行の番号（0-indexed）
         const last_line = if (total_lines > 0) total_lines - 1 else 0;
 
-        // 端末の表示可能行数
-        const max_screen_lines = if (term.height >= 2) term.height - 2 else 0;
+        // ビューポートの表示可能行数
+        const max_screen_lines = if (self.viewport_height >= 2) self.viewport_height - 2 else 0;
 
         // 最終行をできるだけ画面下部に表示
         if (last_line <= max_screen_lines) {

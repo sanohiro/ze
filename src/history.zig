@@ -153,6 +153,15 @@ pub const History = struct {
         };
         defer file.close();
 
+        // 共有ロック（読み取りロック）を取得
+        // 他のプロセスの書き込みをブロックし、同時読み取りは許可
+        _ = std.posix.flock(file.handle, std.posix.LOCK.SH) catch {
+            // ロック取得失敗は無視して続行（NFSなどロック非対応の場合）
+        };
+        defer {
+            _ = std.posix.flock(file.handle, std.posix.LOCK.UN) catch {};
+        }
+
         // ファイル全体を読み込み
         const stat = try file.stat();
         if (stat.size == 0) return;
@@ -193,10 +202,22 @@ pub const History = struct {
         const file = try std.fs.cwd().createFile(path, .{});
         defer file.close();
 
+        // 排他ロック（書き込みロック）を取得
+        // 他のプロセスの読み書きをブロック
+        _ = std.posix.flock(file.handle, std.posix.LOCK.EX) catch {
+            // ロック取得失敗は無視して続行（NFSなどロック非対応の場合）
+        };
+        defer {
+            _ = std.posix.flock(file.handle, std.posix.LOCK.UN) catch {};
+        }
+
         for (self.entries.items) |entry| {
             try file.writeAll(entry);
             try file.writeAll("\n");
         }
+
+        // fsyncで確実にディスクに書き込み
+        try file.sync();
     }
 };
 

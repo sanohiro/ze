@@ -338,6 +338,8 @@ pub const Editor = struct {
         first_window.view = try View.init(allocator, &first_buffer.buffer);
         // 言語検出（新規バッファなのでデフォルト、ファイルオープン時にmain.zigで再検出される）
         first_window.view.detectLanguage(null, null);
+        // ビューポートサイズを設定（カーソル移動の境界判定に使用）
+        first_window.view.setViewport(terminal.width, terminal.height);
 
         // ウィンドウリストを作成
         var windows: std.ArrayList(Window) = .{};
@@ -938,6 +940,8 @@ pub const Editor = struct {
         // 言語検出（*Command*バッファはプレーンテキストだが一貫性のため）
         const content_preview = cmd_buffer.buffer.getContentPreview(512);
         new_window.view.detectLanguage(cmd_buffer.filename, content_preview);
+        // ビューポートサイズを設定
+        new_window.view.setViewport(new_window.width, new_window.height);
 
         try self.windows.append(self.allocator, new_window);
         return self.windows.items.len - 1;
@@ -959,6 +963,8 @@ pub const Editor = struct {
         // 言語検出（新しいViewに言語設定を適用）
         const content_preview = buffer_state.buffer.getContentPreview(512);
         window.view.detectLanguage(buffer_state.filename, content_preview);
+        // ビューポートサイズを設定（ウィンドウサイズは変わらないが新しいViewに必要）
+        window.view.setViewport(window.width, window.height);
     }
 
     /// 指定されたバッファを閉じる（削除）
@@ -981,6 +987,8 @@ pub const Editor = struct {
                         // 言語検出（コメント強調・タブ幅など）
                         const content_preview = next_buffer.buffer.getContentPreview(512);
                         window.view.detectLanguage(next_buffer.filename, content_preview);
+                        // ビューポートサイズを設定
+                        window.view.setViewport(window.width, window.height);
                     }
                 }
 
@@ -1199,6 +1207,11 @@ pub const Editor = struct {
         const content_preview = buffer_state.buffer.getContentPreview(512);
         new_window.view.detectLanguage(buffer_state.filename, content_preview);
 
+        // ビューポートサイズを設定（カーソル制約も行う）
+        new_window.view.setViewport(new_window.width, new_window.height);
+        // 元のウィンドウもサイズが変わったのでビューポートを更新
+        current_window.view.setViewport(current_window.width, current_window.height);
+
         // ウィンドウリストに追加
         try self.windows.append(self.allocator, new_window);
 
@@ -1251,6 +1264,11 @@ pub const Editor = struct {
         // 言語検出（新しいViewに言語設定を適用）
         const content_preview = buffer_state.buffer.getContentPreview(512);
         new_window.view.detectLanguage(buffer_state.filename, content_preview);
+
+        // ビューポートサイズを設定（カーソル制約も行う）
+        new_window.view.setViewport(new_window.width, new_window.height);
+        // 元のウィンドウもサイズが変わったのでビューポートを更新
+        current_window.view.setViewport(current_window.width, current_window.height);
 
         // ウィンドウリストに追加
         try self.windows.append(self.allocator, new_window);
@@ -1476,7 +1494,7 @@ pub const Editor = struct {
             self.windows.items[0].y = 0;
             self.windows.items[0].width = total_width;
             self.windows.items[0].height = total_height;
-            self.windows.items[0].view.markFullRedraw();
+            self.windows.items[0].view.setViewport(total_width, total_height);
             return;
         }
 
@@ -1534,6 +1552,11 @@ pub const Editor = struct {
                     window.height = total_height - window.y;
                 }
             }
+        }
+
+        // 全ウィンドウのビューポートを更新（カーソル制約も行う）
+        for (self.windows.items) |*window| {
+            window.view.setViewport(window.width, window.height);
         }
     }
 
@@ -3089,9 +3112,9 @@ pub const Editor = struct {
                         self.mode = .prefix_x;
                         self.getCurrentView().setError("C-x-");
                     },
-                    'f' => self.getCurrentView().moveCursorRight(&self.terminal), // C-f 前進
+                    'f' => self.getCurrentView().moveCursorRight(), // C-f 前進
                     'b' => self.getCurrentView().moveCursorLeft(), // C-b 後退
-                    'n' => self.getCurrentView().moveCursorDown(&self.terminal), // C-n 次行
+                    'n' => self.getCurrentView().moveCursorDown(), // C-n 次行
                     'p' => self.getCurrentView().moveCursorUp(), // C-p 前行
                     'a' => self.getCurrentView().moveToLineStart(), // C-a 行頭
                     'e' => self.getCurrentView().moveToLineEnd(), // C-e 行末
@@ -3108,7 +3131,7 @@ pub const Editor = struct {
                         const page_size = if (self.terminal.height >= 3) self.terminal.height - 2 else 1;
                         var i: usize = 0;
                         while (i < page_size) : (i += 1) {
-                            view.moveCursorDown(&self.terminal);
+                            view.moveCursorDown();
                         }
                     },
                     'l' => {
@@ -3197,7 +3220,7 @@ pub const Editor = struct {
                         self.getCurrentView().setError("| ");
                     },
                     '<' => self.getCurrentView().moveToBufferStart(), // M-< ファイル先頭
-                    '>' => self.getCurrentView().moveToBufferEnd(&self.terminal), // M-> ファイル終端
+                    '>' => self.getCurrentView().moveToBufferEnd(), // M-> ファイル終端
                     '{' => try self.backwardParagraph(), // M-{ 前の段落
                     '}' => try self.forwardParagraph(), // M-} 次の段落
                     '^' => try self.joinLine(), // M-^ 行の結合
@@ -3232,9 +3255,9 @@ pub const Editor = struct {
 
             // 矢印キー
             .arrow_up => self.getCurrentView().moveCursorUp(),
-            .arrow_down => self.getCurrentView().moveCursorDown(&self.terminal),
+            .arrow_down => self.getCurrentView().moveCursorDown(),
             .arrow_left => self.getCurrentView().moveCursorLeft(),
-            .arrow_right => self.getCurrentView().moveCursorRight(&self.terminal),
+            .arrow_right => self.getCurrentView().moveCursorRight(),
 
             // 特殊キー
             .enter => {
@@ -3291,7 +3314,7 @@ pub const Editor = struct {
                 const page_size = if (self.terminal.height >= 3) self.terminal.height - 2 else 1; // ステータスバー分を引く
                 var i: usize = 0;
                 while (i < page_size) : (i += 1) {
-                    view.moveCursorDown(&self.terminal);
+                    view.moveCursorDown();
                 }
             },
             .page_up => {
@@ -3725,7 +3748,7 @@ pub const Editor = struct {
         view.markDirty(current_line, null);
 
         // カーソルを複製した行に移動
-        view.moveCursorDown(&self.terminal);
+        view.moveCursorDown();
     }
 
     /// 行を上に移動
@@ -3839,7 +3862,7 @@ pub const Editor = struct {
         view.markDirty(current_line, null);
 
         // カーソルを移動した行に合わせる
-        view.moveCursorDown(&self.terminal);
+        view.moveCursorDown();
     }
 
     /// 現在の行のインデント（先頭の空白）を取得
@@ -4138,7 +4161,7 @@ pub const Editor = struct {
         const window = self.getCurrentWindow();
         window.mark_pos = 0;
         // カーソルをバッファの終端に移動
-        self.getCurrentView().moveToBufferEnd(&self.terminal);
+        self.getCurrentView().moveToBufferEnd();
     }
 
     // マーク位置とカーソル位置から範囲を取得（開始位置と長さを返す）
@@ -5628,7 +5651,7 @@ pub const Editor = struct {
             const buffer = self.getCurrentBufferContent();
             const total_lines = buffer.lineCount();
             if (target_line >= total_lines) {
-                view.moveToBufferEnd(&self.terminal);
+                view.moveToBufferEnd();
             } else {
                 // 指定行の先頭に移動
                 if (buffer.getLineStart(target_line)) |pos| {
