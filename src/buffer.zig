@@ -373,6 +373,10 @@ pub const Buffer = struct {
 
             // UTF-8 + LF の場合 → mmapを直接使用（ゼロコピー高速パス）
             if (detected.encoding == .UTF8 and detected.line_ending == .LF) {
+                // mmapを維持する場合のerrdefer（成功時は維持、失敗時はunmap）
+                var mmap_kept = false;
+                errdefer if (!mmap_kept) std.posix.munmap(mapped_ptr[0..file_size]);
+
                 var self = Buffer{
                     .original = mapped,
                     .add_buffer = try std.ArrayList(u8).initCapacity(allocator, 0),
@@ -386,6 +390,11 @@ pub const Buffer = struct {
                     .detected_line_ending = .LF,
                     .detected_encoding = .UTF8,
                 };
+                errdefer {
+                    self.add_buffer.deinit(allocator);
+                    self.pieces.deinit(allocator);
+                    self.line_index.deinit();
+                }
 
                 // 初期状態：originalファイル全体を指す1つのpiece
                 try self.pieces.append(allocator, .{
@@ -397,6 +406,7 @@ pub const Buffer = struct {
                 // LineIndexを即座に構築
                 try self.line_index.rebuild(&self);
 
+                mmap_kept = true; // 成功したのでmmapを保持
                 return self;
             }
 

@@ -26,9 +26,17 @@ const config = @import("config.zig");
 /// グローバルリサイズフラグ（SIGWINCHハンドラから設定）
 var g_resize_pending = std.atomic.Value(bool).init(false);
 
+/// グローバル終了フラグ（SIGINT/SIGTERMハンドラから設定）
+var g_terminate_pending = std.atomic.Value(bool).init(false);
+
 /// SIGWINCHシグナルハンドラ
 fn sigwinchHandler(_: c_int) callconv(.c) void {
     g_resize_pending.store(true, .release);
+}
+
+/// 終了シグナルハンドラ（SIGINT, SIGTERM, SIGHUP, SIGQUIT）
+fn terminateHandler(_: c_int) callconv(.c) void {
+    g_terminate_pending.store(true, .release);
 }
 
 pub const Terminal = struct {
@@ -43,7 +51,9 @@ pub const Terminal = struct {
 
         // stdin が TTY かどうかを確認
         if (!posix.isatty(stdin.handle)) {
-            std.debug.print("Error: stdin is not a TTY. ze requires a terminal.\n", .{});
+            // stderrに出力（std.debug.printは避ける）
+            const stderr: std.fs.File = .{ .handle = posix.STDERR_FILENO };
+            stderr.writeAll("Error: stdin is not a TTY. ze requires a terminal.\n") catch {};
             return error.NotATty;
         }
 
@@ -60,8 +70,9 @@ pub const Terminal = struct {
         try self.enableRawMode();
         try self.getWindowSize();
 
-        // SIGWINCHハンドラを設定
+        // シグナルハンドラを設定
         self.setupSigwinch();
+        self.setupTerminateSignals();
 
         return self;
     }
@@ -74,6 +85,29 @@ pub const Terminal = struct {
             .flags = 0,
         };
         _ = posix.sigaction(posix.SIG.WINCH, &act, null);
+    }
+
+    /// 終了シグナルハンドラを設定（SIGINT, SIGTERM, SIGHUP, SIGQUIT）
+    fn setupTerminateSignals(_: *Terminal) void {
+        const act = posix.Sigaction{
+            .handler = .{ .handler = terminateHandler },
+            .mask = posix.sigemptyset(),
+            .flags = 0,
+        };
+        // SIGINT (Ctrl+C) - rawモードでは通常キャラクタとして受信されるが、
+        // 他のプロセスから送られた場合に備えて設定
+        _ = posix.sigaction(posix.SIG.INT, &act, null);
+        // SIGTERM - killコマンドのデフォルトシグナル
+        _ = posix.sigaction(posix.SIG.TERM, &act, null);
+        // SIGHUP - 端末が切断された場合
+        _ = posix.sigaction(posix.SIG.HUP, &act, null);
+        // SIGQUIT - Ctrl+\ (通常はコアダンプだが、gracefulに終了)
+        _ = posix.sigaction(posix.SIG.QUIT, &act, null);
+    }
+
+    /// 終了が要求されたかチェック
+    pub fn checkTerminate(_: *Terminal) bool {
+        return g_terminate_pending.load(.acquire);
     }
 
     pub fn deinit(self: *Terminal) void {

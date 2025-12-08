@@ -224,27 +224,37 @@ pub fn readKey(stdin: std.fs.File) !?Key {
     // UTF-8マルチバイト文字の処理
     if (ch >= config.UTF8.CONTINUATION_MASK) {
         const len = std.unicode.utf8ByteSequenceLength(ch) catch {
-            // 無効なUTF-8先頭バイトは無視
-            return Key{ .char = ch };
+            // 無効なUTF-8先頭バイト（0x80-0xBFなどのcontinuation byte）
+            // そのまま無視して次のバイトを待つ
+            return null;
         };
 
         if (len > 1) {
-            // 残りのバイトを読み取る
             buf[0] = ch;
-            var total_read: usize = 0;
-            while (total_read < len - 1) {
-                const remaining = try stdin.read(buf[1 + total_read .. len]);
-                if (remaining == 0) break; // タイムアウトまたはEOF
-                total_read += remaining;
+            var bytes_read: usize = 1;
+
+            // continuation bytesを1バイトずつ読み取り、検証する
+            while (bytes_read < len) {
+                const remaining = try stdin.read(buf[bytes_read .. bytes_read + 1]);
+                if (remaining == 0) {
+                    // タイムアウト：不完全なシーケンス、置換文字を返す
+                    return Key{ .codepoint = 0xFFFD };
+                }
+
+                // continuation byte (0x80-0xBF) かチェック
+                if ((buf[bytes_read] & 0xC0) != 0x80) {
+                    // continuation byteでない → 無効なシーケンス
+                    return Key{ .codepoint = 0xFFFD };
+                }
+
+                bytes_read += 1;
             }
 
-            if (total_read == len - 1) {
-                const codepoint = std.unicode.utf8Decode(buf[0..len]) catch {
-                    return Key{ .char = ch };
-                };
-                return Key{ .codepoint = codepoint };
-            }
-            // 不完全なUTF-8シーケンス：最初のバイトだけ返す
+            const codepoint = std.unicode.utf8Decode(buf[0..len]) catch {
+                // デコード失敗：オーバーロング等の無効なシーケンス
+                return Key{ .codepoint = 0xFFFD };
+            };
+            return Key{ .codepoint = codepoint };
         }
     }
 
@@ -350,19 +360,40 @@ pub fn readKeyFromReader(reader: *InputReader) !?Key {
     // UTF-8マルチバイト文字の処理
     if (ch >= config.UTF8.CONTINUATION_MASK) {
         const len = std.unicode.utf8ByteSequenceLength(ch) catch {
-            return Key{ .char = ch };
+            // 無効なUTF-8先頭バイト（0x80-0xBFなどのcontinuation byte）
+            // そのまま無視して次のバイトを待つ
+            return null;
         };
 
         if (len > 1) {
             buf[0] = ch;
-            const total_read = try reader.readBytes(buf[1..len]);
+            var bytes_read: usize = 1;
 
-            if (total_read == len - 1) {
-                const codepoint = std.unicode.utf8Decode(buf[0..len]) catch {
-                    return Key{ .char = ch };
+            // continuation bytesを1バイトずつ読み取り、検証する
+            while (bytes_read < len) {
+                const byte = try reader.readByte() orelse {
+                    // タイムアウト：不完全なシーケンス、置換文字を返す
+                    return Key{ .codepoint = 0xFFFD };
                 };
-                return Key{ .codepoint = codepoint };
+
+                // continuation byte (0x80-0xBF) かチェック
+                if ((byte & 0xC0) != 0x80) {
+                    // continuation byteでない → 無効なシーケンス
+                    // このバイトは次のキー入力の開始かもしれないが、
+                    // InputReaderには戻す機能がないため、
+                    // 置換文字を返して終了（バイトは消費済み）
+                    return Key{ .codepoint = 0xFFFD };
+                }
+
+                buf[bytes_read] = byte;
+                bytes_read += 1;
             }
+
+            const codepoint = std.unicode.utf8Decode(buf[0..len]) catch {
+                // デコード失敗：オーバーロング等の無効なシーケンス
+                return Key{ .codepoint = 0xFFFD };
+            };
+            return Key{ .codepoint = codepoint };
         }
     }
 

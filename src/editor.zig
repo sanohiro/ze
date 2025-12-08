@@ -1549,6 +1549,12 @@ pub const Editor = struct {
         var input_reader = input.InputReader.init(stdin);
 
         while (self.running) {
+            // シグナルによる終了要求をチェック（SIGTERM, SIGHUP等）
+            if (self.terminal.checkTerminate()) {
+                // 未保存の変更があっても終了（シグナルは即座に応答すべき）
+                break;
+            }
+
             // 端末サイズ変更をチェック
             if (try self.terminal.checkResize()) {
                 // サイズが変わったら全ウィンドウの再描画をマーク＆サイズ再計算
@@ -5153,7 +5159,12 @@ pub const Editor = struct {
 
         // シェルコマンド状態を作成
         const state = try self.allocator.create(ShellCommandState);
-        errdefer self.allocator.destroy(state);
+        errdefer {
+            // ArrayListのバッファも解放（空でも安全）
+            state.stdout_buffer.deinit(self.allocator);
+            state.stderr_buffer.deinit(self.allocator);
+            self.allocator.destroy(state);
+        }
 
         // 子プロセスを起動
         const argv = [_][]const u8{ "/bin/sh", "-c", command_copy };
