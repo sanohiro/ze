@@ -201,6 +201,56 @@ pub const View = struct {
         return self.search_highlight_buf[0..self.search_highlight_len];
     }
 
+    /// 出力済み行をviewport_widthまでスペースでパディング
+    /// ANSIエスケープシーケンスを除いた表示幅で計算
+    fn padToWidth(self: *View, term: *Terminal, line: []const u8, viewport_width: usize) !void {
+        _ = self;
+        // 表示幅を計算（ANSIエスケープシーケンスを除外）
+        var display_width: usize = 0;
+        var i: usize = 0;
+        while (i < line.len) {
+            const c = line[i];
+            if (c == 0x1b and i + 1 < line.len and line[i + 1] == '[') {
+                // ANSIエスケープシーケンスをスキップ
+                i += 2;
+                while (i < line.len and line[i] != 'm') : (i += 1) {}
+                if (i < line.len) i += 1;
+            } else if (c < 0x80) {
+                // ASCII
+                display_width += 1;
+                i += 1;
+            } else {
+                // UTF-8: 幅を判定
+                const len = std.unicode.utf8ByteSequenceLength(c) catch 1;
+                if (i + len <= line.len) {
+                    const cp = std.unicode.utf8Decode(line[i..][0..len]) catch {
+                        i += 1;
+                        continue;
+                    };
+                    // CJK文字などの全角幅判定（簡易版）
+                    if (cp >= 0x1100 and cp <= 0x115F) display_width += 2 // Hangul Jamo
+                    else if (cp >= 0x2E80 and cp <= 0x9FFF) display_width += 2 // CJK
+                    else if (cp >= 0xAC00 and cp <= 0xD7AF) display_width += 2 // Hangul Syllables
+                    else if (cp >= 0xF900 and cp <= 0xFAFF) display_width += 2 // CJK Compat
+                    else if (cp >= 0xFE10 and cp <= 0xFE1F) display_width += 2 // Vertical Forms
+                    else if (cp >= 0xFF00 and cp <= 0xFFEF) display_width += 2 // Halfwidth/Fullwidth
+                    else if (cp >= 0x20000 and cp <= 0x2FFFF) display_width += 2 // CJK Extension
+                    else display_width += 1;
+                    i += len;
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        // 残りをスペースで埋める
+        if (display_width < viewport_width) {
+            var padding = viewport_width - display_width;
+            while (padding > 0) : (padding -= 1) {
+                try term.write(" ");
+            }
+        }
+    }
+
     // 行番号の表示幅を計算（999行まで固定、1000行以上で動的拡張）
     fn getLineNumberWidth(self: *View) usize {
         if (!config.Editor.SHOW_LINE_NUMBERS) return 0;
@@ -317,7 +367,7 @@ pub const View = struct {
 
     // イテレータを再利用して行を描画（オフセット付き）
     /// 行を描画し、次の行のブロックコメント状態を返す
-    fn renderLineWithIterOffset(self: *View, term: *Terminal, viewport_y: usize, screen_row: usize, file_line: usize, iter: *PieceIterator, line_buffer: *std.ArrayList(u8), in_block: bool) !bool {
+    fn renderLineWithIterOffset(self: *View, term: *Terminal, viewport_x: usize, viewport_y: usize, viewport_width: usize, screen_row: usize, file_line: usize, iter: *PieceIterator, line_buffer: *std.ArrayList(u8), in_block: bool) !bool {
         const abs_row = viewport_y + screen_row;
         // 再利用バッファをクリア
         line_buffer.clearRetainingCapacity();
@@ -352,7 +402,7 @@ pub const View = struct {
         // grapheme-aware rendering with tab expansion and horizontal scrolling
         var byte_idx: usize = 0;
         var col: usize = 0; // 論理カラム位置（行全体での位置）
-        const visible_width = if (term.width > line_num_width) term.width - line_num_width else 1;
+        const visible_width = if (viewport_width > line_num_width) viewport_width - line_num_width else 1;
         const visible_end = self.top_col + visible_width; // 表示範囲の終端（行番号幅を除く）
 
         // コメントスパンがある場合のみ追跡（最適化：span_count==0なら完全スキップ）
@@ -499,9 +549,10 @@ pub const View = struct {
                 // （ANSIシーケンスの計算が複雑なため、シンプルな実装を優先）
                 if (line_num_display_width > 0) {
                     // 行頭から全体を再描画
-                    try term.moveCursor(abs_row, 0);
-                    try term.write(config.ANSI.CLEAR_LINE);
+                    try term.moveCursor(abs_row, viewport_x);
                     try term.write(new_line);
+                    // 残りをスペースで埋める（CLEAR_LINEの代わり）
+                    try self.padToWidth(term, new_line, viewport_width);
                 } else {
                     // UTF-8文字境界に調整（継続バイトの途中から始まらないように）
                     var start = start_raw;
@@ -547,21 +598,22 @@ pub const View = struct {
                         }
                     }
 
-                    // 差分部分のみ描画
-                    try term.moveCursor(abs_row, screen_col);
+                    // 差分部分のみ描画（viewport_xオフセットを加算）
+                    try term.moveCursor(abs_row, viewport_x + screen_col);
                     try term.write(new_line[start..]);
 
-                    // 古い行の方が長い場合は残りをクリア
+                    // 古い行の方が長い場合は残りをスペースで埋める
                     if (old_line.len > new_line.len) {
-                        try term.write(config.ANSI.CLEAR_LINE);
+                        try self.padToWidth(term, new_line, viewport_width);
                     }
                 }
             }
         } else {
             // 新しい行：全体を描画
-            try term.moveCursor(abs_row, 0);
-            try term.write(config.ANSI.CLEAR_LINE);
+            try term.moveCursor(abs_row, viewport_x);
             try term.write(new_line);
+            // 残りをスペースで埋める
+            try self.padToWidth(term, new_line, viewport_width);
         }
 
         // 前フレームバッファを更新
@@ -581,11 +633,11 @@ pub const View = struct {
 
     // 空行（~）を描画（セルレベル差分版）
     fn renderEmptyLine(self: *View, term: *Terminal, screen_row: usize) !void {
-        try self.renderEmptyLineOffset(term, 0, screen_row);
+        try self.renderEmptyLineOffset(term, 0, 0, term.width, screen_row);
     }
 
     // 空行（~）を描画（オフセット付き）
-    fn renderEmptyLineOffset(self: *View, term: *Terminal, viewport_y: usize, screen_row: usize) !void {
+    fn renderEmptyLineOffset(self: *View, term: *Terminal, viewport_x: usize, viewport_y: usize, viewport_width: usize, screen_row: usize) !void {
         const empty_line = "~";
         const abs_row = viewport_y + screen_row;
 
@@ -594,9 +646,10 @@ pub const View = struct {
             const old_line = self.prev_screen.items[screen_row].items;
             if (old_line.len != 1 or old_line[0] != '~') {
                 // 変更あり：描画
-                try term.moveCursor(abs_row, 0);
-                try term.write(config.ANSI.CLEAR_LINE);
+                try term.moveCursor(abs_row, viewport_x);
                 try term.write(empty_line);
+                // 残りをスペースで埋める
+                try self.padToWidth(term, empty_line, viewport_width);
 
                 // 前フレームバッファ更新
                 self.prev_screen.items[screen_row].clearRetainingCapacity();
@@ -604,9 +657,10 @@ pub const View = struct {
             }
         } else {
             // 新しい行：描画
-            try term.moveCursor(abs_row, 0);
-            try term.write(config.ANSI.CLEAR_LINE);
+            try term.moveCursor(abs_row, viewport_x);
             try term.write(empty_line);
+            // 残りをスペースで埋める
+            try self.padToWidth(term, empty_line, viewport_width);
 
             // 前フレームバッファ追加
             var new_prev_line = std.ArrayList(u8){};
@@ -616,13 +670,17 @@ pub const View = struct {
     }
 
     /// ウィンドウ境界内にレンダリング
+    /// viewport_x: ウィンドウのX座標（画面左端からのオフセット）
     /// viewport_y: ウィンドウのY座標（画面上端からのオフセット）
+    /// viewport_width: ウィンドウの幅
     /// viewport_height: ウィンドウの高さ（ステータスバー含む）
     /// is_active: アクティブウィンドウならtrue（カーソル表示）
     pub fn renderInBounds(
         self: *View,
         term: *Terminal,
+        viewport_x: usize,
         viewport_y: usize,
+        viewport_width: usize,
         viewport_height: usize,
         is_active: bool,
         modified: bool,
@@ -632,7 +690,7 @@ pub const View = struct {
         filename: ?[]const u8,
     ) !void {
         // 端末サイズが0の場合は何もしない
-        if (term.height == 0 or term.width == 0 or viewport_height == 0) return;
+        if (term.height == 0 or term.width == 0 or viewport_height == 0 or viewport_width == 0) return;
 
         // 注意: hideCursor/showCursorは呼び出し元（renderAllWindows）で一括管理
         _ = is_active; // カーソル表示は呼び出し元で処理
@@ -654,7 +712,7 @@ pub const View = struct {
         // 全画面再描画が必要な場合
         if (self.needs_full_redraw) {
             // ウィンドウの開始位置に移動
-            try term.moveCursor(viewport_y, 0);
+            try term.moveCursor(viewport_y, viewport_x);
 
             // top_lineより前の行をスキャンしてブロックコメント状態を計算
             var in_block = self.computeBlockCommentState(self.top_line);
@@ -669,9 +727,9 @@ pub const View = struct {
             while (screen_row < max_lines) : (screen_row += 1) {
                 const file_line = self.top_line + screen_row;
                 if (file_line < self.buffer.lineCount()) {
-                    in_block = try self.renderLineWithIterOffset(term, viewport_y, screen_row, file_line, &iter, &self.line_buffer, in_block);
+                    in_block = try self.renderLineWithIterOffset(term, viewport_x, viewport_y, viewport_width, screen_row, file_line, &iter, &self.line_buffer, in_block);
                 } else {
-                    try self.renderEmptyLineOffset(term, viewport_y, screen_row);
+                    try self.renderEmptyLineOffset(term, viewport_x, viewport_y, viewport_width, screen_row);
                 }
             }
 
@@ -702,9 +760,9 @@ pub const View = struct {
                 while (screen_row < render_end) : (screen_row += 1) {
                     const file_line = self.top_line + screen_row;
                     if (file_line < self.buffer.lineCount()) {
-                        in_block = try self.renderLineWithIterOffset(term, viewport_y, screen_row, file_line, &iter, &self.line_buffer, in_block);
+                        in_block = try self.renderLineWithIterOffset(term, viewport_x, viewport_y, viewport_width, screen_row, file_line, &iter, &self.line_buffer, in_block);
                     } else {
-                        try self.renderEmptyLineOffset(term, viewport_y, screen_row);
+                        try self.renderEmptyLineOffset(term, viewport_x, viewport_y, viewport_width, screen_row);
                     }
                 }
             }
@@ -713,45 +771,45 @@ pub const View = struct {
         }
 
         // ステータスバーの描画
-        try self.renderStatusBarAt(term, viewport_y + viewport_height - 1, modified, readonly, line_ending, file_encoding, filename);
+        try self.renderStatusBarAt(term, viewport_x, viewport_y + viewport_height - 1, viewport_width, modified, readonly, line_ending, file_encoding, filename);
         // 注意: flush()とカーソル表示は呼び出し元で一括して行う（複数ウィンドウ時の効率化のため）
     }
 
     /// アクティブウィンドウ用のカーソル位置を計算
-    pub fn getCursorScreenPosition(self: *View, viewport_y: usize, term_width: usize) struct { row: usize, col: usize } {
+    pub fn getCursorScreenPosition(self: *View, viewport_x: usize, viewport_y: usize, viewport_width: usize) struct { row: usize, col: usize } {
         const line_num_width = self.getLineNumberWidth();
         var screen_cursor_x = line_num_width + (if (self.cursor_x >= self.top_col) self.cursor_x - self.top_col else 0);
-        // 端末幅を超えないようにクリップ（幅0の場合も考慮）
-        if (term_width > 0 and screen_cursor_x >= term_width) {
-            screen_cursor_x = term_width - 1;
-        } else if (term_width == 0) {
+        // viewport幅を超えないようにクリップ（幅0の場合も考慮）
+        if (viewport_width > 0 and screen_cursor_x >= viewport_width) {
+            screen_cursor_x = viewport_width - 1;
+        } else if (viewport_width == 0) {
             screen_cursor_x = 0;
         }
-        return .{ .row = viewport_y + self.cursor_y, .col = screen_cursor_x };
+        return .{ .row = viewport_y + self.cursor_y, .col = viewport_x + screen_cursor_x };
     }
 
     /// 従来のrender（後方互換性のため）- 全画面レンダリング
     pub fn render(self: *View, term: *Terminal, modified: bool, readonly: bool, line_ending: anytype, file_encoding: encoding.Encoding, filename: ?[]const u8) !void {
-        try self.renderInBounds(term, 0, term.height, true, modified, readonly, line_ending, file_encoding, filename);
+        try self.renderInBounds(term, 0, 0, term.width, term.height, true, modified, readonly, line_ending, file_encoding, filename);
     }
 
     pub fn renderStatusBar(self: *View, term: *Terminal, modified: bool, readonly: bool, line_ending: anytype, file_encoding: encoding.Encoding, filename: ?[]const u8) !void {
-        try self.renderStatusBarAt(term, term.height - 1, modified, readonly, line_ending, file_encoding, filename);
+        try self.renderStatusBarAt(term, 0, term.height - 1, term.width, modified, readonly, line_ending, file_encoding, filename);
     }
 
     /// 指定行にステータスバーを描画
     /// 新デザイン: " *filename                          L42 C8  UTF-8(LF)  Zig"
-    pub fn renderStatusBarAt(self: *View, term: *Terminal, row: usize, modified: bool, readonly: bool, line_ending: anytype, file_encoding: encoding.Encoding, filename: ?[]const u8) !void {
-        try term.moveCursor(row, 0);
+    pub fn renderStatusBarAt(self: *View, term: *Terminal, viewport_x: usize, row: usize, viewport_width: usize, modified: bool, readonly: bool, line_ending: anytype, file_encoding: encoding.Encoding, filename: ?[]const u8) !void {
+        try term.moveCursor(row, viewport_x);
 
         // メッセージがあればそれを優先表示（従来通り）
         if (self.getError()) |msg| {
             try term.write(config.ANSI.INVERT);
             var msg_buf: [config.Editor.STATUS_BUF_SIZE]u8 = undefined;
             const status = try std.fmt.bufPrint(&msg_buf, " {s}", .{msg});
-            const display_status = truncateUtf8(status, term.width);
+            const display_status = truncateUtf8(status, viewport_width);
             try term.write(display_status);
-            const padding = if (display_status.len < term.width) term.width - display_status.len else 0;
+            const padding = if (display_status.len < viewport_width) viewport_width - display_status.len else 0;
             for (0..padding) |_| {
                 try term.write(" ");
             }
@@ -782,14 +840,14 @@ pub const View = struct {
         const right_len = right_part.len;
         const total_content = left_len + right_len;
 
-        if (total_content >= term.width) {
+        if (total_content >= viewport_width) {
             // 幅が足りない場合は左側を優先して切り捨て
-            const max_left = if (term.width > right_len) term.width - right_len else term.width;
+            const max_left = if (viewport_width > right_len) viewport_width - right_len else viewport_width;
             const display_left = truncateUtf8(left_part, max_left);
             try term.write(display_left);
             // 右側は表示できる分だけ
-            if (term.width > display_left.len) {
-                const remaining = term.width - display_left.len;
+            if (viewport_width > display_left.len) {
+                const remaining = viewport_width - display_left.len;
                 const display_right = truncateUtf8(right_part, remaining);
                 // パディング
                 const pad = remaining - display_right.len;
@@ -801,7 +859,7 @@ pub const View = struct {
         } else {
             // 通常表示: 左 + パディング + 右
             try term.write(left_part);
-            const padding = term.width - total_content;
+            const padding = viewport_width - total_content;
             for (0..padding) |_| {
                 try term.write(" ");
             }

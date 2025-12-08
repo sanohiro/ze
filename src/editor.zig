@@ -1429,7 +1429,9 @@ pub const Editor = struct {
 
             try window.view.renderInBounds(
                 &self.terminal,
+                window.x,
                 window.y,
+                window.width,
                 window.height,
                 is_active,
                 buffer_state.modified,
@@ -1441,7 +1443,7 @@ pub const Editor = struct {
 
             // アクティブウィンドウのカーソル位置を記録
             if (is_active) {
-                const pos = window.view.getCursorScreenPosition(window.y, self.terminal.width);
+                const pos = window.view.getCursorScreenPosition(window.x, window.y, window.width);
                 active_cursor_row = pos.row;
                 active_cursor_col = pos.col;
                 has_active = true;
