@@ -96,18 +96,6 @@ pub const PieceIterator = struct {
         return null;
     }
 
-    pub fn peek(self: *const PieceIterator) ?u8 {
-        if (self.piece_idx >= self.buffer.pieces.items.len) return null;
-
-        const piece = self.buffer.pieces.items[self.piece_idx];
-        if (self.piece_offset >= piece.length) return null;
-
-        return switch (piece.source) {
-            .original => self.buffer.original[piece.start + self.piece_offset],
-            .add => self.buffer.add_buffer.items[piece.start + self.piece_offset],
-        };
-    }
-
     // UTF-8文字を取得（バイト単位のnextを使って構築）
     pub fn nextCodepoint(self: *PieceIterator) !?u21 {
         const first_byte = self.next() orelse return null;
@@ -335,16 +323,6 @@ pub const Buffer = struct {
         self.line_index.deinit();
     }
 
-    /// バイナリファイルかどうかを判定（NULL バイトの有無でチェック）
-    fn isBinaryFile(content: []const u8) bool {
-        // 最初の8KBをチェック（全体をチェックすると大きいファイルで遅い）
-        const check_size = @min(content.len, 8192);
-        for (content[0..check_size]) |byte| {
-            if (byte == 0) return true;
-        }
-        return false;
-    }
-
     /// ファイルをバッファに読み込む
     ///
     /// 【高速パス（UTF-8 + LF）】
@@ -462,8 +440,14 @@ pub const Buffer = struct {
         const utf8_content = try encoding.convertToUtf8(allocator, raw_content, detected.encoding);
         defer allocator.free(utf8_content);
 
+        // UTF-16の場合、改行検出は変換後のUTF-8で行う（元のバイト列では検出できない）
+        const actual_line_ending = if (detected.encoding == .UTF16LE_BOM or detected.encoding == .UTF16BE_BOM)
+            encoding.detectLineEnding(utf8_content)
+        else
+            detected.line_ending;
+
         // 改行コードを正規化（LFに統一）
-        const normalized = try encoding.normalizeLineEndings(allocator, utf8_content, detected.line_ending);
+        const normalized = try encoding.normalizeLineEndings(allocator, utf8_content, actual_line_ending);
 
         var self = Buffer{
             .original = normalized,
@@ -475,7 +459,7 @@ pub const Buffer = struct {
             .mmap_len = 0,
             .total_len = normalized.len,
             .line_index = LineIndex.init(allocator),
-            .detected_line_ending = detected.line_ending,
+            .detected_line_ending = actual_line_ending,
             .detected_encoding = detected.encoding,
         };
 
@@ -525,7 +509,13 @@ pub const Buffer = struct {
         const utf8_content = try encoding.convertToUtf8(allocator, raw_content, detected.encoding);
         defer allocator.free(utf8_content);
 
-        const normalized = try encoding.normalizeLineEndings(allocator, utf8_content, detected.line_ending);
+        // UTF-16の場合、改行検出は変換後のUTF-8で行う
+        const actual_line_ending = if (detected.encoding == .UTF16LE_BOM or detected.encoding == .UTF16BE_BOM)
+            encoding.detectLineEnding(utf8_content)
+        else
+            detected.line_ending;
+
+        const normalized = try encoding.normalizeLineEndings(allocator, utf8_content, actual_line_ending);
 
         var self = Buffer{
             .original = normalized,
@@ -537,7 +527,7 @@ pub const Buffer = struct {
             .mmap_len = 0,
             .total_len = normalized.len,
             .line_index = LineIndex.init(allocator),
-            .detected_line_ending = detected.line_ending,
+            .detected_line_ending = actual_line_ending,
             .detected_encoding = detected.encoding,
         };
 

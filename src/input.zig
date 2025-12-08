@@ -133,6 +133,11 @@ pub fn readKey(stdin: std.fs.File) !?Key {
         else => {},
     }
 
+    // Ctrl+Space (C-@) = ASCII 0 (NUL)
+    if (ch == 0) {
+        return Key{ .ctrl = 0 };
+    }
+
     // Ctrl キー (0x01-0x1A)
     if (ch >= 1 and ch <= 26) {
         return Key{ .ctrl = ch + 'a' - 1 };
@@ -259,6 +264,11 @@ pub fn readKeyFromReader(reader: *InputReader) !?Key {
         8, config.Input.DEL => return Key.backspace,
         '\t' => return Key.tab,
         else => {},
+    }
+
+    // Ctrl+Space (C-@) = ASCII 0 (NUL)
+    if (ch == 0) {
+        return Key{ .ctrl = 0 };
     }
 
     // Ctrl キー (0x01-0x1A)

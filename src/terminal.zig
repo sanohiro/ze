@@ -24,11 +24,11 @@ const io = std.io;
 const config = @import("config.zig");
 
 /// グローバルリサイズフラグ（SIGWINCHハンドラから設定）
-var g_resize_pending: bool = false;
+var g_resize_pending = std.atomic.Value(bool).init(false);
 
 /// SIGWINCHシグナルハンドラ
 fn sigwinchHandler(_: c_int) callconv(.c) void {
-    g_resize_pending = true;
+    g_resize_pending.store(true, .release);
 }
 
 pub const Terminal = struct {
@@ -139,8 +139,7 @@ pub const Terminal = struct {
     /// 端末サイズが変更されたかチェックし、変更されていればサイズを更新してtrueを返す
     pub fn checkResize(self: *Terminal) !bool {
         // SIGWINCHフラグをチェック（シグナル駆動の高速検出）
-        if (g_resize_pending) {
-            g_resize_pending = false;
+        if (g_resize_pending.swap(false, .acquire)) {
             try self.getWindowSize();
             return true;
         }

@@ -96,8 +96,5 @@ pub fn main() !void {
 
     // エディタを実行
     try editor.run();
-
-    // 終了時に改行を出力（ターミナルのプロンプト表示を整える）
-    const stdout_file: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
-    _ = try stdout_file.write("\n");
+    // 改行はterminal.deinit()で出力される
 }

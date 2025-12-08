@@ -61,7 +61,19 @@ pub const View = struct {
     highlighted_line: std.ArrayList(u8),
     allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator, buffer: *Buffer) View {
+    pub fn init(allocator: std.mem.Allocator, buffer: *Buffer) !View {
+        var line_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
+        errdefer line_buffer.deinit(allocator);
+
+        var prev_screen = try std.ArrayList(std.ArrayList(u8)).initCapacity(allocator, 0);
+        errdefer prev_screen.deinit(allocator);
+
+        var expanded_line = try std.ArrayList(u8).initCapacity(allocator, 256);
+        errdefer expanded_line.deinit(allocator);
+
+        var highlighted_line = try std.ArrayList(u8).initCapacity(allocator, 256);
+        errdefer highlighted_line.deinit(allocator);
+
         return View{
             .buffer = buffer,
             .top_line = 0,
@@ -71,9 +83,9 @@ pub const View = struct {
             .dirty_start = null,
             .dirty_end = null,
             .needs_full_redraw = true,
-            .line_buffer = std.ArrayList(u8).initCapacity(allocator, 0) catch unreachable,
+            .line_buffer = line_buffer,
             .error_msg = null,
-            .prev_screen = std.ArrayList(std.ArrayList(u8)).initCapacity(allocator, 0) catch unreachable,
+            .prev_screen = prev_screen,
             .search_highlight = null,
             .cached_line_num_width = 0,
             .language = &syntax.lang_text, // デフォルトはテキストモード
@@ -81,8 +93,8 @@ pub const View = struct {
             .indent_style = null, // 言語デフォルトを使用
             .cached_block_state = null, // キャッシュ無効
             .cached_block_top_line = 0,
-            .expanded_line = std.ArrayList(u8).initCapacity(allocator, 256) catch .{},
-            .highlighted_line = std.ArrayList(u8).initCapacity(allocator, 256) catch .{},
+            .expanded_line = expanded_line,
+            .highlighted_line = highlighted_line,
             .allocator = allocator,
         };
     }
@@ -291,14 +303,17 @@ pub const View = struct {
         if (line_num_width > 0) {
             var num_buf: [64]u8 = undefined;
             // グレー(\x1b[90m) + 右詰め行番号 + リセット(\x1b[m) + スペース2個
-            const line_num_str = std.fmt.bufPrint(&num_buf, "\x1b[90m{d: >[1]}\x1b[m  ", .{ file_line + 1, line_num_width - 2 }) catch "";
+            // 注: getLineNumberWidthは最小5を返すが、防御的にサチュレート減算
+            const num_width = if (line_num_width >= 2) line_num_width - 2 else 1;
+            const line_num_str = std.fmt.bufPrint(&num_buf, "\x1b[90m{d: >[1]}\x1b[m  ", .{ file_line + 1, num_width }) catch "";
             try self.expanded_line.appendSlice(self.allocator, line_num_str);
         }
 
         // grapheme-aware rendering with tab expansion and horizontal scrolling
         var byte_idx: usize = 0;
         var col: usize = 0; // 論理カラム位置（行全体での位置）
-        const visible_end = self.top_col + (term.width - line_num_width); // 表示範囲の終端（行番号幅を除く）
+        const visible_width = if (term.width > line_num_width) term.width - line_num_width else 1;
+        const visible_end = self.top_col + visible_width; // 表示範囲の終端（行番号幅を除く）
 
         // コメントスパンがある場合のみ追跡（最適化：span_count==0なら完全スキップ）
         const has_spans = analysis.span_count > 0;
@@ -666,9 +681,11 @@ pub const View = struct {
     pub fn getCursorScreenPosition(self: *View, viewport_y: usize, term_width: usize) struct { row: usize, col: usize } {
         const line_num_width = self.getLineNumberWidth();
         var screen_cursor_x = line_num_width + (if (self.cursor_x >= self.top_col) self.cursor_x - self.top_col else 0);
-        // 端末幅を超えないようにクリップ
-        if (screen_cursor_x >= term_width) {
+        // 端末幅を超えないようにクリップ（幅0の場合も考慮）
+        if (term_width > 0 and screen_cursor_x >= term_width) {
             screen_cursor_x = term_width - 1;
+        } else if (term_width == 0) {
+            screen_cursor_x = 0;
         }
         return .{ .row = viewport_y + self.cursor_y, .col = screen_cursor_x };
     }

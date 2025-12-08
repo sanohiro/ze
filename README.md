@@ -139,6 +139,8 @@ ze highlights comments only. This is intentional:
 | `line N` | Jump to line N |
 | `tab` / `tab N` | Show/set tab width |
 | `indent` | Show/set indent style |
+| `mode` / `mode X` | Show/set language mode |
+| `key` | Describe key binding |
 | `revert` | Reload file |
 | `ro` | Toggle read-only |
 | `?` | List commands |

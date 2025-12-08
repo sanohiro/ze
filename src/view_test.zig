@@ -11,7 +11,7 @@ const DummyTerminal = struct {
 
 // ViewのテストヘルパーでTerminalのダミーを渡す
 fn createTestView(allocator: std.mem.Allocator, content: []const u8) !struct { buffer: Buffer, view: View } {
-    var buffer = Buffer.init(allocator) catch unreachable;
+    var buffer = try Buffer.init(allocator);
     errdefer buffer.deinit();
 
     // contentを追加
@@ -19,7 +19,7 @@ fn createTestView(allocator: std.mem.Allocator, content: []const u8) !struct { b
         try buffer.insertSlice(0, content);
     }
 
-    const view = View.init(&buffer);
+    const view = try View.init(allocator, &buffer);
     return .{ .buffer = buffer, .view = view };
 }
 

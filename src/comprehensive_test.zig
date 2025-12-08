@@ -223,7 +223,7 @@ test "Cursor movement: Complex emoji sequences" {
     const family = "👨‍👩‍👧‍👦";
     try buffer.insertSlice(0, family);
 
-    var view = View.init(allocator, &buffer);
+    var view = try View.init(allocator, &buffer);
     var dummy_term = DummyTerminal{};
 
     // Should move over entire family as one unit
@@ -250,7 +250,7 @@ test "Cursor movement: Multiple flags in sequence" {
     const flags = "🇯🇵🇺🇸🇬🇧";
     try buffer.insertSlice(0, flags);
 
-    var view = View.init(allocator, &buffer);
+    var view = try View.init(allocator, &buffer);
     var dummy_term = DummyTerminal{};
 
     // Move through each flag
@@ -288,7 +288,7 @@ test "Cursor movement: Mixed ASCII, CJK, and emoji" {
     const mixed = "Hi日本🌍";
     try buffer.insertSlice(0, mixed);
 
-    var view = View.init(allocator, &buffer);
+    var view = try View.init(allocator, &buffer);
     var dummy_term = DummyTerminal{};
 
     // H (width 1)
@@ -416,7 +416,7 @@ test "Stress test: Long line with mixed content" {
     const line = "Hello世界😀Test日本語🌍ASCII文字🇯🇵Flag";
     try buffer.insertSlice(0, line);
 
-    var view = View.init(allocator, &buffer);
+    var view = try View.init(allocator, &buffer);
     const DummyTerminal = struct {
         width: usize = 80,
         height: usize = 24,

@@ -65,6 +65,11 @@ const EditOp = union(enum) {
         pos: usize,
         text: []const u8, // 削除されたテキストを保存（Undo時に復元）
     },
+    replace: struct {
+        pos: usize,
+        old_text: []const u8, // 置換前のテキスト（Undo時に復元）
+        new_text: []const u8, // 置換後のテキスト
+    },
 };
 
 const UndoEntry = struct {
@@ -76,6 +81,10 @@ const UndoEntry = struct {
         switch (self.op) {
             .insert => |ins| allocator.free(ins.text),
             .delete => |del| allocator.free(del.text),
+            .replace => |rep| {
+                allocator.free(rep.old_text);
+                allocator.free(rep.new_text);
+            },
         }
     }
 };
@@ -143,6 +152,8 @@ pub const ShellCommandState = struct {
     command: []const u8, // コマンド文字列（解放用）
     stdout_buffer: std.ArrayList(u8), // 蓄積された標準出力
     stderr_buffer: std.ArrayList(u8), // 蓄積された標準エラー
+    child_reaped: bool, // 子プロセスがwaitpidで回収済みか（kill防止用）
+    exit_status: ?u32, // 終了ステータス（非0でエラー）
 };
 
 /// 全角英数記号（U+FF01〜U+FF5E）を半角（U+0021〜U+007E）に変換
@@ -324,7 +335,7 @@ pub const Editor = struct {
 
         // 最初のウィンドウを作成（全画面、ステータスバーはheight内に含む）
         var first_window = Window.init(0, 0, 0, 0, terminal.width, terminal.height);
-        first_window.view = View.init(allocator, &first_buffer.buffer);
+        first_window.view = try View.init(allocator, &first_buffer.buffer);
         // 言語検出（新規バッファなのでデフォルト、ファイルオープン時にmain.zigで再検出される）
         first_window.view.detectLanguage(null, null);
 
@@ -436,8 +447,16 @@ pub const Editor = struct {
 
     /// シェルコマンド状態をクリーンアップ
     fn cleanupShellState(self: *Editor, state: *ShellCommandState) void {
-        // 子プロセスがまだ実行中ならkill
-        _ = state.child.kill() catch {};
+        // 子プロセスがまだ実行中（回収されていない）場合のみkill
+        // 回収済みの場合、PIDが再利用されて無関係のプロセスをkillする可能性がある
+        if (!state.child_reaped) {
+            _ = state.child.kill() catch {};
+        }
+
+        // パイプのファイルディスクリプタを閉じる（FDリーク防止）
+        if (state.child.stdout) |f| f.close();
+        if (state.child.stderr) |f| f.close();
+        if (state.child.stdin) |f| f.close();
 
         // stdin_dataを解放
         if (state.stdin_allocated) {
@@ -464,6 +483,8 @@ pub const Editor = struct {
 
     /// 現在のウィンドウを取得
     pub fn getCurrentWindow(self: *Editor) *Window {
+        std.debug.assert(self.windows.items.len > 0);
+        std.debug.assert(self.current_window_idx < self.windows.items.len);
         return &self.windows.items[self.current_window_idx];
     }
 
@@ -802,6 +823,10 @@ pub const Editor = struct {
 
     /// ミニバッファのプロンプトを更新（カーソル位置も保持）
     fn updateMinibufferPrompt(self: *Editor, prefix: []const u8) void {
+        // 古いプロンプトバッファを解放（メモリリーク防止）
+        if (self.prompt_buffer) |old_prompt| {
+            self.allocator.free(old_prompt);
+        }
         self.prompt_prefix_len = prefix.len;
         self.prompt_buffer = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ prefix, self.input_buffer.items }) catch null;
         if (self.prompt_buffer) |prompt| {
@@ -907,7 +932,7 @@ pub const Editor = struct {
             cmd_height,
         );
 
-        new_window.view = View.init(self.allocator, &cmd_buffer.buffer);
+        new_window.view = try View.init(self.allocator, &cmd_buffer.buffer);
         // 言語検出（*Command*バッファはプレーンテキストだが一貫性のため）
         const content_preview = cmd_buffer.buffer.getContentPreview(512);
         new_window.view.detectLanguage(cmd_buffer.filename, content_preview);
@@ -921,9 +946,12 @@ pub const Editor = struct {
         const buffer_state = self.findBufferById(buffer_id) orelse return error.BufferNotFound;
         const window = self.getCurrentWindow();
 
-        // Viewを更新
+        // 新しいViewを先に作成（失敗時は古いViewを保持）
+        const new_view = try View.init(self.allocator, &buffer_state.buffer);
+
+        // 新しいViewの作成に成功したら古いViewを破棄
         window.view.deinit(self.allocator);
-        window.view = View.init(self.allocator, &buffer_state.buffer);
+        window.view = new_view;
         window.buffer_id = buffer_id;
 
         // 言語検出（新しいViewに言語設定を適用）
@@ -946,7 +974,7 @@ pub const Editor = struct {
                         // len >= 2 が保証されているので、i==0 なら items[1] が、i>0 なら items[i-1] が存在
                         const next_buffer = if (i > 0) self.buffers.items[i - 1] else self.buffers.items[1];
                         window.view.deinit(self.allocator);
-                        window.view = View.init(self.allocator, &next_buffer.buffer);
+                        window.view = try View.init(self.allocator, &next_buffer.buffer);
                         window.buffer_id = next_buffer.id;
                         // 言語検出（コメント強調・タブ幅など）
                         const content_preview = next_buffer.buffer.getContentPreview(512);
@@ -1132,9 +1160,19 @@ pub const Editor = struct {
             return error.WindowTooSmall;
         }
 
-        // 現在のウィンドウの高さを半分にする
+        // 分割後のサイズを計算（まだ適用しない）
         const old_height = current_window.height;
         const new_height = old_height / 2;
+
+        // バッファを取得
+        const buffer_state = self.findBufferById(current_window.buffer_id) orelse return error.BufferNotFound;
+
+        // 新しいウィンドウのViewを先に初期化（失敗時は何も変更しない）
+        var new_view = try View.init(self.allocator, &buffer_state.buffer);
+        errdefer new_view.deinit(self.allocator);
+
+        // ここから先は失敗しない操作のみ
+        // 現在のウィンドウの高さを半分にする
         current_window.height = new_height;
 
         // 新しいウィンドウを下半分に作成
@@ -1153,11 +1191,7 @@ pub const Editor = struct {
         // 分割情報を設定
         new_window.split_type = .horizontal;
         new_window.split_parent_id = current_window.id;
-
-        // 新しいウィンドウのViewを初期化
-        // buffer_idは現在のウィンドウから取得しているため、必ず存在する
-        const buffer_state = self.findBufferById(current_window.buffer_id) orelse unreachable;
-        new_window.view = View.init(self.allocator, &buffer_state.buffer);
+        new_window.view = new_view;
 
         // 言語検出（新しいViewに言語設定を適用）
         const content_preview = buffer_state.buffer.getContentPreview(512);
@@ -1179,9 +1213,19 @@ pub const Editor = struct {
             return error.WindowTooSmall;
         }
 
-        // 現在のウィンドウの幅を半分にする
+        // 分割後のサイズを計算（まだ適用しない）
         const old_width = current_window.width;
         const new_width = old_width / 2;
+
+        // バッファを取得
+        const buffer_state = self.findBufferById(current_window.buffer_id) orelse return error.BufferNotFound;
+
+        // 新しいウィンドウのViewを先に初期化（失敗時は何も変更しない）
+        var new_view = try View.init(self.allocator, &buffer_state.buffer);
+        errdefer new_view.deinit(self.allocator);
+
+        // ここから先は失敗しない操作のみ
+        // 現在のウィンドウの幅を半分にする
         current_window.width = new_width;
 
         // 新しいウィンドウを右半分に作成
@@ -1200,11 +1244,7 @@ pub const Editor = struct {
         // 分割情報を設定
         new_window.split_type = .vertical;
         new_window.split_parent_id = current_window.id;
-
-        // 新しいウィンドウのViewを初期化
-        // buffer_idは現在のウィンドウから取得しているため、必ず存在する
-        const buffer_state = self.findBufferById(current_window.buffer_id) orelse unreachable;
-        new_window.view = View.init(self.allocator, &buffer_state.buffer);
+        new_window.view = new_view;
 
         // 言語検出（新しいViewに言語設定を適用）
         const content_preview = buffer_state.buffer.getContentPreview(512);
@@ -1669,6 +1709,10 @@ pub const Editor = struct {
         if (buffer_state.undo_stack.items.len > MAX_UNDO_ENTRIES) {
             const old_entry = buffer_state.undo_stack.orderedRemove(0);
             old_entry.deinit(self.allocator);
+            // save_pointを調整（古いエントリが削除されたので1減らす）
+            if (buffer_state.undo_save_point) |sp| {
+                buffer_state.undo_save_point = if (sp > 0) sp - 1 else null;
+            }
         }
 
         // Redoスタックをクリア
@@ -1727,6 +1771,42 @@ pub const Editor = struct {
         if (buffer_state.undo_stack.items.len > MAX_UNDO_ENTRIES) {
             const old_entry = buffer_state.undo_stack.orderedRemove(0);
             old_entry.deinit(self.allocator);
+            // save_pointを調整（古いエントリが削除されたので1減らす）
+            if (buffer_state.undo_save_point) |sp| {
+                buffer_state.undo_save_point = if (sp > 0) sp - 1 else null;
+            }
+        }
+
+        // Redoスタックをクリア
+        for (buffer_state.redo_stack.items) |*entry| {
+            entry.deinit(self.allocator);
+        }
+        buffer_state.redo_stack.clearRetainingCapacity();
+    }
+
+    /// 置換操作を記録（deleteとinsertを1つの原子的な操作として）
+    fn recordReplace(self: *Editor, pos: usize, old_text: []const u8, new_text: []const u8, cursor_pos_before_edit: usize) !void {
+        const buffer_state = self.getCurrentBuffer();
+        const now = getCurrentTimeMs();
+
+        const old_copy = try self.allocator.dupe(u8, old_text);
+        errdefer self.allocator.free(old_copy);
+        const new_copy = try self.allocator.dupe(u8, new_text);
+
+        try buffer_state.undo_stack.append(self.allocator, .{
+            .op = .{ .replace = .{ .pos = pos, .old_text = old_copy, .new_text = new_copy } },
+            .cursor_pos = cursor_pos_before_edit,
+            .timestamp = now,
+        });
+
+        // Undoスタックが上限を超えたら古いエントリを削除
+        if (buffer_state.undo_stack.items.len > MAX_UNDO_ENTRIES) {
+            const old_entry = buffer_state.undo_stack.orderedRemove(0);
+            old_entry.deinit(self.allocator);
+            // save_pointを調整（古いエントリが削除されたので1減らす）
+            if (buffer_state.undo_save_point) |sp| {
+                buffer_state.undo_save_point = if (sp > 0) sp - 1 else null;
+            }
         }
 
         // Redoスタックをクリア
@@ -1765,6 +1845,18 @@ pub const Editor = struct {
                 const text_copy = try self.allocator.dupe(u8, del.text);
                 try buffer_state.redo_stack.append(self.allocator, .{
                     .op = .{ .delete = .{ .pos = del.pos, .text = text_copy } },
+                    .cursor_pos = self.getCurrentView().getCursorBufferPos(),
+                    .timestamp = now,
+                });
+            },
+            .replace => |rep| {
+                // replaceの取り消し: new_textを削除してold_textを挿入
+                try buffer.delete(rep.pos, rep.new_text.len);
+                try buffer.insertSlice(rep.pos, rep.old_text);
+                const old_copy = try self.allocator.dupe(u8, rep.old_text);
+                const new_copy = try self.allocator.dupe(u8, rep.new_text);
+                try buffer_state.redo_stack.append(self.allocator, .{
+                    .op = .{ .replace = .{ .pos = rep.pos, .old_text = old_copy, .new_text = new_copy } },
                     .cursor_pos = self.getCurrentView().getCursorBufferPos(),
                     .timestamp = now,
                 });
@@ -1810,6 +1902,18 @@ pub const Editor = struct {
                 const text_copy = try self.allocator.dupe(u8, del.text);
                 try buffer_state.undo_stack.append(self.allocator, .{
                     .op = .{ .delete = .{ .pos = del.pos, .text = text_copy } },
+                    .cursor_pos = self.getCurrentView().getCursorBufferPos(),
+                    .timestamp = now,
+                });
+            },
+            .replace => |rep| {
+                // redoのreplace: もう一度old_textを削除してnew_textを挿入
+                try buffer.delete(rep.pos, rep.old_text.len);
+                try buffer.insertSlice(rep.pos, rep.new_text);
+                const old_copy = try self.allocator.dupe(u8, rep.old_text);
+                const new_copy = try self.allocator.dupe(u8, rep.new_text);
+                try buffer_state.undo_stack.append(self.allocator, .{
+                    .op = .{ .replace = .{ .pos = rep.pos, .old_text = old_copy, .new_text = new_copy } },
                     .cursor_pos = self.getCurrentView().getCursorBufferPos(),
                     .timestamp = now,
                 });
@@ -2080,6 +2184,10 @@ pub const Editor = struct {
                         self.input_cursor = self.input_buffer.items.len;
                         // プロンプトを更新して検索実行
                         const prefix = if (is_forward) "I-search: " else "I-search backward: ";
+                        // 古いプロンプトバッファを解放（メモリリーク防止）
+                        if (self.prompt_buffer) |old_prompt| {
+                            self.allocator.free(old_prompt);
+                        }
                         self.prompt_buffer = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ prefix, self.input_buffer.items }) catch null;
                         if (self.prompt_buffer) |prompt| {
                             self.getCurrentView().setError(prompt);
@@ -2115,6 +2223,7 @@ pub const Editor = struct {
                                 if (self.search_start_pos) |start_pos| {
                                     self.setCursorToPos(start_pos);
                                 }
+                                self.search_start_pos = null;
                                 self.mode = .normal;
                                 self.input_buffer.clearRetainingCapacity();
                                 self.search_history.resetNavigation();
@@ -2194,6 +2303,7 @@ pub const Editor = struct {
                             }
                             self.last_search = self.allocator.dupe(u8, self.input_buffer.items) catch null;
                         }
+                        self.search_start_pos = null;
                         self.mode = .normal;
                         self.input_buffer.clearRetainingCapacity();
                         self.search_history.resetNavigation();
@@ -4003,8 +4113,12 @@ pub const Editor = struct {
     // マーク位置とカーソル位置から範囲を取得（開始位置と長さを返す）
     fn getRegion(self: *Editor) ?struct { start: usize, len: usize } {
         const window = self.getCurrentWindow();
-        const mark = window.mark_pos orelse return null;
+        const raw_mark = window.mark_pos orelse return null;
+        const buffer = self.getCurrentBufferContent();
         const cursor = self.getCurrentView().getCursorBufferPos();
+
+        // マーク位置がバッファ範囲を超えている場合はクランプ（バッファ編集後の安全対策）
+        const mark = @min(raw_mark, buffer.len());
 
         if (mark < cursor) {
             return .{ .start = mark, .len = cursor - mark };
@@ -4458,18 +4572,18 @@ pub const Editor = struct {
         // Undo記録のために現在のカーソル位置を保存
         const cursor_pos_before = match_pos;
 
-        // 一致部分を削除
-        const deleted_text = try self.extractText(match_pos, search.len);
-        defer self.allocator.free(deleted_text);
+        // 一致部分のテキストを保存（Undo用）
+        const old_text = try self.extractText(match_pos, search.len);
+        defer self.allocator.free(old_text);
 
+        // 置換を実行（削除してから挿入）
         try buffer.delete(match_pos, search.len);
-        try self.recordDelete(match_pos, deleted_text, cursor_pos_before);
-
-        // 置換文字列を挿入
         if (replacement.len > 0) {
             try buffer.insertSlice(match_pos, replacement);
-            try self.recordInsert(match_pos, replacement, match_pos);
         }
+
+        // 原子的な置換操作として記録（1回のundoで元に戻る）
+        try self.recordReplace(match_pos, old_text, replacement, cursor_pos_before);
 
         buffer_state.modified = true;
         self.replace_match_count += 1;
@@ -5026,6 +5140,13 @@ pub const Editor = struct {
             },
         }
 
+        // 入力データのクリーンアップ（spawn()失敗時用）
+        errdefer if (stdin_allocated) {
+            if (stdin_data) |data| {
+                self.allocator.free(data);
+            }
+        };
+
         // コマンドをヒープにコピー（input_bufferは再利用されるため）
         const command_copy = try self.allocator.dupe(u8, parsed.command);
         errdefer self.allocator.free(command_copy);
@@ -5048,28 +5169,25 @@ pub const Editor = struct {
         state.command = command_copy;
         state.stdout_buffer = .{};
         state.stderr_buffer = .{};
+        state.child_reaped = false;
+        state.exit_status = null;
 
         try state.child.spawn();
 
         // stdout/stderr/stdinをノンブロッキングに設定
-        // O_NONBLOCKの値はPOSIXで0x0004 (macOS/BSD)または0x800 (Linux)
-        const O_NONBLOCK: usize = if (builtin.os.tag == .macos or builtin.os.tag == .freebsd)
-            0x0004
-        else
-            0x800;
-
+        // 注: fcntl失敗は無視（まれで、失敗してもブロッキングI/Oになるだけ）
+        const nonblock_flag: usize = @as(u32, @bitCast(std.posix.O{ .NONBLOCK = true }));
         if (state.child.stdout) |stdout_file| {
             const flags = std.posix.fcntl(stdout_file.handle, std.posix.F.GETFL, 0) catch 0;
-            _ = std.posix.fcntl(stdout_file.handle, std.posix.F.SETFL, flags | O_NONBLOCK) catch {};
+            _ = std.posix.fcntl(stdout_file.handle, std.posix.F.SETFL, flags | nonblock_flag) catch {};
         }
         if (state.child.stderr) |stderr_file| {
             const flags = std.posix.fcntl(stderr_file.handle, std.posix.F.GETFL, 0) catch 0;
-            _ = std.posix.fcntl(stderr_file.handle, std.posix.F.SETFL, flags | O_NONBLOCK) catch {};
+            _ = std.posix.fcntl(stderr_file.handle, std.posix.F.SETFL, flags | nonblock_flag) catch {};
         }
-        // stdinもノンブロッキングに設定（ストリーミング書き込み用）
         if (state.child.stdin) |stdin_file| {
             const flags = std.posix.fcntl(stdin_file.handle, std.posix.F.GETFL, 0) catch 0;
-            _ = std.posix.fcntl(stdin_file.handle, std.posix.F.SETFL, flags | O_NONBLOCK) catch {};
+            _ = std.posix.fcntl(stdin_file.handle, std.posix.F.SETFL, flags | nonblock_flag) catch {};
         }
 
         // stdin への書き込みは pollShellCommand() でインクリメンタルに行う
@@ -5154,6 +5272,19 @@ pub const Editor = struct {
             return;
         }
 
+        // プロセス終了を記録（cleanupShellStateでkillを避けるため）
+        state.child_reaped = true;
+
+        // 終了ステータスを記録
+        if (std.c.W.IFEXITED(result.status)) {
+            state.exit_status = std.c.W.EXITSTATUS(result.status);
+        } else if (std.c.W.IFSIGNALED(result.status)) {
+            // シグナルで終了した場合は128+シグナル番号
+            state.exit_status = 128 + @as(u32, std.c.W.TERMSIG(result.status));
+        } else {
+            state.exit_status = null;
+        }
+
         // プロセス終了 - 残りのデータを読み取って処理
         // 終了後に残っているデータを読み取る
         if (state.child.stdout) |stdout_file| {
@@ -5185,16 +5316,19 @@ pub const Editor = struct {
         // 蓄積されたバッファからデータを取得
         const stdout = state.stdout_buffer.items;
         const stderr = state.stderr_buffer.items;
+        const exit_status = state.exit_status;
 
         // 結果を処理
-        try self.processShellResult(stdout, stderr, state.input_source, state.output_dest);
+        try self.processShellResult(stdout, stderr, exit_status, state.input_source, state.output_dest);
     }
 
     /// シェルコマンドをキャンセル
     fn cancelShellCommand(self: *Editor) void {
         if (self.shell_state) |state| {
-            // 子プロセスをkill
-            _ = state.child.kill() catch {};
+            // 子プロセスをkill（まだ回収されていない場合のみ）
+            if (!state.child_reaped) {
+                _ = state.child.kill() catch {};
+            }
             self.cleanupShellState(state);
         }
         self.mode = .normal;
@@ -5202,16 +5336,38 @@ pub const Editor = struct {
     }
 
     /// シェル実行結果を処理
-    fn processShellResult(self: *Editor, stdout: []const u8, stderr: []const u8, input_source: ShellInputSource, output_dest: ShellOutputDest) !void {
+    fn processShellResult(self: *Editor, stdout: []const u8, stderr: []const u8, exit_status: ?u32, input_source: ShellInputSource, output_dest: ShellOutputDest) !void {
         const window = &self.windows.items[self.current_window_idx];
 
         // 結果を処理
         switch (output_dest) {
             .command_buffer => {
-                // *Command* バッファに出力を表示
-                const output = if (stderr.len > 0) stderr else stdout;
+                // *Command* バッファに出力を表示（stdout + stderrを結合）
+                var output_list: std.ArrayList(u8) = .{};
+                defer output_list.deinit(self.allocator);
+
+                if (stdout.len > 0) {
+                    try output_list.appendSlice(self.allocator, stdout);
+                }
+                if (stderr.len > 0) {
+                    if (stdout.len > 0 and stdout[stdout.len - 1] != '\n') {
+                        try output_list.append(self.allocator, '\n');
+                    }
+                    try output_list.appendSlice(self.allocator, stderr);
+                }
+                const output = output_list.items;
                 if (output.len == 0) {
-                    self.getCurrentView().setError("(no output)");
+                    if (exit_status) |status| {
+                        if (status != 0) {
+                            var msg_buf: [64]u8 = undefined;
+                            const msg = std.fmt.bufPrint(&msg_buf, "Exit status: {d}", .{status}) catch "(exit error)";
+                            self.getCurrentView().setError(msg);
+                        } else {
+                            self.getCurrentView().setError("(no output)");
+                        }
+                    } else {
+                        self.getCurrentView().setError("(no output)");
+                    }
                     return;
                 }
 
@@ -5255,11 +5411,21 @@ pub const Editor = struct {
                 }
 
                 // カレントウィンドウはそのまま（移動しない）
-                // stderrの場合はエラー表示
-                if (stderr.len > 0) {
-                    self.getCurrentView().setError("Command failed (see below)");
+                // ステータス表示
+                if (exit_status) |status| {
+                    if (status != 0) {
+                        var msg_buf: [64]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&msg_buf, "Exit {d} (see below)", .{status}) catch "Exit error";
+                        self.getCurrentView().setError(msg);
+                    } else if (stderr.len > 0) {
+                        self.getCurrentView().setError("Done with warnings (see below)");
+                    } else {
+                        self.getCurrentView().setError("Done (see below)");
+                    }
+                } else if (stderr.len > 0) {
+                    self.getCurrentView().setError("Done with warnings (see below)");
                 } else {
-                    self.getCurrentView().setError("Command output below");
+                    self.getCurrentView().setError("Done (see below)");
                 }
             },
             .replace => {

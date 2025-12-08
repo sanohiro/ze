@@ -164,7 +164,12 @@ pub const History = struct {
 
         // 行ごとに分割して追加
         var iter = std.mem.splitScalar(u8, content[0..bytes_read], '\n');
-        while (iter.next()) |line| {
+        while (iter.next()) |raw_line| {
+            // CRLF対応: 末尾の\rを除去
+            const line = if (raw_line.len > 0 and raw_line[raw_line.len - 1] == '\r')
+                raw_line[0 .. raw_line.len - 1]
+            else
+                raw_line;
             if (line.len > 0) {
                 const duped = try self.allocator.dupe(u8, line);
                 try self.entries.append(self.allocator, duped);
