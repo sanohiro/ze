@@ -1,24 +1,70 @@
+// ============================================================================
+// Piece Table バッファ実装
+// ============================================================================
+//
+// 【Piece Tableとは】
+// テキストエディタで広く使われるデータ構造。元のファイル内容を不変に保ち、
+// 編集操作は「追加バッファ」への追記と「ピース配列」の操作で表現する。
+//
+// 【構造】
+//   original: [元のファイル内容（読み取り専用、mmapも可能）]
+//   add_buffer: [挿入された文字列を追記していくバッファ]
+//   pieces: [{ source: original/add, start: N, length: M }, ...]
+//
+// 【例：「Hello World」→「Hello, Beautiful World」への編集】
+//   original = "Hello World"
+//   add_buffer = ", Beautiful"
+//   pieces = [
+//     { original, 0, 5 },    // "Hello"
+//     { add, 0, 12 },        // ", Beautiful"
+//     { original, 5, 6 },    // " World"
+//   ]
+//
+// 【利点】
+// - 挿入/削除がO(ピース数)で高速（ギャップバッファより安定）
+// - 元ファイルをmmapすればメモリ効率が良い
+// - Undo/Redoが実装しやすい（ピース配列の履歴を保持するだけ）
+//
+// 【LineIndex】
+// 行番号 → バイトオフセットの高速変換のため、行開始位置をキャッシュ。
+// 編集時に無効化され、必要に応じて再構築される（遅延評価）。
+// ============================================================================
+
 const std = @import("std");
 const unicode = @import("unicode.zig");
 const config = @import("config.zig");
 const encoding = @import("encoding.zig");
 
+/// ピースのソース（元ファイル or 追加バッファ）
 pub const PieceSource = enum {
-    original,
-    add,
+    original, // 元のファイル内容
+    add, // 編集で追加された内容
 };
 
+/// ピース: テキストの一部分を表す
+/// source + start + length で、どのバッファのどの範囲かを示す
 pub const Piece = struct {
     source: PieceSource,
-    start: usize,
-    length: usize,
+    start: usize, // ソースバッファ内での開始位置
+    length: usize, // バイト長
 };
 
+/// バッファ内容を順次読み取るためのイテレータ
+///
+/// Piece Tableは複数のpieceで構成されるため、単純なスライスのように
+/// 連続したメモリとしてアクセスできない。このイテレータはpiece間を
+/// 自動的にまたいで、あたかも連続したバイト列のように読み取れる。
+///
+/// 主な機能:
+/// - next(): 1バイトずつ読み取り
+/// - nextCodepoint(): UTF-8コードポイント単位で読み取り
+/// - nextGraphemeCluster(): グラフェムクラスタ単位で読み取り
+/// - seek(): 指定位置にジャンプ
 pub const PieceIterator = struct {
     buffer: *const Buffer,
-    piece_idx: usize,
-    piece_offset: usize,
-    global_pos: usize,
+    piece_idx: usize, // 現在のpiece番号
+    piece_offset: usize, // 現在のpiece内でのオフセット
+    global_pos: usize, // バッファ全体での位置
 
     pub fn init(buffer: *const Buffer) PieceIterator {
         return .{
@@ -134,8 +180,21 @@ pub const PieceIterator = struct {
         self.global_pos = saved.global_pos;
     }
 
-    // Grapheme cluster全体をスキップ（完全なUnicode対応）
-    // ziglyphのアルゴリズムを使用
+    /// 次のグラフェムクラスタを読み取る
+    ///
+    /// 【グラフェムクラスタとは】
+    /// ユーザーが「1文字」として認識する単位。例:
+    /// - "é" (e + 結合アクセント) → 1グラフェム、2コードポイント
+    /// - "👨‍👩‍👧" (家族絵文字) → 1グラフェム、5コードポイント
+    /// - "が" (か + 濁点) → 1グラフェム、1または2コードポイント
+    ///
+    /// UAX #29 (Unicode Text Segmentation) に準拠したbreak判定を使用。
+    /// カーソル移動、削除、表示幅計算などで正しい文字単位を扱える。
+    ///
+    /// 戻り値:
+    /// - base: 先頭コードポイント（表示幅計算に使用）
+    /// - width: 表示幅（端末上のセル数）
+    /// - byte_len: UTF-8バイト長（カーソル移動に使用）
     pub fn nextGraphemeCluster(self: *PieceIterator) !?struct { base: u21, width: usize, byte_len: usize } {
         const start_pos = self.global_pos;
 
@@ -286,6 +345,19 @@ pub const Buffer = struct {
         return false;
     }
 
+    /// ファイルをバッファに読み込む
+    ///
+    /// 【高速パス（UTF-8 + LF）】
+    /// mmapでファイルをメモリマッピングし、コピーなしで直接参照。
+    /// これが最も高速で、大きなファイルでもメモリ効率が良い。
+    ///
+    /// 【フォールバックパス】
+    /// UTF-8以外のエンコーディング（UTF-16, Shift_JIS, EUC-JP等）や
+    /// CRLF/CRの改行コードは、UTF-8 + LF に変換してからバッファに格納。
+    /// 保存時は元のエンコーディング・改行コードに復元される。
+    ///
+    /// 対応エンコーディング: UTF-8, UTF-8(BOM), UTF-16LE/BE(BOM), Shift_JIS, EUC-JP
+    /// 対応改行コード: LF, CRLF, CR
     pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !Buffer {
         var file = try std.fs.cwd().openFile(path, .{});
         defer file.close();
@@ -475,8 +547,20 @@ pub const Buffer = struct {
         return self;
     }
 
+    /// バッファをファイルに保存
+    ///
+    /// 【アトミックセーブ】
+    /// 1. 一時ファイル (.tmp) に書き込み
+    /// 2. 成功したら rename で置き換え
+    /// これによりクラッシュ時にもファイルが壊れない（元ファイルか新ファイルのどちらか）
+    ///
+    /// 【エンコーディング・改行コード復元】
+    /// バッファ内部は常にUTF-8 + LF。保存時に元のエンコーディングと
+    /// 改行コードに変換する（detected_encoding, detected_line_ending を使用）
+    ///
+    /// 【パーミッション保持】
+    /// 元ファイルのパーミッション（chmod）を新ファイルに引き継ぐ
     pub fn saveToFile(self: *Buffer, path: []const u8) !void {
-        // アトミックセーブ: 一時ファイルに書き込んでから rename
         const tmp_path = try std.fmt.allocPrint(self.allocator, "{s}.tmp", .{path});
         defer self.allocator.free(tmp_path);
 
@@ -629,6 +713,20 @@ pub const Buffer = struct {
         // insertSlice内でinvalidateされるのでここでは不要
     }
 
+    /// 指定位置にテキストを挿入
+    ///
+    /// 【Piece Tableでの挿入】
+    /// 1. add_buffer（追加バッファ）に新しいテキストを追記
+    /// 2. 挿入位置でpieceを分割（必要な場合）
+    /// 3. 新しいpieceを作成して配列に追加
+    ///
+    /// 例: "Hello World" の位置5に ", Beautiful" を挿入
+    ///   Before: [{ original, 0, 11 }]  → "Hello World"
+    ///   After:  [{ original, 0, 5 },   → "Hello"
+    ///           { add, 0, 12 },        → ", Beautiful"
+    ///           { original, 5, 6 }]    → " World"
+    ///
+    /// 元のテキストは変更されず、pieceの構成だけが変わる。
     pub fn insertSlice(self: *Buffer, pos: usize, text: []const u8) !void {
         if (text.len == 0) return;
 
@@ -712,6 +810,20 @@ pub const Buffer = struct {
         self.line_index.invalidate();
     }
 
+    /// 指定位置から指定バイト数を削除
+    ///
+    /// 【Piece Tableでの削除】
+    /// 元のテキストは実際には削除されない。pieceを操作して
+    /// 削除範囲を「参照しない」ようにするだけ。
+    ///
+    /// パターン:
+    /// - piece全体を削除 → pieceを配列から除去
+    /// - pieceの一部を削除 → pieceを縮小または分割
+    /// - 複数pieceにまたがる削除 → 各pieceを適切に処理
+    ///
+    /// メモリ効率: original/add_bufferは縮小しないため、
+    /// 削除を繰り返してもメモリリークはないが、無駄な領域が残る。
+    /// 長時間の編集後はバッファの再構築（コンパクション）が有効。
     pub fn delete(self: *Buffer, pos: usize, count: usize) !void {
         if (count == 0) return;
 
@@ -958,7 +1070,13 @@ pub const Buffer = struct {
         return result;
     }
 
-    // Undo/Redo用のスナップショット
+    /// Undo/Redo用: pieceの配列を複製してスナップショットを作成
+    ///
+    /// 【Piece Tableの利点 - 効率的なUndo/Redo】
+    /// pieceの配列（数十〜数百要素）をコピーするだけでスナップショットが取れる。
+    /// original/add_bufferは共有されるため、メモリ効率が良い。
+    ///
+    /// 例: 100MBのファイルでも、Undo履歴は数KB程度で済む。
     pub fn clonePieces(self: *const Buffer, allocator: std.mem.Allocator) ![]Piece {
         return try allocator.dupe(Piece, self.pieces.items);
     }

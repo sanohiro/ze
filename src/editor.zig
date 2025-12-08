@@ -1,3 +1,30 @@
+// ============================================================================
+// Editor - zeエディタのコアモジュール
+// ============================================================================
+//
+// 【責務】
+// - 複数バッファの管理（BufferState）
+// - 複数ウィンドウの管理（Window）
+// - キー入力のディスパッチとコマンド実行
+// - Undo/Redo、検索、置換などの編集操作
+// - シェルコマンドの非同期実行
+//
+// 【マルチバッファ・マルチウィンドウ】
+// zeはEmacs風のバッファ・ウィンドウモデルを採用:
+// - Buffer: テキスト内容（ファイルに対応、または*scratch*）
+// - Window: 画面上の表示領域（同じバッファを複数ウィンドウで表示可能）
+// - 1つのウィンドウは1つのバッファを表示
+// - バッファは複数のウィンドウで共有可能
+//
+// 【エディタモード】
+// モードレスのEmacs風だが、内部的にはモード状態を持つ:
+// - normal: 通常の編集
+// - isearch: インクリメンタルサーチ
+// - query_replace: 対話的置換
+// - shell_command: シェルコマンド入力/実行
+// など
+// ============================================================================
+
 const std = @import("std");
 const builtin = @import("builtin");
 const Buffer = @import("buffer.zig").Buffer;
@@ -9,15 +36,32 @@ const input = @import("input.zig");
 const config = @import("config.zig");
 const regex = @import("regex.zig");
 
-// 差分ログベースのUndo/Redo
+// ============================================================================
+// Undo/Redo システム - 差分ログベース
+// ============================================================================
+//
+// 【設計】
+// 操作ベースの Undo/Redo を採用。各編集操作（挿入/削除）を記録し、
+// Undo 時は逆操作を適用、Redo 時は元の操作を再適用。
+//
+// 【利点】
+// - メモリ効率: テキスト差分のみ保存（スナップショット方式より軽量）
+// - 高速: 小さな操作は即座に適用可能
+//
+// 【実装】
+// - undo_stack: 過去の操作（新しい順）
+// - redo_stack: Undo した操作（Redo 用）
+// - 新しい編集操作を行うと redo_stack はクリアされる
+// ============================================================================
+
 const EditOp = union(enum) {
     insert: struct {
         pos: usize,
-        text: []const u8, // owned by allocator
+        text: []const u8, // allocatorで確保（解放責任あり）
     },
     delete: struct {
         pos: usize,
-        text: []const u8, // owned by allocator (削除されたテキストを保存)
+        text: []const u8, // 削除されたテキストを保存（Undo時に復元）
     },
 };
 
@@ -33,20 +77,25 @@ const UndoEntry = struct {
     }
 };
 
+/// エディタの状態遷移を管理するモード
+///
+/// zeは基本的にモードレス（Vimと違いモード切り替え不要）だが、
+/// 内部的には特殊な入力状態を追跡する必要がある。
+/// 例: ファイル名入力中はEnterで確定、C-gでキャンセル
 const EditorMode = enum {
-    normal,
-    prefix_x, // C-xプレフィックス待ち
+    normal, // 通常編集モード
+    prefix_x, // C-xプレフィックス待ち（C-x C-s, C-x C-c等）
     prefix_r, // C-x rプレフィックス待ち（矩形選択コマンド）
     quit_confirm, // 終了確認中（y/n/cを待つ）
-    filename_input, // ファイル名入力中（保存）
-    find_file_input, // ファイル名入力中（開く）
-    buffer_switch_input, // バッファ名入力中（切り替え）
+    filename_input, // ファイル名入力中（保存: C-x C-s）
+    find_file_input, // ファイル名入力中（開く: C-x C-f）
+    buffer_switch_input, // バッファ名入力中（切り替え: C-x b）
     kill_buffer_confirm, // バッファ閉じる確認中（y/nを待つ）
-    isearch_forward, // インクリメンタルサーチ（前方）
-    isearch_backward, // インクリメンタルサーチ（後方）
-    query_replace_input_search, // 置換：検索文字列入力中
+    isearch_forward, // インクリメンタルサーチ前方（C-s）
+    isearch_backward, // インクリメンタルサーチ後方（C-r）
+    query_replace_input_search, // 置換：検索文字列入力中（M-%）
     query_replace_input_replacement, // 置換：置換文字列入力中
-    query_replace_confirm, // 置換：確認中（y/n/!/qを待つ）
+    query_replace_confirm, // 置換：確認中（y/n/!/q）
     shell_command, // シェルコマンド入力中（M-|）
     shell_running, // シェルコマンド実行中（C-gでキャンセル可）
     mx_command, // M-xコマンド入力中
@@ -68,13 +117,25 @@ const ShellInputSource = enum {
     current_line, // 現在行 (.)
 };
 
-// シェルコマンドの非同期実行状態
+/// シェルコマンドの非同期実行状態
+///
+/// 【非同期実行の仕組み】
+/// 1. spawnAsync(): 子プロセスを起動、stdinにデータを書き込み
+/// 2. pollShellCommand(): 毎フレームstdout/stderrをノンブロッキングで読み取り
+/// 3. 完了時: 出力先に応じてバッファを更新（置換、挿入、新規バッファ）
+///
+/// 【キャンセル対応】
+/// shell_running モード中に C-g でキャンセル可能。
+/// 子プロセスをkillしてリソースをクリーンアップ。
+///
+/// 【パイプライン文法】
+/// `[入力元] | コマンド [出力先]` 形式で、sed/awk/jq等と連携
 pub const ShellCommandState = struct {
-    child: std.process.Child,
-    input_source: ShellInputSource,
-    output_dest: ShellOutputDest,
-    stdin_data: ?[]const u8,
-    stdin_allocated: bool,
+    child: std.process.Child, // 子プロセス（waitやkill用）
+    input_source: ShellInputSource, // 入力元（選択範囲/全体/現在行）
+    output_dest: ShellOutputDest, // 出力先（表示/置換/挿入/新規）
+    stdin_data: ?[]const u8, // 子プロセスに渡すデータ
+    stdin_allocated: bool, // stdin_dataを解放する必要があるか
     command: []const u8, // コマンド文字列（解放用）
     stdout_buffer: std.ArrayList(u8), // 蓄積された標準出力
     stderr_buffer: std.ArrayList(u8), // 蓄積された標準エラー
@@ -979,6 +1040,16 @@ pub const Editor = struct {
         }
     }
 
+    /// メインイベントループ
+    ///
+    /// 【ループの流れ】
+    /// 1. 端末サイズ変更をチェック（ウィンドウリサイズ対応）
+    /// 2. カーソル位置を有効範囲にクランプ
+    /// 3. 全ウィンドウをレンダリング
+    /// 4. シェルコマンド実行中ならポーリング
+    /// 5. キー入力を待ち、処理
+    ///
+    /// running が false になるまで繰り返し（C-x C-c で終了）
     pub fn run(self: *Editor) !void {
         const stdin: std.fs.File = .{ .handle = std.posix.STDIN_FILENO };
 
@@ -1314,6 +1385,20 @@ pub const Editor = struct {
         self.setCursorToPos(target_pos);
     }
 
+    /// キー入力を処理するメインディスパッチャ
+    ///
+    /// 【処理の流れ】
+    /// 1. 現在のモードに応じて処理を分岐
+    /// 2. 各モードごとに有効なキーを処理
+    /// 3. 無効なキーは無視（エラーメッセージを表示する場合あり）
+    ///
+    /// モードごとの特殊処理:
+    /// - normal: 通常編集、移動、C-x プレフィックス開始
+    /// - isearch: インクリメンタルサーチ、C-s/C-r で次へ/前へ
+    /// - query_replace: y/n/!/q で置換操作
+    /// - shell_command: コマンド入力、Enter で実行
+    ///
+    /// 全モードで C-g はキャンセルとして機能
     fn processKey(self: *Editor, key: input.Key) !void {
         // 古いプロンプトバッファを解放
         if (self.prompt_buffer) |old_prompt| {
