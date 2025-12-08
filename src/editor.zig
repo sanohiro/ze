@@ -317,6 +317,8 @@ pub const Editor = struct {
         // 最初のウィンドウを作成（全画面、ステータスバーはheight内に含む）
         var first_window = Window.init(0, 0, 0, 0, terminal.width, terminal.height);
         first_window.view = View.init(allocator, &first_buffer.buffer);
+        // 言語検出（新規バッファなのでデフォルト、ファイルオープン時にmain.zigで再検出される）
+        first_window.view.detectLanguage(null, null);
 
         // ウィンドウリストを作成
         var windows: std.ArrayList(Window) = .{};
@@ -884,6 +886,9 @@ pub const Editor = struct {
         );
 
         new_window.view = View.init(self.allocator, &cmd_buffer.buffer);
+        // 言語検出（*Command*バッファはプレーンテキストだが一貫性のため）
+        const content_preview = cmd_buffer.buffer.getContentPreview(512);
+        new_window.view.detectLanguage(cmd_buffer.filename, content_preview);
 
         try self.windows.append(self.allocator, new_window);
         return self.windows.items.len - 1;
