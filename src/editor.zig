@@ -46,6 +46,7 @@ const UndoEntry = @import("services/undo_manager.zig").UndoEntry;
 const MxCommands = @import("services/mx_commands.zig");
 const Minibuffer = @import("services/minibuffer.zig").Minibuffer;
 const SearchService = @import("services/search_service.zig").SearchService;
+const ShellService = @import("services/shell_service.zig").ShellService;
 const BufferManager = @import("services/buffer_manager.zig").BufferManager;
 const BufferState = @import("services/buffer_manager.zig").BufferState;
 const WindowManager = @import("services/window_manager.zig").WindowManager;
@@ -112,22 +113,9 @@ const ShellInputSource = enum {
 ///
 /// 【パイプライン文法】
 /// `[入力元] | コマンド [出力先]` 形式で、sed/awk/jq等と連携
-pub const ShellCommandState = struct {
-    child: std.process.Child, // 子プロセス（waitやkill用）
-    input_source: ShellInputSource, // 入力元（選択範囲/全体/現在行）
-    output_dest: ShellOutputDest, // 出力先（表示/置換/挿入/新規）
-    stdin_data: ?[]const u8, // 子プロセスに渡すデータ
-    stdin_allocated: bool, // stdin_dataを解放する必要があるか
-    stdin_write_pos: usize, // stdinへの書き込み済み位置（ストリーミング書き込み用）
-    command: []const u8, // コマンド文字列（解放用）
-    stdout_buffer: std.ArrayList(u8), // 蓄積された標準出力
-    stderr_buffer: std.ArrayList(u8), // 蓄積された標準エラー
-    child_reaped: bool, // 子プロセスがwaitpidで回収済みか（kill防止用）
-    exit_status: ?u32, // 終了ステータス（非0でエラー）
-};
-
 // ========================================
 // BufferState, Window: services/buffer_manager.zig, services/window_manager.zig に移動済み
+// ShellCommandState: services/shell_service.zig に移動済み
 // ========================================
 
 // ========================================
@@ -167,11 +155,8 @@ pub const Editor = struct {
     replace_current_pos: ?usize,
     replace_match_count: usize,
 
-    // シェルコマンド非同期実行状態
-    shell_state: ?*ShellCommandState,
-
-    // 履歴（~/.ze/ に保存）
-    shell_history: History,
+    // サービス
+    shell_service: ShellService, // シェルコマンド実行サービス（履歴含む）
     search_service: SearchService, // 検索サービス（履歴含む）
 
     // Undo/Redoマネージャー
@@ -200,10 +185,6 @@ pub const Editor = struct {
         var windows: std.ArrayList(Window) = .{};
         try windows.append(allocator, first_window);
 
-        // 履歴を初期化してロード
-        var shell_history = History.init(allocator);
-        shell_history.load(.shell) catch {}; // エラーは無視（ファイルがなければ空）
-
         const editor = Editor{
             .terminal = terminal,
             .allocator = allocator,
@@ -226,8 +207,7 @@ pub const Editor = struct {
             .replace_replacement = null,
             .replace_current_pos = null,
             .replace_match_count = 0,
-            .shell_state = null,
-            .shell_history = shell_history,
+            .shell_service = ShellService.init(allocator),
             .search_service = SearchService.init(allocator),
             .undo_manager = UndoManager.init(allocator),
         };
@@ -283,49 +263,9 @@ pub const Editor = struct {
         // ミニバッファのクリーンアップ
         self.minibuffer.deinit();
 
-        // シェルコマンド状態のクリーンアップ
-        if (self.shell_state) |state| {
-            self.cleanupShellState(state);
-        }
-
-        // 履歴を保存して解放
-        self.shell_history.save(.shell) catch {};
-        self.shell_history.deinit();
+        // サービスのクリーンアップ
+        self.shell_service.deinit();
         self.search_service.deinit();
-    }
-
-    /// シェルコマンド状態をクリーンアップ
-    fn cleanupShellState(self: *Editor, state: *ShellCommandState) void {
-        // 子プロセスがまだ実行中（回収されていない）場合のみkillとwait
-        // 回収済みの場合、PIDが再利用されて無関係のプロセスをkillする可能性がある
-        if (!state.child_reaped) {
-            _ = state.child.kill() catch {};
-            // ゾンビプロセスを防ぐためwaitで回収
-            _ = state.child.wait() catch {};
-        }
-
-        // パイプのファイルディスクリプタを閉じる（FDリーク防止）
-        if (state.child.stdout) |f| f.close();
-        if (state.child.stderr) |f| f.close();
-        if (state.child.stdin) |f| f.close();
-
-        // stdin_dataを解放
-        if (state.stdin_allocated) {
-            if (state.stdin_data) |data| {
-                self.allocator.free(data);
-            }
-        }
-
-        // コマンド文字列を解放
-        self.allocator.free(state.command);
-
-        // 蓄積されたバッファを解放
-        state.stdout_buffer.deinit(self.allocator);
-        state.stderr_buffer.deinit(self.allocator);
-
-        // 状態自体を解放
-        self.allocator.destroy(state);
-        self.shell_state = null;
     }
 
     // ========================================
@@ -2385,7 +2325,7 @@ pub const Editor = struct {
                             'g' => {
                                 self.mode = .normal;
                                 self.clearInputBuffer();
-                                self.shell_history.resetNavigation();
+                                self.shell_service.resetHistoryNavigation();
                                 self.getCurrentView().clearError();
                                 return;
                             },
@@ -2415,15 +2355,15 @@ pub const Editor = struct {
                     .escape => {
                         self.mode = .normal;
                         self.clearInputBuffer();
-                        self.shell_history.resetNavigation();
+                        self.shell_service.resetHistoryNavigation();
                         self.getCurrentView().clearError();
                         return;
                     },
                     .enter => {
                         if (self.minibuffer.getContent().len > 0) {
                             // 履歴に追加
-                            try self.shell_history.add(self.minibuffer.getContent());
-                            self.shell_history.resetNavigation();
+                            try self.shell_service.addToHistory(self.minibuffer.getContent());
+                            self.shell_service.resetHistoryNavigation();
                             try self.startShellCommand();
                         }
                         if (self.mode != .shell_running) {
@@ -4141,87 +4081,14 @@ pub const Editor = struct {
     // Shell Integration
     // ========================================
 
-    /// コマンド文字列をパースしてプレフィックス/サフィックスを取り出す
-    fn parseShellCommand(cmd: []const u8) struct {
-        input_source: ShellInputSource,
-        output_dest: ShellOutputDest,
-        command: []const u8,
-    } {
-        var input_source: ShellInputSource = .selection;
-        var output_dest: ShellOutputDest = .command_buffer;
-        var start: usize = 0;
-        var end: usize = cmd.len;
-
-        // プレフィックス解析
-        if (cmd.len > 0) {
-            if (cmd[0] == '%') {
-                input_source = .buffer_all;
-                start = 1;
-                // スペースをスキップ
-                while (start < cmd.len and cmd[start] == ' ') : (start += 1) {}
-            } else if (cmd[0] == '.') {
-                input_source = .current_line;
-                start = 1;
-                while (start < cmd.len and cmd[start] == ' ') : (start += 1) {}
-            }
-        }
-
-        // パイプ記号 '|' をスキップ（構文セパレータ）
-        if (start < cmd.len and cmd[start] == '|') {
-            start += 1;
-            // パイプ後のスペースをスキップ
-            while (start < cmd.len and cmd[start] == ' ') : (start += 1) {}
-        }
-
-        // サフィックス解析（末尾から）
-        if (end > start) {
-            // 末尾の空白をスキップ
-            while (end > start and cmd[end - 1] == ' ') : (end -= 1) {}
-
-            if (end > start) {
-                // "n>" チェック
-                if (end >= 2 and cmd[end - 2] == 'n' and cmd[end - 1] == '>') {
-                    output_dest = .new_buffer;
-                    end -= 2;
-                }
-                // "+>" チェック
-                else if (end >= 2 and cmd[end - 2] == '+' and cmd[end - 1] == '>') {
-                    output_dest = .insert;
-                    end -= 2;
-                }
-                // ">" チェック（末尾が > で、その後ろに何もない場合のみ）
-                else if (cmd[end - 1] == '>') {
-                    // "> file" のようなシェルリダイレクトではないことを確認
-                    // 末尾が ">" で終わっていて、その前がスペースか行頭
-                    if (end >= 2 and cmd[end - 2] == ' ') {
-                        output_dest = .replace;
-                        end -= 1;
-                    } else if (end == 1) {
-                        output_dest = .replace;
-                        end -= 1;
-                    }
-                }
-            }
-
-            // サフィックス前の空白をスキップ
-            while (end > start and cmd[end - 1] == ' ') : (end -= 1) {}
-        }
-
-        return .{
-            .input_source = input_source,
-            .output_dest = output_dest,
-            .command = if (end > start) cmd[start..end] else "",
-        };
-    }
-
     /// シェルコマンド履歴をナビゲート
     fn navigateShellHistory(self: *Editor, prev: bool) !void {
         // 最初のナビゲーションなら現在の入力を保存
-        if (self.shell_history.current_index == null) {
-            try self.shell_history.startNavigation(self.minibuffer.getContent());
+        if (!self.shell_service.isNavigating()) {
+            try self.shell_service.startHistoryNavigation(self.minibuffer.getContent());
         }
 
-        const entry = if (prev) self.shell_history.prev() else self.shell_history.next();
+        const entry = if (prev) self.shell_service.historyPrev() else self.shell_service.historyNext();
         if (entry) |text| {
             // ミニバッファを履歴エントリで置き換え
             try self.minibuffer.setContent(text);
@@ -4261,8 +4128,8 @@ pub const Editor = struct {
         const cmd_input = self.minibuffer.getContent();
         if (cmd_input.len == 0) return;
 
-        // コマンドをパース
-        const parsed = parseShellCommand(cmd_input);
+        // コマンドをパースして入力元を取得
+        const parsed = ShellService.parseCommand(cmd_input);
 
         if (parsed.command.len == 0) {
             self.getCurrentView().setError("No command specified");
@@ -4280,10 +4147,10 @@ pub const Editor = struct {
                 // 選択範囲（マークがあれば）
                 if (window.mark_pos) |mark| {
                     const cursor_pos = self.getCurrentView().getCursorBufferPos();
-                    const start = @min(mark, cursor_pos);
-                    const end_pos = @max(mark, cursor_pos);
-                    if (end_pos > start) {
-                        stdin_data = try self.getCurrentBufferContent().getRange(self.allocator, start, end_pos - start);
+                    const sel_start = @min(mark, cursor_pos);
+                    const sel_end = @max(mark, cursor_pos);
+                    if (sel_end > sel_start) {
+                        stdin_data = try self.getCurrentBufferContent().getRange(self.allocator, sel_start, sel_end - sel_start);
                         stdin_allocated = true;
                     }
                 }
@@ -4311,204 +4178,58 @@ pub const Editor = struct {
             },
         }
 
-        // 入力データのクリーンアップ（spawn()失敗時用）
-        errdefer if (stdin_allocated) {
-            if (stdin_data) |data| {
-                self.allocator.free(data);
+        // ShellServiceにコマンド実行を委譲
+        self.shell_service.start(cmd_input, stdin_data, stdin_allocated) catch |err| {
+            // エラー時は入力データを解放
+            if (stdin_allocated) {
+                if (stdin_data) |data| {
+                    self.allocator.free(data);
+                }
             }
+            switch (err) {
+                error.EmptyCommand, error.NoCommand => {
+                    self.getCurrentView().setError("No command specified");
+                },
+                else => {
+                    self.getCurrentView().setError("Failed to start command");
+                },
+            }
+            return;
         };
 
-        // コマンドをヒープにコピー（input_bufferは再利用されるため）
-        const command_copy = try self.allocator.dupe(u8, parsed.command);
-        errdefer self.allocator.free(command_copy);
-
-        // シェルコマンド状態を作成
-        const state = try self.allocator.create(ShellCommandState);
-        errdefer {
-            // ArrayListのバッファも解放（空でも安全）
-            state.stdout_buffer.deinit(self.allocator);
-            state.stderr_buffer.deinit(self.allocator);
-            self.allocator.destroy(state);
-        }
-
-        // 子プロセスを起動
-        const argv = [_][]const u8{ "/bin/sh", "-c", command_copy };
-        state.child = std.process.Child.init(&argv, self.allocator);
-        state.child.stdin_behavior = if (stdin_data != null) .Pipe else .Close;
-        state.child.stdout_behavior = .Pipe;
-        state.child.stderr_behavior = .Pipe;
-        state.input_source = parsed.input_source;
-        state.output_dest = parsed.output_dest;
-        state.stdin_data = stdin_data;
-        state.stdin_allocated = stdin_allocated;
-        state.stdin_write_pos = 0;
-        state.command = command_copy;
-        state.stdout_buffer = .{};
-        state.stderr_buffer = .{};
-        state.child_reaped = false;
-        state.exit_status = null;
-
-        try state.child.spawn();
-
-        // stdout/stderr/stdinをノンブロッキングに設定
-        // 注: fcntl失敗は無視（まれで、失敗してもブロッキングI/Oになるだけ）
-        const nonblock_flag: usize = @as(u32, @bitCast(std.posix.O{ .NONBLOCK = true }));
-        if (state.child.stdout) |stdout_file| {
-            const flags = std.posix.fcntl(stdout_file.handle, std.posix.F.GETFL, 0) catch 0;
-            _ = std.posix.fcntl(stdout_file.handle, std.posix.F.SETFL, flags | nonblock_flag) catch {};
-        }
-        if (state.child.stderr) |stderr_file| {
-            const flags = std.posix.fcntl(stderr_file.handle, std.posix.F.GETFL, 0) catch 0;
-            _ = std.posix.fcntl(stderr_file.handle, std.posix.F.SETFL, flags | nonblock_flag) catch {};
-        }
-        if (state.child.stdin) |stdin_file| {
-            const flags = std.posix.fcntl(stdin_file.handle, std.posix.F.GETFL, 0) catch 0;
-            _ = std.posix.fcntl(stdin_file.handle, std.posix.F.SETFL, flags | nonblock_flag) catch {};
-        }
-
-        // stdin への書き込みは pollShellCommand() でインクリメンタルに行う
-        // （大きなデータでもブロックしないように）
-        // stdinデータがない場合のみここで閉じる
-        if (stdin_data == null) {
-            if (state.child.stdin) |stdin| {
-                stdin.close();
-                state.child.stdin = null;
-            }
-        }
-
-        // 状態を保存してモード変更
-        self.shell_state = state;
         self.mode = .shell_running;
         self.getCurrentView().setError("Running... (C-g to cancel)");
     }
 
     /// シェルコマンドの完了をポーリング
-    /// パイプから増分読み取りを行い、64KB以上の出力でもデッドロックしないようにする
     fn pollShellCommand(self: *Editor) !void {
-        var state = self.shell_state orelse return;
+        // ShellServiceにポーリングを委譲
+        if (try self.shell_service.poll()) |result| {
+            // コマンド完了 - 結果を処理
+            defer self.shell_service.finish();
 
-        // パイプから利用可能なデータを読み取る（ノンブロッキング）
-        var read_buf: [8192]u8 = undefined;
+            // ShellServiceの型をエディタの型に変換
+            const input_source: ShellInputSource = switch (result.input_source) {
+                .selection => .selection,
+                .buffer_all => .buffer_all,
+                .current_line => .current_line,
+            };
+            const output_dest: ShellOutputDest = switch (result.output_dest) {
+                .command_buffer => .command_buffer,
+                .replace => .replace,
+                .insert => .insert,
+                .new_buffer => .new_buffer,
+            };
 
-        // stdout から読み取り
-        if (state.child.stdout) |stdout_file| {
-            while (true) {
-                const bytes_read = stdout_file.read(&read_buf) catch |err| switch (err) {
-                    error.WouldBlock => break, // ノンブロッキングで読み取れるデータがない
-                    else => break,
-                };
-                if (bytes_read == 0) break; // EOF
-                try state.stdout_buffer.appendSlice(self.allocator, read_buf[0..bytes_read]);
-            }
-        }
-
-        // stderr から読み取り
-        if (state.child.stderr) |stderr_file| {
-            while (true) {
-                const bytes_read = stderr_file.read(&read_buf) catch |err| switch (err) {
-                    error.WouldBlock => break,
-                    else => break,
-                };
-                if (bytes_read == 0) break;
-                try state.stderr_buffer.appendSlice(self.allocator, read_buf[0..bytes_read]);
-            }
-        }
-
-        // stdin へのストリーミング書き込み（デッドロック防止）
-        if (state.child.stdin) |stdin_file| {
-            if (state.stdin_data) |data| {
-                const remaining = data.len - state.stdin_write_pos;
-                if (remaining > 0) {
-                    // 最大8KBずつ書き込み（パイプバッファサイズに合わせる）
-                    const chunk_size = @min(remaining, 8192);
-                    const chunk = data[state.stdin_write_pos .. state.stdin_write_pos + chunk_size];
-                    const bytes_written = stdin_file.write(chunk) catch |err| switch (err) {
-                        error.WouldBlock => 0, // バッファが満杯、次回リトライ
-                        else => blk: {
-                            // エラー発生、stdinを閉じる
-                            stdin_file.close();
-                            state.child.stdin = null;
-                            break :blk 0;
-                        },
-                    };
-                    state.stdin_write_pos += bytes_written;
-                } else {
-                    // すべて書き込み完了、stdinを閉じる
-                    stdin_file.close();
-                    state.child.stdin = null;
-                }
-            }
-        }
-
-        // waitpidでプロセス終了をチェック（WNOHANG）
-        const result = std.posix.waitpid(state.child.id, std.c.W.NOHANG);
-
-        if (result.pid == 0) {
-            // プロセスはまだ実行中
-            return;
-        }
-
-        // プロセス終了を記録（cleanupShellStateでkillを避けるため）
-        state.child_reaped = true;
-
-        // 終了ステータスを記録
-        if (std.c.W.IFEXITED(result.status)) {
-            state.exit_status = std.c.W.EXITSTATUS(result.status);
-        } else if (std.c.W.IFSIGNALED(result.status)) {
-            // シグナルで終了した場合は128+シグナル番号
-            state.exit_status = 128 + @as(u32, std.c.W.TERMSIG(result.status));
-        } else {
-            state.exit_status = null;
-        }
-
-        // プロセス終了 - 残りのデータを読み取って処理
-        // 終了後に残っているデータを読み取る
-        if (state.child.stdout) |stdout_file| {
-            while (true) {
-                const bytes_read = stdout_file.read(&read_buf) catch break;
-                if (bytes_read == 0) break;
-                try state.stdout_buffer.appendSlice(self.allocator, read_buf[0..bytes_read]);
-            }
-        }
-        if (state.child.stderr) |stderr_file| {
-            while (true) {
-                const bytes_read = stderr_file.read(&read_buf) catch break;
-                if (bytes_read == 0) break;
-                try state.stderr_buffer.appendSlice(self.allocator, read_buf[0..bytes_read]);
-            }
-        }
-
-        try self.finishShellCommand();
-    }
-
-    /// シェルコマンド完了後の処理
-    fn finishShellCommand(self: *Editor) !void {
-        const state = self.shell_state orelse return;
-        defer {
-            self.cleanupShellState(state);
+            try self.processShellResult(result.stdout, result.stderr, result.exit_status, input_source, output_dest);
             self.mode = .normal;
         }
-
-        // 蓄積されたバッファからデータを取得
-        const stdout = state.stdout_buffer.items;
-        const stderr = state.stderr_buffer.items;
-        const exit_status = state.exit_status;
-
-        // 結果を処理
-        try self.processShellResult(stdout, stderr, exit_status, state.input_source, state.output_dest);
+        // まだ実行中の場合は何もしない
     }
 
     /// シェルコマンドをキャンセル
     fn cancelShellCommand(self: *Editor) void {
-        if (self.shell_state) |state| {
-            // 子プロセスをkill（まだ回収されていない場合のみ）
-            if (!state.child_reaped) {
-                _ = state.child.kill() catch {};
-                // ゾンビプロセスを防ぐためwaitで回収
-                _ = state.child.wait() catch {};
-            }
-            self.cleanupShellState(state);
-        }
+        self.shell_service.cancel();
         self.mode = .normal;
         self.getCurrentView().setError("Cancelled");
     }

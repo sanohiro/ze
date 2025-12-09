@@ -93,57 +93,57 @@ pub const ShellService = struct {
     pub fn parseCommand(cmd: []const u8) ParsedCommand {
         var input_source: InputSource = .selection;
         var output_dest: OutputDest = .command_buffer;
-        var start: usize = 0;
-        var end: usize = cmd.len;
+        var cmd_start: usize = 0;
+        var cmd_end: usize = cmd.len;
 
         // プレフィックス解析
         if (cmd.len > 0) {
             if (cmd[0] == '%') {
                 input_source = .buffer_all;
-                start = 1;
-                while (start < cmd.len and cmd[start] == ' ') : (start += 1) {}
+                cmd_start = 1;
+                while (cmd_start < cmd.len and cmd[cmd_start] == ' ') : (cmd_start += 1) {}
             } else if (cmd[0] == '.') {
                 input_source = .current_line;
-                start = 1;
-                while (start < cmd.len and cmd[start] == ' ') : (start += 1) {}
+                cmd_start = 1;
+                while (cmd_start < cmd.len and cmd[cmd_start] == ' ') : (cmd_start += 1) {}
             }
         }
 
         // パイプ記号 '|' をスキップ
-        if (start < cmd.len and cmd[start] == '|') {
-            start += 1;
-            while (start < cmd.len and cmd[start] == ' ') : (start += 1) {}
+        if (cmd_start < cmd.len and cmd[cmd_start] == '|') {
+            cmd_start += 1;
+            while (cmd_start < cmd.len and cmd[cmd_start] == ' ') : (cmd_start += 1) {}
         }
 
         // サフィックス解析（末尾から）
-        if (end > start) {
-            while (end > start and cmd[end - 1] == ' ') : (end -= 1) {}
+        if (cmd_end > cmd_start) {
+            while (cmd_end > cmd_start and cmd[cmd_end - 1] == ' ') : (cmd_end -= 1) {}
 
-            if (end > start) {
-                if (end >= 2 and cmd[end - 2] == 'n' and cmd[end - 1] == '>') {
+            if (cmd_end > cmd_start) {
+                if (cmd_end >= 2 and cmd[cmd_end - 2] == 'n' and cmd[cmd_end - 1] == '>') {
                     output_dest = .new_buffer;
-                    end -= 2;
-                } else if (end >= 2 and cmd[end - 2] == '+' and cmd[end - 1] == '>') {
+                    cmd_end -= 2;
+                } else if (cmd_end >= 2 and cmd[cmd_end - 2] == '+' and cmd[cmd_end - 1] == '>') {
                     output_dest = .insert;
-                    end -= 2;
-                } else if (cmd[end - 1] == '>') {
-                    if (end >= 2 and cmd[end - 2] == ' ') {
+                    cmd_end -= 2;
+                } else if (cmd[cmd_end - 1] == '>') {
+                    if (cmd_end >= 2 and cmd[cmd_end - 2] == ' ') {
                         output_dest = .replace;
-                        end -= 1;
-                    } else if (end == 1) {
+                        cmd_end -= 1;
+                    } else if (cmd_end == 1) {
                         output_dest = .replace;
-                        end -= 1;
+                        cmd_end -= 1;
                     }
                 }
             }
 
-            while (end > start and cmd[end - 1] == ' ') : (end -= 1) {}
+            while (cmd_end > cmd_start and cmd[cmd_end - 1] == ' ') : (cmd_end -= 1) {}
         }
 
         return .{
             .input_source = input_source,
             .output_dest = output_dest,
-            .command = if (end > start) cmd[start..end] else "",
+            .command = if (cmd_end > cmd_start) cmd[cmd_start..cmd_end] else "",
         };
     }
 
