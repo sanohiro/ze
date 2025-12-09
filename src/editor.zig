@@ -560,6 +560,7 @@ pub const Editor = struct {
         self.search_history.resetNavigation();
         self.getCurrentView().setSearchHighlight(null);
         self.getCurrentView().clearError();
+        self.getCurrentView().markFullRedraw();
     }
 
     /// バッファ閉じる確認モードの文字処理
@@ -2987,6 +2988,7 @@ pub const Editor = struct {
                             try self.performSearch(true, true); // skip_current=true で次を検索
                             // 検索ハイライトは残すが、プロンプトはクリア（Emacs風）
                             self.getCurrentView().clearError();
+                            self.getCurrentView().markFullRedraw();
                         } else {
                             // 新規検索開始
                             self.mode = .isearch_forward;
@@ -3007,6 +3009,7 @@ pub const Editor = struct {
                             try self.performSearch(false, true); // forward=false, skip_current=true で前を検索
                             // 検索ハイライトは残すが、プロンプトはクリア（Emacs風）
                             self.getCurrentView().clearError();
+                            self.getCurrentView().markFullRedraw();
                         } else {
                             // 新規検索開始
                             self.mode = .isearch_backward;
@@ -4393,16 +4396,15 @@ pub const Editor = struct {
                     self.setCursorToPos(iter.global_pos - cp_len);
                     return;
                 }
+                // 空白から非空白に変わる場合、その位置で停止
+                if (pt == .space and current_type != .space) {
+                    const cp_len = std.unicode.utf8CodepointSequenceLength(cp) catch 1;
+                    self.setCursorToPos(iter.global_pos - cp_len);
+                    return;
+                }
             }
 
             prev_type = current_type;
-
-            // 空白から非空白に変わる場合、その位置で停止
-            if (prev_type == .space and current_type != .space) {
-                const cp_len = std.unicode.utf8CodepointSequenceLength(cp) catch 1;
-                self.setCursorToPos(iter.global_pos - cp_len);
-                return;
-            }
         }
 
         // EOFに到達
@@ -4484,59 +4486,30 @@ pub const Editor = struct {
         var iter = PieceIterator.init(buffer);
         iter.seek(start_pos);
 
-        var pos = start_pos;
         var prev_type: ?CharType = null;
+        var end_pos = start_pos;
 
-        while (iter.next()) |byte| {
-            const cp = blk: {
-                if (unicode.isAsciiByte(byte)) {
-                    break :blk @as(u21, byte);
-                } else {
-                    var utf8_buf: [4]u8 = undefined;
-                    utf8_buf[0] = byte;
-                    var utf8_len: usize = 1;
-
-                    const expected_len = std.unicode.utf8ByteSequenceLength(byte) catch {
-                        pos += 1;
-                        continue;
-                    };
-
-                    while (utf8_len < expected_len) : (utf8_len += 1) {
-                        const next_byte = iter.next() orelse break;
-                        utf8_buf[utf8_len] = next_byte;
-                    }
-
-                    if (utf8_len != expected_len) {
-                        pos += utf8_len;
-                        continue;
-                    }
-
-                    break :blk std.unicode.utf8Decode(utf8_buf[0..expected_len]) catch {
-                        pos += expected_len;
-                        continue;
-                    };
-                }
-            };
-
+        while (iter.nextCodepoint() catch null) |cp| {
             const current_type = getCharType(cp);
 
             if (prev_type) |pt| {
+                // 文字種が変わったら停止（ただし空白は飛ばす）
                 if (current_type != .space and pt != .space and current_type != pt) {
+                    break;
+                }
+                // 空白から非空白に変わる場合、その位置で停止
+                if (pt == .space and current_type != .space) {
                     break;
                 }
             }
 
             prev_type = current_type;
-            pos += if (unicode.isAscii(cp)) 1 else std.unicode.utf8CodepointSequenceLength(cp) catch 1;
-
-            if (prev_type == .space and current_type != .space) {
-                break;
-            }
+            end_pos = iter.global_pos;
         }
 
         // 削除する範囲が存在する場合のみ削除
-        if (pos > start_pos) {
-            const delete_len = pos - start_pos;
+        if (end_pos > start_pos) {
+            const delete_len = end_pos - start_pos;
             const deleted_text = try self.extractText(start_pos, delete_len);
             defer self.allocator.free(deleted_text);
 

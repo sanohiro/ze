@@ -346,6 +346,11 @@ fn parseKeySequence(allocator: std.mem.Allocator, seq: []const u8) ![]const u8 {
         const result = try allocator.alloc(u8, 1);
         result[0] = 0;
         return result;
+    } else if (std.mem.eql(u8, seq, "Space")) {
+        // Space キー
+        const result = try allocator.alloc(u8, 1);
+        result[0] = ' ';
+        return result;
     } else if (std.mem.eql(u8, seq, "Enter")) {
         const result = try allocator.alloc(u8, 1);
         result[0] = '\r';

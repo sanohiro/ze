@@ -111,7 +111,7 @@ echo
 echo "=== カテゴリ 9: ページスクロール ==="
 run_test "9.1 Page Down動作" --file=test_data/test_page_scroll.txt "PageDown" "C-x" "C-c"
 run_test "9.2 Page Up動作" --file=test_data/test_page_scroll.txt "PageDown" "PageUp" "C-x" "C-c"
-run_test "9.3 ページまたぎ検索" --file=test_data/test_page_scroll.txt "C-s" "line" "Space" "3" "0" "Enter" "C-x" "C-c"
+run_test "9.3 ページまたぎ検索" --file=test_data/test_page_scroll.txt "C-s" "30" "Enter" "C-x" "C-c"
 
 echo
 echo "=== カテゴリ 10: エッジケース ==="
@@ -239,10 +239,10 @@ run_test "21.10 日本語の置換" --input-file=test_data/test_japanese_replace
 
 echo
 echo "=== カテゴリ 22: 検索履歴 ==="
-run_test "22.1 C-s で前回パターン再利用（次へ）" --file=test_data/test_search_pages.txt "C-s" "Target" "Enter" "C-s" "C-x" "C-c"
-run_test "22.2 C-r で前回パターン再利用（前へ）" --file=test_data/test_search_pages.txt "M->" "C-s" "line" "Enter" "C-r" "C-x" "C-c"
-run_test "22.3 検索後に別の検索" --file=test_data/test_search_pages.txt "C-s" "Target" "Enter" "C-s" "C-s" "C-x" "C-c"
-run_test "22.4 C-s→C-r の切り替え" --file=test_data/test_search_pages.txt "C-s" "line" "Enter" "C-s" "C-r" "C-x" "C-c"
+run_test "22.1 C-s で前回パターン再利用（次へ）" --file=test_data/test_search_pages.txt "C-s" "Tar" "Enter" "C-s" "C-x" "C-c"
+run_test "22.2 C-r で前回パターン再利用（前へ）" --file=test_data/test_search_pages.txt "M->" "C-s" "li" "Enter" "C-r" "C-x" "C-c"
+run_test "22.3 検索後に別の検索" --file=test_data/test_search_pages.txt "C-s" "Tar" "Enter" "C-s" "C-s" "C-x" "C-c"
+run_test "22.4 C-s→C-r の切り替え" --file=test_data/test_search_pages.txt "C-s" "li" "Enter" "C-s" "C-r" "C-x" "C-c"
 
 echo
 echo "=== カテゴリ 23: 正規表現検索 ==="

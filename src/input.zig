@@ -294,17 +294,19 @@ pub fn readKeyFromReader(reader: *InputReader) !?Key {
 
     // ESC シーケンス
     if (ch == config.Input.ESC) {
-        const n2 = try reader.readBytes(buf[1..3]);
-        if (n2 == 0) {
-            return Key.escape;
+        // まず1バイトだけ読む
+        const first_byte = try reader.readByte() orelse return Key.escape;
+        buf[1] = first_byte;
+
+        // Alt+印刷可能ASCII文字（ESC + 文字）
+        if (first_byte >= 0x20 and first_byte < 0x7F and first_byte != '[') {
+            return Key{ .alt = first_byte };
         }
 
-        // Alt+印刷可能ASCII文字
-        if (n2 == 1 and buf[1] >= 0x20 and buf[1] < 0x7F) {
-            return Key{ .alt = buf[1] };
-        }
-
-        if (n2 >= 2 and buf[1] == '[') {
+        // CSIシーケンス（ESC [）の場合、2バイト目を読む
+        if (first_byte == '[') {
+            const second_byte = try reader.readByte() orelse return Key.escape;
+            buf[2] = second_byte;
             switch (buf[2]) {
                 'A' => return Key.arrow_up,
                 'B' => return Key.arrow_down,
