@@ -1,0 +1,326 @@
+// ============================================================================
+// Minibuffer - ミニバッファ入力サービス
+// ============================================================================
+//
+// 【責務】
+// - コマンドライン風の1行入力
+// - カーソル移動、削除、単語単位操作
+// - プロンプト表示
+//
+// 【設計原則】
+// - Editorから独立した入力バッファ管理
+// - UTF-8/grapheme cluster対応
+// ============================================================================
+
+const std = @import("std");
+const unicode = @import("../unicode.zig");
+const input = @import("../input.zig");
+
+/// ミニバッファ
+pub const Minibuffer = struct {
+    allocator: std.mem.Allocator,
+    buffer: std.ArrayListUnmanaged(u8),
+    cursor: usize,
+    prompt: [256]u8,
+    prompt_len: usize,
+
+    const Self = @This();
+
+    pub fn init(allocator: std.mem.Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .buffer = .{},
+            .cursor = 0,
+            .prompt = undefined,
+            .prompt_len = 0,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.buffer.deinit(self.allocator);
+    }
+
+    /// バッファをクリア
+    pub fn clear(self: *Self) void {
+        self.buffer.clearRetainingCapacity();
+        self.cursor = 0;
+    }
+
+    /// プロンプトを設定
+    pub fn setPrompt(self: *Self, prompt: []const u8) void {
+        const len = @min(prompt.len, self.prompt.len);
+        @memcpy(self.prompt[0..len], prompt[0..len]);
+        self.prompt_len = len;
+    }
+
+    /// プロンプトを取得
+    pub fn getPrompt(self: *const Self) []const u8 {
+        return self.prompt[0..self.prompt_len];
+    }
+
+    /// 内容を取得
+    pub fn getContent(self: *const Self) []const u8 {
+        return self.buffer.items;
+    }
+
+    /// 内容を設定
+    pub fn setContent(self: *Self, content: []const u8) !void {
+        self.buffer.clearRetainingCapacity();
+        try self.buffer.appendSlice(self.allocator, content);
+        self.cursor = content.len;
+    }
+
+    /// カーソル位置に文字を挿入
+    pub fn insertAtCursor(self: *Self, text: []const u8) !void {
+        if (text.len == 0) return;
+        try self.buffer.insertSlice(self.allocator, self.cursor, text);
+        self.cursor += text.len;
+    }
+
+    /// カーソル位置にコードポイントを挿入
+    pub fn insertCodepointAtCursor(self: *Self, cp: u21) !void {
+        var buf: [4]u8 = undefined;
+        const len = std.unicode.utf8Encode(cp, &buf) catch return;
+        try self.insertAtCursor(buf[0..len]);
+    }
+
+    /// カーソル前の1文字（グラフェム）を削除（バックスペース）
+    pub fn backspace(self: *Self) void {
+        if (self.cursor == 0) return;
+
+        const prev_pos = findPrevGraphemeStart(self.buffer.items, self.cursor);
+        const delete_len = self.cursor - prev_pos;
+
+        const items = self.buffer.items;
+        std.mem.copyForwards(u8, items[prev_pos..], items[self.cursor..]);
+        self.buffer.shrinkRetainingCapacity(items.len - delete_len);
+        self.cursor = prev_pos;
+    }
+
+    /// カーソル位置の1文字（グラフェム）を削除（デリート）
+    pub fn delete(self: *Self) void {
+        if (self.cursor >= self.buffer.items.len) return;
+
+        const next_pos = findNextGraphemeEnd(self.buffer.items, self.cursor);
+        const delete_len = next_pos - self.cursor;
+
+        const items = self.buffer.items;
+        std.mem.copyForwards(u8, items[self.cursor..], items[next_pos..]);
+        self.buffer.shrinkRetainingCapacity(items.len - delete_len);
+    }
+
+    /// カーソルを1文字左に移動
+    pub fn moveLeft(self: *Self) void {
+        if (self.cursor == 0) return;
+        self.cursor = findPrevGraphemeStart(self.buffer.items, self.cursor);
+    }
+
+    /// カーソルを1文字右に移動
+    pub fn moveRight(self: *Self) void {
+        if (self.cursor >= self.buffer.items.len) return;
+        self.cursor = findNextGraphemeEnd(self.buffer.items, self.cursor);
+    }
+
+    /// カーソルを先頭に移動
+    pub fn moveToStart(self: *Self) void {
+        self.cursor = 0;
+    }
+
+    /// カーソルを末尾に移動
+    pub fn moveToEnd(self: *Self) void {
+        self.cursor = self.buffer.items.len;
+    }
+
+    /// カーソルを1単語前に移動
+    pub fn moveWordBackward(self: *Self) void {
+        if (self.cursor == 0) return;
+        const items = self.buffer.items;
+        var pos = self.cursor;
+
+        // 空白をスキップ
+        while (pos > 0) {
+            const prev = findPrevGraphemeStart(items, pos);
+            if (!isWhitespaceAt(items, prev)) break;
+            pos = prev;
+        }
+        // 単語文字をスキップ
+        while (pos > 0) {
+            const prev = findPrevGraphemeStart(items, pos);
+            if (isWhitespaceAt(items, prev)) break;
+            pos = prev;
+        }
+        self.cursor = pos;
+    }
+
+    /// カーソルを1単語後に移動
+    pub fn moveWordForward(self: *Self) void {
+        const items = self.buffer.items;
+        if (self.cursor >= items.len) return;
+        var pos = self.cursor;
+
+        // 単語文字をスキップ
+        while (pos < items.len) {
+            if (isWhitespaceAt(items, pos)) break;
+            pos = findNextGraphemeEnd(items, pos);
+        }
+        // 空白をスキップ
+        while (pos < items.len) {
+            if (!isWhitespaceAt(items, pos)) break;
+            pos = findNextGraphemeEnd(items, pos);
+        }
+        self.cursor = pos;
+    }
+
+    /// 前の単語を削除（M-Backspace）
+    pub fn deleteWordBackward(self: *Self) void {
+        if (self.cursor == 0) return;
+        const start_pos = self.cursor;
+        self.moveWordBackward();
+        const delete_len = start_pos - self.cursor;
+        if (delete_len > 0) {
+            const items = self.buffer.items;
+            std.mem.copyForwards(u8, items[self.cursor..], items[start_pos..]);
+            self.buffer.shrinkRetainingCapacity(items.len - delete_len);
+        }
+    }
+
+    /// 次の単語を削除（M-d）
+    pub fn deleteWordForward(self: *Self) void {
+        const items = self.buffer.items;
+        if (self.cursor >= items.len) return;
+        const start_pos = self.cursor;
+
+        var end_pos = start_pos;
+        // 単語文字をスキップ
+        while (end_pos < items.len) {
+            if (isWhitespaceAt(items, end_pos)) break;
+            end_pos = findNextGraphemeEnd(items, end_pos);
+        }
+        // 空白をスキップ
+        while (end_pos < items.len) {
+            if (!isWhitespaceAt(items, end_pos)) break;
+            end_pos = findNextGraphemeEnd(items, end_pos);
+        }
+
+        const delete_len = end_pos - start_pos;
+        if (delete_len > 0) {
+            std.mem.copyForwards(u8, items[start_pos..], items[end_pos..]);
+            self.buffer.shrinkRetainingCapacity(items.len - delete_len);
+        }
+    }
+
+    /// カーソルから行末まで削除（C-k）
+    pub fn killLine(self: *Self) void {
+        if (self.cursor >= self.buffer.items.len) return;
+        self.buffer.shrinkRetainingCapacity(self.cursor);
+    }
+
+    /// 表示用のカーソル位置を取得（プロンプト含む）
+    pub fn getDisplayCursorColumn(self: *const Self) usize {
+        var col: usize = self.prompt_len;
+        var pos: usize = 0;
+        while (pos < self.cursor and pos < self.buffer.items.len) {
+            const cp = unicode.decodeUtf8(self.buffer.items[pos..]) orelse {
+                col += 1;
+                pos += 1;
+                continue;
+            };
+            col += unicode.codePointWidth(cp.codepoint);
+            pos += cp.len;
+        }
+        return col;
+    }
+
+    // ========================================
+    // ヘルパー関数
+    // ========================================
+
+    fn findPrevGraphemeStart(text: []const u8, pos: usize) usize {
+        if (pos == 0) return 0;
+        var p = pos - 1;
+        while (p > 0 and unicode.isUtf8Continuation(text[p])) {
+            p -= 1;
+        }
+        return p;
+    }
+
+    fn findNextGraphemeEnd(text: []const u8, pos: usize) usize {
+        if (pos >= text.len) return text.len;
+        return @min(pos + unicode.utf8SeqLen(text[pos]), text.len);
+    }
+
+    fn isWhitespaceAt(text: []const u8, pos: usize) bool {
+        if (pos >= text.len) return false;
+        const c = text[pos];
+        return c == ' ' or c == '\t' or c == '\n' or c == '\r';
+    }
+};
+
+// ============================================================================
+// テスト
+// ============================================================================
+
+test "Minibuffer - basic operations" {
+    const allocator = std.testing.allocator;
+    var mb = Minibuffer.init(allocator);
+    defer mb.deinit();
+
+    try mb.insertAtCursor("hello");
+    try std.testing.expectEqualStrings("hello", mb.getContent());
+    try std.testing.expectEqual(@as(usize, 5), mb.cursor);
+
+    mb.backspace();
+    try std.testing.expectEqualStrings("hell", mb.getContent());
+
+    mb.moveToStart();
+    try std.testing.expectEqual(@as(usize, 0), mb.cursor);
+
+    mb.delete();
+    try std.testing.expectEqualStrings("ell", mb.getContent());
+}
+
+test "Minibuffer - cursor movement" {
+    const allocator = std.testing.allocator;
+    var mb = Minibuffer.init(allocator);
+    defer mb.deinit();
+
+    try mb.insertAtCursor("hello world");
+
+    mb.moveToStart();
+    try std.testing.expectEqual(@as(usize, 0), mb.cursor);
+
+    mb.moveRight();
+    try std.testing.expectEqual(@as(usize, 1), mb.cursor);
+
+    mb.moveToEnd();
+    try std.testing.expectEqual(@as(usize, 11), mb.cursor);
+
+    mb.moveLeft();
+    try std.testing.expectEqual(@as(usize, 10), mb.cursor);
+}
+
+test "Minibuffer - word operations" {
+    const allocator = std.testing.allocator;
+    var mb = Minibuffer.init(allocator);
+    defer mb.deinit();
+
+    try mb.insertAtCursor("hello world test");
+
+    mb.moveWordBackward();
+    try std.testing.expectEqual(@as(usize, 12), mb.cursor);
+
+    mb.moveWordBackward();
+    try std.testing.expectEqual(@as(usize, 6), mb.cursor);
+
+    mb.moveWordForward();
+    try std.testing.expectEqual(@as(usize, 12), mb.cursor);
+}
+
+test "Minibuffer - prompt" {
+    const allocator = std.testing.allocator;
+    var mb = Minibuffer.init(allocator);
+    defer mb.deinit();
+
+    mb.setPrompt("Search: ");
+    try std.testing.expectEqualStrings("Search: ", mb.getPrompt());
+}

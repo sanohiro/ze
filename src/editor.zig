@@ -39,56 +39,25 @@ const History = @import("history.zig").History;
 const HistoryType = @import("history.zig").HistoryType;
 const unicode = @import("unicode.zig");
 
+// サービス
+const UndoManager = @import("services/undo_manager.zig").UndoManager;
+const UndoStack = @import("services/undo_manager.zig").UndoStack;
+const UndoEntry = @import("services/undo_manager.zig").UndoEntry;
+const MxCommands = @import("services/mx_commands.zig");
+const Minibuffer = @import("services/minibuffer.zig").Minibuffer;
+const SearchService = @import("services/search_service.zig").SearchService;
+const BufferManager = @import("services/buffer_manager.zig").BufferManager;
+const BufferState = @import("services/buffer_manager.zig").BufferState;
+const WindowManager = @import("services/window_manager.zig").WindowManager;
+const Window = @import("services/window_manager.zig").Window;
+const SplitType = @import("services/window_manager.zig").SplitType;
+
 // ============================================================================
-// Undo/Redo システム - 差分ログベース
-// ============================================================================
-//
-// 【設計】
-// 操作ベースの Undo/Redo を採用。各編集操作（挿入/削除）を記録し、
-// Undo 時は逆操作を適用、Redo 時は元の操作を再適用。
-//
-// 【利点】
-// - メモリ効率: テキスト差分のみ保存（スナップショット方式より軽量）
-// - 高速: 小さな操作は即座に適用可能
-//
-// 【実装】
-// - undo_stack: 過去の操作（新しい順）
-// - redo_stack: Undo した操作（Redo 用）
-// - 新しい編集操作を行うと redo_stack はクリアされる
+// Undo/Redo システム - services/undo_manager.zig に移動済み
 // ============================================================================
 
-const EditOp = union(enum) {
-    insert: struct {
-        pos: usize,
-        text: []const u8, // allocatorで確保（解放責任あり）
-    },
-    delete: struct {
-        pos: usize,
-        text: []const u8, // 削除されたテキストを保存（Undo時に復元）
-    },
-    replace: struct {
-        pos: usize,
-        old_text: []const u8, // 置換前のテキスト（Undo時に復元）
-        new_text: []const u8, // 置換後のテキスト
-    },
-};
-
-const UndoEntry = struct {
-    op: EditOp,
-    cursor_pos: usize, // 操作前のカーソルバイト位置
-    timestamp: i64, // 操作時のタイムスタンプ（ミリ秒）
-
-    fn deinit(self: *const UndoEntry, allocator: std.mem.Allocator) void {
-        switch (self.op) {
-            .insert => |ins| allocator.free(ins.text),
-            .delete => |del| allocator.free(del.text),
-            .replace => |rep| {
-                allocator.free(rep.old_text);
-                allocator.free(rep.new_text);
-            },
-        }
-    }
-};
+// EditOpとUndoEntryはundo_manager.zigからインポート
+const EditOp = @import("services/undo_manager.zig").EditOp;
 
 /// エディタの状態遷移を管理するモード
 ///
@@ -158,115 +127,8 @@ pub const ShellCommandState = struct {
 };
 
 // ========================================
-// BufferState: バッファの内容と状態
+// BufferState, Window: services/buffer_manager.zig, services/window_manager.zig に移動済み
 // ========================================
-pub const BufferState = struct {
-    id: usize, // バッファID（一意）
-    buffer: Buffer, // 実際のテキスト内容
-    filename: ?[]const u8, // ファイル名（nullなら*scratch*）
-    modified: bool, // 変更フラグ
-    readonly: bool, // 読み取り専用フラグ
-    file_mtime: ?i128, // ファイルの最終更新時刻
-    undo_stack: std.ArrayList(UndoEntry), // Undoスタック
-    redo_stack: std.ArrayList(UndoEntry), // Redoスタック
-    undo_save_point: ?usize, // 保存時のundoスタック深さ（nullなら一度も保存されていない）
-    allocator: std.mem.Allocator,
-
-    pub fn init(allocator: std.mem.Allocator, id: usize) !*BufferState {
-        const self = try allocator.create(BufferState);
-        self.* = BufferState{
-            .id = id,
-            .buffer = try Buffer.init(allocator),
-            .filename = null,
-            .modified = false,
-            .readonly = false,
-            .file_mtime = null,
-            .undo_stack = undefined, // 後で初期化
-            .redo_stack = undefined, // 後で初期化
-            .undo_save_point = 0, // 初期状態は保存済み扱い
-            .allocator = allocator,
-        };
-        // ArrayListは構造体リテラル内で初期化できないため、後で初期化
-        // Zig 0.15では.{}で空のリストとして初期化
-        self.undo_stack = .{};
-        self.redo_stack = .{};
-        return self;
-    }
-
-    /// 現在の状態がディスク上のファイルと一致するかを判定
-    pub fn isModified(self: *const BufferState) bool {
-        if (self.undo_save_point) |save_point| {
-            return self.undo_stack.items.len != save_point;
-        }
-        // 一度も保存されていない場合、何か変更があればmodified
-        return self.undo_stack.items.len > 0;
-    }
-
-    /// 現在の状態を保存済みとしてマーク
-    pub fn markSaved(self: *BufferState) void {
-        self.undo_save_point = self.undo_stack.items.len;
-        self.modified = false;
-    }
-
-    pub fn deinit(self: *BufferState) void {
-        self.buffer.deinit();
-        if (self.filename) |fname| {
-            self.allocator.free(fname);
-        }
-        for (self.undo_stack.items) |*entry| {
-            entry.deinit(self.allocator);
-        }
-        self.undo_stack.deinit(self.allocator);
-        for (self.redo_stack.items) |*entry| {
-            entry.deinit(self.allocator);
-        }
-        self.redo_stack.deinit(self.allocator);
-        self.allocator.destroy(self);
-    }
-};
-
-// ========================================
-// Window: 画面上の表示領域
-// ========================================
-/// ウィンドウの分割タイプ
-pub const SplitType = enum {
-    none, // 分割なし（単一ウィンドウまたは最初のウィンドウ）
-    horizontal, // 横分割（上下に分割）で作られたウィンドウ
-    vertical, // 縦分割（左右に分割）で作られたウィンドウ
-};
-
-pub const Window = struct {
-    id: usize, // ウィンドウID
-    buffer_id: usize, // 表示しているバッファのID
-    view: View, // 表示状態（カーソル位置、スクロールなど）
-    x: usize, // 画面上のX座標
-    y: usize, // 画面上のY座標
-    width: usize, // ウィンドウの幅
-    height: usize, // ウィンドウの高さ
-    mark_pos: ?usize, // 範囲選択のマーク位置
-    split_type: SplitType, // このウィンドウがどの分割で作られたか
-    // 分割元ウィンドウのID（リサイズ時のグループ化に使用）
-    split_parent_id: ?usize,
-
-    pub fn init(id: usize, buffer_id: usize, x: usize, y: usize, width: usize, height: usize) Window {
-        return Window{
-            .id = id,
-            .buffer_id = buffer_id,
-            .view = undefined, // 後で初期化
-            .x = x,
-            .y = y,
-            .width = width,
-            .height = height,
-            .mark_pos = null,
-            .split_type = .none,
-            .split_parent_id = null,
-        };
-    }
-
-    pub fn deinit(self: *Window, allocator: std.mem.Allocator) void {
-        self.view.deinit(allocator);
-    }
-};
 
 // ========================================
 // Editor: エディタ本体（複数バッファ・ウィンドウを管理）
