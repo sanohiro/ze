@@ -160,7 +160,6 @@ pub const Editor = struct {
     // 検索状態（グローバル）
     search_start_pos: ?usize,
     last_search: ?[]const u8,
-    compiled_regex: ?regex.Regex,
 
     // 置換状態（グローバル）
     replace_search: ?[]const u8,
@@ -173,7 +172,7 @@ pub const Editor = struct {
 
     // 履歴（~/.ze/ に保存）
     shell_history: History,
-    search_history: History,
+    search_service: SearchService, // 検索サービス（履歴含む）
 
     // Undo/Redoマネージャー
     undo_manager: UndoManager,
@@ -204,8 +203,6 @@ pub const Editor = struct {
         // 履歴を初期化してロード
         var shell_history = History.init(allocator);
         shell_history.load(.shell) catch {}; // エラーは無視（ファイルがなければ空）
-        var search_history = History.init(allocator);
-        search_history.load(.search) catch {};
 
         const editor = Editor{
             .terminal = terminal,
@@ -225,14 +222,13 @@ pub const Editor = struct {
             .rectangle_ring = null,
             .search_start_pos = null,
             .last_search = null,
-            .compiled_regex = null,
             .replace_search = null,
             .replace_replacement = null,
             .replace_current_pos = null,
             .replace_match_count = 0,
             .shell_state = null,
             .shell_history = shell_history,
-            .search_history = search_history,
+            .search_service = SearchService.init(allocator),
             .undo_manager = UndoManager.init(allocator),
         };
 
@@ -270,10 +266,6 @@ pub const Editor = struct {
         if (self.last_search) |search| {
             self.allocator.free(search);
         }
-        if (self.compiled_regex) |*r| {
-            var re = r.*;
-            re.deinit();
-        }
 
         // 置換状態の解放
         if (self.replace_search) |search| {
@@ -298,9 +290,8 @@ pub const Editor = struct {
 
         // 履歴を保存して解放
         self.shell_history.save(.shell) catch {};
-        self.search_history.save(.search) catch {};
         self.shell_history.deinit();
-        self.search_history.deinit();
+        self.search_service.deinit();
     }
 
     /// シェルコマンド状態をクリーンアップ
@@ -421,7 +412,7 @@ pub const Editor = struct {
         self.search_start_pos = null;
         self.mode = .normal;
         self.minibuffer.clear();
-        self.search_history.resetNavigation();
+        self.search_service.resetHistoryNavigation();
         self.getCurrentView().setSearchHighlight(null);
         self.getCurrentView().clearError();
         self.getCurrentView().markFullRedraw();
@@ -2046,7 +2037,7 @@ pub const Editor = struct {
                         // 検索文字列を保存
                         if (self.minibuffer.getContent().len > 0) {
                             // 履歴に追加
-                            try self.search_history.add(self.minibuffer.getContent());
+                            try self.search_service.addToHistory(self.minibuffer.getContent());
                             if (self.last_search) |old_search| {
                                 self.allocator.free(old_search);
                             }
@@ -3581,96 +3572,25 @@ pub const Editor = struct {
         defer self.allocator.free(content);
 
         const start_pos = self.getCurrentView().getCursorBufferPos();
-        const search_from = if (skip_current and start_pos < content.len) start_pos + 1 else start_pos;
 
-        // 正規表現パターンかチェック
-        const is_regex = regex.isRegexPattern(search_str);
-
-        if (is_regex) {
-            // 正規表現検索
-            // 古いコンパイル済み正規表現を解放
-            if (self.compiled_regex) |*r| {
-                var re = r.*;
-                re.deinit();
-                self.compiled_regex = null;
-            }
-
-            // 新しい正規表現をコンパイル
-            self.compiled_regex = regex.Regex.compile(self.allocator, search_str) catch {
-                self.getCurrentView().setError("Invalid regex pattern");
-                return;
-            };
-
-            const re = &self.compiled_regex.?;
-
-            if (forward) {
-                // 前方検索
-                if (re.search(content, search_from)) |match| {
-                    self.setCursorToPos(match.start);
-                    return;
-                }
-                // ラップアラウンド
-                if (start_pos > 0) {
-                    if (re.search(content, 0)) |match| {
-                        if (match.start < start_pos) {
-                            self.setCursorToPos(match.start);
-                            return;
-                        }
-                    }
-                }
-                self.getCurrentView().setError("Failing I-search (regex)");
-            } else {
-                // 後方検索
-                if (re.searchBackward(content, search_from)) |match| {
-                    self.setCursorToPos(match.start);
-                    return;
-                }
-                // ラップアラウンド
-                if (re.searchBackward(content, content.len)) |match| {
-                    if (match.start > start_pos) {
-                        self.setCursorToPos(match.start);
-                        return;
-                    }
-                }
-                self.getCurrentView().setError("Failing I-search backward (regex)");
-            }
+        // SearchServiceに検索を委譲
+        if (self.search_service.search(content, search_str, start_pos, forward, skip_current)) |match| {
+            self.setCursorToPos(match.start);
         } else {
-            // リテラル検索（従来の動作）
+            // 見つからなかった場合のエラーメッセージ
+            const is_regex = SearchService.isRegexPattern(search_str);
             if (forward) {
-                // 前方検索
-                if (search_from < content.len) {
-                    if (std.mem.indexOf(u8, content[search_from..], search_str)) |offset| {
-                        const found_pos = search_from + offset;
-                        self.setCursorToPos(found_pos);
-                        return;
-                    }
+                if (is_regex) {
+                    self.getCurrentView().setError("Failing I-search (regex)");
+                } else {
+                    self.getCurrentView().setError("Failing I-search");
                 }
-                // 見つからなかったら先頭から検索（ラップアラウンド）
-                if (start_pos > 0) {
-                    if (std.mem.indexOf(u8, content[0..start_pos], search_str)) |offset| {
-                        self.setCursorToPos(offset);
-                        return;
-                    }
-                }
-                // それでも見つからない
-                self.getCurrentView().setError("Failing I-search");
             } else {
-                // 後方検索
-                if (search_from > 0) {
-                    if (std.mem.lastIndexOf(u8, content[0..search_from], search_str)) |offset| {
-                        self.setCursorToPos(offset);
-                        return;
-                    }
+                if (is_regex) {
+                    self.getCurrentView().setError("Failing I-search backward (regex)");
+                } else {
+                    self.getCurrentView().setError("Failing I-search backward");
                 }
-                // 見つからなかったら末尾から検索（ラップアラウンド）
-                if (start_pos < content.len) {
-                    if (std.mem.lastIndexOf(u8, content[start_pos..], search_str)) |offset| {
-                        self.setCursorToPos(start_pos + offset);
-                        return;
-                    }
-                }
-                // それでも見つからない
-                self.getCurrentView().setError("Failing I-search backward");
             }
         }
     }
@@ -4312,11 +4232,11 @@ pub const Editor = struct {
     /// 検索履歴をナビゲート
     fn navigateSearchHistory(self: *Editor, prev: bool, is_forward: bool) !void {
         // 最初のナビゲーションなら現在の入力を保存
-        if (self.search_history.current_index == null) {
-            try self.search_history.startNavigation(self.minibuffer.getContent());
+        if (!self.search_service.isNavigating()) {
+            try self.search_service.startHistoryNavigation(self.minibuffer.getContent());
         }
 
-        const entry = if (prev) self.search_history.prev() else self.search_history.next();
+        const entry = if (prev) self.search_service.historyPrev() else self.search_service.historyNext();
         if (entry) |text| {
             // ミニバッファを履歴エントリで置き換え
             try self.minibuffer.setContent(text);
