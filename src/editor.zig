@@ -1717,20 +1717,730 @@ pub const Editor = struct {
         self.setCursorToPos(target_pos);
     }
 
+    // ========================================
+    // キー処理：モードハンドラー
+    // ========================================
+
+    /// ファイル名入力モード（C-x C-s で新規ファイル保存時）
+    fn handleFilenameInputKey(self: *Editor, key: input.Key) !bool {
+        switch (key) {
+            .ctrl => |c| {
+                if (c == 'g') {
+                    self.mode = .normal;
+                    self.quit_after_save = false;
+                    self.clearInputBuffer();
+                    self.getCurrentView().clearError();
+                    return true;
+                }
+            },
+            .enter => {
+                if (self.minibuffer.getContent().len > 0) {
+                    const buffer_state = self.getCurrentBuffer();
+                    if (buffer_state.filename) |old| {
+                        self.allocator.free(old);
+                    }
+                    buffer_state.filename = try self.allocator.dupe(u8, self.minibuffer.getContent());
+                    self.clearInputBuffer();
+                    try self.saveFile();
+                    self.mode = .normal;
+                    if (self.quit_after_save) {
+                        self.quit_after_save = false;
+                        self.running = false;
+                    }
+                }
+                return true;
+            },
+            .escape => {
+                self.mode = .normal;
+                self.quit_after_save = false;
+                self.clearInputBuffer();
+                self.getCurrentView().clearError();
+                return true;
+            },
+            else => {},
+        }
+        _ = try self.handleMinibufferKey(key);
+        self.updateMinibufferPrompt("Write file: ");
+        return true;
+    }
+
+    /// ファイルを開くモード（C-x C-f）
+    fn handleFindFileInputKey(self: *Editor, key: input.Key) !bool {
+        switch (key) {
+            .ctrl => |c| {
+                if (c == 'g') {
+                    self.cancelInput();
+                    return true;
+                }
+            },
+            .escape => {
+                self.cancelInput();
+                return true;
+            },
+            .enter => {
+                if (self.minibuffer.getContent().len > 0) {
+                    const filename = self.minibuffer.getContent();
+                    const existing_buffer = self.findBufferByFilename(filename);
+                    if (existing_buffer) |buf| {
+                        try self.switchToBuffer(buf.id);
+                    } else {
+                        const new_buffer = try self.createNewBuffer();
+                        const filename_copy = try self.allocator.dupe(u8, filename);
+
+                        const loaded_buffer = Buffer.loadFromFile(self.allocator, filename_copy) catch |err| {
+                            self.allocator.free(filename_copy);
+                            if (err == error.FileNotFound) {
+                                new_buffer.filename = try self.allocator.dupe(u8, filename);
+                                try self.switchToBuffer(new_buffer.id);
+                                self.cancelInput();
+                                return true;
+                            } else if (err == error.BinaryFile) {
+                                _ = try self.closeBuffer(new_buffer.id);
+                                self.getCurrentView().setError("Cannot open binary file");
+                                self.mode = .normal;
+                                self.clearInputBuffer();
+                                return true;
+                            } else {
+                                _ = try self.closeBuffer(new_buffer.id);
+                                self.showError(err);
+                                self.mode = .normal;
+                                self.clearInputBuffer();
+                                return true;
+                            }
+                        };
+
+                        new_buffer.buffer.deinit();
+                        new_buffer.buffer = loaded_buffer;
+                        new_buffer.filename = filename_copy;
+                        new_buffer.modified = false;
+
+                        const file = std.fs.cwd().openFile(filename_copy, .{}) catch null;
+                        if (file) |f| {
+                            defer f.close();
+                            const stat = f.stat() catch null;
+                            if (stat) |s| {
+                                new_buffer.file_mtime = s.mtime;
+                            }
+                        }
+                        try self.switchToBuffer(new_buffer.id);
+                    }
+                    self.cancelInput();
+                }
+                return true;
+            },
+            else => {},
+        }
+        _ = try self.handleMinibufferKey(key);
+        self.updateMinibufferPrompt("Find file: ");
+        return true;
+    }
+
+    /// バッファ切り替えモード（C-x b）
+    fn handleBufferSwitchInputKey(self: *Editor, key: input.Key) !bool {
+        switch (key) {
+            .ctrl => |c| {
+                if (c == 'g') {
+                    self.cancelInput();
+                    return true;
+                }
+            },
+            .escape => {
+                self.cancelInput();
+                return true;
+            },
+            .enter => {
+                if (self.minibuffer.getContent().len > 0) {
+                    const buffer_name = self.minibuffer.getContent();
+                    const found_buffer = self.findBufferByFilename(buffer_name);
+                    if (found_buffer) |buf| {
+                        try self.switchToBuffer(buf.id);
+                        self.cancelInput();
+                    } else {
+                        self.getCurrentView().setError("No such buffer");
+                        self.mode = .normal;
+                        self.clearInputBuffer();
+                    }
+                }
+                return true;
+            },
+            else => {},
+        }
+        _ = try self.handleMinibufferKey(key);
+        self.updateMinibufferPrompt("Switch to buffer: ");
+        return true;
+    }
+
+    /// インクリメンタルサーチモード（C-s / C-r）
+    fn handleIsearchKey(self: *Editor, key: input.Key, is_forward: bool) !bool {
+        switch (key) {
+            .char => |c| try self.addSearchChar(c, is_forward),
+            .codepoint => |cp| try self.addSearchChar(cp, is_forward),
+            .ctrl => |c| {
+                switch (c) {
+                    'g' => {
+                        if (self.search_start_pos) |start_pos| {
+                            self.setCursorToPos(start_pos);
+                        }
+                        self.endSearch();
+                    },
+                    's' => {
+                        if (self.minibuffer.getContent().len > 0) {
+                            self.getCurrentView().setSearchHighlight(self.minibuffer.getContent());
+                            try self.performSearch(true, true);
+                        }
+                    },
+                    'r' => {
+                        if (self.minibuffer.getContent().len > 0) {
+                            self.getCurrentView().setSearchHighlight(self.minibuffer.getContent());
+                            try self.performSearch(false, true);
+                        }
+                    },
+                    'p' => try self.navigateSearchHistory(true, is_forward),
+                    'n' => try self.navigateSearchHistory(false, is_forward),
+                    else => {},
+                }
+            },
+            .arrow_up => try self.navigateSearchHistory(true, is_forward),
+            .arrow_down => try self.navigateSearchHistory(false, is_forward),
+            .backspace => {
+                if (self.minibuffer.getContent().len > 0) {
+                    self.minibuffer.moveToEnd();
+                    self.minibuffer.backspace();
+                    const prefix = if (is_forward) "I-search: " else "I-search backward: ";
+                    self.setPrompt("{s}{s}", .{ prefix, self.minibuffer.getContent() });
+                    if (self.minibuffer.getContent().len > 0) {
+                        self.getCurrentView().setSearchHighlight(self.minibuffer.getContent());
+                        if (self.search_start_pos) |start_pos| {
+                            self.setCursorToPos(start_pos);
+                        }
+                        try self.performSearch(is_forward, false);
+                    } else {
+                        self.getCurrentView().setSearchHighlight(null);
+                        if (self.search_start_pos) |start_pos| {
+                            self.setCursorToPos(start_pos);
+                        }
+                    }
+                }
+            },
+            .enter => {
+                if (self.minibuffer.getContent().len > 0) {
+                    try self.search_service.addToHistory(self.minibuffer.getContent());
+                    if (self.last_search) |old_search| {
+                        self.allocator.free(old_search);
+                    }
+                    self.last_search = self.allocator.dupe(u8, self.minibuffer.getContent()) catch null;
+                }
+                self.endSearch();
+            },
+            else => {},
+        }
+        return true;
+    }
+
+    /// C-xプレフィックスモード
+    fn handlePrefixXKey(self: *Editor, key: input.Key) !bool {
+        self.mode = .normal;
+        switch (key) {
+            .ctrl => |c| {
+                switch (c) {
+                    'g' => self.getCurrentView().clearError(),
+                    'b' => self.showBufferList() catch |err| self.showError(err),
+                    'f' => {
+                        self.mode = .find_file_input;
+                        self.clearInputBuffer();
+                        self.prompt_prefix_len = 12;
+                        self.getCurrentView().setError("Find file: ");
+                    },
+                    's' => {
+                        const buffer_state = self.getCurrentBuffer();
+                        if (buffer_state.filename == null) {
+                            self.mode = .filename_input;
+                            self.quit_after_save = false;
+                            self.minibuffer.clear();
+                            self.minibuffer.cursor = 0;
+                            self.prompt_prefix_len = 13;
+                            self.getCurrentView().setError("Write file: ");
+                        } else {
+                            try self.saveFile();
+                        }
+                    },
+                    'w' => {
+                        self.mode = .filename_input;
+                        self.quit_after_save = false;
+                        self.clearInputBuffer();
+                        self.prompt_prefix_len = 13;
+                        self.getCurrentView().setError("Write file: ");
+                    },
+                    'c' => {
+                        var modified_count: usize = 0;
+                        var first_modified_name: ?[]const u8 = null;
+                        for (self.buffers.items) |buf| {
+                            if (buf.modified) {
+                                modified_count += 1;
+                                if (first_modified_name == null) {
+                                    first_modified_name = buf.filename;
+                                }
+                            }
+                        }
+                        if (modified_count > 0) {
+                            if (modified_count == 1) {
+                                const name = first_modified_name orelse "*scratch*";
+                                self.setPrompt("Save changes to {s}? (y/n/c): ", .{name});
+                            } else {
+                                self.setPrompt("{d} buffers modified; exit anyway? (y/n): ", .{modified_count});
+                            }
+                            self.mode = .quit_confirm;
+                        } else {
+                            self.running = false;
+                        }
+                    },
+                    else => self.getCurrentView().setError("Unknown command"),
+                }
+            },
+            .char => |c| {
+                switch (c) {
+                    'h' => self.selectAll(),
+                    'r' => {
+                        self.mode = .prefix_r;
+                        return true;
+                    },
+                    'b' => {
+                        self.mode = .buffer_switch_input;
+                        self.clearInputBuffer();
+                        self.prompt_prefix_len = 19;
+                        self.getCurrentView().setError("Switch to buffer: ");
+                    },
+                    'k' => {
+                        const buffer_state = self.getCurrentBuffer();
+                        if (buffer_state.modified) {
+                            const name = buffer_state.filename orelse "*scratch*";
+                            self.setPrompt("Buffer {s} modified; kill anyway? (y/n): ", .{name});
+                            self.mode = .kill_buffer_confirm;
+                        } else {
+                            const buffer_id = buffer_state.id;
+                            self.closeBuffer(buffer_id) catch |err| self.showError(err);
+                        }
+                    },
+                    '2' => self.splitWindowHorizontally() catch |err| self.showError(err),
+                    '3' => self.splitWindowVertically() catch |err| self.showError(err),
+                    'o' => {
+                        if (self.windows.items.len > 1) {
+                            self.current_window_idx = (self.current_window_idx + 1) % self.windows.items.len;
+                        }
+                    },
+                    '0' => self.closeCurrentWindow() catch |err| self.showError(err),
+                    '1' => self.deleteOtherWindows() catch |err| self.showError(err),
+                    else => self.getCurrentView().setError("Unknown command"),
+                }
+            },
+            else => self.getCurrentView().setError("Expected C-x C-[key]"),
+        }
+        return true;
+    }
+
+    /// C-x rプレフィックスモード（矩形操作）
+    fn handlePrefixRKey(self: *Editor, key: input.Key) bool {
+        self.mode = .normal;
+        switch (key) {
+            .char => |c| {
+                switch (c) {
+                    'k' => self.killRectangle(),
+                    'y' => self.yankRectangle(),
+                    't' => self.getCurrentView().setError("C-x r t not implemented yet"),
+                    else => self.getCurrentView().setError("Unknown rectangle command"),
+                }
+            },
+            .ctrl => |c| {
+                if (c == 'g') {
+                    self.getCurrentView().clearError();
+                } else {
+                    self.getCurrentView().setError("Unknown rectangle command");
+                }
+            },
+            else => self.getCurrentView().setError("Unknown rectangle command"),
+        }
+        return true;
+    }
+
+    /// Query Replace: 検索文字列入力モード
+    fn handleQueryReplaceInputSearchKey(self: *Editor, key: input.Key) !bool {
+        switch (key) {
+            .ctrl => |c| {
+                if (c == 'g') {
+                    self.cancelInput();
+                    return true;
+                }
+            },
+            .escape => {
+                self.cancelInput();
+                return true;
+            },
+            .enter => {
+                if (self.minibuffer.getContent().len > 0) {
+                    if (self.replace_search) |old| {
+                        self.allocator.free(old);
+                    }
+                    self.replace_search = try self.allocator.dupe(u8, self.minibuffer.getContent());
+                    self.clearInputBuffer();
+                    self.mode = .query_replace_input_replacement;
+                    self.setPrompt("Query replace {s} with: ", .{self.replace_search.?});
+                    self.prompt_prefix_len = 1 + 14 + self.replace_search.?.len + 7;
+                }
+                return true;
+            },
+            else => {},
+        }
+        _ = try self.handleMinibufferKey(key);
+        self.updateMinibufferPrompt("Query replace: ");
+        return true;
+    }
+
+    /// Query Replace: 置換文字列入力モード
+    fn handleQueryReplaceInputReplacementKey(self: *Editor, key: input.Key) !bool {
+        switch (key) {
+            .ctrl => |c| {
+                if (c == 'g') {
+                    self.mode = .normal;
+                    self.clearInputBuffer();
+                    if (self.replace_search) |search| {
+                        self.allocator.free(search);
+                        self.replace_search = null;
+                    }
+                    self.getCurrentView().clearError();
+                    return true;
+                }
+            },
+            .escape => {
+                self.mode = .normal;
+                self.clearInputBuffer();
+                if (self.replace_search) |search| {
+                    self.allocator.free(search);
+                    self.replace_search = null;
+                }
+                self.getCurrentView().clearError();
+                return true;
+            },
+            .enter => {
+                if (self.replace_replacement) |old| {
+                    self.allocator.free(old);
+                }
+                self.replace_replacement = try self.allocator.dupe(u8, self.minibuffer.getContent());
+                self.minibuffer.clear();
+
+                if (self.replace_search) |search| {
+                    const found = try self.findNextMatch(search, self.getCurrentView().getCursorBufferPos());
+                    if (found) {
+                        self.mode = .query_replace_confirm;
+                        self.setPrompt("Replace? (y)es (n)ext (!)all (q)uit", .{});
+                    } else {
+                        self.mode = .normal;
+                        self.getCurrentView().setError("No match found");
+                    }
+                } else {
+                    self.mode = .normal;
+                    self.getCurrentView().setError("No search string");
+                }
+                return true;
+            },
+            else => {},
+        }
+        _ = try self.handleMinibufferKey(key);
+        if (self.replace_search) |search| {
+            self.setPrompt("Query replace {s} with: {s}", .{ search, self.minibuffer.getContent() });
+        } else {
+            self.setPrompt("Query replace with: {s}", .{self.minibuffer.getContent()});
+        }
+        return true;
+    }
+
+    /// Query Replace: 確認モード
+    fn handleQueryReplaceConfirmKey(self: *Editor, key: input.Key) !bool {
+        switch (key) {
+            .char => |c| try self.handleReplaceConfirmChar(c),
+            .codepoint => |cp| try self.handleReplaceConfirmChar(unicode.normalizeFullwidth(cp)),
+            .ctrl => |c| {
+                if (c == 'g') {
+                    self.mode = .normal;
+                    self.setPrompt("Replaced {d} occurrence(s)", .{self.replace_match_count});
+                }
+            },
+            else => {},
+        }
+        return true;
+    }
+
+    /// シェルコマンド入力モード（M-|）
+    fn handleShellCommandKey(self: *Editor, key: input.Key) !bool {
+        switch (key) {
+            .ctrl => |c| {
+                switch (c) {
+                    'g' => {
+                        self.mode = .normal;
+                        self.clearInputBuffer();
+                        self.shell_service.resetHistoryNavigation();
+                        self.getCurrentView().clearError();
+                        return true;
+                    },
+                    'p' => {
+                        try self.navigateShellHistory(true);
+                        return true;
+                    },
+                    'n' => {
+                        try self.navigateShellHistory(false);
+                        return true;
+                    },
+                    else => {},
+                }
+            },
+            .arrow_up => {
+                try self.navigateShellHistory(true);
+                return true;
+            },
+            .arrow_down => {
+                try self.navigateShellHistory(false);
+                return true;
+            },
+            .escape => {
+                self.mode = .normal;
+                self.clearInputBuffer();
+                self.shell_service.resetHistoryNavigation();
+                self.getCurrentView().clearError();
+                return true;
+            },
+            .enter => {
+                if (self.minibuffer.getContent().len > 0) {
+                    try self.shell_service.addToHistory(self.minibuffer.getContent());
+                    self.shell_service.resetHistoryNavigation();
+                    try self.startShellCommand();
+                }
+                if (self.mode != .shell_running) {
+                    self.mode = .normal;
+                    self.clearInputBuffer();
+                }
+                return true;
+            },
+            else => {},
+        }
+        _ = try self.handleMinibufferKey(key);
+        self.updateMinibufferPrompt("| ");
+        return true;
+    }
+
+    /// M-xコマンド入力モード
+    fn handleMxCommandKey(self: *Editor, key: input.Key) !bool {
+        switch (key) {
+            .ctrl => |c| {
+                if (c == 'g') {
+                    self.cancelInput();
+                    return true;
+                }
+            },
+            .escape => {
+                self.cancelInput();
+                return true;
+            },
+            .enter => {
+                try self.executeMxCommand();
+                return true;
+            },
+            else => {},
+        }
+        _ = try self.handleMinibufferKey(key);
+        self.updateMinibufferPrompt(": ");
+        return true;
+    }
+
+    /// 通常モードのキー処理
+    fn handleNormalKey(self: *Editor, key: input.Key) !void {
+        switch (key) {
+            .ctrl => |c| {
+                switch (c) {
+                    0, '@' => self.setMark(),
+                    'x' => {
+                        self.mode = .prefix_x;
+                        self.getCurrentView().setError("C-x-");
+                    },
+                    'f' => self.getCurrentView().moveCursorRight(),
+                    'b' => self.getCurrentView().moveCursorLeft(),
+                    'n' => self.getCurrentView().moveCursorDown(),
+                    'p' => self.getCurrentView().moveCursorUp(),
+                    'a' => self.getCurrentView().moveToLineStart(),
+                    'e' => self.getCurrentView().moveToLineEnd(),
+                    'd' => try self.deleteChar(),
+                    'k' => try self.killLine(),
+                    'w' => try self.killRegion(),
+                    'y' => try self.yank(),
+                    'g' => self.getCurrentView().clearError(),
+                    'u' => try self.undo(),
+                    31, '/' => try self.redo(),
+                    'v' => {
+                        const view = self.getCurrentView();
+                        const page_size = if (view.viewport_height >= 3) view.viewport_height - 2 else 1;
+                        var i: usize = 0;
+                        while (i < page_size) : (i += 1) {
+                            view.moveCursorDown();
+                        }
+                    },
+                    'l' => {
+                        const view = self.getCurrentView();
+                        const visible_lines = if (view.viewport_height >= 2) view.viewport_height - 2 else 1;
+                        const center = visible_lines / 2;
+                        const current_line = view.top_line + view.cursor_y;
+                        if (current_line >= center) {
+                            view.top_line = current_line - center;
+                        } else {
+                            view.top_line = 0;
+                        }
+                        view.cursor_y = if (current_line >= view.top_line) current_line - view.top_line else 0;
+                    },
+                    's' => {
+                        if (self.last_search) |search_str| {
+                            self.minibuffer.setContent(search_str) catch {};
+                            self.getCurrentView().setSearchHighlight(search_str);
+                            try self.performSearch(true, true);
+                            self.getCurrentView().clearError();
+                            self.getCurrentView().markFullRedraw();
+                        } else {
+                            self.mode = .isearch_forward;
+                            self.search_start_pos = self.getCurrentView().getCursorBufferPos();
+                            self.clearInputBuffer();
+                            self.prompt_prefix_len = 11;
+                            self.getCurrentView().setError("I-search: ");
+                        }
+                    },
+                    'r' => {
+                        if (self.last_search) |search_str| {
+                            self.minibuffer.setContent(search_str) catch {};
+                            self.getCurrentView().setSearchHighlight(search_str);
+                            try self.performSearch(false, true);
+                            self.getCurrentView().clearError();
+                            self.getCurrentView().markFullRedraw();
+                        } else {
+                            self.mode = .isearch_backward;
+                            self.search_start_pos = self.getCurrentView().getCursorBufferPos();
+                            self.clearInputBuffer();
+                            self.prompt_prefix_len = 20;
+                            self.getCurrentView().setError("I-search backward: ");
+                        }
+                    },
+                    else => {},
+                }
+            },
+            .alt => |c| {
+                switch (c) {
+                    '%' => {
+                        self.mode = .query_replace_input_search;
+                        self.clearInputBuffer();
+                        self.prompt_prefix_len = 16;
+                        self.replace_match_count = 0;
+                        self.getCurrentView().setError("Query replace: ");
+                    },
+                    'f' => try self.forwardWord(),
+                    'b' => try self.backwardWord(),
+                    'd' => try self.deleteWord(),
+                    'w' => try self.copyRegion(),
+                    '|' => {
+                        self.mode = .shell_command;
+                        self.clearInputBuffer();
+                        self.prompt_prefix_len = 3;
+                        self.getCurrentView().setError("| ");
+                    },
+                    '<' => self.getCurrentView().moveToBufferStart(),
+                    '>' => self.getCurrentView().moveToBufferEnd(),
+                    '{' => try self.backwardParagraph(),
+                    '}' => try self.forwardParagraph(),
+                    '^' => try self.joinLine(),
+                    ';' => try self.toggleComment(),
+                    'v' => {
+                        const view = self.getCurrentView();
+                        const page_size = if (view.viewport_height >= 3) view.viewport_height - 2 else 1;
+                        var i: usize = 0;
+                        while (i < page_size) : (i += 1) {
+                            view.moveCursorUp();
+                        }
+                    },
+                    'x' => {
+                        self.mode = .mx_command;
+                        self.clearInputBuffer();
+                        self.prompt_prefix_len = 3;
+                        self.getCurrentView().setError(": ");
+                    },
+                    else => {},
+                }
+            },
+            .alt_delete => try self.deleteWord(),
+            .alt_arrow_up => try self.moveLineUp(),
+            .alt_arrow_down => try self.moveLineDown(),
+            .arrow_up => self.getCurrentView().moveCursorUp(),
+            .arrow_down => self.getCurrentView().moveCursorDown(),
+            .arrow_left => self.getCurrentView().moveCursorLeft(),
+            .arrow_right => self.getCurrentView().moveCursorRight(),
+            .enter => {
+                const buffer_state = self.getCurrentBuffer();
+                if (buffer_state.filename) |fname| {
+                    if (std.mem.eql(u8, fname, "*Buffer List*")) {
+                        try self.selectBufferFromList();
+                        return;
+                    }
+                }
+                const indent = self.getCurrentLineIndent();
+                try self.insertChar('\n');
+                if (indent.len > 0) {
+                    for (indent) |ch| {
+                        try self.insertChar(ch);
+                    }
+                }
+            },
+            .backspace => try self.backspace(),
+            .tab => {
+                const window = self.getCurrentWindow();
+                if (window.mark_pos != null) {
+                    try self.indentRegion();
+                } else {
+                    try self.insertChar('\t');
+                }
+            },
+            .shift_tab => try self.unindentRegion(),
+            .ctrl_tab => {
+                if (self.windows.items.len > 1) {
+                    self.current_window_idx = (self.current_window_idx + 1) % self.windows.items.len;
+                }
+            },
+            .ctrl_shift_tab => {
+                if (self.windows.items.len > 1) {
+                    if (self.current_window_idx == 0) {
+                        self.current_window_idx = self.windows.items.len - 1;
+                    } else {
+                        self.current_window_idx -= 1;
+                    }
+                }
+            },
+            .page_down => {
+                const view = self.getCurrentView();
+                const page_size = if (view.viewport_height >= 3) view.viewport_height - 2 else 1;
+                var i: usize = 0;
+                while (i < page_size) : (i += 1) {
+                    view.moveCursorDown();
+                }
+            },
+            .page_up => {
+                const view = self.getCurrentView();
+                const page_size = if (view.viewport_height >= 3) view.viewport_height - 2 else 1;
+                var i: usize = 0;
+                while (i < page_size) : (i += 1) {
+                    view.moveCursorUp();
+                }
+            },
+            .home => self.getCurrentView().moveToLineStart(),
+            .end_key => self.getCurrentView().moveToLineEnd(),
+            .delete => try self.deleteChar(),
+            .char => |c| if (c >= 32 and c < 127) try self.insertCodepoint(c),
+            .codepoint => |cp| try self.insertCodepoint(cp),
+            else => {},
+        }
+    }
+
     /// キー入力を処理するメインディスパッチャ
-    ///
-    /// 【処理の流れ】
-    /// 1. 現在のモードに応じて処理を分岐
-    /// 2. 各モードごとに有効なキーを処理
-    /// 3. 無効なキーは無視（エラーメッセージを表示する場合あり）
-    ///
-    /// モードごとの特殊処理:
-    /// - normal: 通常編集、移動、C-x プレフィックス開始
-    /// - isearch: インクリメンタルサーチ、C-s/C-r で次へ/前へ
-    /// - query_replace: y/n/!/q で置換操作
-    /// - shell_command: コマンド入力、Enter で実行
-    ///
-    /// 全モードで C-g はキャンセルとして機能
     fn processKey(self: *Editor, key: input.Key) !void {
         // 古いプロンプトバッファを解放
         if (self.prompt_buffer) |old_prompt| {
@@ -1741,684 +2451,89 @@ pub const Editor = struct {
         // モード別に処理を分岐
         switch (self.mode) {
             .filename_input => {
-                // ファイル名入力モード
-                // モード固有キーを先に処理
-                switch (key) {
-                    .ctrl => |c| {
-                        if (c == 'g') {
-                            // C-g: キャンセル
-                            self.mode = .normal;
-                            self.quit_after_save = false;
-                            self.clearInputBuffer();
-                            self.getCurrentView().clearError();
-                            return;
-                        }
-                    },
-                    .enter => {
-                        // Enter: ファイル名確定
-                        if (self.minibuffer.getContent().len > 0) {
-                            const buffer_state = self.getCurrentBuffer();
-                            if (buffer_state.filename) |old| {
-                                self.allocator.free(old);
-                            }
-                            buffer_state.filename = try self.allocator.dupe(u8, self.minibuffer.getContent());
-                            self.clearInputBuffer();
-                            try self.saveFile();
-                            self.mode = .normal;
-                            if (self.quit_after_save) {
-                                self.quit_after_save = false;
-                                self.running = false;
-                            }
-                        }
-                        return;
-                    },
-                    .escape => {
-                        // ESC: キャンセル
-                        self.mode = .normal;
-                        self.quit_after_save = false;
-                        self.clearInputBuffer();
-                        self.getCurrentView().clearError();
-                        return;
-                    },
-                    else => {},
-                }
-                // 共通のミニバッファキー処理
-                _ = try self.handleMinibufferKey(key);
-                // プロンプトを更新
-                self.updateMinibufferPrompt("Write file: ");
+                _ = try self.handleFilenameInputKey(key);
                 return;
             },
             .find_file_input => {
-                // ファイルを開くためのファイル名入力モード
-                switch (key) {
-                    .ctrl => |c| {
-                        if (c == 'g') {
-                            self.cancelInput();
-                            return;
-                        }
-                    },
-                    .escape => {
-                        self.cancelInput();
-                        return;
-                    },
-                    .enter => {
-                        // Enter: ファイル名確定
-                        if (self.minibuffer.getContent().len > 0) {
-                            const filename = self.minibuffer.getContent();
-
-                            // 既存のバッファでこのファイルが開かれているか検索
-                            const existing_buffer = self.findBufferByFilename(filename);
-                            if (existing_buffer) |buf| {
-                                try self.switchToBuffer(buf.id);
-                            } else {
-                                // 新しいバッファを作成してファイルを読み込む
-                                const new_buffer = try self.createNewBuffer();
-                                const filename_copy = try self.allocator.dupe(u8, filename);
-
-                                const loaded_buffer = Buffer.loadFromFile(self.allocator, filename_copy) catch |err| {
-                                    self.allocator.free(filename_copy);
-                                    if (err == error.FileNotFound) {
-                                        new_buffer.filename = try self.allocator.dupe(u8, filename);
-                                        try self.switchToBuffer(new_buffer.id);
-                                        self.cancelInput();
-                                        return;
-                                    } else if (err == error.BinaryFile) {
-                                        _ = try self.closeBuffer(new_buffer.id);
-                                        self.getCurrentView().setError("Cannot open binary file");
-                                        self.mode = .normal;
-                                        self.clearInputBuffer();
-                                        return;
-                                    } else {
-                                        _ = try self.closeBuffer(new_buffer.id);
-                                        self.showError(err);
-                                        self.mode = .normal;
-                                        self.clearInputBuffer();
-                                        return;
-                                    }
-                                };
-
-                                new_buffer.buffer.deinit();
-                                new_buffer.buffer = loaded_buffer;
-                                new_buffer.filename = filename_copy;
-                                new_buffer.modified = false;
-
-                                const file = std.fs.cwd().openFile(filename_copy, .{}) catch null;
-                                if (file) |f| {
-                                    defer f.close();
-                                    const stat = f.stat() catch null;
-                                    if (stat) |s| {
-                                        new_buffer.file_mtime = s.mtime;
-                                    }
-                                }
-
-                                // switchToBuffer内でView初期化とdetectLanguageが行われる
-                                try self.switchToBuffer(new_buffer.id);
-                            }
-
-                            self.cancelInput();
-                        }
-                        return;
-                    },
-                    else => {},
-                }
-                // 共通のミニバッファキー処理
-                _ = try self.handleMinibufferKey(key);
-                self.updateMinibufferPrompt("Find file: ");
+                _ = try self.handleFindFileInputKey(key);
                 return;
             },
             .buffer_switch_input => {
-                // バッファ切り替えのための入力モード
-                switch (key) {
-                    .ctrl => |c| {
-                        if (c == 'g') {
-                            self.cancelInput();
-                            return;
-                        }
-                    },
-                    .escape => {
-                        self.cancelInput();
-                        return;
-                    },
-                    .enter => {
-                        if (self.minibuffer.getContent().len > 0) {
-                            const buffer_name = self.minibuffer.getContent();
-                            const found_buffer = self.findBufferByFilename(buffer_name);
-                            if (found_buffer) |buf| {
-                                try self.switchToBuffer(buf.id);
-                                self.cancelInput();
-                            } else {
-                                self.getCurrentView().setError("No such buffer");
-                                self.mode = .normal;
-                                self.clearInputBuffer();
-                            }
-                        }
-                        return;
-                    },
-                    else => {},
-                }
-                _ = try self.handleMinibufferKey(key);
-                self.updateMinibufferPrompt("Switch to buffer: ");
+                _ = try self.handleBufferSwitchInputKey(key);
                 return;
             },
-            .isearch_forward, .isearch_backward => {
-                // インクリメンタルサーチモード
-                const is_forward = (self.mode == .isearch_forward);
-                switch (key) {
-                    .char => |c| try self.addSearchChar(c, is_forward),
-                    .codepoint => |cp| try self.addSearchChar(cp, is_forward),
-                    .ctrl => |c| {
-                        switch (c) {
-                            'g' => {
-                                // C-g: 検索キャンセル、元の位置に戻る
-                                if (self.search_start_pos) |start_pos| {
-                                    self.setCursorToPos(start_pos);
-                                }
-                                self.endSearch();
-                            },
-                            's' => {
-                                // C-s: 次の一致を検索（前方）
-                                if (self.minibuffer.getContent().len > 0) {
-                                    self.getCurrentView().setSearchHighlight(self.minibuffer.getContent());
-                                    try self.performSearch(true, true);
-                                }
-                            },
-                            'r' => {
-                                // C-r: 前の一致を検索（後方）
-                                if (self.minibuffer.getContent().len > 0) {
-                                    self.getCurrentView().setSearchHighlight(self.minibuffer.getContent());
-                                    try self.performSearch(false, true);
-                                }
-                            },
-                            'p' => {
-                                // C-p: 前の検索履歴
-                                try self.navigateSearchHistory(true, is_forward);
-                            },
-                            'n' => {
-                                // C-n: 次の検索履歴
-                                try self.navigateSearchHistory(false, is_forward);
-                            },
-                            else => {},
-                        }
-                    },
-                    .arrow_up => {
-                        // Up: 前の検索履歴
-                        try self.navigateSearchHistory(true, is_forward);
-                    },
-                    .arrow_down => {
-                        // Down: 次の検索履歴
-                        try self.navigateSearchHistory(false, is_forward);
-                    },
-                    .backspace => {
-                        // バックスペース：検索文字列の最後の文字を削除
-                        if (self.minibuffer.getContent().len > 0) {
-                            self.minibuffer.moveToEnd();
-                            self.minibuffer.backspace();
-                            const prefix = if (is_forward) "I-search: " else "I-search backward: ";
-                            self.setPrompt("{s}{s}", .{ prefix, self.minibuffer.getContent() });
-                            // 検索文字列が残っていれば再検索
-                            if (self.minibuffer.getContent().len > 0) {
-                                self.getCurrentView().setSearchHighlight(self.minibuffer.getContent());
-                                // 開始位置から再検索
-                                if (self.search_start_pos) |start_pos| {
-                                    self.setCursorToPos(start_pos);
-                                }
-                                try self.performSearch(is_forward, false);
-                            } else {
-                                // 検索文字列が空になったら開始位置に戻る
-                                self.getCurrentView().setSearchHighlight(null); // ハイライトクリア
-                                if (self.search_start_pos) |start_pos| {
-                                    self.setCursorToPos(start_pos);
-                                }
-                            }
-                        }
-                    },
-                    .enter => {
-                        // Enter: 検索確定（現在位置で確定）
-                        // 検索文字列を保存
-                        if (self.minibuffer.getContent().len > 0) {
-                            // 履歴に追加
-                            try self.search_service.addToHistory(self.minibuffer.getContent());
-                            if (self.last_search) |old_search| {
-                                self.allocator.free(old_search);
-                            }
-                            self.last_search = self.allocator.dupe(u8, self.minibuffer.getContent()) catch null;
-                        }
-                        self.endSearch();
-                    },
-                    else => {},
-                }
+            .isearch_forward => {
+                _ = try self.handleIsearchKey(key, true);
+                return;
+            },
+            .isearch_backward => {
+                _ = try self.handleIsearchKey(key, false);
                 return;
             },
             .prefix_x => {
-                // C-xプレフィックスモード：次のCtrlキーを待つ
-                self.mode = .normal; // デフォルトでnormalに戻る
-                switch (key) {
-                    .ctrl => |c| {
-                        switch (c) {
-                            'g' => {
-                                // C-g: キャンセル
-                                self.getCurrentView().clearError();
-                            },
-                            'b' => {
-                                // C-x C-b: バッファ一覧表示
-                                self.showBufferList() catch |err| {
-                                    self.showError(err);
-                                };
-                            },
-                            'f' => {
-                                // C-x C-f: ファイルを開く
-                                self.mode = .find_file_input;
-                                self.clearInputBuffer();
-                                self.prompt_prefix_len = 12; // " Find file: "
-                                self.getCurrentView().setError("Find file: ");
-                            },
-                            's' => {
-                                // C-x C-s: 保存
-                                const buffer_state = self.getCurrentBuffer();
-                                if (buffer_state.filename == null) {
-                                    // 新規ファイル：ファイル名入力モードへ
-                                    self.mode = .filename_input;
-                                    self.quit_after_save = false; // 保存後は終了しない
-                                    self.minibuffer.clear();
-                                    self.minibuffer.cursor = 0;
-                                    self.prompt_prefix_len = 13; // " Write file: "
-                                    self.getCurrentView().setError("Write file: ");
-                                } else {
-                                    // 既存ファイル：そのまま保存
-                                    try self.saveFile();
-                                }
-                            },
-                            'w' => {
-                                // C-x C-w: 名前を付けて保存（save-as）
-                                self.mode = .filename_input;
-                                self.quit_after_save = false;
-                                self.clearInputBuffer();
-                                self.prompt_prefix_len = 13; // " Write file: "
-                                self.getCurrentView().setError("Write file: ");
-                            },
-                            'c' => {
-                                // C-x C-c: 終了
-                                // 全バッファの変更をチェック（現在のバッファだけでなく）
-                                var modified_count: usize = 0;
-                                var first_modified_name: ?[]const u8 = null;
-                                for (self.buffers.items) |buf| {
-                                    if (buf.modified) {
-                                        modified_count += 1;
-                                        if (first_modified_name == null) {
-                                            first_modified_name = buf.filename;
-                                        }
-                                    }
-                                }
-
-                                if (modified_count > 0) {
-                                    if (modified_count == 1) {
-                                        const name = first_modified_name orelse "*scratch*";
-                                        self.setPrompt("Save changes to {s}? (y/n/c): ", .{name});
-                                    } else {
-                                        self.setPrompt("{d} buffers modified; exit anyway? (y/n): ", .{modified_count});
-                                    }
-                                    self.mode = .quit_confirm;
-                                } else {
-                                    self.running = false;
-                                }
-                            },
-                            else => {
-                                self.getCurrentView().setError("Unknown command");
-                            },
-                        }
-                    },
-                    .char => |c| {
-                        // C-x の後に通常文字を受け付ける（C-x h、C-x r など）
-                        switch (c) {
-                            'h' => self.selectAll(), // C-x h 全選択
-                            'r' => {
-                                // C-x r: 矩形コマンドプレフィックス
-                                self.mode = .prefix_r;
-                                return;
-                            },
-                            'b' => {
-                                // C-x b: バッファ切り替え
-                                self.mode = .buffer_switch_input;
-                                self.clearInputBuffer();
-                                self.prompt_prefix_len = 19; // " Switch to buffer: "
-                                self.getCurrentView().setError("Switch to buffer: ");
-                            },
-                            'k' => {
-                                // C-x k: バッファを閉じる
-                                const buffer_state = self.getCurrentBuffer();
-                                if (buffer_state.modified) {
-                                    // 変更がある場合は確認モードに入る
-                                    const name = buffer_state.filename orelse "*scratch*";
-                                    self.setPrompt("Buffer {s} modified; kill anyway? (y/n): ", .{name});
-                                    self.mode = .kill_buffer_confirm;
-                                } else {
-                                    // 変更がない場合は直接閉じる
-                                    const buffer_id = buffer_state.id;
-                                    self.closeBuffer(buffer_id) catch |err| {
-                                        self.showError(err);
-                                    };
-                                }
-                            },
-                            '2' => {
-                                // C-x 2: 横分割（上下に分割）
-                                self.splitWindowHorizontally() catch |err| {
-                                    self.showError(err);
-                                };
-                            },
-                            '3' => {
-                                // C-x 3: 縦分割（左右に分割）
-                                self.splitWindowVertically() catch |err| {
-                                    self.showError(err);
-                                };
-                            },
-                            'o' => {
-                                // C-x o: 次のウィンドウに移動
-                                if (self.windows.items.len > 1) {
-                                    self.current_window_idx = (self.current_window_idx + 1) % self.windows.items.len;
-                                }
-                            },
-                            '0' => {
-                                // C-x 0: 現在のウィンドウを閉じる
-                                self.closeCurrentWindow() catch |err| {
-                                    self.showError(err);
-                                };
-                            },
-                            '1' => {
-                                // C-x 1: 他のウィンドウをすべて閉じる
-                                self.deleteOtherWindows() catch |err| {
-                                    self.showError(err);
-                                };
-                            },
-                            else => {
-                                self.getCurrentView().setError("Unknown command");
-                            },
-                        }
-                    },
-                    else => {
-                        self.getCurrentView().setError("Expected C-x C-[key]");
-                    },
-                }
+                _ = try self.handlePrefixXKey(key);
                 return;
             },
             .quit_confirm => {
-                // 終了確認モード：y/n/cのみ受け付ける
                 switch (key) {
                     .char => |c| self.handleQuitConfirmChar(c),
                     .codepoint => |cp| self.handleQuitConfirmChar(unicode.normalizeFullwidth(cp)),
                     .ctrl => |c| {
-                        // Ctrl-Gでもキャンセル
-                        if (c == 'g') {
-                            self.resetToNormal();
-                        }
+                        if (c == 'g') self.resetToNormal();
                     },
                     else => {},
                 }
                 return;
             },
             .kill_buffer_confirm => {
-                // バッファ閉じる確認モード：y/nのみ受け付ける
                 switch (key) {
                     .char => |c| self.handleKillBufferConfirmChar(c),
                     .codepoint => |cp| self.handleKillBufferConfirmChar(unicode.normalizeFullwidth(cp)),
                     .ctrl => |c| {
-                        if (c == 'g') {
-                            self.resetToNormal();
-                        }
+                        if (c == 'g') self.resetToNormal();
                     },
-                    .escape => {
-                        self.resetToNormal();
-                    },
+                    .escape => self.resetToNormal(),
                     else => {},
                 }
                 return;
             },
             .prefix_r => {
-                // C-x r プレフィックスモード：矩形コマンドを受け付ける
-                self.mode = .normal; // 次のキーの後は通常モードに戻る
-                switch (key) {
-                    .char => |c| {
-                        switch (c) {
-                            'k' => self.killRectangle(), // C-x r k 矩形削除
-                            'y' => self.yankRectangle(), // C-x r y 矩形貼り付け
-                            't' => {
-                                // C-x r t 矩形文字列挿入（未実装）
-                                self.getCurrentView().setError("C-x r t not implemented yet");
-                            },
-                            else => {
-                                self.getCurrentView().setError("Unknown rectangle command");
-                            },
-                        }
-                    },
-                    .ctrl => |c| {
-                        // Ctrl-Gでキャンセル
-                        if (c == 'g') {
-                            self.getCurrentView().clearError();
-                        } else {
-                            self.getCurrentView().setError("Unknown rectangle command");
-                        }
-                    },
-                    else => {
-                        self.getCurrentView().setError("Unknown rectangle command");
-                    },
-                }
+                _ = self.handlePrefixRKey(key);
                 return;
             },
             .query_replace_input_search => {
-                // 置換：検索文字列入力モード
-                switch (key) {
-                    .ctrl => |c| {
-                        if (c == 'g') {
-                            self.cancelInput();
-                            return;
-                        }
-                    },
-                    .escape => {
-                        self.cancelInput();
-                        return;
-                    },
-                    .enter => {
-                        if (self.minibuffer.getContent().len > 0) {
-                            if (self.replace_search) |old| {
-                                self.allocator.free(old);
-                            }
-                            self.replace_search = try self.allocator.dupe(u8, self.minibuffer.getContent());
-                            self.clearInputBuffer();
-                            self.mode = .query_replace_input_replacement;
-                            self.setPrompt("Query replace {s} with: ", .{self.replace_search.?});
-                            // " Query replace {search} with: " のプレフィックス長を計算
-                            // 1 (space) + "Query replace ".len + search.len + " with: ".len
-                            self.prompt_prefix_len = 1 + 14 + self.replace_search.?.len + 7;
-                        }
-                        return;
-                    },
-                    else => {},
-                }
-                _ = try self.handleMinibufferKey(key);
-                self.updateMinibufferPrompt("Query replace: ");
+                _ = try self.handleQueryReplaceInputSearchKey(key);
                 return;
             },
             .query_replace_input_replacement => {
-                // 置換：置換文字列入力モード
-                switch (key) {
-                    .ctrl => |c| {
-                        if (c == 'g') {
-                            self.mode = .normal;
-                            self.clearInputBuffer();
-                            if (self.replace_search) |search| {
-                                self.allocator.free(search);
-                                self.replace_search = null;
-                            }
-                            self.getCurrentView().clearError();
-                            return;
-                        }
-                    },
-                    .escape => {
-                        self.mode = .normal;
-                        self.clearInputBuffer();
-                        if (self.replace_search) |search| {
-                            self.allocator.free(search);
-                            self.replace_search = null;
-                        }
-                        self.getCurrentView().clearError();
-                        return;
-                    },
-                    .enter => {
-                        // Enter: 置換文字列確定、最初の一致を検索
-                        // 置換文字列を保存（空文字列も許可）
-                        if (self.replace_replacement) |old| {
-                            self.allocator.free(old);
-                        }
-                        self.replace_replacement = try self.allocator.dupe(u8, self.minibuffer.getContent());
-                        self.minibuffer.clear();
-
-                        // 最初の一致を検索
-                        if (self.replace_search) |search| {
-                            const found = try self.findNextMatch(search, self.getCurrentView().getCursorBufferPos());
-                            if (found) {
-                                // 一致が見つかった：確認モードへ
-                                self.mode = .query_replace_confirm;
-                                self.setPrompt("Replace? (y)es (n)ext (!)all (q)uit", .{});
-                            } else {
-                                // 一致が見つからない
-                                self.mode = .normal;
-                                self.getCurrentView().setError("No match found");
-                            }
-                        } else {
-                            // 検索文字列がない（エラー）
-                            self.mode = .normal;
-                            self.getCurrentView().setError("No search string");
-                        }
-                        return;
-                    },
-                    else => {},
-                }
-                _ = try self.handleMinibufferKey(key);
-                // プロンプトを更新（検索文字列を含む）
-                if (self.replace_search) |search| {
-                    self.setPrompt("Query replace {s} with: {s}", .{ search, self.minibuffer.getContent() });
-                } else {
-                    self.setPrompt("Query replace with: {s}", .{self.minibuffer.getContent()});
-                }
+                _ = try self.handleQueryReplaceInputReplacementKey(key);
                 return;
             },
             .query_replace_confirm => {
-                // 置換：確認モード
-                switch (key) {
-                    .char => |c| try self.handleReplaceConfirmChar(c),
-                    .codepoint => |cp| try self.handleReplaceConfirmChar(unicode.normalizeFullwidth(cp)),
-                    .ctrl => |c| {
-                        // Ctrl-Gで終了
-                        if (c == 'g') {
-                            self.mode = .normal;
-                            self.setPrompt("Replaced {d} occurrence(s)", .{self.replace_match_count});
-                        }
-                    },
-                    else => {},
-                }
+                _ = try self.handleQueryReplaceConfirmKey(key);
                 return;
             },
             .shell_command => {
-                // シェルコマンド入力モード
-                switch (key) {
-                    .ctrl => |c| {
-                        switch (c) {
-                            'g' => {
-                                self.mode = .normal;
-                                self.clearInputBuffer();
-                                self.shell_service.resetHistoryNavigation();
-                                self.getCurrentView().clearError();
-                                return;
-                            },
-                            'p' => {
-                                // C-p: 前の履歴
-                                try self.navigateShellHistory(true);
-                                return;
-                            },
-                            'n' => {
-                                // C-n: 次の履歴
-                                try self.navigateShellHistory(false);
-                                return;
-                            },
-                            else => {},
-                        }
-                    },
-                    .arrow_up => {
-                        // Up: 前の履歴
-                        try self.navigateShellHistory(true);
-                        return;
-                    },
-                    .arrow_down => {
-                        // Down: 次の履歴
-                        try self.navigateShellHistory(false);
-                        return;
-                    },
-                    .escape => {
-                        self.mode = .normal;
-                        self.clearInputBuffer();
-                        self.shell_service.resetHistoryNavigation();
-                        self.getCurrentView().clearError();
-                        return;
-                    },
-                    .enter => {
-                        if (self.minibuffer.getContent().len > 0) {
-                            // 履歴に追加
-                            try self.shell_service.addToHistory(self.minibuffer.getContent());
-                            self.shell_service.resetHistoryNavigation();
-                            try self.startShellCommand();
-                        }
-                        if (self.mode != .shell_running) {
-                            self.mode = .normal;
-                            self.clearInputBuffer();
-                        }
-                        return;
-                    },
-                    else => {},
-                }
-                _ = try self.handleMinibufferKey(key);
-                self.updateMinibufferPrompt("| ");
+                _ = try self.handleShellCommandKey(key);
                 return;
             },
             .shell_running => {
-                // シェルコマンド実行中モード
                 switch (key) {
                     .ctrl => |c| {
                         if (c == 'g') {
-                            // C-g: キャンセル
                             self.cancelShellCommand();
                             self.minibuffer.clear();
                         }
                     },
-                    else => {
-                        // 他のキーは無視（実行中は操作不可）
-                    },
+                    else => {},
                 }
                 return;
             },
             .mx_command => {
-                // M-xコマンド入力モード
-                switch (key) {
-                    .ctrl => |c| {
-                        if (c == 'g') {
-                            self.cancelInput();
-                            return;
-                        }
-                    },
-                    .escape => {
-                        self.cancelInput();
-                        return;
-                    },
-                    .enter => {
-                        try self.executeMxCommand();
-                        return;
-                    },
-                    else => {},
-                }
-                _ = try self.handleMinibufferKey(key);
-                self.updateMinibufferPrompt(": ");
+                _ = try self.handleMxCommandKey(key);
                 return;
             },
             .mx_key_describe => {
-                // M-x key: 次のキー入力を待っている
                 const key_desc = self.describeKey(key);
                 self.getCurrentView().setError(key_desc);
                 self.mode = .normal;
@@ -2428,237 +2543,7 @@ pub const Editor = struct {
         }
 
         // 通常モード
-        switch (key) {
-            // Ctrl キー
-            .ctrl => |c| {
-                switch (c) {
-                    0, '@' => self.setMark(), // C-Space / C-@ マーク設定
-                    'x' => {
-                        // C-x プレフィックスキー
-                        self.mode = .prefix_x;
-                        self.getCurrentView().setError("C-x-");
-                    },
-                    'f' => self.getCurrentView().moveCursorRight(), // C-f 前進
-                    'b' => self.getCurrentView().moveCursorLeft(), // C-b 後退
-                    'n' => self.getCurrentView().moveCursorDown(), // C-n 次行
-                    'p' => self.getCurrentView().moveCursorUp(), // C-p 前行
-                    'a' => self.getCurrentView().moveToLineStart(), // C-a 行頭
-                    'e' => self.getCurrentView().moveToLineEnd(), // C-e 行末
-                    'd' => try self.deleteChar(), // C-d 文字削除
-                    'k' => try self.killLine(), // C-k 行削除
-                    'w' => try self.killRegion(), // C-w 範囲削除（カット）
-                    'y' => try self.yank(), // C-y ペースト
-                    'g' => self.getCurrentView().clearError(), // C-g キャンセル
-                    'u' => try self.undo(), // C-u Undo
-                    31, '/' => try self.redo(), // C-/ または C-_ Redo
-                    'v' => {
-                        // C-v PageDown (Emacs風)
-                        const view = self.getCurrentView();
-                        const page_size = if (view.viewport_height >= 3) view.viewport_height - 2 else 1;
-                        var i: usize = 0;
-                        while (i < page_size) : (i += 1) {
-                            view.moveCursorDown();
-                        }
-                    },
-                    'l' => {
-                        // C-l recenter（カーソルを画面中央に）
-                        const view = self.getCurrentView();
-                        const visible_lines = if (view.viewport_height >= 2) view.viewport_height - 2 else 1;
-                        const center = visible_lines / 2;
-                        const current_line = view.top_line + view.cursor_y;
-                        // top_lineを調整してカーソルが中央に来るようにする
-                        if (current_line >= center) {
-                            view.top_line = current_line - center;
-                        } else {
-                            view.top_line = 0;
-                        }
-                        // cursor_yも調整
-                        view.cursor_y = if (current_line >= view.top_line) current_line - view.top_line else 0;
-                    },
-                    's' => {
-                        // C-s インクリメンタルサーチ（前方）
-                        // 前回の検索文字列がある場合は、それを使って次の一致を検索
-                        if (self.last_search) |search_str| {
-                            // ミニバッファに前回の検索文字列をコピー
-                            self.minibuffer.setContent(search_str) catch {};
-                            self.getCurrentView().setSearchHighlight(search_str);
-                            try self.performSearch(true, true); // skip_current=true で次を検索
-                            // 検索ハイライトは残すが、プロンプトはクリア（Emacs風）
-                            self.getCurrentView().clearError();
-                            self.getCurrentView().markFullRedraw();
-                        } else {
-                            // 新規検索開始
-                            self.mode = .isearch_forward;
-                            self.search_start_pos = self.getCurrentView().getCursorBufferPos();
-                            self.clearInputBuffer();
-                            self.prompt_prefix_len = 11; // " I-search: "
-                            self.getCurrentView().setError("I-search: ");
-                        }
-                    },
-                    'r' => {
-                        // C-r インクリメンタルサーチ（後方）
-                        // 前回の検索文字列がある場合は、それを使って前の一致を検索
-                        if (self.last_search) |search_str| {
-                            // ミニバッファに前回の検索文字列をコピー
-                            self.minibuffer.setContent(search_str) catch {};
-                            self.getCurrentView().setSearchHighlight(search_str);
-                            try self.performSearch(false, true); // forward=false, skip_current=true で前を検索
-                            // 検索ハイライトは残すが、プロンプトはクリア（Emacs風）
-                            self.getCurrentView().clearError();
-                            self.getCurrentView().markFullRedraw();
-                        } else {
-                            // 新規検索開始
-                            self.mode = .isearch_backward;
-                            self.search_start_pos = self.getCurrentView().getCursorBufferPos();
-                            self.clearInputBuffer();
-                            self.prompt_prefix_len = 20; // " I-search backward: "
-                            self.getCurrentView().setError("I-search backward: ");
-                        }
-                    },
-                    else => {},
-                }
-            },
-
-            // Alt キー
-            .alt => |c| {
-                switch (c) {
-                    '%' => {
-                        // M-% : query-replace
-                        self.mode = .query_replace_input_search;
-                        self.clearInputBuffer();
-                        self.prompt_prefix_len = 16; // " Query replace: "
-                        self.replace_match_count = 0;
-                        self.getCurrentView().setError("Query replace: ");
-                    },
-                    'f' => try self.forwardWord(), // M-f 単語前進
-                    'b' => try self.backwardWord(), // M-b 単語後退
-                    'd' => try self.deleteWord(), // M-d 単語削除
-                    'w' => try self.copyRegion(), // M-w 範囲コピー
-                    '|' => {
-                        // M-| シェルコマンド入力
-                        self.mode = .shell_command;
-                        self.clearInputBuffer();
-                        self.prompt_prefix_len = 3; // " | "
-                        self.getCurrentView().setError("| ");
-                    },
-                    '<' => self.getCurrentView().moveToBufferStart(), // M-< ファイル先頭
-                    '>' => self.getCurrentView().moveToBufferEnd(), // M-> ファイル終端
-                    '{' => try self.backwardParagraph(), // M-{ 前の段落
-                    '}' => try self.forwardParagraph(), // M-} 次の段落
-                    '^' => try self.joinLine(), // M-^ 行の結合
-                    ';' => try self.toggleComment(), // M-; コメント切り替え
-                    'v' => {
-                        // M-v PageUp (Emacs風)
-                        const view = self.getCurrentView();
-                        const page_size = if (view.viewport_height >= 3) view.viewport_height - 2 else 1;
-                        var i: usize = 0;
-                        while (i < page_size) : (i += 1) {
-                            view.moveCursorUp();
-                        }
-                    },
-                    'x' => {
-                        // M-x: コマンドプロンプト
-                        self.mode = .mx_command;
-                        self.clearInputBuffer();
-                        self.prompt_prefix_len = 3; // " : "
-                        self.getCurrentView().setError(": ");
-                    },
-                    else => {},
-                }
-            },
-
-            // M-delete
-            .alt_delete => try self.deleteWord(),
-
-            // Alt+矢印（行の移動）
-            .alt_arrow_up => try self.moveLineUp(),
-            .alt_arrow_down => try self.moveLineDown(),
-
-            // 矢印キー
-            .arrow_up => self.getCurrentView().moveCursorUp(),
-            .arrow_down => self.getCurrentView().moveCursorDown(),
-            .arrow_left => self.getCurrentView().moveCursorLeft(),
-            .arrow_right => self.getCurrentView().moveCursorRight(),
-
-            // 特殊キー
-            .enter => {
-                // *Buffer List* の場合は選択したバッファに切り替え
-                const buffer_state = self.getCurrentBuffer();
-                if (buffer_state.filename) |fname| {
-                    if (std.mem.eql(u8, fname, "*Buffer List*")) {
-                        try self.selectBufferFromList();
-                        return;
-                    }
-                }
-                // 自動インデント: 現在の行のインデントを取得
-                const indent = self.getCurrentLineIndent();
-                try self.insertChar('\n');
-                // インデントを挿入
-                if (indent.len > 0) {
-                    for (indent) |ch| {
-                        try self.insertChar(ch);
-                    }
-                }
-            },
-            .backspace => try self.backspace(),
-            .tab => {
-                // マーク選択がある場合はインデント、なければタブ挿入
-                const window = self.getCurrentWindow();
-                if (window.mark_pos != null) {
-                    try self.indentRegion();
-                } else {
-                    try self.insertChar('\t');
-                }
-            },
-            .shift_tab => try self.unindentRegion(), // アンインデント
-            .ctrl_tab => {
-                // Ctrl-Tab: 次のウィンドウに移動
-                if (self.windows.items.len > 1) {
-                    self.current_window_idx = (self.current_window_idx + 1) % self.windows.items.len;
-                }
-            },
-            .ctrl_shift_tab => {
-                // Ctrl-Shift-Tab: 前のウィンドウに移動
-                if (self.windows.items.len > 1) {
-                    if (self.current_window_idx == 0) {
-                        self.current_window_idx = self.windows.items.len - 1;
-                    } else {
-                        self.current_window_idx -= 1;
-                    }
-                }
-            },
-
-            // ページスクロール
-            .page_down => {
-                // PageDown: 1画面分下にスクロール
-                const view = self.getCurrentView();
-                const page_size = if (view.viewport_height >= 3) view.viewport_height - 2 else 1; // ステータスバー分を引く
-                var i: usize = 0;
-                while (i < page_size) : (i += 1) {
-                    view.moveCursorDown();
-                }
-            },
-            .page_up => {
-                // PageUp: 1画面分上にスクロール
-                const view = self.getCurrentView();
-                const page_size = if (view.viewport_height >= 3) view.viewport_height - 2 else 1; // ステータスバー分を引く
-                var i: usize = 0;
-                while (i < page_size) : (i += 1) {
-                    view.moveCursorUp();
-                }
-            },
-
-            // Home/Endキー
-            .home => self.getCurrentView().moveToLineStart(),
-            .end_key => self.getCurrentView().moveToLineEnd(),
-            .delete => try self.deleteChar(),
-
-            // 文字入力（ASCII / UTF-8共通）
-            .char => |c| if (c >= 32 and c < 127) try self.insertCodepoint(c),
-            .codepoint => |cp| try self.insertCodepoint(cp),
-
-            else => {},
-        }
+        try self.handleNormalKey(key);
     }
 
     fn insertChar(self: *Editor, ch: u8) !void {
