@@ -27,6 +27,7 @@ const Terminal = @import("terminal.zig").Terminal;
 const config = @import("config.zig");
 const syntax = @import("syntax.zig");
 const encoding = @import("encoding.zig");
+const unicode = @import("unicode.zig");
 
 /// UTF-8文字列をバイト数制限内でトランケート（文字境界を守る）
 /// 日本語などマルチバイト文字を途中で切らないようにする
@@ -34,11 +35,10 @@ fn truncateUtf8(str: []const u8, max_bytes: usize) []const u8 {
     if (str.len <= max_bytes) return str;
     if (max_bytes == 0) return str[0..0];
 
-    // max_bytesから後ろに戻って、継続バイト(10xxxxxx)でない位置を見つける
+    // max_bytesから後ろに戻って、継続バイトでない位置を見つける
     var end = max_bytes;
     while (end > 0) {
-        // UTF-8継続バイトは0x80-0xBF (10xxxxxx)
-        if ((str[end] & 0xC0) != 0x80) break;
+        if (!unicode.isUtf8Continuation(str[end])) break;
         end -= 1;
     }
     return str[0..end];
@@ -244,32 +244,24 @@ pub const View = struct {
         var i: usize = 0;
         while (i < line.len) {
             const c = line[i];
-            if (c == 0x1b and i + 1 < line.len and line[i + 1] == '[') {
+            if (i + 1 < line.len and unicode.isAnsiEscapeStart(c, line[i + 1])) {
                 // ANSIエスケープシーケンスをスキップ
                 i += 2;
                 while (i < line.len and line[i] != 'm') : (i += 1) {}
                 if (i < line.len) i += 1;
-            } else if (c < 0x80) {
+            } else if (unicode.isAsciiByte(c)) {
                 // ASCII
                 display_width += 1;
                 i += 1;
             } else {
                 // UTF-8: 幅を判定
-                const len = std.unicode.utf8ByteSequenceLength(c) catch 1;
+                const len = unicode.utf8SeqLen(c);
                 if (i + len <= line.len) {
                     const cp = std.unicode.utf8Decode(line[i..][0..len]) catch {
                         i += 1;
                         continue;
                     };
-                    // CJK文字などの全角幅判定（簡易版）
-                    if (cp >= 0x1100 and cp <= 0x115F) display_width += 2 // Hangul Jamo
-                    else if (cp >= 0x2E80 and cp <= 0x9FFF) display_width += 2 // CJK
-                    else if (cp >= 0xAC00 and cp <= 0xD7AF) display_width += 2 // Hangul Syllables
-                    else if (cp >= 0xF900 and cp <= 0xFAFF) display_width += 2 // CJK Compat
-                    else if (cp >= 0xFE10 and cp <= 0xFE1F) display_width += 2 // Vertical Forms
-                    else if (cp >= 0xFF00 and cp <= 0xFFEF) display_width += 2 // Halfwidth/Fullwidth
-                    else if (cp >= 0x20000 and cp <= 0x2FFFF) display_width += 2 // CJK Extension
-                    else display_width += 1;
+                    display_width += unicode.displayWidth(cp);
                     i += len;
                 } else {
                     i += 1;
@@ -501,7 +493,7 @@ pub const View = struct {
                     byte_idx += 1;
                     continue;
                 };
-                const width = Buffer.charWidth(codepoint);
+                const width = unicode.displayWidth(codepoint);
                 // 水平スクロール範囲内なら追加
                 if (col >= self.top_col) {
                     // UTF-8文字をそのままコピー
@@ -590,8 +582,7 @@ pub const View = struct {
                 } else {
                     // UTF-8文字境界に調整（継続バイトの途中から始まらないように）
                     var start = start_raw;
-                    while (start > 0 and start < new_line.len and new_line[start] >= 0x80 and new_line[start] < 0xC0) {
-                        // 継続バイト（0x80-0xBF）の場合は前に戻る
+                    while (start > 0 and start < new_line.len and unicode.isUtf8Continuation(new_line[start])) {
                         start -= 1;
                     }
 
@@ -601,29 +592,26 @@ pub const View = struct {
                     var b: usize = 0;
                     while (b < start) {
                         const c = new_line[b];
-                        // ANSIエスケープシーケンスをスキップ（ESC [ ... m）
-                        if (c == 0x1B and b + 1 < new_line.len and new_line[b + 1] == '[') {
-                            // ESCシーケンスの終わり('m')まで読み飛ばす
+                        // ANSIエスケープシーケンスをスキップ
+                        if (b + 1 < new_line.len and unicode.isAnsiEscapeStart(c, new_line[b + 1])) {
                             b += 2;
-                            while (b < new_line.len and new_line[b] != 'm') {
-                                b += 1;
-                            }
-                            if (b < new_line.len) b += 1; // 'm'をスキップ
+                            while (b < new_line.len and new_line[b] != 'm') : (b += 1) {}
+                            if (b < new_line.len) b += 1;
                             continue;
                         }
 
-                        if (c < config.UTF8.CONTINUATION_MASK) {
+                        if (unicode.isAsciiByte(c)) {
                             b += 1;
                             screen_col += 1;
                         } else {
-                            const len = std.unicode.utf8ByteSequenceLength(c) catch 1;
+                            const len = unicode.utf8SeqLen(c);
                             if (b + len <= new_line.len) {
                                 const cp = std.unicode.utf8Decode(new_line[b..b + len]) catch {
                                     b += 1;
                                     screen_col += 1;
                                     continue;
                                 };
-                                screen_col += Buffer.charWidth(cp);
+                                screen_col += unicode.displayWidth(cp);
                                 b += len;
                             } else {
                                 b += 1;

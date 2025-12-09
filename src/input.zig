@@ -22,6 +22,7 @@
 
 const std = @import("std");
 const config = @import("config.zig");
+const unicode = @import("unicode.zig");
 
 /// 入力バッファ付きリーダー
 /// 複数バイトを一度に読み取ってシステムコールを削減する
@@ -241,8 +242,8 @@ pub fn readKey(stdin: std.fs.File) !?Key {
                     return Key{ .codepoint = 0xFFFD };
                 }
 
-                // continuation byte (0x80-0xBF) かチェック
-                if ((buf[bytes_read] & 0xC0) != 0x80) {
+                // continuation byteかチェック
+                if (!unicode.isUtf8Continuation(buf[bytes_read])) {
                     // continuation byteでない → 無効なシーケンス
                     return Key{ .codepoint = 0xFFFD };
                 }
@@ -376,8 +377,8 @@ pub fn readKeyFromReader(reader: *InputReader) !?Key {
                     return Key{ .codepoint = 0xFFFD };
                 };
 
-                // continuation byte (0x80-0xBF) かチェック
-                if ((byte & 0xC0) != 0x80) {
+                // continuation byteかチェック
+                if (!unicode.isUtf8Continuation(byte)) {
                     // continuation byteでない → 無効なシーケンス
                     // このバイトは次のキー入力の開始かもしれないが、
                     // InputReaderには戻す機能がないため、

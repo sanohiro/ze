@@ -210,7 +210,7 @@ pub const PieceIterator = struct {
         }
 
         // 幅の計算（最初のcodepointの幅、残りは幅0のはず）
-        const total_width = Buffer.charWidth(base_cp);
+        const total_width = unicode.displayWidth(base_cp);
 
         return .{
             .base = base_cp,
@@ -1062,6 +1062,30 @@ pub const Buffer = struct {
         return .{ .start = line_start, .end = iter.global_pos };
     }
 
+    /// 指定位置から行末位置を取得（改行の位置、またはEOF）
+    pub fn findLineEndFromPos(self: *Buffer, pos: usize) usize {
+        var iter = PieceIterator.init(self);
+        iter.seek(pos);
+        while (iter.next()) |ch| {
+            if (ch == '\n') {
+                return iter.global_pos - 1;
+            }
+        }
+        return iter.global_pos;
+    }
+
+    /// 指定位置から次の改行位置を取得（改行の次の位置、またはEOF）
+    pub fn findNextLineFromPos(self: *Buffer, pos: usize) usize {
+        var iter = PieceIterator.init(self);
+        iter.seek(pos);
+        while (iter.next()) |ch| {
+            if (ch == '\n') {
+                return iter.global_pos;
+            }
+        }
+        return iter.global_pos;
+    }
+
     // バイト位置から列番号を計算（グラフェムクラスタ数）
     pub fn findColumnByPos(self: *Buffer, pos: usize) usize {
         const line_num = self.findLineByPos(pos);
@@ -1079,11 +1103,6 @@ pub const Buffer = struct {
             col += 1;
         }
         return col;
-    }
-
-    // UTF-8文字幅を計算（unicode.zigに委譲）
-    pub fn charWidth(codepoint: u21) usize {
-        return unicode.displayWidth(codepoint);
     }
 
     // 指定範囲のテキストを取得（新しいメモリを確保）

@@ -322,3 +322,108 @@ pub fn displayWidth(cp: u21) usize {
     // Default: narrow (width 1)
     return 1;
 }
+
+/// 文字種（単語境界の検出用）
+pub const CharType = enum {
+    alnum, // 英数字・アンダースコア
+    hiragana, // ひらがな
+    katakana, // カタカナ
+    kanji, // 漢字
+    space, // 空白
+    other, // その他（記号など）
+};
+
+/// 文字種を判定
+pub fn getCharType(cp: u21) CharType {
+    // 英数字とアンダースコア
+    if ((cp >= 'a' and cp <= 'z') or
+        (cp >= 'A' and cp <= 'Z') or
+        (cp >= '0' and cp <= '9') or
+        cp == '_')
+    {
+        return .alnum;
+    }
+
+    // 空白文字
+    if (cp == ' ' or cp == '\t' or cp == '\n' or cp == '\r') {
+        return .space;
+    }
+
+    // ひらがな（U+3040〜U+309F）
+    if (cp >= 0x3040 and cp <= 0x309F) {
+        return .hiragana;
+    }
+
+    // カタカナ（U+30A0〜U+30FF）
+    if (cp >= 0x30A0 and cp <= 0x30FF) {
+        return .katakana;
+    }
+
+    // 漢字（CJK統合漢字）
+    // U+4E00〜U+9FFF: CJK Unified Ideographs
+    // U+3400〜U+4DBF: CJK Unified Ideographs Extension A
+    if ((cp >= 0x4E00 and cp <= 0x9FFF) or
+        (cp >= 0x3400 and cp <= 0x4DBF))
+    {
+        return .kanji;
+    }
+
+    // その他の記号
+    return .other;
+}
+
+/// 空白文字判定
+pub fn isWhitespace(cp: u21) bool {
+    return cp == ' ' or cp == '\t' or cp == '\n' or cp == '\r';
+}
+
+/// 英数字判定
+pub inline fn isAlnum(cp: u21) bool {
+    return (cp >= 'a' and cp <= 'z') or
+        (cp >= 'A' and cp <= 'Z') or
+        (cp >= '0' and cp <= '9') or
+        cp == '_';
+}
+
+/// ASCII範囲判定（コードポイント用）
+pub inline fn isAscii(cp: u21) bool {
+    return cp < 0x80;
+}
+
+/// ASCII範囲判定（バイト用）
+pub inline fn isAsciiByte(byte: u8) bool {
+    return byte < 0x80;
+}
+
+/// コードポイントをASCII文字に変換（ASCII外は0を返す）
+pub inline fn toAsciiChar(cp: u21) u8 {
+    return if (cp < 0x80) @truncate(cp) else 0;
+}
+
+/// UTF-8シーケンス長を取得（先頭バイトから判定）
+pub inline fn utf8SeqLen(first_byte: u8) usize {
+    return if (first_byte < 0x80) 1 else if (first_byte < 0xE0) 2 else if (first_byte < 0xF0) 3 else 4;
+}
+
+/// UTF-8の先頭バイトかどうか（継続バイトでない）
+pub inline fn isUtf8Start(byte: u8) bool {
+    return byte < 0x80 or (byte & 0xC0) == 0xC0;
+}
+
+/// UTF-8の継続バイトかどうか（10xxxxxx形式）
+pub inline fn isUtf8Continuation(byte: u8) bool {
+    return (byte & 0xC0) == 0x80;
+}
+
+/// ANSIエスケープシーケンスの開始かどうか（ESC [）
+pub inline fn isAnsiEscapeStart(c: u8, next: u8) bool {
+    return c == 0x1B and next == '[';
+}
+
+/// 全角英数記号（U+FF01〜U+FF5E）を半角（U+0021〜U+007E）に変換
+pub inline fn normalizeFullwidth(cp: u21) u21 {
+    if (cp >= 0xFF01 and cp <= 0xFF5E) {
+        return cp - 0xFF00 + 0x20;
+    }
+    return cp;
+}

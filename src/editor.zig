@@ -37,6 +37,7 @@ const config = @import("config.zig");
 const regex = @import("regex.zig");
 const History = @import("history.zig").History;
 const HistoryType = @import("history.zig").HistoryType;
+const unicode = @import("unicode.zig");
 
 // ============================================================================
 // Undo/Redo システム - 差分ログベース
@@ -155,15 +156,6 @@ pub const ShellCommandState = struct {
     child_reaped: bool, // 子プロセスがwaitpidで回収済みか（kill防止用）
     exit_status: ?u32, // 終了ステータス（非0でエラー）
 };
-
-/// 全角英数記号（U+FF01〜U+FF5E）を半角（U+0021〜U+007E）に変換
-fn normalizeCodepoint(cp: u21) u21 {
-    // 全角英数記号の範囲を半角に変換
-    if (cp >= 0xFF01 and cp <= 0xFF5E) {
-        return cp - 0xFF00 + 0x20;
-    }
-    return cp;
-}
 
 // ========================================
 // BufferState: バッファの内容と状態
@@ -513,6 +505,207 @@ pub const Editor = struct {
         return &self.getCurrentBuffer().buffer;
     }
 
+    /// 読み取り専用チェック（編集前に呼ぶ）
+    /// 読み取り専用ならエラー表示してtrueを返す
+    fn isReadOnly(self: *Editor) bool {
+        if (self.getCurrentBuffer().readonly) {
+            self.getCurrentView().setError("Buffer is read-only");
+            return true;
+        }
+        return false;
+    }
+
+    /// プロンプトを設定（古いバッファを自動解放）
+    fn setPrompt(self: *Editor, comptime fmt: []const u8, args: anytype) void {
+        if (self.prompt_buffer) |old| {
+            self.allocator.free(old);
+        }
+        self.prompt_buffer = std.fmt.allocPrint(self.allocator, fmt, args) catch null;
+        if (self.prompt_buffer) |prompt| {
+            self.getCurrentView().setError(prompt);
+        }
+    }
+
+    /// プロンプトを解放
+    fn clearPrompt(self: *Editor) void {
+        if (self.prompt_buffer) |old| {
+            self.allocator.free(old);
+            self.prompt_buffer = null;
+        }
+    }
+
+    /// エラーを表示（anyerror対応）
+    fn showError(self: *Editor, err: anyerror) void {
+        self.getCurrentView().setError(@errorName(err));
+    }
+
+    /// ミニバッファ入力をキャンセルしてnormalモードに戻る
+    fn cancelInput(self: *Editor) void {
+        self.mode = .normal;
+        self.clearInputBuffer();
+        self.getCurrentView().clearError();
+    }
+
+    /// normalモードに戻りエラー表示をクリア
+    fn resetToNormal(self: *Editor) void {
+        self.mode = .normal;
+        self.getCurrentView().clearError();
+    }
+
+    /// 検索モードを終了してnormalに戻る
+    fn endSearch(self: *Editor) void {
+        self.search_start_pos = null;
+        self.mode = .normal;
+        self.input_buffer.clearRetainingCapacity();
+        self.search_history.resetNavigation();
+        self.getCurrentView().setSearchHighlight(null);
+        self.getCurrentView().clearError();
+    }
+
+    /// バッファ閉じる確認モードの文字処理
+    fn handleKillBufferConfirmChar(self: *Editor, cp: u21) void {
+        const c = unicode.toAsciiChar(cp);
+        switch (c) {
+            'y', 'Y' => {
+                const buffer_id = self.getCurrentBuffer().id;
+                self.closeBuffer(buffer_id) catch |err| self.showError(err);
+                self.mode = .normal;
+            },
+            'n', 'N' => {
+                self.resetToNormal();
+            },
+            else => self.getCurrentView().setError("Please answer: (y)es or (n)o"),
+        }
+    }
+
+    /// 終了確認モードの文字処理
+    fn handleQuitConfirmChar(self: *Editor, cp: u21) void {
+        const c = unicode.toAsciiChar(cp);
+        switch (c) {
+            'y', 'Y' => {
+                const buffer_state = self.getCurrentBuffer();
+                if (buffer_state.filename == null) {
+                    self.mode = .filename_input;
+                    self.quit_after_save = true;
+                    self.input_buffer.clearRetainingCapacity();
+                    self.getCurrentView().setError("Write file: ");
+                } else {
+                    self.saveFile() catch |err| {
+                        self.showError(err);
+                        self.mode = .normal;
+                        return;
+                    };
+                    self.running = false;
+                }
+            },
+            'n', 'N' => self.running = false,
+            'c', 'C' => {
+                self.resetToNormal();
+            },
+            else => self.getCurrentView().setError("Please answer: (y)es, (n)o, (c)ancel"),
+        }
+    }
+
+    /// 置換確認モードの文字処理
+    fn handleReplaceConfirmChar(self: *Editor, cp: u21) !void {
+        const c = unicode.toAsciiChar(cp);
+        switch (c) {
+            'y', 'Y' => {
+                // この箇所を置換して次へ
+                try self.replaceCurrentMatch();
+                const search = self.replace_search orelse {
+                    self.mode = .normal;
+                    self.getCurrentView().setError("Error: no search string");
+                    return;
+                };
+                // 次の一致を検索
+                const found = try self.findNextMatch(search, self.getCurrentView().getCursorBufferPos());
+                if (!found) {
+                    // これ以上一致がない
+                    self.mode = .normal;
+                    var msg_buf: [128]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace done";
+                    self.getCurrentView().setError(msg);
+                } else {
+                    // 次のマッチが見つかった - 確認プロンプトを表示
+                    self.getCurrentView().setError("Replace? (y)es (n)ext (!)all (q)uit");
+                }
+            },
+            'n', 'N', ' ' => {
+                // スキップして次へ
+                const search = self.replace_search orelse {
+                    self.mode = .normal;
+                    self.getCurrentView().setError("Error: no search string");
+                    return;
+                };
+                // 現在の一致をスキップ（カーソルを一致の後ろに移動）
+                const current_pos = self.getCurrentView().getCursorBufferPos();
+                const found = try self.findNextMatch(search, current_pos + 1);
+                if (!found) {
+                    // これ以上一致がない
+                    self.mode = .normal;
+                    var msg_buf: [128]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace done";
+                    self.getCurrentView().setError(msg);
+                } else {
+                    // 次のマッチが見つかった - 確認プロンプトを表示
+                    self.getCurrentView().setError("Replace? (y)es (n)ext (!)all (q)uit");
+                }
+            },
+            '!' => {
+                // 残りすべてを置換
+                try self.replaceCurrentMatch();
+                const search = self.replace_search orelse {
+                    self.mode = .normal;
+                    self.getCurrentView().setError("Error: no search string");
+                    return;
+                };
+                // 残りすべてを置換
+                var pos = self.getCurrentView().getCursorBufferPos();
+                while (true) {
+                    const found = try self.findNextMatch(search, pos);
+                    if (!found) break;
+                    try self.replaceCurrentMatch();
+                    pos = self.getCurrentView().getCursorBufferPos();
+                }
+                self.mode = .normal;
+                var msg_buf: [128]u8 = undefined;
+                const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace done";
+                self.getCurrentView().setError(msg);
+            },
+            'q', 'Q' => {
+                // 終了
+                self.mode = .normal;
+                var msg_buf: [128]u8 = undefined;
+                const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace cancelled";
+                self.getCurrentView().setError(msg);
+            },
+            else => {
+                // 無効な入力
+                self.getCurrentView().setError("Please answer: (y)es, (n)ext, (!)all, (q)uit");
+            },
+        }
+    }
+
+    /// 検索文字列にコードポイントを追加して検索実行
+    fn addSearchChar(self: *Editor, cp: u21, is_forward: bool) !void {
+        // UTF-8にエンコードして追加
+        var buf: [4]u8 = undefined;
+        const len = std.unicode.utf8Encode(cp, &buf) catch return;
+        try self.input_buffer.appendSlice(self.allocator, buf[0..len]);
+        self.input_cursor = self.input_buffer.items.len;
+
+        // プロンプトを更新
+        const prefix = if (is_forward) "I-search: " else "I-search backward: ";
+        self.setPrompt("{s}{s}", .{ prefix, self.input_buffer.items });
+
+        // 検索実行
+        if (self.input_buffer.items.len > 0) {
+            self.getCurrentView().setSearchHighlight(self.input_buffer.items);
+            try self.performSearch(is_forward, false);
+        }
+    }
+
     /// 新しいバッファを作成してリストに追加
     pub fn createNewBuffer(self: *Editor) !*BufferState {
         const new_buffer = try BufferState.init(self.allocator, self.next_buffer_id);
@@ -555,6 +748,13 @@ pub const Editor = struct {
         // カーソル位置に挿入
         try self.input_buffer.insertSlice(self.allocator, self.input_cursor, text);
         self.input_cursor += text.len;
+    }
+
+    /// ミニバッファにコードポイントを挿入（char/codepoint共通）
+    fn insertCodepointAtInputCursor(self: *Editor, cp: u21) !void {
+        var buf: [4]u8 = undefined;
+        const len = std.unicode.utf8Encode(cp, &buf) catch return;
+        try self.insertAtInputCursor(buf[0..len]);
     }
 
     /// ミニバッファのカーソル前の1文字（グラフェム）を削除（バックスペース）
@@ -691,8 +891,8 @@ pub const Editor = struct {
     fn findPrevGraphemeStart(_: *Editor, text: []const u8, pos: usize) usize {
         if (pos == 0) return 0;
         var p = pos - 1;
-        // UTF-8継続バイト（10xxxxxx）をスキップ
-        while (p > 0 and (text[p] & 0xC0) == 0x80) {
+        // UTF-8継続バイトをスキップ
+        while (p > 0 and unicode.isUtf8Continuation(text[p])) {
             p -= 1;
         }
         return p;
@@ -701,10 +901,7 @@ pub const Editor = struct {
     /// UTF-8で次のグラフェムの終了位置を見つける
     fn findNextGraphemeEnd(_: *Editor, text: []const u8, pos: usize) usize {
         if (pos >= text.len) return text.len;
-        const first_byte = text[pos];
-        // UTF-8バイト長を判定
-        const len: usize = if (first_byte < 0x80) 1 else if (first_byte < 0xE0) 2 else if (first_byte < 0xF0) 3 else 4;
-        return @min(pos + len, text.len);
+        return @min(pos + unicode.utf8SeqLen(text[pos]), text.len);
     }
 
     /// 指定位置が空白文字かどうか
@@ -737,13 +934,11 @@ pub const Editor = struct {
     fn handleMinibufferKey(self: *Editor, key: input.Key) !bool {
         switch (key) {
             .char => |c| {
-                try self.insertAtInputCursor(&[_]u8{c});
+                try self.insertCodepointAtInputCursor(c);
                 return true;
             },
             .codepoint => |cp| {
-                var buf: [4]u8 = undefined;
-                const len = std.unicode.utf8Encode(cp, &buf) catch return false;
-                try self.insertAtInputCursor(buf[0..len]);
+                try self.insertCodepointAtInputCursor(cp);
                 return true;
             },
             .ctrl => |c| {
@@ -827,15 +1022,8 @@ pub const Editor = struct {
 
     /// ミニバッファのプロンプトを更新（カーソル位置も保持）
     fn updateMinibufferPrompt(self: *Editor, prefix: []const u8) void {
-        // 古いプロンプトバッファを解放（メモリリーク防止）
-        if (self.prompt_buffer) |old_prompt| {
-            self.allocator.free(old_prompt);
-        }
         self.prompt_prefix_len = prefix.len;
-        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ prefix, self.input_buffer.items }) catch null;
-        if (self.prompt_buffer) |prompt| {
-            self.getCurrentView().setError(prompt);
-        }
+        self.setPrompt("{s}{s}", .{ prefix, self.input_buffer.items });
     }
 
     /// ミニバッファのカーソル位置を表示幅（列数）で計算
@@ -846,7 +1034,7 @@ pub const Editor = struct {
 
         while (pos < self.input_cursor and pos < items.len) {
             const first_byte = items[pos];
-            if (first_byte < 0x80) {
+            if (unicode.isAsciiByte(first_byte)) {
                 // ASCII
                 if (first_byte == '\t') {
                     col += 8 - (col % 8); // タブ展開
@@ -856,14 +1044,14 @@ pub const Editor = struct {
                 pos += 1;
             } else {
                 // UTF-8マルチバイト
-                const len: usize = if (first_byte < 0xE0) 2 else if (first_byte < 0xF0) 3 else 4;
+                const len = unicode.utf8SeqLen(first_byte);
                 const cp = std.unicode.utf8Decode(items[pos..@min(pos + len, items.len)]) catch {
                     col += 1;
                     pos += 1;
                     continue;
                 };
-                // 全角文字は2カラム、それ以外は1カラム
-                col += if (cp >= 0x1100) Buffer.charWidth(cp) else 1;
+                // 文字幅を取得（全角は2、半角は1）
+                col += unicode.displayWidth(cp);
                 pos += len;
             }
         }
@@ -2106,16 +2294,12 @@ pub const Editor = struct {
                 switch (key) {
                     .ctrl => |c| {
                         if (c == 'g') {
-                            self.mode = .normal;
-                            self.clearInputBuffer();
-                            self.getCurrentView().clearError();
+                            self.cancelInput();
                             return;
                         }
                     },
                     .escape => {
-                        self.mode = .normal;
-                        self.clearInputBuffer();
-                        self.getCurrentView().clearError();
+                        self.cancelInput();
                         return;
                     },
                     .enter => {
@@ -2137,9 +2321,7 @@ pub const Editor = struct {
                                     if (err == error.FileNotFound) {
                                         new_buffer.filename = try self.allocator.dupe(u8, filename);
                                         try self.switchToBuffer(new_buffer.id);
-                                        self.mode = .normal;
-                                        self.clearInputBuffer();
-                                        self.getCurrentView().clearError();
+                                        self.cancelInput();
                                         return;
                                     } else if (err == error.BinaryFile) {
                                         _ = try self.closeBuffer(new_buffer.id);
@@ -2149,7 +2331,7 @@ pub const Editor = struct {
                                         return;
                                     } else {
                                         _ = try self.closeBuffer(new_buffer.id);
-                                        self.getCurrentView().setError(@errorName(err));
+                                        self.showError(err);
                                         self.mode = .normal;
                                         self.clearInputBuffer();
                                         return;
@@ -2174,9 +2356,7 @@ pub const Editor = struct {
                                 try self.switchToBuffer(new_buffer.id);
                             }
 
-                            self.mode = .normal;
-                            self.clearInputBuffer();
-                            self.getCurrentView().clearError();
+                            self.cancelInput();
                         }
                         return;
                     },
@@ -2192,16 +2372,12 @@ pub const Editor = struct {
                 switch (key) {
                     .ctrl => |c| {
                         if (c == 'g') {
-                            self.mode = .normal;
-                            self.clearInputBuffer();
-                            self.getCurrentView().clearError();
+                            self.cancelInput();
                             return;
                         }
                     },
                     .escape => {
-                        self.mode = .normal;
-                        self.clearInputBuffer();
-                        self.getCurrentView().clearError();
+                        self.cancelInput();
                         return;
                     },
                     .enter => {
@@ -2210,9 +2386,7 @@ pub const Editor = struct {
                             const found_buffer = self.findBufferByFilename(buffer_name);
                             if (found_buffer) |buf| {
                                 try self.switchToBuffer(buf.id);
-                                self.mode = .normal;
-                                self.clearInputBuffer();
-                                self.getCurrentView().clearError();
+                                self.cancelInput();
                             } else {
                                 self.getCurrentView().setError("No such buffer");
                                 self.mode = .normal;
@@ -2231,44 +2405,8 @@ pub const Editor = struct {
                 // インクリメンタルサーチモード
                 const is_forward = (self.mode == .isearch_forward);
                 switch (key) {
-                    .char => |c| {
-                        // 検索文字列に文字を追加
-                        try self.input_buffer.append(self.allocator, c);
-                        self.input_cursor = self.input_buffer.items.len;
-                        // プロンプトを更新して検索実行
-                        const prefix = if (is_forward) "I-search: " else "I-search backward: ";
-                        // 古いプロンプトバッファを解放（メモリリーク防止）
-                        if (self.prompt_buffer) |old_prompt| {
-                            self.allocator.free(old_prompt);
-                        }
-                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ prefix, self.input_buffer.items }) catch null;
-                        if (self.prompt_buffer) |prompt| {
-                            self.getCurrentView().setError(prompt);
-                        }
-                        // 検索実行（現在位置から）
-                        if (self.input_buffer.items.len > 0) {
-                            self.getCurrentView().setSearchHighlight(self.input_buffer.items);
-                            try self.performSearch(is_forward, false);
-                        }
-                    },
-                    .codepoint => |cp| {
-                        // UTF-8マルチバイト文字を処理
-                        var buf: [4]u8 = undefined;
-                        const len = std.unicode.utf8Encode(cp, &buf) catch return;
-                        try self.input_buffer.appendSlice(self.allocator, buf[0..len]);
-                        self.input_cursor = self.input_buffer.items.len;
-                        // プロンプトを更新して検索実行
-                        const prefix = if (is_forward) "I-search: " else "I-search backward: ";
-                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ prefix, self.input_buffer.items }) catch null;
-                        if (self.prompt_buffer) |prompt| {
-                            self.getCurrentView().setError(prompt);
-                        }
-                        // 検索実行（現在位置から）
-                        if (self.input_buffer.items.len > 0) {
-                            self.getCurrentView().setSearchHighlight(self.input_buffer.items);
-                            try self.performSearch(is_forward, false);
-                        }
-                    },
+                    .char => |c| try self.addSearchChar(c, is_forward),
+                    .codepoint => |cp| try self.addSearchChar(cp, is_forward),
                     .ctrl => |c| {
                         switch (c) {
                             'g' => {
@@ -2276,12 +2414,7 @@ pub const Editor = struct {
                                 if (self.search_start_pos) |start_pos| {
                                     self.setCursorToPos(start_pos);
                                 }
-                                self.search_start_pos = null;
-                                self.mode = .normal;
-                                self.input_buffer.clearRetainingCapacity();
-                                self.search_history.resetNavigation();
-                                self.getCurrentView().setSearchHighlight(null); // ハイライトクリア
-                                self.getCurrentView().clearError();
+                                self.endSearch();
                             },
                             's' => {
                                 // C-s: 次の一致を検索（前方）
@@ -2322,12 +2455,7 @@ pub const Editor = struct {
                             _ = self.input_buffer.pop();
                             self.input_cursor = self.input_buffer.items.len;
                             const prefix = if (is_forward) "I-search: " else "I-search backward: ";
-                            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ prefix, self.input_buffer.items }) catch null;
-                            if (self.prompt_buffer) |prompt| {
-                                self.getCurrentView().setError(prompt);
-                            } else {
-                                self.getCurrentView().clearError();
-                            }
+                            self.setPrompt("{s}{s}", .{ prefix, self.input_buffer.items });
                             // 検索文字列が残っていれば再検索
                             if (self.input_buffer.items.len > 0) {
                                 self.getCurrentView().setSearchHighlight(self.input_buffer.items);
@@ -2356,12 +2484,7 @@ pub const Editor = struct {
                             }
                             self.last_search = self.allocator.dupe(u8, self.input_buffer.items) catch null;
                         }
-                        self.search_start_pos = null;
-                        self.mode = .normal;
-                        self.input_buffer.clearRetainingCapacity();
-                        self.search_history.resetNavigation();
-                        self.getCurrentView().setSearchHighlight(null); // ハイライトクリア
-                        self.getCurrentView().clearError();
+                        self.endSearch();
                     },
                     else => {},
                 }
@@ -2380,14 +2503,13 @@ pub const Editor = struct {
                             'b' => {
                                 // C-x C-b: バッファ一覧表示
                                 self.showBufferList() catch |err| {
-                                    self.getCurrentView().setError(@errorName(err));
+                                    self.showError(err);
                                 };
                             },
                             'f' => {
                                 // C-x C-f: ファイルを開く
                                 self.mode = .find_file_input;
-                                self.input_buffer.clearRetainingCapacity();
-                                self.input_cursor = 0;
+                                self.clearInputBuffer();
                                 self.prompt_prefix_len = 12; // " Find file: "
                                 self.getCurrentView().setError("Find file: ");
                             },
@@ -2411,8 +2533,7 @@ pub const Editor = struct {
                                 // C-x C-w: 名前を付けて保存（save-as）
                                 self.mode = .filename_input;
                                 self.quit_after_save = false;
-                                self.input_buffer.clearRetainingCapacity();
-                                self.input_cursor = 0;
+                                self.clearInputBuffer();
                                 self.prompt_prefix_len = 13; // " Write file: "
                                 self.getCurrentView().setError("Write file: ");
                             },
@@ -2432,18 +2553,10 @@ pub const Editor = struct {
 
                                 if (modified_count > 0) {
                                     if (modified_count == 1) {
-                                        if (first_modified_name) |name| {
-                                            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Save changes to {s}? (y/n/c): ", .{name}) catch null;
-                                        } else {
-                                            self.prompt_buffer = null;
-                                        }
+                                        const name = first_modified_name orelse "*scratch*";
+                                        self.setPrompt("Save changes to {s}? (y/n/c): ", .{name});
                                     } else {
-                                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "{d} buffers modified; exit anyway? (y/n): ", .{modified_count}) catch null;
-                                    }
-                                    if (self.prompt_buffer) |prompt| {
-                                        self.getCurrentView().setError(prompt);
-                                    } else {
-                                        self.getCurrentView().setError("Save changes? (y/n/c): ");
+                                        self.setPrompt("{d} buffers modified; exit anyway? (y/n): ", .{modified_count});
                                     }
                                     self.mode = .quit_confirm;
                                 } else {
@@ -2467,8 +2580,7 @@ pub const Editor = struct {
                             'b' => {
                                 // C-x b: バッファ切り替え
                                 self.mode = .buffer_switch_input;
-                                self.input_buffer.clearRetainingCapacity();
-                                self.input_cursor = 0;
+                                self.clearInputBuffer();
                                 self.prompt_prefix_len = 19; // " Switch to buffer: "
                                 self.getCurrentView().setError("Switch to buffer: ");
                             },
@@ -2477,35 +2589,27 @@ pub const Editor = struct {
                                 const buffer_state = self.getCurrentBuffer();
                                 if (buffer_state.modified) {
                                     // 変更がある場合は確認モードに入る
-                                    if (buffer_state.filename) |name| {
-                                        self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Buffer {s} modified; kill anyway? (y/n): ", .{name}) catch null;
-                                        if (self.prompt_buffer) |prompt| {
-                                            self.getCurrentView().setError(prompt);
-                                        } else {
-                                            self.getCurrentView().setError("Buffer modified; kill anyway? (y/n): ");
-                                        }
-                                    } else {
-                                        self.getCurrentView().setError("Buffer *scratch* modified; kill anyway? (y/n): ");
-                                    }
+                                    const name = buffer_state.filename orelse "*scratch*";
+                                    self.setPrompt("Buffer {s} modified; kill anyway? (y/n): ", .{name});
                                     self.mode = .kill_buffer_confirm;
                                 } else {
                                     // 変更がない場合は直接閉じる
                                     const buffer_id = buffer_state.id;
                                     self.closeBuffer(buffer_id) catch |err| {
-                                        self.getCurrentView().setError(@errorName(err));
+                                        self.showError(err);
                                     };
                                 }
                             },
                             '2' => {
                                 // C-x 2: 横分割（上下に分割）
                                 self.splitWindowHorizontally() catch |err| {
-                                    self.getCurrentView().setError(@errorName(err));
+                                    self.showError(err);
                                 };
                             },
                             '3' => {
                                 // C-x 3: 縦分割（左右に分割）
                                 self.splitWindowVertically() catch |err| {
-                                    self.getCurrentView().setError(@errorName(err));
+                                    self.showError(err);
                                 };
                             },
                             'o' => {
@@ -2517,13 +2621,13 @@ pub const Editor = struct {
                             '0' => {
                                 // C-x 0: 現在のウィンドウを閉じる
                                 self.closeCurrentWindow() catch |err| {
-                                    self.getCurrentView().setError(@errorName(err));
+                                    self.showError(err);
                                 };
                             },
                             '1' => {
                                 // C-x 1: 他のウィンドウをすべて閉じる
                                 self.deleteOtherWindows() catch |err| {
-                                    self.getCurrentView().setError(@errorName(err));
+                                    self.showError(err);
                                 };
                             },
                             else => {
@@ -2540,83 +2644,12 @@ pub const Editor = struct {
             .quit_confirm => {
                 // 終了確認モード：y/n/cのみ受け付ける
                 switch (key) {
-                    .char => |c| {
-                        switch (c) {
-                            'y', 'Y' => {
-                                // 保存して終了
-                                const buffer_state = self.getCurrentBuffer();
-                                if (buffer_state.filename == null) {
-                                    // 新規ファイル：ファイル名入力モードへ
-                                    self.mode = .filename_input;
-                                    self.quit_after_save = true; // 保存後に終了
-                                    self.input_buffer.clearRetainingCapacity();
-                                    self.getCurrentView().setError("Write file: ");
-                                } else {
-                                    self.saveFile() catch |err| {
-                                        self.getCurrentView().setError(@errorName(err));
-                                        self.mode = .normal;
-                                        return;
-                                    };
-                                    self.running = false;
-                                }
-                            },
-                            'n', 'N' => {
-                                // 保存せずに終了
-                                self.running = false;
-                            },
-                            'c', 'C' => {
-                                // キャンセル
-                                self.mode = .normal;
-                                self.getCurrentView().clearError();
-                            },
-                            else => {
-                                // 無効な入力
-                                self.getCurrentView().setError("Please answer: (y)es, (n)o, (c)ancel");
-                            },
-                        }
-                    },
-                    .codepoint => |cp| {
-                        // IMEがオンの状態でもy/n/cを受け付ける（全角も半角に変換して処理）
-                        const normalized = normalizeCodepoint(cp);
-                        switch (normalized) {
-                            'y', 'Y' => {
-                                // 保存して終了
-                                const buffer_state = self.getCurrentBuffer();
-                                if (buffer_state.filename == null) {
-                                    // 新規ファイル：ファイル名入力モードへ
-                                    self.mode = .filename_input;
-                                    self.quit_after_save = true; // 保存後に終了
-                                    self.input_buffer.clearRetainingCapacity();
-                                    self.getCurrentView().setError("Write file: ");
-                                } else {
-                                    self.saveFile() catch |err| {
-                                        self.getCurrentView().setError(@errorName(err));
-                                        self.mode = .normal;
-                                        return;
-                                    };
-                                    self.running = false;
-                                }
-                            },
-                            'n', 'N' => {
-                                // 保存せずに終了
-                                self.running = false;
-                            },
-                            'c', 'C' => {
-                                // キャンセル
-                                self.mode = .normal;
-                                self.getCurrentView().clearError();
-                            },
-                            else => {
-                                // 無効な入力
-                                self.getCurrentView().setError("Please answer: (y)es, (n)o, (c)ancel");
-                            },
-                        }
-                    },
+                    .char => |c| self.handleQuitConfirmChar(c),
+                    .codepoint => |cp| self.handleQuitConfirmChar(unicode.normalizeFullwidth(cp)),
                     .ctrl => |c| {
                         // Ctrl-Gでもキャンセル
                         if (c == 'g') {
-                            self.mode = .normal;
-                            self.getCurrentView().clearError();
+                            self.resetToNormal();
                         }
                     },
                     else => {},
@@ -2626,54 +2659,15 @@ pub const Editor = struct {
             .kill_buffer_confirm => {
                 // バッファ閉じる確認モード：y/nのみ受け付ける
                 switch (key) {
-                    .char => |c| {
-                        switch (c) {
-                            'y', 'Y' => {
-                                // 閉じる
-                                const buffer_id = self.getCurrentBuffer().id;
-                                self.closeBuffer(buffer_id) catch |err| {
-                                    self.getCurrentView().setError(@errorName(err));
-                                };
-                                self.mode = .normal;
-                            },
-                            'n', 'N' => {
-                                // キャンセル
-                                self.mode = .normal;
-                                self.getCurrentView().clearError();
-                            },
-                            else => {
-                                self.getCurrentView().setError("Please answer: (y)es or (n)o");
-                            },
-                        }
-                    },
-                    .codepoint => |cp| {
-                        const normalized = normalizeCodepoint(cp);
-                        switch (normalized) {
-                            'y', 'Y' => {
-                                const buffer_id = self.getCurrentBuffer().id;
-                                self.closeBuffer(buffer_id) catch |err| {
-                                    self.getCurrentView().setError(@errorName(err));
-                                };
-                                self.mode = .normal;
-                            },
-                            'n', 'N' => {
-                                self.mode = .normal;
-                                self.getCurrentView().clearError();
-                            },
-                            else => {
-                                self.getCurrentView().setError("Please answer: (y)es or (n)o");
-                            },
-                        }
-                    },
+                    .char => |c| self.handleKillBufferConfirmChar(c),
+                    .codepoint => |cp| self.handleKillBufferConfirmChar(unicode.normalizeFullwidth(cp)),
                     .ctrl => |c| {
                         if (c == 'g') {
-                            self.mode = .normal;
-                            self.getCurrentView().clearError();
+                            self.resetToNormal();
                         }
                     },
                     .escape => {
-                        self.mode = .normal;
-                        self.getCurrentView().clearError();
+                        self.resetToNormal();
                     },
                     else => {},
                 }
@@ -2715,16 +2709,12 @@ pub const Editor = struct {
                 switch (key) {
                     .ctrl => |c| {
                         if (c == 'g') {
-                            self.mode = .normal;
-                            self.clearInputBuffer();
-                            self.getCurrentView().clearError();
+                            self.cancelInput();
                             return;
                         }
                     },
                     .escape => {
-                        self.mode = .normal;
-                        self.clearInputBuffer();
-                        self.getCurrentView().clearError();
+                        self.cancelInput();
                         return;
                     },
                     .enter => {
@@ -2735,13 +2725,10 @@ pub const Editor = struct {
                             self.replace_search = try self.allocator.dupe(u8, self.input_buffer.items);
                             self.clearInputBuffer();
                             self.mode = .query_replace_input_replacement;
-                            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace {s} with: ", .{self.replace_search.?}) catch null;
-                            if (self.prompt_buffer) |prompt| {
-                                self.getCurrentView().setError(prompt);
-                                // " Query replace {search} with: " のプレフィックス長を計算
-                                // 1 (space) + "Query replace ".len + search.len + " with: ".len
-                                self.prompt_prefix_len = 1 + 14 + self.replace_search.?.len + 7;
-                            }
+                            self.setPrompt("Query replace {s} with: ", .{self.replace_search.?});
+                            // " Query replace {search} with: " のプレフィックス長を計算
+                            // 1 (space) + "Query replace ".len + search.len + " with: ".len
+                            self.prompt_prefix_len = 1 + 14 + self.replace_search.?.len + 7;
                         }
                         return;
                     },
@@ -2791,12 +2778,7 @@ pub const Editor = struct {
                             if (found) {
                                 // 一致が見つかった：確認モードへ
                                 self.mode = .query_replace_confirm;
-                                self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Replace? (y)es (n)ext (!)all (q)uit", .{}) catch null;
-                                if (self.prompt_buffer) |prompt| {
-                                    self.getCurrentView().setError(prompt);
-                                } else {
-                                    self.getCurrentView().setError("Replace? (y/n/!/q)");
-                                }
+                                self.setPrompt("Replace? (y)es (n)ext (!)all (q)uit", .{});
                             } else {
                                 // 一致が見つからない
                                 self.mode = .normal;
@@ -2814,186 +2796,22 @@ pub const Editor = struct {
                 _ = try self.handleMinibufferKey(key);
                 // プロンプトを更新（検索文字列を含む）
                 if (self.replace_search) |search| {
-                    self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace {s} with: {s}", .{ search, self.input_buffer.items }) catch null;
+                    self.setPrompt("Query replace {s} with: {s}", .{ search, self.input_buffer.items });
                 } else {
-                    self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Query replace with: {s}", .{self.input_buffer.items}) catch null;
-                }
-                if (self.prompt_buffer) |prompt| {
-                    self.getCurrentView().setError(prompt);
+                    self.setPrompt("Query replace with: {s}", .{self.input_buffer.items});
                 }
                 return;
             },
             .query_replace_confirm => {
                 // 置換：確認モード
                 switch (key) {
-                    .char => |c| {
-                        switch (c) {
-                            'y', 'Y' => {
-                                // この箇所を置換して次へ
-                                try self.replaceCurrentMatch();
-                                const search = self.replace_search orelse {
-                                    self.mode = .normal;
-                                    self.getCurrentView().setError("Error: no search string");
-                                    return;
-                                };
-                                // 次の一致を検索
-                                const found = try self.findNextMatch(search, self.getCurrentView().getCursorBufferPos());
-                                if (!found) {
-                                    // これ以上一致がない
-                                    self.mode = .normal;
-                                    var msg_buf: [128]u8 = undefined;
-                                    const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace done";
-                                    self.getCurrentView().setError(msg);
-                                } else {
-                                    // 次のマッチが見つかった - 確認プロンプトを表示
-                                    self.getCurrentView().setError("Replace? (y)es (n)ext (!)all (q)uit");
-                                }
-                            },
-                            'n', 'N', ' ' => {
-                                // スキップして次へ
-                                const search = self.replace_search orelse {
-                                    self.mode = .normal;
-                                    self.getCurrentView().setError("Error: no search string");
-                                    return;
-                                };
-                                // 現在の一致をスキップ（カーソルを一致の後ろに移動）
-                                const current_pos = self.getCurrentView().getCursorBufferPos();
-                                const found = try self.findNextMatch(search, current_pos + 1);
-                                if (!found) {
-                                    // これ以上一致がない
-                                    self.mode = .normal;
-                                    var msg_buf: [128]u8 = undefined;
-                                    const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace done";
-                                    self.getCurrentView().setError(msg);
-                                } else {
-                                    // 次のマッチが見つかった - 確認プロンプトを表示
-                                    self.getCurrentView().setError("Replace? (y)es (n)ext (!)all (q)uit");
-                                }
-                            },
-                            '!' => {
-                                // 残りすべてを置換
-                                try self.replaceCurrentMatch();
-                                const search = self.replace_search orelse {
-                                    self.mode = .normal;
-                                    self.getCurrentView().setError("Error: no search string");
-                                    return;
-                                };
-                                // 残りすべてを置換
-                                var pos = self.getCurrentView().getCursorBufferPos();
-                                while (true) {
-                                    const found = try self.findNextMatch(search, pos);
-                                    if (!found) break;
-                                    try self.replaceCurrentMatch();
-                                    pos = self.getCurrentView().getCursorBufferPos();
-                                }
-                                self.mode = .normal;
-                                var msg_buf: [128]u8 = undefined;
-                                const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace done";
-                                self.getCurrentView().setError(msg);
-                            },
-                            'q', 'Q' => {
-                                // 終了
-                                self.mode = .normal;
-                                var msg_buf: [128]u8 = undefined;
-                                const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace cancelled";
-                                self.getCurrentView().setError(msg);
-                            },
-                            else => {
-                                // 無効な入力
-                                self.getCurrentView().setError("Please answer: (y)es, (n)ext, (!)all, (q)uit");
-                            },
-                        }
-                    },
-                    .codepoint => |cp| {
-                        // IMEがオンの状態でもy/n/!/qを受け付ける（全角も半角に変換して処理）
-                        const normalized = normalizeCodepoint(cp);
-                        switch (normalized) {
-                            'y', 'Y' => {
-                                // この箇所を置換して次へ
-                                try self.replaceCurrentMatch();
-                                const search = self.replace_search orelse {
-                                    self.mode = .normal;
-                                    self.getCurrentView().setError("Error: no search string");
-                                    return;
-                                };
-                                // 次の一致を検索
-                                const found = try self.findNextMatch(search, self.getCurrentView().getCursorBufferPos());
-                                if (!found) {
-                                    // これ以上一致がない
-                                    self.mode = .normal;
-                                    var msg_buf: [128]u8 = undefined;
-                                    const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace done";
-                                    self.getCurrentView().setError(msg);
-                                } else {
-                                    // 次のマッチが見つかった - 確認プロンプトを表示
-                                    self.getCurrentView().setError("Replace? (y)es (n)ext (!)all (q)uit");
-                                }
-                            },
-                            'n', 'N', ' ' => {
-                                // スキップして次へ
-                                const search = self.replace_search orelse {
-                                    self.mode = .normal;
-                                    self.getCurrentView().setError("Error: no search string");
-                                    return;
-                                };
-                                // 現在の一致をスキップ（カーソルを一致の後ろに移動）
-                                const current_pos = self.getCurrentView().getCursorBufferPos();
-                                const found = try self.findNextMatch(search, current_pos + 1);
-                                if (!found) {
-                                    // これ以上一致がない
-                                    self.mode = .normal;
-                                    var msg_buf: [128]u8 = undefined;
-                                    const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace done";
-                                    self.getCurrentView().setError(msg);
-                                } else {
-                                    // 次のマッチが見つかった - 確認プロンプトを表示
-                                    self.getCurrentView().setError("Replace? (y)es (n)ext (!)all (q)uit");
-                                }
-                            },
-                            '!' => {
-                                // 残りすべてを置換
-                                try self.replaceCurrentMatch();
-                                const search = self.replace_search orelse {
-                                    self.mode = .normal;
-                                    self.getCurrentView().setError("Error: no search string");
-                                    return;
-                                };
-                                // 残りすべてを置換
-                                var pos = self.getCurrentView().getCursorBufferPos();
-                                while (true) {
-                                    const found = try self.findNextMatch(search, pos);
-                                    if (!found) break;
-                                    try self.replaceCurrentMatch();
-                                    pos = self.getCurrentView().getCursorBufferPos();
-                                }
-                                self.mode = .normal;
-                                var msg_buf: [128]u8 = undefined;
-                                const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace done";
-                                self.getCurrentView().setError(msg);
-                            },
-                            'q', 'Q' => {
-                                // 終了
-                                self.mode = .normal;
-                                var msg_buf: [128]u8 = undefined;
-                                const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace cancelled";
-                                self.getCurrentView().setError(msg);
-                            },
-                            else => {
-                                // 無効な入力
-                                self.getCurrentView().setError("Please answer: (y)es, (n)ext, (!)all, (q)uit");
-                            },
-                        }
-                    },
+                    .char => |c| try self.handleReplaceConfirmChar(c),
+                    .codepoint => |cp| try self.handleReplaceConfirmChar(unicode.normalizeFullwidth(cp)),
                     .ctrl => |c| {
                         // Ctrl-Gで終了
                         if (c == 'g') {
                             self.mode = .normal;
-                            const msg = std.fmt.allocPrint(self.allocator, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch null;
-                            if (msg) |m| {
-                                self.getCurrentView().setError(m);
-                            } else {
-                                self.getCurrentView().setError("Replace cancelled");
-                            }
+                            self.setPrompt("Replaced {d} occurrence(s)", .{self.replace_match_count});
                         }
                     },
                     else => {},
@@ -3082,16 +2900,12 @@ pub const Editor = struct {
                 switch (key) {
                     .ctrl => |c| {
                         if (c == 'g') {
-                            self.mode = .normal;
-                            self.clearInputBuffer();
-                            self.getCurrentView().clearError();
+                            self.cancelInput();
                             return;
                         }
                     },
                     .escape => {
-                        self.mode = .normal;
-                        self.clearInputBuffer();
-                        self.getCurrentView().clearError();
+                        self.cancelInput();
                         return;
                     },
                     .enter => {
@@ -3177,8 +2991,7 @@ pub const Editor = struct {
                             // 新規検索開始
                             self.mode = .isearch_forward;
                             self.search_start_pos = self.getCurrentView().getCursorBufferPos();
-                            self.input_buffer.clearRetainingCapacity();
-                            self.input_cursor = 0;
+                            self.clearInputBuffer();
                             self.prompt_prefix_len = 11; // " I-search: "
                             self.getCurrentView().setError("I-search: ");
                         }
@@ -3198,8 +3011,7 @@ pub const Editor = struct {
                             // 新規検索開始
                             self.mode = .isearch_backward;
                             self.search_start_pos = self.getCurrentView().getCursorBufferPos();
-                            self.input_buffer.clearRetainingCapacity();
-                            self.input_cursor = 0;
+                            self.clearInputBuffer();
                             self.prompt_prefix_len = 20; // " I-search backward: "
                             self.getCurrentView().setError("I-search backward: ");
                         }
@@ -3214,8 +3026,7 @@ pub const Editor = struct {
                     '%' => {
                         // M-% : query-replace
                         self.mode = .query_replace_input_search;
-                        self.input_buffer.clearRetainingCapacity();
-                        self.input_cursor = 0;
+                        self.clearInputBuffer();
                         self.prompt_prefix_len = 16; // " Query replace: "
                         self.replace_match_count = 0;
                         self.getCurrentView().setError("Query replace: ");
@@ -3227,8 +3038,7 @@ pub const Editor = struct {
                     '|' => {
                         // M-| シェルコマンド入力
                         self.mode = .shell_command;
-                        self.input_buffer.clearRetainingCapacity();
-                        self.input_cursor = 0;
+                        self.clearInputBuffer();
                         self.prompt_prefix_len = 3; // " | "
                         self.getCurrentView().setError("| ");
                     },
@@ -3250,8 +3060,7 @@ pub const Editor = struct {
                     'x' => {
                         // M-x: コマンドプロンプト
                         self.mode = .mx_command;
-                        self.input_buffer.clearRetainingCapacity();
-                        self.input_cursor = 0;
+                        self.clearInputBuffer();
                         self.prompt_prefix_len = 3; // " : "
                         self.getCurrentView().setError(": ");
                     },
@@ -3345,85 +3154,21 @@ pub const Editor = struct {
             .end_key => self.getCurrentView().moveToLineEnd(),
             .delete => try self.deleteChar(),
 
-            // 通常の文字 (ASCII)
-            .char => |c| {
-                if (c >= 32 and c < 127) {
-                    try self.insertChar(c);
-                }
-            },
-
-            // UTF-8文字
-            .codepoint => |cp| {
-                try self.insertCodepoint(cp);
-            },
+            // 文字入力（ASCII / UTF-8共通）
+            .char => |c| if (c >= 32 and c < 127) try self.insertCodepoint(c),
+            .codepoint => |cp| try self.insertCodepoint(cp),
 
             else => {},
         }
     }
 
     fn insertChar(self: *Editor, ch: u8) !void {
-        const buffer_state = self.getCurrentBuffer();
-        if (buffer_state.readonly) {
-            self.getCurrentView().setError("Buffer is read-only");
-            return;
-        }
-        const buffer = self.getCurrentBufferContent();
-        const current_line = self.getCurrentLine();
-        const pos = self.getCurrentView().getCursorBufferPos();
-
-        // バッファ変更を先に実行（失敗した場合はundoログに記録しない）
-        try buffer.insert(pos, ch);
-        errdefer buffer.delete(pos, 1) catch unreachable; // rollback失敗は致命的
-        try self.recordInsert(pos, &[_]u8{ch}, pos); // 編集前のカーソル位置を記録
-        buffer_state.modified = true;
-
-        if (ch == '\n') {
-            // 改行: 現在行以降すべてdirty
-            const view = self.getCurrentView();
-            view.markDirty(current_line, null); // EOF まで再描画
-
-            // 次の行の先頭に移動（ビューポート高さを使用）
-            const max_screen_line = if (view.viewport_height >= 2) view.viewport_height - 2 else 0;
-            if (view.cursor_y < max_screen_line) {
-                view.cursor_y += 1;
-            } else {
-                // 画面の最下部の場合はスクロール
-                view.top_line += 1;
-            }
-            view.cursor_x = 0;
-            view.top_col = 0; // 水平スクロールもリセット
-        } else {
-            // 通常文字: 現在行のみdirty
-            const view = self.getCurrentView();
-            view.markDirty(current_line, current_line);
-
-            // タブ文字の場合は文脈依存の幅を計算
-            if (ch == '\t') {
-                const tab_width = view.getTabWidth();
-                const next_tab_stop = (view.cursor_x / tab_width + 1) * tab_width;
-                view.cursor_x = next_tab_stop;
-            } else {
-                // UTF-8文字の幅を計算してカーソルを移動
-                const width = Buffer.charWidth(@as(u21, ch));
-                view.cursor_x += width;
-            }
-
-            // 水平スクロール: カーソルが右端を超えた場合
-            const line_num_width = view.getLineNumberWidth();
-            const visible_width = if (view.viewport_width > line_num_width) view.viewport_width - line_num_width else 1;
-            if (view.cursor_x >= view.top_col + visible_width) {
-                view.top_col = view.cursor_x - visible_width + 1;
-                view.markFullRedraw();
-            }
-        }
+        return self.insertCodepoint(@as(u21, ch));
     }
 
     fn insertCodepoint(self: *Editor, codepoint: u21) !void {
+        if (self.isReadOnly()) return;
         const buffer_state = self.getCurrentBuffer();
-        if (buffer_state.readonly) {
-            self.getCurrentView().setError("Buffer is read-only");
-            return;
-        }
         const buffer = self.getCurrentBufferContent();
         const current_line = self.getCurrentLine();
 
@@ -3440,28 +3185,32 @@ pub const Editor = struct {
         buffer_state.modified = true;
 
         if (codepoint == '\n') {
-            // 改行: 現在行以降すべてdirty
+            // 改行処理
             const view = self.getCurrentView();
-            view.markDirty(current_line, null);
-
-            // 次の行の先頭に移動（ビューポート高さを使用）
             const max_screen_line = if (view.viewport_height >= 2) view.viewport_height - 2 else 0;
             if (view.cursor_y < max_screen_line) {
                 view.cursor_y += 1;
+                view.markDirty(current_line, null); // EOF まで再描画
             } else {
                 // 画面の最下部の場合はスクロール
                 view.top_line += 1;
+                view.markFullRedraw(); // スクロール時は全画面再描画
             }
             view.cursor_x = 0;
             view.top_col = 0; // 水平スクロールもリセット
         } else {
-            // 通常文字: 現在行のみdirty
+            // 通常文字
             const view = self.getCurrentView();
             view.markDirty(current_line, current_line);
 
-            // UTF-8文字の幅を計算してカーソルを移動
-            const width = Buffer.charWidth(codepoint);
-            view.cursor_x += width;
+            // カーソル移動（タブは特別扱い）
+            if (codepoint == '\t') {
+                const tab_width = view.getTabWidth();
+                const next_tab_stop = (view.cursor_x / tab_width + 1) * tab_width;
+                view.cursor_x = next_tab_stop;
+            } else {
+                view.cursor_x += unicode.displayWidth(codepoint);
+            }
 
             // 水平スクロール: カーソルが右端を超えた場合
             const line_num_width = view.getLineNumberWidth();
@@ -3474,11 +3223,8 @@ pub const Editor = struct {
     }
 
     fn deleteChar(self: *Editor) !void {
+        if (self.isReadOnly()) return;
         const buffer_state = self.getCurrentBuffer();
-        if (buffer_state.readonly) {
-            self.getCurrentView().setError("Buffer is read-only");
-            return;
-        }
         const buffer = self.getCurrentBufferContent();
         const current_line = self.getCurrentLine();
         const pos = self.getCurrentView().getCursorBufferPos();
@@ -3529,11 +3275,8 @@ pub const Editor = struct {
     }
 
     fn backspace(self: *Editor) !void {
+        if (self.isReadOnly()) return;
         const buffer_state = self.getCurrentBuffer();
-        if (buffer_state.readonly) {
-            self.getCurrentView().setError("Buffer is read-only");
-            return;
-        }
         const buffer = self.getCurrentBufferContent();
         const current_line = self.getCurrentLine();
         const pos = self.getCurrentView().getCursorBufferPos();
@@ -3624,29 +3367,12 @@ pub const Editor = struct {
     }
 
     fn killLine(self: *Editor) !void {
+        if (self.isReadOnly()) return;
         const buffer_state = self.getCurrentBuffer();
-        if (buffer_state.readonly) {
-            self.getCurrentView().setError("Buffer is read-only");
-            return;
-        }
         const buffer = self.getCurrentBufferContent();
         const current_line = self.getCurrentLine();
         const pos = self.getCurrentView().getCursorBufferPos();
-
-        // PieceIteratorで行末を探す
-        var iter = PieceIterator.init(buffer);
-        iter.seek(pos);
-
-        var end_pos = pos;
-        while (iter.next()) |ch| {
-            if (ch == '\n') {
-                end_pos = iter.global_pos;
-                break;
-            }
-        } else {
-            end_pos = buffer.len();
-        }
-
+        const end_pos = buffer.findNextLineFromPos(pos);
         const count = end_pos - pos;
         if (count > 0) {
             const deleted = try self.extractText(pos, count);
@@ -3670,11 +3396,8 @@ pub const Editor = struct {
     /// M-^ 行の結合 (delete-indentation)
     /// 現在の行の先頭インデントを削除し、前の行と結合
     fn joinLine(self: *Editor) !void {
+        if (self.isReadOnly()) return;
         const buffer_state = self.getCurrentBuffer();
-        if (buffer_state.readonly) {
-            self.getCurrentView().setError("Buffer is read-only");
-            return;
-        }
         const buffer = self.getCurrentBufferContent();
         const view = self.getCurrentView();
 
@@ -3742,28 +3465,15 @@ pub const Editor = struct {
 
     /// 行の複製 (duplicate-line)
     fn duplicateLine(self: *Editor) !void {
+        if (self.isReadOnly()) return;
         const buffer_state = self.getCurrentBuffer();
-        if (buffer_state.readonly) {
-            self.getCurrentView().setError("Buffer is read-only");
-            return;
-        }
         const buffer = self.getCurrentBufferContent();
         const view = self.getCurrentView();
         const current_line = self.getCurrentLine();
 
         // 現在の行の開始・終了位置を取得
-        const line_start = buffer.getLineStart(current_line);
-        var line_end = line_start;
-        var iter = PieceIterator.init(buffer);
-        iter.seek(line_start);
-        while (iter.next()) |ch| {
-            if (ch == '\n') {
-                line_end = iter.global_pos;
-                break;
-            }
-        } else {
-            line_end = buffer.len();
-        }
+        const line_start = buffer.getLineStart(current_line) orelse return;
+        const line_end = buffer.findNextLineFromPos(line_start);
 
         // 行の内容を取得（改行を含む）
         const line_len = line_end - line_start;
@@ -3802,11 +3512,8 @@ pub const Editor = struct {
 
     /// 行を上に移動
     fn moveLineUp(self: *Editor) !void {
+        if (self.isReadOnly()) return;
         const buffer_state = self.getCurrentBuffer();
-        if (buffer_state.readonly) {
-            self.getCurrentView().setError("Buffer is read-only");
-            return;
-        }
         const buffer = self.getCurrentBufferContent();
         const view = self.getCurrentView();
         const current_line = self.getCurrentLine();
@@ -3815,17 +3522,7 @@ pub const Editor = struct {
 
         // 現在の行を取得
         const line_start = buffer.getLineStart(current_line) orelse return;
-        var line_end = line_start;
-        var iter = PieceIterator.init(buffer);
-        iter.seek(line_start);
-        while (iter.next()) |ch| {
-            if (ch == '\n') {
-                line_end = iter.global_pos;
-                break;
-            }
-        } else {
-            line_end = buffer.len();
-        }
+        const line_end = buffer.findNextLineFromPos(line_start);
 
         // 前の行の開始位置
         const prev_line_start = buffer.getLineStart(current_line - 1) orelse return;
@@ -3854,11 +3551,8 @@ pub const Editor = struct {
 
     /// 行を下に移動
     fn moveLineDown(self: *Editor) !void {
+        if (self.isReadOnly()) return;
         const buffer_state = self.getCurrentBuffer();
-        if (buffer_state.readonly) {
-            self.getCurrentView().setError("Buffer is read-only");
-            return;
-        }
         const buffer = self.getCurrentBufferContent();
         const view = self.getCurrentView();
         const current_line = self.getCurrentLine();
@@ -3868,28 +3562,10 @@ pub const Editor = struct {
 
         // 現在の行を取得
         const line_start = buffer.getLineStart(current_line) orelse return;
-        var line_end = line_start;
-        var iter = PieceIterator.init(buffer);
-        iter.seek(line_start);
-        while (iter.next()) |ch| {
-            if (ch == '\n') {
-                line_end = iter.global_pos;
-                break;
-            }
-        } else {
-            line_end = buffer.len();
-        }
+        const line_end = buffer.findNextLineFromPos(line_start);
 
         // 次の行の終了位置
-        var next_line_end = line_end;
-        while (iter.next()) |ch| {
-            if (ch == '\n') {
-                next_line_end = iter.global_pos;
-                break;
-            }
-        } else {
-            next_line_end = buffer.len();
-        }
+        const next_line_end = buffer.findNextLineFromPos(line_end);
 
         // 現在の行の内容を取得
         const line_len = line_end - line_start;
@@ -3993,11 +3669,8 @@ pub const Editor = struct {
 
     /// 選択範囲または現在行をインデント
     fn indentRegion(self: *Editor) !void {
+        if (self.isReadOnly()) return;
         const buffer_state = self.getCurrentBuffer();
-        if (buffer_state.readonly) {
-            self.getCurrentView().setError("Buffer is read-only");
-            return;
-        }
         const buffer = self.getCurrentBufferContent();
         const view = self.getCurrentView();
         const window = self.getCurrentWindow();
@@ -4042,11 +3715,8 @@ pub const Editor = struct {
 
     /// 選択範囲または現在行をアンインデント
     fn unindentRegion(self: *Editor) !void {
+        if (self.isReadOnly()) return;
         const buffer_state = self.getCurrentBuffer();
-        if (buffer_state.readonly) {
-            self.getCurrentView().setError("Buffer is read-only");
-            return;
-        }
         const buffer = self.getCurrentBufferContent();
         const view = self.getCurrentView();
         const window = self.getCurrentWindow();
@@ -4124,11 +3794,8 @@ pub const Editor = struct {
 
     /// コメント切り替え (M-;)
     fn toggleComment(self: *Editor) !void {
+        if (self.isReadOnly()) return;
         const buffer_state = self.getCurrentBuffer();
-        if (buffer_state.readonly) {
-            self.getCurrentView().setError("Buffer is read-only");
-            return;
-        }
         const buffer = self.getCurrentBufferContent();
         const view = self.getCurrentView();
         const window = self.getCurrentWindow();
@@ -4302,11 +3969,8 @@ pub const Editor = struct {
 
     // kill_ringの内容をペースト（C-y）
     fn yank(self: *Editor) !void {
+        if (self.isReadOnly()) return;
         const buffer_state = self.getCurrentBuffer();
-        if (buffer_state.readonly) {
-            self.getCurrentView().setError("Buffer is read-only");
-            return;
-        }
         const buffer = self.getCurrentBufferContent();
         const current_line = self.getCurrentLine();
         const text = self.kill_ring orelse {
@@ -4702,53 +4366,9 @@ pub const Editor = struct {
     // 単語移動・削除（日本語対応）
     // ========================================
 
-    /// 文字種を判定（単語境界の検出用）
-    const CharType = enum {
-        alnum, // 英数字・アンダースコア
-        hiragana, // ひらがな
-        katakana, // カタカナ
-        kanji, // 漢字
-        space, // 空白
-        other, // その他（記号など）
-    };
-
-    fn getCharType(cp: u21) CharType {
-        // 英数字とアンダースコア
-        if ((cp >= 'a' and cp <= 'z') or
-            (cp >= 'A' and cp <= 'Z') or
-            (cp >= '0' and cp <= '9') or
-            cp == '_')
-        {
-            return .alnum;
-        }
-
-        // 空白文字
-        if (cp == ' ' or cp == '\t' or cp == '\n' or cp == '\r') {
-            return .space;
-        }
-
-        // ひらがな（U+3040〜U+309F）
-        if (cp >= 0x3040 and cp <= 0x309F) {
-            return .hiragana;
-        }
-
-        // カタカナ（U+30A0〜U+30FF）
-        if (cp >= 0x30A0 and cp <= 0x30FF) {
-            return .katakana;
-        }
-
-        // 漢字（CJK統合漢字）
-        // U+4E00〜U+9FFF: CJK Unified Ideographs
-        // U+3400〜U+4DBF: CJK Unified Ideographs Extension A
-        if ((cp >= 0x4E00 and cp <= 0x9FFF) or
-            (cp >= 0x3400 and cp <= 0x4DBF))
-        {
-            return .kanji;
-        }
-
-        // その他の記号
-        return .other;
-    }
+    // 文字種判定はunicode.zigで定義
+    const CharType = unicode.CharType;
+    const getCharType = unicode.getCharType;
 
     /// 前方の単語へ移動（M-f）
     fn forwardWord(self: *Editor) !void {
@@ -4844,8 +4464,8 @@ pub const Editor = struct {
             var iter = PieceIterator.init(buffer);
             iter.seek(test_pos);
             const byte = iter.next() orelse break;
-            // UTF-8の先頭バイトかチェック（ASCII or マルチバイト先頭）
-            if (byte < 0x80 or (byte & 0xC0) == 0xC0) {
+            // UTF-8の先頭バイトかチェック
+            if (unicode.isUtf8Start(byte)) {
                 return test_pos;
             }
         }
@@ -4869,7 +4489,7 @@ pub const Editor = struct {
 
         while (iter.next()) |byte| {
             const cp = blk: {
-                if (byte < 0x80) {
+                if (unicode.isAsciiByte(byte)) {
                     break :blk @as(u21, byte);
                 } else {
                     var utf8_buf: [4]u8 = undefined;
@@ -4907,7 +4527,7 @@ pub const Editor = struct {
             }
 
             prev_type = current_type;
-            pos += if (cp < 0x80) 1 else std.unicode.utf8CodepointSequenceLength(cp) catch 1;
+            pos += if (unicode.isAscii(cp)) 1 else std.unicode.utf8CodepointSequenceLength(cp) catch 1;
 
             if (prev_type == .space and current_type != .space) {
                 break;
@@ -5169,13 +4789,7 @@ pub const Editor = struct {
 
             // プロンプトを更新
             const prefix = if (is_forward) "I-search: " else "I-search backward: ";
-            if (self.prompt_buffer) |old| {
-                self.allocator.free(old);
-            }
-            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ prefix, text }) catch null;
-            if (self.prompt_buffer) |prompt| {
-                self.getCurrentView().setError(prompt);
-            }
+            self.setPrompt("{s}{s}", .{ prefix, text });
 
             // 検索を実行
             if (text.len > 0) {
@@ -5676,10 +5290,7 @@ pub const Editor = struct {
             self.mxCmdReadonly();
         } else {
             // 未知のコマンド
-            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Unknown command: {s}", .{cmd}) catch null;
-            if (self.prompt_buffer) |msg| {
-                self.getCurrentView().setError(msg);
-            }
+            self.setPrompt("Unknown command: {s}", .{cmd});
         }
     }
 
@@ -5712,10 +5323,7 @@ pub const Editor = struct {
             // 引数なし: 現在の行番号を表示
             const view = self.getCurrentView();
             const current_line = view.top_line + view.cursor_y + 1;
-            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "line: {d}", .{current_line}) catch null;
-            if (self.prompt_buffer) |msg| {
-                self.getCurrentView().setError(msg);
-            }
+            self.setPrompt("line: {d}", .{current_line});
         }
     }
 
@@ -5731,17 +5339,11 @@ pub const Editor = struct {
                 return;
             }
             self.getCurrentView().setTabWidth(width);
-            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "tab: {d}", .{width}) catch null;
-            if (self.prompt_buffer) |msg| {
-                self.getCurrentView().setError(msg);
-            }
+            self.setPrompt("tab: {d}", .{width});
         } else {
             // 引数なし: 現在のタブ幅を表示
             const width = self.getCurrentView().getTabWidth();
-            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "tab: {d}", .{width}) catch null;
-            if (self.prompt_buffer) |msg| {
-                self.getCurrentView().setError(msg);
-            }
+            self.setPrompt("tab: {d}", .{width});
         }
     }
 
@@ -5765,10 +5367,7 @@ pub const Editor = struct {
                 .space => "space",
                 .tab => "tab",
             };
-            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "indent: {s}", .{style_name}) catch null;
-            if (self.prompt_buffer) |msg| {
-                self.getCurrentView().setError(msg);
-            }
+            self.setPrompt("indent: {s}", .{style_name});
         }
         _ = syntax;
     }
@@ -5796,23 +5395,14 @@ pub const Editor = struct {
             }
             if (found) |lang| {
                 self.getCurrentView().setLanguage(lang);
-                self.prompt_buffer = std.fmt.allocPrint(self.allocator, "mode: {s}", .{lang.name}) catch null;
-                if (self.prompt_buffer) |msg| {
-                    self.getCurrentView().setError(msg);
-                }
+                self.setPrompt("mode: {s}", .{lang.name});
             } else {
-                self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Unknown mode: {s}", .{mode_str}) catch null;
-                if (self.prompt_buffer) |msg| {
-                    self.getCurrentView().setError(msg);
-                }
+                self.setPrompt("Unknown mode: {s}", .{mode_str});
             }
         } else {
             // 引数なし: 現在のモードを表示
             const lang = self.getCurrentView().language;
-            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "mode: {s}", .{lang.name}) catch null;
-            if (self.prompt_buffer) |msg| {
-                self.getCurrentView().setError(msg);
-            }
+            self.setPrompt("mode: {s}", .{lang.name});
         }
     }
 
@@ -5832,10 +5422,7 @@ pub const Editor = struct {
 
         // Buffer.loadFromFileを使用（エンコーディング・改行コード処理を含む）
         const loaded_buffer = Buffer.loadFromFile(self.allocator, filename) catch |err| {
-            self.prompt_buffer = std.fmt.allocPrint(self.allocator, "Cannot open: {s}", .{@errorName(err)}) catch null;
-            if (self.prompt_buffer) |msg| {
-                self.getCurrentView().setError(msg);
-            }
+            self.setPrompt("Cannot open: {s}", .{@errorName(err)});
             return;
         };
 
