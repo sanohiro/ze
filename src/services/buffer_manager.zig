@@ -15,7 +15,7 @@
 
 const std = @import("std");
 const Buffer = @import("../buffer.zig").Buffer;
-const UndoEntry = @import("undo_manager.zig").UndoEntry;
+const UndoStack = @import("undo_manager.zig").UndoStack;
 
 /// バッファ状態
 pub const BufferState = struct {
@@ -25,9 +25,7 @@ pub const BufferState = struct {
     modified: bool, // 変更フラグ
     readonly: bool, // 読み取り専用フラグ
     file_mtime: ?i128, // ファイルの最終更新時刻
-    undo_stack: std.ArrayList(UndoEntry), // Undoスタック
-    redo_stack: std.ArrayList(UndoEntry), // Redoスタック
-    undo_save_point: ?usize, // 保存時のundoスタック深さ（nullなら一度も保存されていない）
+    undo: UndoStack, // Undo/Redoスタック
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, id: usize) !*BufferState {
@@ -39,29 +37,20 @@ pub const BufferState = struct {
             .modified = false,
             .readonly = false,
             .file_mtime = null,
-            .undo_stack = undefined, // 後で初期化
-            .redo_stack = undefined, // 後で初期化
-            .undo_save_point = 0, // 初期状態は保存済み扱い
+            .undo = UndoStack.init(),
             .allocator = allocator,
         };
-        // ArrayListは構造体リテラル内で初期化できないため、後で初期化
-        self.undo_stack = .{};
-        self.redo_stack = .{};
         return self;
     }
 
     /// 現在の状態がディスク上のファイルと一致するかを判定
     pub fn isModified(self: *const BufferState) bool {
-        if (self.undo_save_point) |save_point| {
-            return self.undo_stack.items.len != save_point;
-        }
-        // 一度も保存されていない場合、何か変更があればmodified
-        return self.undo_stack.items.len > 0;
+        return self.undo.isModified();
     }
 
     /// 現在の状態を保存済みとしてマーク
     pub fn markSaved(self: *BufferState) void {
-        self.undo_save_point = self.undo_stack.items.len;
+        self.undo.markSaved();
         self.modified = false;
     }
 
@@ -87,14 +76,7 @@ pub const BufferState = struct {
         if (self.filename) |fname| {
             self.allocator.free(fname);
         }
-        for (self.undo_stack.items) |*entry| {
-            entry.deinit(self.allocator);
-        }
-        self.undo_stack.deinit(self.allocator);
-        for (self.redo_stack.items) |*entry| {
-            entry.deinit(self.allocator);
-        }
-        self.redo_stack.deinit(self.allocator);
+        self.undo.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 };

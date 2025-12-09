@@ -280,28 +280,32 @@ pub const UndoManager = struct {
             },
             .delete => |del| blk: {
                 // deleteの取り消し: insert
-                const text_copy = try self.allocator.dupe(u8, del.text);
+                // redo用とresult用にテキストをコピー
+                const text_for_redo = try self.allocator.dupe(u8, del.text);
+                const text_for_result = try self.allocator.dupe(u8, del.text);
                 try stack.redo_stack.append(self.allocator, .{
-                    .op = .{ .delete = .{ .pos = del.pos, .text = text_copy } },
+                    .op = .{ .delete = .{ .pos = del.pos, .text = text_for_redo } },
                     .cursor_pos = current_cursor_pos,
                     .timestamp = now,
                 });
                 break :blk .{
-                    .action = .{ .insert = .{ .pos = del.pos, .text = del.text } },
+                    .action = .{ .insert = .{ .pos = del.pos, .text = text_for_result } },
                     .cursor_pos = saved_cursor,
                 };
             },
             .replace => |rep| blk: {
                 // replaceの取り消し: new_textを削除してold_textを挿入
-                const old_copy = try self.allocator.dupe(u8, rep.old_text);
-                const new_copy = try self.allocator.dupe(u8, rep.new_text);
+                // redo用とresult用にテキストをコピー
+                const old_for_redo = try self.allocator.dupe(u8, rep.old_text);
+                const new_for_redo = try self.allocator.dupe(u8, rep.new_text);
+                const old_for_result = try self.allocator.dupe(u8, rep.old_text);
                 try stack.redo_stack.append(self.allocator, .{
-                    .op = .{ .replace = .{ .pos = rep.pos, .old_text = old_copy, .new_text = new_copy } },
+                    .op = .{ .replace = .{ .pos = rep.pos, .old_text = old_for_redo, .new_text = new_for_redo } },
                     .cursor_pos = current_cursor_pos,
                     .timestamp = now,
                 });
                 break :blk .{
-                    .action = .{ .replace = .{ .pos = rep.pos, .delete_len = rep.new_text.len, .text = rep.old_text } },
+                    .action = .{ .replace = .{ .pos = rep.pos, .delete_len = rep.new_text.len, .text = old_for_result } },
                     .cursor_pos = saved_cursor,
                 };
             },
@@ -323,14 +327,16 @@ pub const UndoManager = struct {
         const result: UndoResult = switch (entry.op) {
             .insert => |ins| blk: {
                 // redoのinsert: もう一度insert
-                const text_copy = try self.allocator.dupe(u8, ins.text);
+                // undo用とresult用にテキストをコピー
+                const text_for_undo = try self.allocator.dupe(u8, ins.text);
+                const text_for_result = try self.allocator.dupe(u8, ins.text);
                 try stack.undo_stack.append(self.allocator, .{
-                    .op = .{ .insert = .{ .pos = ins.pos, .text = text_copy } },
+                    .op = .{ .insert = .{ .pos = ins.pos, .text = text_for_undo } },
                     .cursor_pos = current_cursor_pos,
                     .timestamp = now,
                 });
                 break :blk .{
-                    .action = .{ .insert = .{ .pos = ins.pos, .text = ins.text } },
+                    .action = .{ .insert = .{ .pos = ins.pos, .text = text_for_result } },
                     .cursor_pos = saved_cursor,
                 };
             },
@@ -342,6 +348,7 @@ pub const UndoManager = struct {
                     .cursor_pos = current_cursor_pos,
                     .timestamp = now,
                 });
+                // deleteはテキスト長のみ必要（テキスト内容は不要）
                 break :blk .{
                     .action = .{ .delete = .{ .pos = del.pos, .len = del.text.len } },
                     .cursor_pos = saved_cursor,
@@ -349,15 +356,17 @@ pub const UndoManager = struct {
             },
             .replace => |rep| blk: {
                 // redoのreplace: もう一度replace
-                const old_copy = try self.allocator.dupe(u8, rep.old_text);
-                const new_copy = try self.allocator.dupe(u8, rep.new_text);
+                // undo用とresult用にテキストをコピー
+                const old_for_undo = try self.allocator.dupe(u8, rep.old_text);
+                const new_for_undo = try self.allocator.dupe(u8, rep.new_text);
+                const new_for_result = try self.allocator.dupe(u8, rep.new_text);
                 try stack.undo_stack.append(self.allocator, .{
-                    .op = .{ .replace = .{ .pos = rep.pos, .old_text = old_copy, .new_text = new_copy } },
+                    .op = .{ .replace = .{ .pos = rep.pos, .old_text = old_for_undo, .new_text = new_for_undo } },
                     .cursor_pos = current_cursor_pos,
                     .timestamp = now,
                 });
                 break :blk .{
-                    .action = .{ .replace = .{ .pos = rep.pos, .delete_len = rep.old_text.len, .text = rep.new_text } },
+                    .action = .{ .replace = .{ .pos = rep.pos, .delete_len = rep.old_text.len, .text = new_for_result } },
                     .cursor_pos = saved_cursor,
                 };
             },

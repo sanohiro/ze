@@ -176,6 +176,9 @@ pub const Editor = struct {
     shell_history: History,
     search_history: History,
 
+    // Undo/Redoマネージャー
+    undo_manager: UndoManager,
+
     pub fn init(allocator: std.mem.Allocator) !Editor {
         // ターミナルを先に初期化（サイズ取得のため）
         const terminal = try Terminal.init(allocator);
@@ -232,6 +235,7 @@ pub const Editor = struct {
             .shell_state = null,
             .shell_history = shell_history,
             .search_history = search_history,
+            .undo_manager = UndoManager.init(allocator),
         };
 
         return editor;
@@ -1416,15 +1420,7 @@ pub const Editor = struct {
         buffer_state.filename = new_filename;
 
         // Undo/Redoスタックをクリア
-        for (buffer_state.undo_stack.items) |*entry| {
-            entry.deinit(self.allocator);
-        }
-        buffer_state.undo_stack.clearRetainingCapacity();
-        for (buffer_state.redo_stack.items) |*entry| {
-            entry.deinit(self.allocator);
-        }
-        buffer_state.redo_stack.clearRetainingCapacity();
-        buffer_state.undo_save_point = 0; // ロード直後は保存済み状態
+        buffer_state.undo.clear(self.allocator);
         buffer_state.modified = false;
 
         // 言語検出（ファイル名とコンテンツ先頭から判定）
@@ -1754,204 +1750,46 @@ pub const Editor = struct {
         }
     }
 
-    // Undoスタックの最大エントリ数
-    const MAX_UNDO_ENTRIES = config.Editor.MAX_UNDO_ENTRIES;
-
-    // 現在時刻をミリ秒で取得
-    fn getCurrentTimeMs() i64 {
-        return @divFloor(std.time.milliTimestamp(), 1);
-    }
-
-    // 編集操作を記録（差分ベース、連続挿入はマージ）
+    // 編集操作を記録（UndoManagerに委譲）
     fn recordInsert(self: *Editor, pos: usize, text: []const u8, cursor_pos_before_edit: usize) !void {
         const buffer_state = self.getCurrentBuffer();
-        const cursor_pos = cursor_pos_before_edit;
-        const now = getCurrentTimeMs();
-
-        // 連続挿入のコアレッシング: 直前の操作が連続する挿入ならマージ
-        // ただし、タイムアウト経過後は新しいundoグループを開始
-        if (buffer_state.undo_stack.items.len > 0) {
-            const last = &buffer_state.undo_stack.items[buffer_state.undo_stack.items.len - 1];
-            const time_diff: u64 = @intCast(@max(0, now - last.timestamp));
-            const within_timeout = time_diff < config.Editor.UNDO_COALESCE_TIMEOUT_MS;
-
-            if (within_timeout and last.op == .insert) {
-                const last_ins = last.op.insert;
-                // 直前の挿入の直後に続く挿入ならマージ
-                if (last_ins.pos + last_ins.text.len == pos) {
-                    const new_text = try std.mem.concat(self.allocator, u8, &[_][]const u8{ last_ins.text, text });
-                    errdefer self.allocator.free(new_text); // concat成功後の保護
-                    self.allocator.free(last_ins.text);
-                    last.op.insert.text = new_text;
-                    last.timestamp = now; // タイムスタンプ更新
-                    // cursor_posは最初の操作のものを保持
-                    return;
-                }
-            }
-        }
-
-        const text_copy = try self.allocator.dupe(u8, text);
-        try buffer_state.undo_stack.append(self.allocator, .{
-            .op = .{ .insert = .{ .pos = pos, .text = text_copy } },
-            .cursor_pos = cursor_pos,
-            .timestamp = now,
-        });
-
-        // Undoスタックが上限を超えたら古いエントリを削除
-        if (buffer_state.undo_stack.items.len > MAX_UNDO_ENTRIES) {
-            const old_entry = buffer_state.undo_stack.orderedRemove(0);
-            old_entry.deinit(self.allocator);
-            // save_pointを調整（古いエントリが削除されたので1減らす）
-            if (buffer_state.undo_save_point) |sp| {
-                buffer_state.undo_save_point = if (sp > 0) sp - 1 else null;
-            }
-        }
-
-        // Redoスタックをクリア
-        for (buffer_state.redo_stack.items) |*entry| {
-            entry.deinit(self.allocator);
-        }
-        buffer_state.redo_stack.clearRetainingCapacity();
+        try self.undo_manager.recordInsert(&buffer_state.undo, pos, text, cursor_pos_before_edit);
     }
 
     fn recordDelete(self: *Editor, pos: usize, text: []const u8, cursor_pos_before_edit: usize) !void {
         const buffer_state = self.getCurrentBuffer();
-        const cursor_pos = cursor_pos_before_edit;
-        const now = getCurrentTimeMs();
-
-        // 連続削除のコアレッシング: 直前の操作が連続する削除ならマージ
-        // ただし、タイムアウト経過後は新しいundoグループを開始
-        if (buffer_state.undo_stack.items.len > 0) {
-            const last = &buffer_state.undo_stack.items[buffer_state.undo_stack.items.len - 1];
-            const time_diff: u64 = @intCast(@max(0, now - last.timestamp));
-            const within_timeout = time_diff < config.Editor.UNDO_COALESCE_TIMEOUT_MS;
-
-            if (within_timeout and last.op == .delete) {
-                const last_del = last.op.delete;
-                // Backspace: 削除位置が前に移動（pos == last_pos - text.len）
-                if (pos + text.len == last_del.pos) {
-                    const new_text = try std.mem.concat(self.allocator, u8, &[_][]const u8{ text, last_del.text });
-                    errdefer self.allocator.free(new_text);
-                    self.allocator.free(last_del.text);
-                    last.op.delete.text = new_text;
-                    last.op.delete.pos = pos;
-                    last.timestamp = now; // タイムスタンプ更新
-                    // cursor_posは最初の操作のものを保持
-                    return;
-                }
-                // Delete: 削除位置が同じ（連続してpos位置で削除）
-                if (pos == last_del.pos) {
-                    const new_text = try std.mem.concat(self.allocator, u8, &[_][]const u8{ last_del.text, text });
-                    errdefer self.allocator.free(new_text);
-                    self.allocator.free(last_del.text);
-                    last.op.delete.text = new_text;
-                    last.timestamp = now; // タイムスタンプ更新
-                    // cursor_posは最初の操作のものを保持
-                    return;
-                }
-            }
-        }
-
-        const text_copy = try self.allocator.dupe(u8, text);
-        try buffer_state.undo_stack.append(self.allocator, .{
-            .op = .{ .delete = .{ .pos = pos, .text = text_copy } },
-            .cursor_pos = cursor_pos,
-            .timestamp = now,
-        });
-
-        // Undoスタックが上限を超えたら古いエントリを削除
-        if (buffer_state.undo_stack.items.len > MAX_UNDO_ENTRIES) {
-            const old_entry = buffer_state.undo_stack.orderedRemove(0);
-            old_entry.deinit(self.allocator);
-            // save_pointを調整（古いエントリが削除されたので1減らす）
-            if (buffer_state.undo_save_point) |sp| {
-                buffer_state.undo_save_point = if (sp > 0) sp - 1 else null;
-            }
-        }
-
-        // Redoスタックをクリア
-        for (buffer_state.redo_stack.items) |*entry| {
-            entry.deinit(self.allocator);
-        }
-        buffer_state.redo_stack.clearRetainingCapacity();
+        try self.undo_manager.recordDelete(&buffer_state.undo, pos, text, cursor_pos_before_edit);
     }
 
     /// 置換操作を記録（deleteとinsertを1つの原子的な操作として）
     fn recordReplace(self: *Editor, pos: usize, old_text: []const u8, new_text: []const u8, cursor_pos_before_edit: usize) !void {
         const buffer_state = self.getCurrentBuffer();
-        const now = getCurrentTimeMs();
-
-        const old_copy = try self.allocator.dupe(u8, old_text);
-        errdefer self.allocator.free(old_copy);
-        const new_copy = try self.allocator.dupe(u8, new_text);
-
-        try buffer_state.undo_stack.append(self.allocator, .{
-            .op = .{ .replace = .{ .pos = pos, .old_text = old_copy, .new_text = new_copy } },
-            .cursor_pos = cursor_pos_before_edit,
-            .timestamp = now,
-        });
-
-        // Undoスタックが上限を超えたら古いエントリを削除
-        if (buffer_state.undo_stack.items.len > MAX_UNDO_ENTRIES) {
-            const old_entry = buffer_state.undo_stack.orderedRemove(0);
-            old_entry.deinit(self.allocator);
-            // save_pointを調整（古いエントリが削除されたので1減らす）
-            if (buffer_state.undo_save_point) |sp| {
-                buffer_state.undo_save_point = if (sp > 0) sp - 1 else null;
-            }
-        }
-
-        // Redoスタックをクリア
-        for (buffer_state.redo_stack.items) |*entry| {
-            entry.deinit(self.allocator);
-        }
-        buffer_state.redo_stack.clearRetainingCapacity();
+        try self.undo_manager.recordReplace(&buffer_state.undo, pos, old_text, new_text, cursor_pos_before_edit);
     }
 
     fn undo(self: *Editor) !void {
         const buffer_state = self.getCurrentBuffer();
         const buffer = self.getCurrentBufferContent();
-        if (buffer_state.undo_stack.items.len == 0) return;
+        const current_cursor = self.getCurrentView().getCursorBufferPos();
 
-        const entry = buffer_state.undo_stack.pop() orelse return;
-        defer entry.deinit(self.allocator);
+        const result = try self.undo_manager.undo(&buffer_state.undo, current_cursor);
+        if (result == null) return;
 
-        const saved_cursor = entry.cursor_pos;
+        const undo_result = result.?;
 
-        // 逆操作を実行してredoスタックに保存
-        const now = getCurrentTimeMs();
-        switch (entry.op) {
+        // Bufferに操作を適用（テキストは使用後に解放）
+        switch (undo_result.action) {
             .insert => |ins| {
-                // insertの取り消し: deleteする
-                try buffer.delete(ins.pos, ins.text.len);
-                const text_copy = try self.allocator.dupe(u8, ins.text);
-                try buffer_state.redo_stack.append(self.allocator, .{
-                    .op = .{ .insert = .{ .pos = ins.pos, .text = text_copy } },
-                    .cursor_pos = self.getCurrentView().getCursorBufferPos(),
-                    .timestamp = now,
-                });
+                defer self.allocator.free(ins.text);
+                try buffer.insertSlice(ins.pos, ins.text);
             },
             .delete => |del| {
-                // deleteの取り消し: insertする
-                try buffer.insertSlice(del.pos, del.text);
-                const text_copy = try self.allocator.dupe(u8, del.text);
-                try buffer_state.redo_stack.append(self.allocator, .{
-                    .op = .{ .delete = .{ .pos = del.pos, .text = text_copy } },
-                    .cursor_pos = self.getCurrentView().getCursorBufferPos(),
-                    .timestamp = now,
-                });
+                try buffer.delete(del.pos, del.len);
             },
             .replace => |rep| {
-                // replaceの取り消し: new_textを削除してold_textを挿入
-                try buffer.delete(rep.pos, rep.new_text.len);
-                try buffer.insertSlice(rep.pos, rep.old_text);
-                const old_copy = try self.allocator.dupe(u8, rep.old_text);
-                const new_copy = try self.allocator.dupe(u8, rep.new_text);
-                try buffer_state.redo_stack.append(self.allocator, .{
-                    .op = .{ .replace = .{ .pos = rep.pos, .old_text = old_copy, .new_text = new_copy } },
-                    .cursor_pos = self.getCurrentView().getCursorBufferPos(),
-                    .timestamp = now,
-                });
+                defer self.allocator.free(rep.text);
+                try buffer.delete(rep.pos, rep.delete_len);
+                try buffer.insertSlice(rep.pos, rep.text);
             },
         }
 
@@ -1962,53 +1800,32 @@ pub const Editor = struct {
         self.getCurrentView().markFullRedraw();
 
         // カーソル位置を復元（保存された位置へ）
-        self.restoreCursorPos(saved_cursor);
+        self.restoreCursorPos(undo_result.cursor_pos);
     }
 
     fn redo(self: *Editor) !void {
         const buffer_state = self.getCurrentBuffer();
         const buffer = self.getCurrentBufferContent();
-        if (buffer_state.redo_stack.items.len == 0) return;
+        const current_cursor = self.getCurrentView().getCursorBufferPos();
 
-        const entry = buffer_state.redo_stack.pop() orelse return;
-        defer entry.deinit(self.allocator);
+        const result = try self.undo_manager.redo(&buffer_state.undo, current_cursor);
+        if (result == null) return;
 
-        const saved_cursor = entry.cursor_pos;
+        const redo_result = result.?;
 
-        // 逆操作を実行してundoスタックに保存
-        const now = getCurrentTimeMs();
-        switch (entry.op) {
+        // Bufferに操作を適用（テキストは使用後に解放）
+        switch (redo_result.action) {
             .insert => |ins| {
-                // redoのinsert: もう一度insertする
+                defer self.allocator.free(ins.text);
                 try buffer.insertSlice(ins.pos, ins.text);
-                const text_copy = try self.allocator.dupe(u8, ins.text);
-                try buffer_state.undo_stack.append(self.allocator, .{
-                    .op = .{ .insert = .{ .pos = ins.pos, .text = text_copy } },
-                    .cursor_pos = self.getCurrentView().getCursorBufferPos(),
-                    .timestamp = now,
-                });
             },
             .delete => |del| {
-                // redoのdelete: もう一度deleteする
-                try buffer.delete(del.pos, del.text.len);
-                const text_copy = try self.allocator.dupe(u8, del.text);
-                try buffer_state.undo_stack.append(self.allocator, .{
-                    .op = .{ .delete = .{ .pos = del.pos, .text = text_copy } },
-                    .cursor_pos = self.getCurrentView().getCursorBufferPos(),
-                    .timestamp = now,
-                });
+                try buffer.delete(del.pos, del.len);
             },
             .replace => |rep| {
-                // redoのreplace: もう一度old_textを削除してnew_textを挿入
-                try buffer.delete(rep.pos, rep.old_text.len);
-                try buffer.insertSlice(rep.pos, rep.new_text);
-                const old_copy = try self.allocator.dupe(u8, rep.old_text);
-                const new_copy = try self.allocator.dupe(u8, rep.new_text);
-                try buffer_state.undo_stack.append(self.allocator, .{
-                    .op = .{ .replace = .{ .pos = rep.pos, .old_text = old_copy, .new_text = new_copy } },
-                    .cursor_pos = self.getCurrentView().getCursorBufferPos(),
-                    .timestamp = now,
-                });
+                defer self.allocator.free(rep.text);
+                try buffer.delete(rep.pos, rep.delete_len);
+                try buffer.insertSlice(rep.pos, rep.text);
             },
         }
 
@@ -2019,7 +1836,7 @@ pub const Editor = struct {
         self.getCurrentView().markFullRedraw();
 
         // カーソル位置を復元（保存された位置へ）
-        self.restoreCursorPos(saved_cursor);
+        self.restoreCursorPos(redo_result.cursor_pos);
     }
 
     // バイト位置からカーソル座標を計算して設定（grapheme cluster考慮）
@@ -5267,15 +5084,7 @@ pub const Editor = struct {
         buffer_state.modified = false;
 
         // Undo/Redoスタックをクリア（リロード前の編集履歴は無効）
-        for (buffer_state.undo_stack.items) |*entry| {
-            entry.deinit(self.allocator);
-        }
-        buffer_state.undo_stack.clearRetainingCapacity();
-        for (buffer_state.redo_stack.items) |*entry| {
-            entry.deinit(self.allocator);
-        }
-        buffer_state.redo_stack.clearRetainingCapacity();
-        buffer_state.undo_save_point = 0;
+        buffer_state.undo.clear(self.allocator);
 
         // ファイルの最終更新時刻を記録
         const file = std.fs.cwd().openFile(filename, .{}) catch null;
