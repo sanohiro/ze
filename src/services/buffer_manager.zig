@@ -9,49 +9,68 @@
 // - ファイルとバッファの関連付け
 //
 // 【設計原則】
-// - バッファの内容操作はBufferStateが担当
+// - バッファの内容操作はEditingContextが担当
+// - BufferStateはファイル情報とEditingContextを保持
 // - BufferManagerは純粋にバッファのコレクション管理に集中
 // ============================================================================
 
 const std = @import("std");
 const Buffer = @import("../buffer.zig").Buffer;
 const UndoStack = @import("undo_manager.zig").UndoStack;
+const EditingContext = @import("../editing_context.zig").EditingContext;
 
 /// バッファ状態
+/// EditingContextを内包し、ファイル情報を追加する
 pub const BufferState = struct {
     id: usize, // バッファID（一意）
-    buffer: Buffer, // 実際のテキスト内容
+    editing_ctx: *EditingContext, // 編集コンテキスト（Buffer + cursor + undo + kill_ring）
     filename: ?[]const u8, // ファイル名（nullなら*scratch*）
-    modified: bool, // 変更フラグ
     readonly: bool, // 読み取り専用フラグ
     file_mtime: ?i128, // ファイルの最終更新時刻
-    undo: UndoStack, // Undo/Redoスタック
     allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator, id: usize) !*BufferState {
-        const self = try allocator.create(BufferState);
-        self.* = BufferState{
-            .id = id,
-            .buffer = try Buffer.init(allocator),
-            .filename = null,
-            .modified = false,
-            .readonly = false,
-            .file_mtime = null,
-            .undo = UndoStack.init(),
-            .allocator = allocator,
-        };
-        return self;
+    // === 後方互換性のためのプロパティアクセサ ===
+    // 段階的移行のため、従来のAPIを維持
+    // buffer フィールドはBufferへのポインタとして公開（getBuffer経由）
+
+    /// バッファへの直接アクセス（EditingContext経由）
+    pub fn getBuffer(self: *BufferState) *Buffer {
+        return self.editing_ctx.buffer;
     }
 
-    /// 現在の状態がディスク上のファイルと一致するかを判定
+    /// 従来のコードとの互換性のためにbufferフィールドとしてアクセス可能にする
+    /// 注意: これは段階的移行のためのブリッジであり、将来的には削除される
+    pub fn buffer(self: *BufferState) *Buffer {
+        return self.editing_ctx.buffer;
+    }
+
+    /// 変更フラグ（EditingContext経由）
     pub fn isModified(self: *const BufferState) bool {
-        return self.undo.isModified();
+        return self.editing_ctx.modified;
     }
 
     /// 現在の状態を保存済みとしてマーク
     pub fn markSaved(self: *BufferState) void {
-        self.undo.markSaved();
-        self.modified = false;
+        self.editing_ctx.modified = false;
+        // Undo履歴はクリアしない（将来的には保存位置をマーク）
+    }
+
+    pub fn init(allocator: std.mem.Allocator, id: usize) !*BufferState {
+        const self = try allocator.create(BufferState);
+        errdefer allocator.destroy(self);
+
+        const editing_ctx = try EditingContext.init(allocator);
+        errdefer editing_ctx.deinit();
+
+        self.* = BufferState{
+            .id = id,
+            .editing_ctx = editing_ctx,
+            .filename = null,
+            .readonly = false,
+            .file_mtime = null,
+            .allocator = allocator,
+        };
+        return self;
     }
 
     /// バッファ名を取得（ファイル名がなければ*scratch*）
@@ -72,11 +91,10 @@ pub const BufferState = struct {
     }
 
     pub fn deinit(self: *BufferState) void {
-        self.buffer.deinit();
+        self.editing_ctx.deinit();
         if (self.filename) |fname| {
             self.allocator.free(fname);
         }
-        self.undo.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 };
@@ -124,9 +142,14 @@ pub const BufferManager = struct {
         const buffer_state = try BufferState.init(self.allocator, buffer_id);
         errdefer buffer_state.deinit();
 
-        // ファイルをロード
-        buffer_state.buffer.deinit();
-        buffer_state.buffer = try Buffer.loadFromFile(self.allocator, path);
+        // ファイルをロード（EditingContext内のBufferを差し替え）
+        const old_buffer = buffer_state.editing_ctx.buffer;
+        old_buffer.deinit();
+        self.allocator.destroy(old_buffer);
+
+        const new_buffer = try self.allocator.create(Buffer);
+        new_buffer.* = try Buffer.loadFromFile(self.allocator, path);
+        buffer_state.editing_ctx.buffer = new_buffer;
 
         // ファイル名を設定
         buffer_state.filename = try self.allocator.dupe(u8, path);

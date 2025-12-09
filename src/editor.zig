@@ -40,9 +40,6 @@ const HistoryType = @import("history.zig").HistoryType;
 const unicode = @import("unicode.zig");
 
 // サービス
-const UndoManager = @import("services/undo_manager.zig").UndoManager;
-const UndoStack = @import("services/undo_manager.zig").UndoStack;
-const UndoEntry = @import("services/undo_manager.zig").UndoEntry;
 const MxCommands = @import("services/mx_commands.zig");
 const Minibuffer = @import("services/minibuffer.zig").Minibuffer;
 const SearchService = @import("services/search_service.zig").SearchService;
@@ -52,13 +49,7 @@ const BufferState = @import("services/buffer_manager.zig").BufferState;
 const WindowManager = @import("services/window_manager.zig").WindowManager;
 const Window = @import("services/window_manager.zig").Window;
 const SplitType = @import("services/window_manager.zig").SplitType;
-
-// ============================================================================
-// Undo/Redo システム - services/undo_manager.zig に移動済み
-// ============================================================================
-
-// EditOpとUndoEntryはundo_manager.zigからインポート
-const EditOp = @import("services/undo_manager.zig").EditOp;
+const EditingContext = @import("editing_context.zig").EditingContext;
 
 /// エディタの状態遷移を管理するモード
 ///
@@ -159,9 +150,6 @@ pub const Editor = struct {
     shell_service: ShellService, // シェルコマンド実行サービス（履歴含む）
     search_service: SearchService, // 検索サービス（履歴含む）
 
-    // Undo/Redoマネージャー
-    undo_manager: UndoManager,
-
     pub fn init(allocator: std.mem.Allocator) !Editor {
         // ターミナルを先に初期化（サイズ取得のため）
         const terminal = try Terminal.init(allocator);
@@ -175,7 +163,7 @@ pub const Editor = struct {
 
         // 最初のウィンドウを作成（全画面、ステータスバーはheight内に含む）
         var first_window = Window.init(0, 0, 0, 0, terminal.width, terminal.height);
-        first_window.view = try View.init(allocator, &first_buffer.buffer);
+        first_window.view = try View.init(allocator, first_buffer.editing_ctx.buffer);
         // 言語検出（新規バッファなのでデフォルト、ファイルオープン時にmain.zigで再検出される）
         first_window.view.detectLanguage(null, null);
         // ビューポートサイズを設定（カーソル移動の境界判定に使用）
@@ -209,7 +197,6 @@ pub const Editor = struct {
             .replace_match_count = 0,
             .shell_service = ShellService.init(allocator),
             .search_service = SearchService.init(allocator),
-            .undo_manager = UndoManager.init(allocator),
         };
 
         return editor;
@@ -297,7 +284,7 @@ pub const Editor = struct {
 
     /// 現在のバッファのBufferを取得
     pub fn getCurrentBufferContent(self: *Editor) *Buffer {
-        return &self.getCurrentBuffer().buffer;
+        return self.getCurrentBuffer().editing_ctx.buffer;
     }
 
     /// 読み取り専用チェック（編集前に呼ぶ）
@@ -810,9 +797,9 @@ pub const Editor = struct {
             cmd_height,
         );
 
-        new_window.view = try View.init(self.allocator, &cmd_buffer.buffer);
+        new_window.view = try View.init(self.allocator, cmd_buffer.editing_ctx.buffer);
         // 言語検出（*Command*バッファはプレーンテキストだが一貫性のため）
-        const content_preview = cmd_buffer.buffer.getContentPreview(512);
+        const content_preview = cmd_buffer.editing_ctx.buffer.getContentPreview(512);
         new_window.view.detectLanguage(cmd_buffer.filename, content_preview);
         // ビューポートサイズを設定
         new_window.view.setViewport(new_window.width, new_window.height);
@@ -827,7 +814,7 @@ pub const Editor = struct {
         const window = self.getCurrentWindow();
 
         // 新しいViewを先に作成（失敗時は古いViewを保持）
-        const new_view = try View.init(self.allocator, &buffer_state.buffer);
+        const new_view = try View.init(self.allocator, buffer_state.editing_ctx.buffer);
 
         // 新しいViewの作成に成功したら古いViewを破棄
         window.view.deinit(self.allocator);
@@ -835,7 +822,7 @@ pub const Editor = struct {
         window.buffer_id = buffer_id;
 
         // 言語検出（新しいViewに言語設定を適用）
-        const content_preview = buffer_state.buffer.getContentPreview(512);
+        const content_preview = buffer_state.editing_ctx.buffer.getContentPreview(512);
         window.view.detectLanguage(buffer_state.filename, content_preview);
         // ビューポートサイズを設定（ウィンドウサイズは変わらないが新しいViewに必要）
         window.view.setViewport(window.width, window.height);
@@ -856,10 +843,10 @@ pub const Editor = struct {
                         // len >= 2 が保証されているので、i==0 なら items[1] が、i>0 なら items[i-1] が存在
                         const next_buffer = if (i > 0) self.buffers.items[i - 1] else self.buffers.items[1];
                         window.view.deinit(self.allocator);
-                        window.view = try View.init(self.allocator, &next_buffer.buffer);
+                        window.view = try View.init(self.allocator, next_buffer.editing_ctx.buffer);
                         window.buffer_id = next_buffer.id;
                         // 言語検出（コメント強調・タブ幅など）
-                        const content_preview = next_buffer.buffer.getContentPreview(512);
+                        const content_preview = next_buffer.editing_ctx.buffer.getContentPreview(512);
                         window.view.detectLanguage(next_buffer.filename, content_preview);
                         // ビューポートサイズを設定
                         window.view.setViewport(window.width, window.height);
@@ -887,7 +874,7 @@ pub const Editor = struct {
 
         for (self.buffers.items) |buf| {
             // 変更フラグ
-            const mod_char: u8 = if (buf.modified) '*' else '.';
+            const mod_char: u8 = if (buf.editing_ctx.modified) '*' else '.';
             // 読み取り専用フラグ
             const ro_char: u8 = if (buf.readonly) '%' else '.';
 
@@ -895,7 +882,7 @@ pub const Editor = struct {
             const buf_name = if (buf.filename) |fname| fname else "*scratch*";
 
             // サイズ
-            const size = buf.buffer.total_len;
+            const size = buf.editing_ctx.buffer.total_len;
 
             // フォーマットして追加
             try std.fmt.format(writer, "  {c}{c} {s:<16} {d:>6}  {s}\n", .{
@@ -931,11 +918,11 @@ pub const Editor = struct {
         const buf = buffer_list.?; // ここでは必ず値が設定されている
 
         // バッファの内容をクリアして新しい一覧を挿入
-        if (buf.buffer.total_len > 0) {
-            try buf.buffer.delete(0, buf.buffer.total_len);
+        if (buf.editing_ctx.buffer.total_len > 0) {
+            try buf.editing_ctx.buffer.delete(0, buf.editing_ctx.buffer.total_len);
         }
-        try buf.buffer.insertSlice(0, list_text.items);
-        buf.modified = false; // バッファ一覧は変更扱いにしない
+        try buf.editing_ctx.buffer.insertSlice(0, list_text.items);
+        buf.editing_ctx.modified = false; // バッファ一覧は変更扱いにしない
 
         // バッファ一覧に切り替え
         try self.switchToBuffer(buf.id);
@@ -1052,7 +1039,7 @@ pub const Editor = struct {
         const buffer_state = self.findBufferById(current_window.buffer_id) orelse return error.BufferNotFound;
 
         // 新しいウィンドウのViewを先に初期化（失敗時は何も変更しない）
-        var new_view = try View.init(self.allocator, &buffer_state.buffer);
+        var new_view = try View.init(self.allocator, buffer_state.editing_ctx.buffer);
         errdefer new_view.deinit(self.allocator);
 
         // ここから先は失敗しない操作のみ
@@ -1078,7 +1065,7 @@ pub const Editor = struct {
         new_window.view = new_view;
 
         // 言語検出（新しいViewに言語設定を適用）
-        const content_preview = buffer_state.buffer.getContentPreview(512);
+        const content_preview = buffer_state.editing_ctx.buffer.getContentPreview(512);
         new_window.view.detectLanguage(buffer_state.filename, content_preview);
 
         // ビューポートサイズを設定（カーソル制約も行う）
@@ -1110,7 +1097,7 @@ pub const Editor = struct {
         const buffer_state = self.findBufferById(current_window.buffer_id) orelse return error.BufferNotFound;
 
         // 新しいウィンドウのViewを先に初期化（失敗時は何も変更しない）
-        var new_view = try View.init(self.allocator, &buffer_state.buffer);
+        var new_view = try View.init(self.allocator, buffer_state.editing_ctx.buffer);
         errdefer new_view.deinit(self.allocator);
 
         // ここから先は失敗しない操作のみ
@@ -1136,7 +1123,7 @@ pub const Editor = struct {
         new_window.view = new_view;
 
         // 言語検出（新しいViewに言語設定を適用）
-        const content_preview = buffer_state.buffer.getContentPreview(512);
+        const content_preview = buffer_state.editing_ctx.buffer.getContentPreview(512);
         new_window.view.detectLanguage(buffer_state.filename, content_preview);
 
         // ビューポートサイズを設定（カーソル制約も行う）
@@ -1221,10 +1208,10 @@ pub const Editor = struct {
 
         // ここから先は失敗しない操作のみ
 
-        // 古いバッファを解放
-        buffer_state.buffer.deinit();
-        buffer_state.buffer = new_buffer;
-        view.buffer = &buffer_state.buffer;
+        // 古いバッファの内容を解放して新しい内容で上書き
+        buffer_state.editing_ctx.buffer.deinit();
+        buffer_state.editing_ctx.buffer.* = new_buffer;
+        // viewは同じバッファポインタを参照しているのでそのまま
 
         // View状態をリセット（新しいファイルを開いた時に前のカーソル位置が残らないように）
         view.top_line = 0;
@@ -1239,11 +1226,11 @@ pub const Editor = struct {
         buffer_state.filename = new_filename;
 
         // Undo/Redoスタックをクリア
-        buffer_state.undo.clear(self.allocator);
-        buffer_state.modified = false;
+        buffer_state.editing_ctx.clearUndoHistory();
+        buffer_state.editing_ctx.modified = false;
 
         // 言語検出（ファイル名とコンテンツ先頭から判定）
-        const content_preview = buffer_state.buffer.getContentPreview(512);
+        const content_preview = buffer_state.editing_ctx.buffer.getContentPreview(512);
         view.detectLanguage(path, content_preview);
 
         // ファイルの最終更新時刻を記録（外部変更検知用）
@@ -1287,7 +1274,7 @@ pub const Editor = struct {
                 }
             }
 
-            try buffer_state.buffer.saveToFile(path);
+            try buffer_state.editing_ctx.buffer.saveToFile(path);
             buffer_state.markSaved(); // 保存時点を記録
 
             // 保存後に新しい mtime を記録
@@ -1311,7 +1298,7 @@ pub const Editor = struct {
         for (self.windows.items, 0..) |*window, idx| {
             const is_active = (idx == self.current_window_idx);
             const buffer_state = self.findBufferById(window.buffer_id) orelse continue;
-            const buffer = &buffer_state.buffer;
+            const buffer = buffer_state.editing_ctx.buffer;
 
             try window.view.renderInBounds(
                 &self.terminal,
@@ -1320,7 +1307,7 @@ pub const Editor = struct {
                 window.width,
                 window.height,
                 is_active,
-                buffer_state.modified,
+                buffer_state.editing_ctx.modified,
                 buffer_state.readonly,
                 buffer.detected_line_ending,
                 buffer.detected_encoding,
@@ -1569,93 +1556,47 @@ pub const Editor = struct {
         }
     }
 
-    // 編集操作を記録（UndoManagerに委譲）
+    // 編集操作を記録（EditingContextに委譲）
     fn recordInsert(self: *Editor, pos: usize, text: []const u8, cursor_pos_before_edit: usize) !void {
         const buffer_state = self.getCurrentBuffer();
-        try self.undo_manager.recordInsert(&buffer_state.undo, pos, text, cursor_pos_before_edit);
+        try buffer_state.editing_ctx.recordInsertOp(pos, text, cursor_pos_before_edit);
     }
 
     fn recordDelete(self: *Editor, pos: usize, text: []const u8, cursor_pos_before_edit: usize) !void {
         const buffer_state = self.getCurrentBuffer();
-        try self.undo_manager.recordDelete(&buffer_state.undo, pos, text, cursor_pos_before_edit);
+        try buffer_state.editing_ctx.recordDeleteOp(pos, text, cursor_pos_before_edit);
     }
 
     /// 置換操作を記録（deleteとinsertを1つの原子的な操作として）
     fn recordReplace(self: *Editor, pos: usize, old_text: []const u8, new_text: []const u8, cursor_pos_before_edit: usize) !void {
         const buffer_state = self.getCurrentBuffer();
-        try self.undo_manager.recordReplace(&buffer_state.undo, pos, old_text, new_text, cursor_pos_before_edit);
+        try buffer_state.editing_ctx.recordReplaceOp(pos, old_text, new_text, cursor_pos_before_edit);
     }
 
     fn undo(self: *Editor) !void {
         const buffer_state = self.getCurrentBuffer();
-        const buffer = self.getCurrentBufferContent();
-        const current_cursor = self.getCurrentView().getCursorBufferPos();
 
-        const result = try self.undo_manager.undo(&buffer_state.undo, current_cursor);
+        const result = try buffer_state.editing_ctx.undoWithCursor();
         if (result == null) return;
-
-        const undo_result = result.?;
-
-        // Bufferに操作を適用（テキストは使用後に解放）
-        switch (undo_result.action) {
-            .insert => |ins| {
-                defer self.allocator.free(ins.text);
-                try buffer.insertSlice(ins.pos, ins.text);
-            },
-            .delete => |del| {
-                try buffer.delete(del.pos, del.len);
-            },
-            .replace => |rep| {
-                defer self.allocator.free(rep.text);
-                try buffer.delete(rep.pos, rep.delete_len);
-                try buffer.insertSlice(rep.pos, rep.text);
-            },
-        }
-
-        // 保存時点と現在のスタック深さを比較してmodifiedを更新
-        buffer_state.modified = buffer_state.isModified();
 
         // 画面全体を再描画
         self.getCurrentView().markFullRedraw();
 
         // カーソル位置を復元（保存された位置へ）
-        self.restoreCursorPos(undo_result.cursor_pos);
+        self.restoreCursorPos(result.?.cursor_pos);
     }
 
     fn redo(self: *Editor) !void {
         const buffer_state = self.getCurrentBuffer();
-        const buffer = self.getCurrentBufferContent();
-        const current_cursor = self.getCurrentView().getCursorBufferPos();
 
-        const result = try self.undo_manager.redo(&buffer_state.undo, current_cursor);
+        const result = try buffer_state.editing_ctx.redoWithCursor();
         if (result == null) return;
-
-        const redo_result = result.?;
-
-        // Bufferに操作を適用（テキストは使用後に解放）
-        switch (redo_result.action) {
-            .insert => |ins| {
-                defer self.allocator.free(ins.text);
-                try buffer.insertSlice(ins.pos, ins.text);
-            },
-            .delete => |del| {
-                try buffer.delete(del.pos, del.len);
-            },
-            .replace => |rep| {
-                defer self.allocator.free(rep.text);
-                try buffer.delete(rep.pos, rep.delete_len);
-                try buffer.insertSlice(rep.pos, rep.text);
-            },
-        }
-
-        // 保存時点と現在のスタック深さを比較してmodifiedを更新
-        buffer_state.modified = buffer_state.isModified();
 
         // 画面全体を再描画
         self.getCurrentView().markFullRedraw();
 
         // カーソル位置を復元（保存された位置へ）
-        self.restoreCursorPos(redo_result.cursor_pos);
+        self.restoreCursorPos(result.?.cursor_pos);
     }
 
     // バイト位置からカーソル座標を計算して設定（grapheme cluster考慮）
@@ -1809,10 +1750,10 @@ pub const Editor = struct {
                             }
                         };
 
-                        new_buffer.buffer.deinit();
-                        new_buffer.buffer = loaded_buffer;
+                        new_buffer.editing_ctx.buffer.deinit();
+                        new_buffer.editing_ctx.buffer.* = loaded_buffer;
                         new_buffer.filename = filename_copy;
-                        new_buffer.modified = false;
+                        new_buffer.editing_ctx.modified = false;
 
                         const file = std.fs.cwd().openFile(filename_copy, .{}) catch null;
                         if (file) |f| {
@@ -1975,7 +1916,7 @@ pub const Editor = struct {
                         var modified_count: usize = 0;
                         var first_modified_name: ?[]const u8 = null;
                         for (self.buffers.items) |buf| {
-                            if (buf.modified) {
+                            if (buf.editing_ctx.modified) {
                                 modified_count += 1;
                                 if (first_modified_name == null) {
                                     first_modified_name = buf.filename;
@@ -2012,7 +1953,7 @@ pub const Editor = struct {
                     },
                     'k' => {
                         const buffer_state = self.getCurrentBuffer();
-                        if (buffer_state.modified) {
+                        if (buffer_state.editing_ctx.modified) {
                             const name = buffer_state.filename orelse "*scratch*";
                             self.setPrompt("Buffer {s} modified; kill anyway? (y/n): ", .{name});
                             self.mode = .kill_buffer_confirm;
@@ -2566,7 +2507,7 @@ pub const Editor = struct {
         try buffer.insertSlice(pos, buf[0..len]);
         errdefer buffer.delete(pos, len) catch unreachable; // rollback失敗は致命的
         try self.recordInsert(pos, buf[0..len], pos); // 編集前のカーソル位置を記録
-        buffer_state.modified = true;
+        buffer_state.editing_ctx.modified = true;
 
         if (codepoint == '\n') {
             // 改行処理
@@ -2628,7 +2569,7 @@ pub const Editor = struct {
             errdefer buffer.insertSlice(pos, deleted) catch unreachable; // rollback失敗は致命的
             try self.recordDelete(pos, deleted, pos); // 編集前のカーソル位置を記録
 
-            buffer_state.modified = true;
+            buffer_state.editing_ctx.modified = true;
             // 改行削除の場合は末尾まで再描画
             if (std.mem.indexOf(u8, deleted, "\n") != null) {
                 self.getCurrentView().markDirty(current_line, null);
@@ -2647,7 +2588,7 @@ pub const Editor = struct {
             errdefer buffer.insertSlice(pos, deleted) catch unreachable; // rollback失敗は致命的
             try self.recordDelete(pos, deleted, pos); // 編集前のカーソル位置を記録
 
-            buffer_state.modified = true;
+            buffer_state.editing_ctx.modified = true;
             // 改行削除の場合は末尾まで再描画
             if (std.mem.indexOf(u8, deleted, "\n") != null) {
                 self.getCurrentView().markDirty(current_line, null);
@@ -2696,7 +2637,7 @@ pub const Editor = struct {
         errdefer buffer.insertSlice(char_start, deleted) catch unreachable; // rollback失敗は致命的
         try self.recordDelete(char_start, deleted, pos); // 編集前のカーソル位置を記録
 
-        buffer_state.modified = true;
+        buffer_state.editing_ctx.modified = true;
         // 改行削除の場合は末尾まで再描画
         if (is_newline) {
             self.getCurrentView().markDirty(current_line, null);
@@ -2766,7 +2707,7 @@ pub const Editor = struct {
             errdefer buffer.insertSlice(pos, deleted) catch unreachable; // rollback失敗は致命的
             try self.recordDelete(pos, deleted, pos); // 編集前のカーソル位置を記録
 
-            buffer_state.modified = true;
+            buffer_state.editing_ctx.modified = true;
             // 改行削除の場合は末尾まで再描画
             if (std.mem.indexOf(u8, deleted, "\n") != null) {
                 self.getCurrentView().markDirty(current_line, null);
@@ -2837,7 +2778,7 @@ pub const Editor = struct {
                 try self.recordInsert(delete_start, " ", view.getCursorBufferPos());
             }
 
-            buffer_state.modified = true;
+            buffer_state.editing_ctx.modified = true;
             view.markDirty(current_line - 1, null);
 
             // カーソルを結合位置に移動
@@ -2887,7 +2828,7 @@ pub const Editor = struct {
         try buffer.insertSlice(insert_pos, to_insert);
         try self.recordInsert(insert_pos, to_insert, view.getCursorBufferPos());
 
-        buffer_state.modified = true;
+        buffer_state.editing_ctx.modified = true;
         view.markDirty(current_line, null);
 
         // カーソルを複製した行に移動
@@ -2926,7 +2867,7 @@ pub const Editor = struct {
         try self.recordDelete(line_start, line_content, view.getCursorBufferPos());
         try self.recordInsert(prev_line_start, line_content, view.getCursorBufferPos());
 
-        buffer_state.modified = true;
+        buffer_state.editing_ctx.modified = true;
         view.markDirty(current_line - 1, null);
 
         // カーソルを移動した行に合わせる
@@ -2967,7 +2908,7 @@ pub const Editor = struct {
         try self.recordDelete(line_start, line_content, view.getCursorBufferPos());
         try self.recordInsert(new_insert_pos, line_content, view.getCursorBufferPos());
 
-        buffer_state.modified = true;
+        buffer_state.editing_ctx.modified = true;
         view.markDirty(current_line, null);
 
         // カーソルを移動した行に合わせる
@@ -3090,7 +3031,7 @@ pub const Editor = struct {
             try self.recordInsert(line_start, indent_str, view.getCursorBufferPos());
         }
 
-        buffer_state.modified = true;
+        buffer_state.editing_ctx.modified = true;
         view.markDirty(start_line, end_line);
 
         // マークをクリア
@@ -3168,7 +3109,7 @@ pub const Editor = struct {
         }
 
         if (any_modified) {
-            buffer_state.modified = true;
+            buffer_state.editing_ctx.modified = true;
             view.markDirty(start_line, end_line);
         }
 
@@ -3234,7 +3175,7 @@ pub const Editor = struct {
             try self.recordInsert(line_start, comment_str, view.getCursorBufferPos());
         }
 
-        buffer_state.modified = true;
+        buffer_state.editing_ctx.modified = true;
         view.markDirty(current_line, current_line);
 
         // マークをクリア
@@ -3333,7 +3274,7 @@ pub const Editor = struct {
         // kill_ringに保存（extractTextと同じデータなので、新たにdupeせずそのまま使う）
         self.kill_ring = deleted;
 
-        buffer_state.modified = true;
+        buffer_state.editing_ctx.modified = true;
 
         // カーソルを範囲の開始位置に移動
         self.setCursorToPos(region.start);
@@ -3369,7 +3310,7 @@ pub const Editor = struct {
         errdefer buffer.delete(pos, text.len) catch unreachable;
         try self.recordInsert(pos, text, pos);
 
-        buffer_state.modified = true;
+        buffer_state.editing_ctx.modified = true;
 
         // カーソルを挿入後の位置に移動
         self.setCursorToPos(pos + text.len);
@@ -3587,7 +3528,7 @@ pub const Editor = struct {
         }
 
         const buffer_state = self.getCurrentBuffer();
-        buffer_state.modified = true;
+        buffer_state.editing_ctx.modified = true;
         self.getCurrentView().setError("Rectangle yanked");
     }
 
@@ -3665,7 +3606,7 @@ pub const Editor = struct {
         // 原子的な置換操作として記録（1回のundoで元に戻る）
         try self.recordReplace(match_pos, old_text, replacement, cursor_pos_before);
 
-        buffer_state.modified = true;
+        buffer_state.editing_ctx.modified = true;
         self.replace_match_count += 1;
 
         // カーソルを置換後の位置に移動
@@ -3826,7 +3767,7 @@ pub const Editor = struct {
             try buffer.delete(start_pos, delete_len);
             try self.recordDelete(start_pos, deleted_text, start_pos);
 
-            buffer_state.modified = true;
+            buffer_state.editing_ctx.modified = true;
             self.getCurrentView().markFullRedraw();
         }
     }
@@ -4159,12 +4100,12 @@ pub const Editor = struct {
                 const cmd_buffer = try self.getOrCreateCommandBuffer();
 
                 // バッファをクリアして新しい内容を設定
-                if (cmd_buffer.buffer.total_len > 0) {
-                    cmd_buffer.buffer.delete(0, cmd_buffer.buffer.total_len) catch {};
+                if (cmd_buffer.editing_ctx.buffer.total_len > 0) {
+                    cmd_buffer.editing_ctx.buffer.delete(0, cmd_buffer.editing_ctx.buffer.total_len) catch {};
                 }
 
                 // 出力を挿入
-                cmd_buffer.buffer.insertSlice(0, output) catch {};
+                cmd_buffer.editing_ctx.buffer.insertSlice(0, output) catch {};
 
                 // *Command* バッファがどこかのウィンドウに表示されているか確認
                 var cmd_window_idx: ?usize = null;
@@ -4186,7 +4127,7 @@ pub const Editor = struct {
                     // 表示されていない：ウィンドウを分割して下に *Command* を表示
                     const new_win_idx = try self.openCommandBufferWindow();
                     // 新しいウィンドウのビューを更新（バッファが更新されているため）
-                    self.windows.items[new_win_idx].view.buffer = &cmd_buffer.buffer;
+                    self.windows.items[new_win_idx].view.buffer = cmd_buffer.editing_ctx.buffer;
                     self.windows.items[new_win_idx].view.markFullRedraw();
                     self.windows.items[new_win_idx].view.cursor_x = 0;
                     self.windows.items[new_win_idx].view.cursor_y = 0;
@@ -4232,7 +4173,7 @@ pub const Editor = struct {
                                     try buf.insertSlice(start, stdout);
                                     try self.recordInsert(start, stdout, start);
                                 }
-                                self.getCurrentBuffer().modified = true;
+                                self.getCurrentBuffer().editing_ctx.modified = true;
                                 self.setCursorToPos(start);
                                 self.windows.items[self.current_window_idx].mark_pos = null; // マークをクリア
                                 self.getCurrentView().markDirty(0, null);
@@ -4255,7 +4196,7 @@ pub const Editor = struct {
                             try buf.insertSlice(0, stdout);
                             try self.recordInsert(0, stdout, 0);
                         }
-                        self.getCurrentBuffer().modified = true;
+                        self.getCurrentBuffer().editing_ctx.modified = true;
                         self.setCursorToPos(0);
                         self.getCurrentView().markDirty(0, null);
                     },
@@ -4276,7 +4217,7 @@ pub const Editor = struct {
                             try buf.insertSlice(line_start, stdout);
                             try self.recordInsert(line_start, stdout, line_start);
                         }
-                        self.getCurrentBuffer().modified = true;
+                        self.getCurrentBuffer().editing_ctx.modified = true;
                         self.setCursorToPos(line_start);
                         self.getCurrentView().markDirty(line_num, null);
                     },
@@ -4289,7 +4230,7 @@ pub const Editor = struct {
                     const buf = self.getCurrentBufferContent();
                     try buf.insertSlice(pos, stdout);
                     try self.recordInsert(pos, stdout, pos);
-                    self.getCurrentBuffer().modified = true;
+                    self.getCurrentBuffer().editing_ctx.modified = true;
                     self.getCurrentView().markDirty(0, null);
                 }
             },
@@ -4297,12 +4238,12 @@ pub const Editor = struct {
                 // 新規バッファに出力
                 if (stdout.len > 0) {
                     const new_buffer = try self.createNewBuffer();
-                    try new_buffer.buffer.insertSlice(0, stdout);
+                    try new_buffer.editing_ctx.buffer.insertSlice(0, stdout);
                     new_buffer.filename = try self.allocator.dupe(u8, "*shell output*");
                     try self.switchToBuffer(new_buffer.id);
                 } else if (stderr.len > 0) {
                     const new_buffer = try self.createNewBuffer();
-                    try new_buffer.buffer.insertSlice(0, stderr);
+                    try new_buffer.editing_ctx.buffer.insertSlice(0, stderr);
                     new_buffer.filename = try self.allocator.dupe(u8, "*shell error*");
                     try self.switchToBuffer(new_buffer.id);
                 }
@@ -4473,7 +4414,7 @@ pub const Editor = struct {
             self.getCurrentView().setError("No file to revert");
             return;
         }
-        if (buffer_state.modified) {
+        if (buffer_state.editing_ctx.modified) {
             self.getCurrentView().setError("Buffer modified. Save first or use C-x k");
             return;
         }
@@ -4487,12 +4428,12 @@ pub const Editor = struct {
         };
 
         // 古いバッファを解放して新しいバッファに置き換え
-        buffer_state.buffer.deinit();
-        buffer_state.buffer = loaded_buffer;
-        buffer_state.modified = false;
+        buffer_state.editing_ctx.buffer.deinit();
+        buffer_state.editing_ctx.buffer.* = loaded_buffer;
+        buffer_state.editing_ctx.modified = false;
 
         // Undo/Redoスタックをクリア（リロード前の編集履歴は無効）
-        buffer_state.undo.clear(self.allocator);
+        buffer_state.editing_ctx.clearUndoHistory();
 
         // ファイルの最終更新時刻を記録
         const file = std.fs.cwd().openFile(filename, .{}) catch null;
@@ -4505,10 +4446,10 @@ pub const Editor = struct {
         }
 
         // Viewのバッファ参照を更新
-        self.getCurrentView().buffer = &buffer_state.buffer;
+        self.getCurrentView().buffer = buffer_state.editing_ctx.buffer;
 
         // 言語検出を再実行（ファイル内容が変わった可能性があるため）
-        const content_preview = buffer_state.buffer.getContentPreview(512);
+        const content_preview = buffer_state.editing_ctx.buffer.getContentPreview(512);
         self.getCurrentView().detectLanguage(buffer_state.filename, content_preview);
 
         // カーソルを先頭に
