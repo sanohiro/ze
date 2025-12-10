@@ -40,7 +40,6 @@ const HistoryType = @import("history.zig").HistoryType;
 const unicode = @import("unicode.zig");
 
 // サービス
-const MxCommands = @import("services/mx_commands.zig");
 const Minibuffer = @import("services/minibuffer.zig").Minibuffer;
 const SearchService = @import("services/search_service.zig").SearchService;
 const ShellService = @import("services/shell_service.zig").ShellService;

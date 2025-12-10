@@ -45,6 +45,7 @@ pub const SearchService = struct {
     allocator: std.mem.Allocator,
     history: History,
     compiled_regex: ?regex.Regex,
+    cached_pattern: ?[]const u8, // キャッシュされたパターン文字列
 
     const Self = @This();
 
@@ -55,6 +56,7 @@ pub const SearchService = struct {
             .allocator = allocator,
             .history = history,
             .compiled_regex = null,
+            .cached_pattern = null,
         };
     }
 
@@ -64,6 +66,42 @@ pub const SearchService = struct {
         if (self.compiled_regex) |*r| {
             r.deinit();
         }
+        if (self.cached_pattern) |p| {
+            self.allocator.free(p);
+        }
+    }
+
+    /// キャッシュされた正規表現を取得（必要に応じてコンパイル）
+    fn getCompiledRegex(self: *Self, pattern: []const u8) ?*regex.Regex {
+        // キャッシュヒット判定
+        if (self.cached_pattern) |cached| {
+            if (std.mem.eql(u8, cached, pattern)) {
+                // 同じパターン - キャッシュを再利用
+                if (self.compiled_regex) |*r| {
+                    return r;
+                }
+            }
+        }
+
+        // キャッシュミス - 再コンパイル
+        if (self.compiled_regex) |*r| {
+            r.deinit();
+            self.compiled_regex = null;
+        }
+        if (self.cached_pattern) |p| {
+            self.allocator.free(p);
+            self.cached_pattern = null;
+        }
+
+        self.compiled_regex = regex.Regex.compile(self.allocator, pattern) catch return null;
+        self.cached_pattern = self.allocator.dupe(u8, pattern) catch {
+            if (self.compiled_regex) |*r| {
+                r.deinit();
+                self.compiled_regex = null;
+            }
+            return null;
+        };
+        return &self.compiled_regex.?;
     }
 
     /// リテラル検索（前方）
@@ -121,16 +159,9 @@ pub const SearchService = struct {
         return null;
     }
 
-    /// 正規表現検索（前方）
+    /// 正規表現検索（前方）- キャッシュを使用
     pub fn searchRegexForward(self: *Self, content: []const u8, pattern: []const u8, start_pos: usize) ?SearchMatch {
-        // 正規表現をコンパイル
-        if (self.compiled_regex) |*r| {
-            r.deinit();
-            self.compiled_regex = null;
-        }
-
-        self.compiled_regex = regex.Regex.compile(self.allocator, pattern) catch return null;
-        const re = &self.compiled_regex.?;
+        const re = self.getCompiledRegex(pattern) orelse return null;
 
         // 前方検索
         if (re.search(content, start_pos)) |match| {
@@ -155,16 +186,9 @@ pub const SearchService = struct {
         return null;
     }
 
-    /// 正規表現検索（後方）
+    /// 正規表現検索（後方）- キャッシュを使用
     pub fn searchRegexBackward(self: *Self, content: []const u8, pattern: []const u8, start_pos: usize) ?SearchMatch {
-        // 正規表現をコンパイル
-        if (self.compiled_regex) |*r| {
-            r.deinit();
-            self.compiled_regex = null;
-        }
-
-        self.compiled_regex = regex.Regex.compile(self.allocator, pattern) catch return null;
-        const re = &self.compiled_regex.?;
+        const re = self.getCompiledRegex(pattern) orelse return null;
 
         // 後方検索
         if (re.searchBackward(content, start_pos)) |match| {
@@ -331,4 +355,32 @@ test "SearchService - isRegexPattern" {
     try std.testing.expect(SearchService.isRegexPattern("world$"));
     try std.testing.expect(!SearchService.isRegexPattern("hello"));
     try std.testing.expect(!SearchService.isRegexPattern("world"));
+}
+
+test "SearchService - regex cache" {
+    const allocator = std.testing.allocator;
+    var service = SearchService.init(allocator);
+    defer service.deinit();
+
+    const content = "test123 foo456 bar789";
+
+    // 最初の検索でキャッシュ作成
+    const result1 = service.searchRegexForward(content, "\\d+", 0);
+    try std.testing.expect(result1 != null);
+    try std.testing.expectEqual(@as(usize, 4), result1.?.start);
+    try std.testing.expectEqual(@as(usize, 3), result1.?.len);
+
+    // キャッシュがあることを確認
+    try std.testing.expect(service.cached_pattern != null);
+    try std.testing.expectEqualStrings("\\d+", service.cached_pattern.?);
+
+    // 同じパターンで2番目のマッチを検索（キャッシュを使用）
+    const result2 = service.searchRegexForward(content, "\\d+", 7);
+    try std.testing.expect(result2 != null);
+    try std.testing.expectEqual(@as(usize, 10), result2.?.start);
+
+    // パターンが変わるとキャッシュが更新される
+    const result3 = service.searchRegexForward(content, "[a-z]+", 0);
+    try std.testing.expect(result3 != null);
+    try std.testing.expectEqualStrings("[a-z]+", service.cached_pattern.?);
 }
