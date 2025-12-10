@@ -363,6 +363,30 @@ pub const Editor = struct {
         self.getCurrentView().markFullRedraw();
     }
 
+    /// インクリメンタルサーチを開始（C-s / C-r）
+    fn startIsearch(self: *Editor, forward: bool) !void {
+        if (self.last_search) |search_str| {
+            // 前回の検索パターンがあれば、それで検索を実行
+            self.minibuffer.setContent(search_str) catch {};
+            self.getCurrentView().setSearchHighlight(search_str);
+            try self.performSearch(forward, true);
+            self.getCurrentView().clearError();
+            self.getCurrentView().markFullRedraw();
+        } else {
+            // 新規検索モードに入る
+            self.mode = if (forward) .isearch_forward else .isearch_backward;
+            self.search_start_pos = self.getCurrentView().getCursorBufferPos();
+            self.clearInputBuffer();
+            if (forward) {
+                self.prompt_prefix_len = 11;
+                self.getCurrentView().setError("I-search: ");
+            } else {
+                self.prompt_prefix_len = 20;
+                self.getCurrentView().setError("I-search backward: ");
+            }
+        }
+    }
+
     /// バッファ閉じる確認モードの文字処理
     fn handleKillBufferConfirmChar(self: *Editor, cp: u21) void {
         const c = unicode.toAsciiChar(cp);
@@ -407,61 +431,47 @@ pub const Editor = struct {
         }
     }
 
+    /// 置換完了メッセージを表示してノーマルモードに戻る
+    fn finishReplace(self: *Editor) void {
+        self.mode = .normal;
+        var msg_buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace done";
+        self.getCurrentView().setError(msg);
+    }
+
+    /// 次のマッチを検索し、見つかればプロンプトを表示、なければ完了
+    fn findNextOrFinish(self: *Editor, search: []const u8, start_pos: usize) !void {
+        const found = try self.findNextMatch(search, start_pos);
+        if (!found) {
+            self.finishReplace();
+        } else {
+            self.getCurrentView().setError("Replace? (y)es (n)ext (!)all (q)uit");
+        }
+    }
+
     /// 置換確認モードの文字処理
     fn handleReplaceConfirmChar(self: *Editor, cp: u21) !void {
         const c = unicode.toAsciiChar(cp);
+        const search = self.replace_search orelse {
+            self.mode = .normal;
+            self.getCurrentView().setError("Error: no search string");
+            return;
+        };
+
         switch (c) {
             'y', 'Y' => {
                 // この箇所を置換して次へ
                 try self.replaceCurrentMatch();
-                const search = self.replace_search orelse {
-                    self.mode = .normal;
-                    self.getCurrentView().setError("Error: no search string");
-                    return;
-                };
-                // 次の一致を検索
-                const found = try self.findNextMatch(search, self.getCurrentView().getCursorBufferPos());
-                if (!found) {
-                    // これ以上一致がない
-                    self.mode = .normal;
-                    var msg_buf: [128]u8 = undefined;
-                    const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace done";
-                    self.getCurrentView().setError(msg);
-                } else {
-                    // 次のマッチが見つかった - 確認プロンプトを表示
-                    self.getCurrentView().setError("Replace? (y)es (n)ext (!)all (q)uit");
-                }
+                try self.findNextOrFinish(search, self.getCurrentView().getCursorBufferPos());
             },
             'n', 'N', ' ' => {
                 // スキップして次へ
-                const search = self.replace_search orelse {
-                    self.mode = .normal;
-                    self.getCurrentView().setError("Error: no search string");
-                    return;
-                };
-                // 現在の一致をスキップ（カーソルを一致の後ろに移動）
                 const current_pos = self.getCurrentView().getCursorBufferPos();
-                const found = try self.findNextMatch(search, current_pos + 1);
-                if (!found) {
-                    // これ以上一致がない
-                    self.mode = .normal;
-                    var msg_buf: [128]u8 = undefined;
-                    const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace done";
-                    self.getCurrentView().setError(msg);
-                } else {
-                    // 次のマッチが見つかった - 確認プロンプトを表示
-                    self.getCurrentView().setError("Replace? (y)es (n)ext (!)all (q)uit");
-                }
+                try self.findNextOrFinish(search, current_pos + 1);
             },
             '!' => {
                 // 残りすべてを置換
                 try self.replaceCurrentMatch();
-                const search = self.replace_search orelse {
-                    self.mode = .normal;
-                    self.getCurrentView().setError("Error: no search string");
-                    return;
-                };
-                // 残りすべてを置換
                 var pos = self.getCurrentView().getCursorBufferPos();
                 while (true) {
                     const found = try self.findNextMatch(search, pos);
@@ -469,17 +479,11 @@ pub const Editor = struct {
                     try self.replaceCurrentMatch();
                     pos = self.getCurrentView().getCursorBufferPos();
                 }
-                self.mode = .normal;
-                var msg_buf: [128]u8 = undefined;
-                const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace done";
-                self.getCurrentView().setError(msg);
+                self.finishReplace();
             },
             'q', 'Q' => {
                 // 終了
-                self.mode = .normal;
-                var msg_buf: [128]u8 = undefined;
-                const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace cancelled";
-                self.getCurrentView().setError(msg);
+                self.finishReplace();
             },
             else => {
                 // 無効な入力
@@ -1030,8 +1034,8 @@ pub const Editor = struct {
         self.getCurrentView().setError("Buffer not found");
     }
 
-    /// 現在のウィンドウを横（上下）に分割
-    pub fn splitWindowHorizontally(self: *Editor) !void {
+    /// ウィンドウ分割の共通処理
+    fn splitWindowCommon(self: *Editor, comptime is_horizontal: bool) !void {
         const current_window = self.window_manager.getCurrentWindow();
 
         // バッファを取得
@@ -1042,7 +1046,10 @@ pub const Editor = struct {
         errdefer new_view.deinit(self.allocator);
 
         // WindowManagerで分割（ウィンドウのサイズ調整とリスト追加）
-        const result = try self.window_manager.splitHorizontally();
+        const result = if (is_horizontal)
+            try self.window_manager.splitHorizontally()
+        else
+            try self.window_manager.splitVertically();
 
         // 新しいウィンドウにViewを設定
         result.new_window.view = new_view;
@@ -1060,34 +1067,14 @@ pub const Editor = struct {
         self.window_manager.setActiveWindow(result.new_window_idx);
     }
 
+    /// 現在のウィンドウを横（上下）に分割
+    pub fn splitWindowHorizontally(self: *Editor) !void {
+        return self.splitWindowCommon(true);
+    }
+
     /// 現在のウィンドウを縦（左右）に分割
     pub fn splitWindowVertically(self: *Editor) !void {
-        const current_window = self.window_manager.getCurrentWindow();
-
-        // バッファを取得
-        const buffer_state = self.findBufferById(current_window.buffer_id) orelse return error.BufferNotFound;
-
-        // 新しいウィンドウのViewを先に初期化（失敗時は何も変更しない）
-        var new_view = try View.init(self.allocator, buffer_state.editing_ctx.buffer);
-        errdefer new_view.deinit(self.allocator);
-
-        // WindowManagerで分割（ウィンドウのサイズ調整とリスト追加）
-        const result = try self.window_manager.splitVertically();
-
-        // 新しいウィンドウにViewを設定
-        result.new_window.view = new_view;
-
-        // 言語検出（新しいViewに言語設定を適用）
-        const content_preview = buffer_state.editing_ctx.buffer.getContentPreview(512);
-        result.new_window.view.detectLanguage(buffer_state.filename, content_preview);
-
-        // ビューポートサイズを設定（カーソル制約も行う）
-        result.new_window.view.setViewport(result.new_window.width, result.new_window.height);
-        // 元のウィンドウもサイズが変わったのでビューポートを更新
-        result.original_window.view.setViewport(result.original_window.width, result.original_window.height);
-
-        // 新しいウィンドウをアクティブにする
-        self.window_manager.setActiveWindow(result.new_window_idx);
+        return self.splitWindowCommon(false);
     }
 
     /// 現在のウィンドウを閉じる
@@ -1953,36 +1940,8 @@ pub const Editor = struct {
                         self.mode = .prefix_x;
                         self.getCurrentView().setError("C-x-");
                     },
-                    's' => {
-                        if (self.last_search) |search_str| {
-                            self.minibuffer.setContent(search_str) catch {};
-                            self.getCurrentView().setSearchHighlight(search_str);
-                            try self.performSearch(true, true);
-                            self.getCurrentView().clearError();
-                            self.getCurrentView().markFullRedraw();
-                        } else {
-                            self.mode = .isearch_forward;
-                            self.search_start_pos = self.getCurrentView().getCursorBufferPos();
-                            self.clearInputBuffer();
-                            self.prompt_prefix_len = 11;
-                            self.getCurrentView().setError("I-search: ");
-                        }
-                    },
-                    'r' => {
-                        if (self.last_search) |search_str| {
-                            self.minibuffer.setContent(search_str) catch {};
-                            self.getCurrentView().setSearchHighlight(search_str);
-                            try self.performSearch(false, true);
-                            self.getCurrentView().clearError();
-                            self.getCurrentView().markFullRedraw();
-                        } else {
-                            self.mode = .isearch_backward;
-                            self.search_start_pos = self.getCurrentView().getCursorBufferPos();
-                            self.clearInputBuffer();
-                            self.prompt_prefix_len = 20;
-                            self.getCurrentView().setError("I-search backward: ");
-                        }
-                    },
+                    's' => try self.startIsearch(true),
+                    'r' => try self.startIsearch(false),
                     else => {},
                 }
             },

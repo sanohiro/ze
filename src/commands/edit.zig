@@ -9,6 +9,47 @@ const PieceIterator = @import("../buffer.zig").PieceIterator;
 const unicode = @import("../unicode.zig");
 
 // ========================================
+// 共通ヘルパー関数
+// ========================================
+
+/// 削除操作後のdirtyマークを適切に設定
+/// 改行を含む場合は現在行以降全体、そうでなければ現在行のみ
+fn markDirtyAfterDelete(e: *Editor, current_line: usize, deleted_text: []const u8) void {
+    if (std.mem.indexOf(u8, deleted_text, "\n") != null) {
+        e.getCurrentView().markDirty(current_line, null);
+    } else {
+        e.getCurrentView().markDirty(current_line, current_line);
+    }
+}
+
+/// 選択範囲から行範囲を計算（indentRegion/unindentRegion共通）
+fn getSelectedLineRange(e: *Editor) struct { start_line: usize, end_line: usize } {
+    const buffer = e.getCurrentBufferContent();
+    const view = e.getCurrentView();
+    const window = e.getCurrentWindow();
+
+    if (window.mark_pos) |mark| {
+        const cursor_pos = view.getCursorBufferPos();
+        const sel_start = @min(mark, cursor_pos);
+        const sel_end = @max(mark, cursor_pos);
+        const line1 = buffer.findLineByPos(sel_start);
+        var line2 = buffer.findLineByPos(sel_end);
+        // sel_endが行頭にあり、範囲が行をまたいでいる場合は前の行までとする
+        if (sel_end > sel_start) {
+            if (buffer.getLineStart(line2)) |ls| {
+                if (sel_end == ls and line2 > line1) {
+                    line2 -= 1;
+                }
+            }
+        }
+        return .{ .start_line = line1, .end_line = line2 };
+    }
+
+    const current = e.getCurrentLine();
+    return .{ .start_line = current, .end_line = current };
+}
+
+// ========================================
 // 基本編集コマンド
 // ========================================
 
@@ -36,11 +77,7 @@ pub fn deleteChar(e: *Editor) !void {
         try e.recordDelete(pos, deleted, pos);
 
         buffer_state.editing_ctx.modified = true;
-        if (std.mem.indexOf(u8, deleted, "\n") != null) {
-            e.getCurrentView().markDirty(current_line, null);
-        } else {
-            e.getCurrentView().markDirty(current_line, current_line);
-        }
+        markDirtyAfterDelete(e, current_line, deleted);
         e.allocator.free(deleted);
         return;
     };
@@ -54,11 +91,7 @@ pub fn deleteChar(e: *Editor) !void {
         try e.recordDelete(pos, deleted, pos);
 
         buffer_state.editing_ctx.modified = true;
-        if (std.mem.indexOf(u8, deleted, "\n") != null) {
-            e.getCurrentView().markDirty(current_line, null);
-        } else {
-            e.getCurrentView().markDirty(current_line, current_line);
-        }
+        markDirtyAfterDelete(e, current_line, deleted);
         e.allocator.free(deleted);
     }
 }
@@ -102,11 +135,7 @@ pub fn backspace(e: *Editor) !void {
     try e.recordDelete(char_start, deleted, pos);
 
     buffer_state.editing_ctx.modified = true;
-    if (is_newline) {
-        e.getCurrentView().markDirty(current_line, null);
-    } else {
-        e.getCurrentView().markDirty(current_line, current_line);
-    }
+    markDirtyAfterDelete(e, current_line, deleted);
     e.allocator.free(deleted);
 
     // カーソル移動
@@ -168,11 +197,7 @@ pub fn killLine(e: *Editor) !void {
         try e.recordDelete(pos, deleted, pos);
 
         buffer_state.editing_ctx.modified = true;
-        if (std.mem.indexOf(u8, deleted, "\n") != null) {
-            e.getCurrentView().markDirty(current_line, null);
-        } else {
-            e.getCurrentView().markDirty(current_line, current_line);
-        }
+        markDirtyAfterDelete(e, current_line, deleted);
         e.allocator.free(deleted);
     }
 }
@@ -228,17 +253,14 @@ pub fn yank(e: *Editor) !void {
 
     e.setCursorToPos(pos + text.len);
 
-    if (std.mem.indexOf(u8, text, "\n") != null) {
-        e.getCurrentView().markDirty(current_line, null);
-    } else {
-        e.getCurrentView().markDirty(current_line, current_line);
-    }
+    markDirtyAfterDelete(e, current_line, text);
 
     e.getCurrentView().setError("Yanked text");
 }
 
 /// C-w: 選択範囲を削除してkill ringに保存
 pub fn killRegion(e: *Editor) !void {
+    if (e.isReadOnly()) return;
     const buffer = e.getCurrentBufferContent();
     const buffer_state = e.getCurrentBuffer();
     const window = e.getCurrentWindow();
@@ -267,11 +289,7 @@ pub fn killRegion(e: *Editor) !void {
 
     window.mark_pos = null;
 
-    if (std.mem.indexOf(u8, deleted, "\n") != null) {
-        e.getCurrentView().markDirty(current_line, null);
-    } else {
-        e.getCurrentView().markDirty(current_line, current_line);
-    }
+    markDirtyAfterDelete(e, current_line, deleted);
 
     e.getCurrentView().setError("Killed region");
 }
@@ -488,6 +506,7 @@ pub fn moveLineDown(e: *Editor) !void {
 
 /// M-d: カーソル位置から次の単語までを削除
 pub fn deleteWord(e: *Editor) !void {
+    if (e.isReadOnly()) return;
     const buffer = e.getCurrentBufferContent();
     const buffer_state = e.getCurrentBuffer();
     const start_pos = e.getCurrentView().getCursorBufferPos();
@@ -609,22 +628,9 @@ pub fn indentRegion(e: *Editor) !void {
     const indent_str: []const u8 = if (indent_char == '\t') "\t" else "    ";
 
     // 選択範囲があればその行全体をインデント、なければ現在行のみ
-    const start_line: usize, const end_line: usize = if (window.mark_pos) |mark| blk: {
-        const cursor_pos = view.getCursorBufferPos();
-        const sel_start = @min(mark, cursor_pos);
-        const sel_end = @max(mark, cursor_pos);
-        const line1 = buffer.findLineByPos(sel_start);
-        var line2 = buffer.findLineByPos(sel_end);
-        // sel_endが行頭にあり、範囲が行をまたいでいる場合は前の行までとする
-        if (sel_end > sel_start) {
-            if (buffer.getLineStart(line2)) |ls| {
-                if (sel_end == ls and line2 > line1) {
-                    line2 -= 1;
-                }
-            }
-        }
-        break :blk .{ line1, line2 };
-    } else .{ e.getCurrentLine(), e.getCurrentLine() };
+    const range = getSelectedLineRange(e);
+    const start_line = range.start_line;
+    const end_line = range.end_line;
 
     // 行ごとにインデント（後ろから処理してバイト位置がずれないようにする）
     var line = end_line + 1;
@@ -651,22 +657,9 @@ pub fn unindentRegion(e: *Editor) !void {
     const window = e.getCurrentWindow();
 
     // 選択範囲があればその行全体をアンインデント、なければ現在行のみ
-    const start_line: usize, const end_line: usize = if (window.mark_pos) |mark| blk: {
-        const cursor_pos = view.getCursorBufferPos();
-        const sel_start = @min(mark, cursor_pos);
-        const sel_end = @max(mark, cursor_pos);
-        const line1 = buffer.findLineByPos(sel_start);
-        var line2 = buffer.findLineByPos(sel_end);
-        // sel_endが行頭にあり、範囲が行をまたいでいる場合は前の行までとする
-        if (sel_end > sel_start) {
-            if (buffer.getLineStart(line2)) |ls| {
-                if (sel_end == ls and line2 > line1) {
-                    line2 -= 1;
-                }
-            }
-        }
-        break :blk .{ line1, line2 };
-    } else .{ e.getCurrentLine(), e.getCurrentLine() };
+    const range = getSelectedLineRange(e);
+    const start_line = range.start_line;
+    const end_line = range.end_line;
 
     var any_modified = false;
 

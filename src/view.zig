@@ -29,6 +29,14 @@ const syntax = @import("syntax.zig");
 const encoding = @import("encoding.zig");
 const unicode = @import("unicode.zig");
 
+// ANSIエスケープシーケンス定数
+const ANSI = struct {
+    const RESET = "\x1b[m";
+    const REVERSE = "\x1b[7m";
+    const REVERSE_OFF = "\x1b[27m";
+    const GRAY = "\x1b[90m";
+};
+
 /// UTF-8文字列をバイト数制限内でトランケート（文字境界を守る）
 /// 日本語などマルチバイト文字を途中で切らないようにする
 fn truncateUtf8(str: []const u8, max_bytes: usize) []const u8 {
@@ -403,11 +411,11 @@ pub const View = struct {
                 // マッチ前の部分をコピー
                 try self.highlighted_line.appendSlice(self.allocator, line[pos..match_pos]);
                 // 反転表示開始
-                try self.highlighted_line.appendSlice(self.allocator, "\x1b[7m");
+                try self.highlighted_line.appendSlice(self.allocator, ANSI.REVERSE);
                 // マッチ部分をコピー
                 try self.highlighted_line.appendSlice(self.allocator, line[match_pos .. match_pos + search_str.len]);
                 // 反転表示終了
-                try self.highlighted_line.appendSlice(self.allocator, "\x1b[27m");
+                try self.highlighted_line.appendSlice(self.allocator, ANSI.REVERSE_OFF);
                 pos = match_pos + search_str.len;
             } else {
                 // これ以上マッチなし：残りをコピー
@@ -584,14 +592,14 @@ pub const View = struct {
                 if (current_span) |span| {
                     if (!in_comment and byte_idx == span.start) {
                         // コメント開始
-                        try self.expanded_line.appendSlice(self.allocator, "\x1b[90m");
+                        try self.expanded_line.appendSlice(self.allocator, ANSI.GRAY);
                         in_comment = true;
                     }
                     if (in_comment) {
                         if (span.end) |end| {
                             if (byte_idx == end) {
                                 // コメント終了
-                                try self.expanded_line.appendSlice(self.allocator, "\x1b[m");
+                                try self.expanded_line.appendSlice(self.allocator, ANSI.RESET);
                                 in_comment = false;
                                 // 次のスパンへ
                                 current_span_idx += 1;
@@ -650,7 +658,7 @@ pub const View = struct {
 
         // コメント内だった場合はリセット（スパンがある場合のみチェック）
         if (has_spans and in_comment) {
-            try self.expanded_line.appendSlice(self.allocator, "\x1b[m");
+            try self.expanded_line.appendSlice(self.allocator, ANSI.RESET);
         }
 
         // 検索ハイライトを適用
