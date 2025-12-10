@@ -386,6 +386,38 @@ pub const View = struct {
         return in_block;
     }
 
+    /// 検索ハイライトを適用
+    /// 検索文字列がある場合、入力行にハイライト（反転表示）を適用
+    /// ハイライトがある場合は highlighted_line を返し、ない場合は入力をそのまま返す
+    fn applySearchHighlight(self: *View, line: []const u8) ![]const u8 {
+        const search_str = self.getSearchHighlight() orelse return line;
+        if (search_str.len == 0 or line.len == 0) return line;
+
+        // スクラッチバッファをクリアして再利用
+        self.highlighted_line.clearRetainingCapacity();
+
+        var pos: usize = 0;
+        while (pos < line.len) {
+            if (std.mem.indexOf(u8, line[pos..], search_str)) |match_offset| {
+                const match_pos = pos + match_offset;
+                // マッチ前の部分をコピー
+                try self.highlighted_line.appendSlice(self.allocator, line[pos..match_pos]);
+                // 反転表示開始
+                try self.highlighted_line.appendSlice(self.allocator, "\x1b[7m");
+                // マッチ部分をコピー
+                try self.highlighted_line.appendSlice(self.allocator, line[match_pos .. match_pos + search_str.len]);
+                // 反転表示終了
+                try self.highlighted_line.appendSlice(self.allocator, "\x1b[27m");
+                pos = match_pos + search_str.len;
+            } else {
+                // これ以上マッチなし：残りをコピー
+                try self.highlighted_line.appendSlice(self.allocator, line[pos..]);
+                break;
+            }
+        }
+        return self.highlighted_line.items;
+    }
+
     // イテレータを再利用して行を描画（セルレベル差分描画版）
     fn renderLineWithIter(self: *View, term: *Terminal, screen_row: usize, file_line: usize, iter: *PieceIterator, line_buffer: *std.ArrayList(u8)) !bool {
         return self.renderLineWithIterOffset(term, 0, screen_row, file_line, iter, line_buffer, false);
@@ -512,37 +544,8 @@ pub const View = struct {
             try self.expanded_line.appendSlice(self.allocator, "\x1b[m");
         }
 
-        var new_line = self.expanded_line.items;
-
-        // 検索ハイライト用スクラッチバッファをクリアして再利用
-        self.highlighted_line.clearRetainingCapacity();
-
-        if (self.getSearchHighlight()) |search_str| {
-            if (search_str.len > 0 and new_line.len > 0) {
-                // 行内で検索文字列を探してハイライト
-                var pos: usize = 0;
-                while (pos < new_line.len) {
-                    if (std.mem.indexOf(u8, new_line[pos..], search_str)) |match_offset| {
-                        const match_pos = pos + match_offset;
-                        // マッチ前の部分をコピー
-                        try self.highlighted_line.appendSlice(self.allocator, new_line[pos..match_pos]);
-                        // 反転表示開始
-                        try self.highlighted_line.appendSlice(self.allocator, "\x1b[7m");
-                        // マッチ部分をコピー
-                        try self.highlighted_line.appendSlice(self.allocator, new_line[match_pos..match_pos + search_str.len]);
-                        // 反転表示終了
-                        try self.highlighted_line.appendSlice(self.allocator, "\x1b[27m");
-                        // 次の検索位置へ
-                        pos = match_pos + search_str.len;
-                    } else {
-                        // これ以上マッチなし：残りをコピー
-                        try self.highlighted_line.appendSlice(self.allocator, new_line[pos..]);
-                        break;
-                    }
-                }
-                new_line = self.highlighted_line.items;
-            }
-        }
+        // 検索ハイライトを適用
+        const new_line = try self.applySearchHighlight(self.expanded_line.items);
 
         // 前フレームと比較してセルレベル差分描画
         if (screen_row < self.prev_screen.items.len) {
