@@ -362,14 +362,14 @@ pub const Buffer = struct {
         if (mmap_result) |mapped_ptr| {
             const mapped: []const u8 = mapped_ptr[0..file_size];
 
-            // バイナリファイルチェック
-            if (encoding.isBinaryContent(mapped)) {
+            // エンコーディングと改行コードを検出（BOM検出を先に行うため、detectEncodingを使用）
+            const detected = encoding.detectEncoding(mapped);
+
+            // バイナリファイルチェック（UTF-16等のBOM付きファイルは除外済み）
+            if (detected.encoding == .Unknown) {
                 std.posix.munmap(mapped_ptr[0..file_size]);
                 return error.BinaryFile;
             }
-
-            // エンコーディングと改行コードを検出
-            const detected = encoding.detectEncoding(mapped);
 
             // UTF-8 + LF の場合 → mmapを直接使用（ゼロコピー高速パス）
             if (detected.encoding == .UTF8 and detected.line_ending == .LF) {

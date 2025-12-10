@@ -14,12 +14,26 @@ const unicode = @import("../unicode.zig");
 
 /// 削除操作後のdirtyマークを適切に設定
 /// 改行を含む場合は現在行以降全体、そうでなければ現在行のみ
+/// 同一バッファを表示している全ウィンドウを更新
 fn markDirtyAfterDelete(e: *Editor, current_line: usize, deleted_text: []const u8) void {
+    const buffer_id = e.getCurrentBuffer().id;
     if (std.mem.indexOf(u8, deleted_text, "\n") != null) {
-        e.getCurrentView().markDirty(current_line, null);
+        e.markAllViewsDirtyForBuffer(buffer_id, current_line, null);
     } else {
-        e.getCurrentView().markDirty(current_line, current_line);
+        e.markAllViewsDirtyForBuffer(buffer_id, current_line, current_line);
     }
+}
+
+/// 編集後のdirtyマーク（同一バッファを表示している全ウィンドウを更新）
+fn markDirtyAll(e: *Editor, start_line: usize, end_line: ?usize) void {
+    const buffer_id = e.getCurrentBuffer().id;
+    e.markAllViewsDirtyForBuffer(buffer_id, start_line, end_line);
+}
+
+/// 全画面再描画（同一バッファを表示している全ウィンドウを更新）
+fn markFullRedrawAll(e: *Editor) void {
+    const buffer_id = e.getCurrentBuffer().id;
+    e.markAllViewsFullRedrawForBuffer(buffer_id);
 }
 
 /// 選択範囲から行範囲を計算（indentRegion/unindentRegion共通）
@@ -213,7 +227,7 @@ pub fn undo(e: *Editor) !void {
     const result = try buffer_state.editing_ctx.undoWithCursor();
     if (result == null) return;
 
-    e.getCurrentView().markFullRedraw();
+    markFullRedrawAll(e);
     e.restoreCursorPos(result.?.cursor_pos);
 }
 
@@ -224,7 +238,7 @@ pub fn redo(e: *Editor) !void {
     const result = try buffer_state.editing_ctx.redoWithCursor();
     if (result == null) return;
 
-    e.getCurrentView().markFullRedraw();
+    markFullRedrawAll(e);
     e.restoreCursorPos(result.?.cursor_pos);
 }
 
@@ -369,7 +383,7 @@ pub fn joinLine(e: *Editor) !void {
         }
 
         buffer_state.editing_ctx.modified = true;
-        view.markDirty(current_line - 1, null);
+        markDirtyAll(e, current_line - 1, null);
 
         e.setCursorToPos(delete_start);
 
@@ -429,7 +443,7 @@ pub fn toggleComment(e: *Editor) !void {
     }
 
     buffer_state.editing_ctx.modified = true;
-    view.markDirty(current_line, current_line);
+    markDirtyAll(e, current_line, current_line);
 
     window.mark_pos = null;
 }
@@ -461,7 +475,7 @@ pub fn moveLineUp(e: *Editor) !void {
     try e.recordInsert(prev_line_start, line_content, view.getCursorBufferPos());
 
     buffer_state.editing_ctx.modified = true;
-    view.markDirty(current_line - 1, null);
+    markDirtyAll(e, current_line - 1, null);
 
     view.moveCursorUp();
 }
@@ -495,7 +509,7 @@ pub fn moveLineDown(e: *Editor) !void {
     try e.recordInsert(new_insert_pos, line_content, view.getCursorBufferPos());
 
     buffer_state.editing_ctx.modified = true;
-    view.markDirty(current_line, null);
+    markDirtyAll(e, current_line, null);
 
     view.moveCursorDown();
 }
@@ -544,7 +558,7 @@ pub fn deleteWord(e: *Editor) !void {
         try e.recordDelete(start_pos, deleted_text, start_pos);
 
         buffer_state.editing_ctx.modified = true;
-        e.getCurrentView().markFullRedraw();
+        markFullRedrawAll(e);
     }
 }
 
@@ -609,7 +623,7 @@ pub fn duplicateLine(e: *Editor) !void {
     try e.recordInsert(insert_pos, to_insert, view.getCursorBufferPos());
 
     buffer_state.editing_ctx.modified = true;
-    view.markDirty(current_line, null);
+    markDirtyAll(e, current_line, null);
 
     // カーソルを複製した行に移動
     view.moveCursorDown();
@@ -642,7 +656,7 @@ pub fn indentRegion(e: *Editor) !void {
     }
 
     buffer_state.editing_ctx.modified = true;
-    view.markDirty(start_line, end_line);
+    markDirtyAll(e, start_line, end_line);
 
     // マークをクリア
     window.mark_pos = null;
@@ -707,7 +721,7 @@ pub fn unindentRegion(e: *Editor) !void {
 
     if (any_modified) {
         buffer_state.editing_ctx.modified = true;
-        view.markDirty(start_line, end_line);
+        markDirtyAll(e, start_line, end_line);
     }
 
     // マークをクリア

@@ -127,24 +127,27 @@ pub const History = struct {
     }
 
     /// ~/.ze/ ディレクトリのパスを取得
-    fn getZeDir(allocator: std.mem.Allocator) ![]const u8 {
-        const home = std.posix.getenv("HOME") orelse return error.NoHomeDir;
-        return std.fmt.allocPrint(allocator, "{s}/.ze", .{home});
+    /// HOME未設定時はnullを返す（エディタはHOMEなしでも動作可能、履歴だけが保存されない）
+    fn getZeDir(allocator: std.mem.Allocator) ?[]const u8 {
+        const home = std.posix.getenv("HOME") orelse return null;
+        return std.fmt.allocPrint(allocator, "{s}/.ze", .{home}) catch null;
     }
 
     /// 履歴ファイルのパスを取得
-    fn getHistoryPath(allocator: std.mem.Allocator, history_type: HistoryType) ![]const u8 {
-        const home = std.posix.getenv("HOME") orelse return error.NoHomeDir;
+    /// HOME未設定時はnullを返す
+    fn getHistoryPath(allocator: std.mem.Allocator, history_type: HistoryType) ?[]const u8 {
+        const home = std.posix.getenv("HOME") orelse return null;
         const filename = switch (history_type) {
             .shell => "shell_history",
             .search => "search_history",
         };
-        return std.fmt.allocPrint(allocator, "{s}/.ze/{s}", .{ home, filename });
+        return std.fmt.allocPrint(allocator, "{s}/.ze/{s}", .{ home, filename }) catch null;
     }
 
     /// ファイルから履歴を読み込み
+    /// HOME未設定時は何もせずに正常終了（履歴は空のまま）
     pub fn load(self: *History, history_type: HistoryType) !void {
-        const path = try getHistoryPath(self.allocator, history_type);
+        const path = getHistoryPath(self.allocator, history_type) orelse return;
         defer self.allocator.free(path);
 
         const file = std.fs.cwd().openFile(path, .{}) catch |err| {
@@ -187,16 +190,18 @@ pub const History = struct {
     }
 
     /// 履歴をファイルに保存（アトミック: temp+rename方式）
+    /// HOME未設定時は何もせずに正常終了（履歴は保存されない）
     pub fn save(self: *History, history_type: HistoryType) !void {
         // ~/.ze ディレクトリを作成（存在しなければ）
-        const ze_dir = try getZeDir(self.allocator);
+        // HOME未設定時はnullが返るので何もせず終了
+        const ze_dir = getZeDir(self.allocator) orelse return;
         defer self.allocator.free(ze_dir);
 
         std.fs.cwd().makeDir(ze_dir) catch |err| {
             if (err != error.PathAlreadyExists) return err;
         };
 
-        const path = try getHistoryPath(self.allocator, history_type);
+        const path = getHistoryPath(self.allocator, history_type) orelse return;
         defer self.allocator.free(path);
 
         // 一時ファイルパスを作成（元のパス + ".tmp"）

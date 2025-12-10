@@ -85,12 +85,7 @@ pub fn isBinaryContent(content: []const u8) bool {
 
 /// エンコーディングと改行コードを自動検出
 pub fn detectEncoding(content: []const u8) DetectionResult {
-    // ステップ1: バイナリ判定（NULLバイトがあればUnknown）
-    if (isBinaryContent(content)) {
-        return .{ .encoding = .Unknown, .line_ending = .LF };
-    }
-
-    // ステップ2: BOM検出（確実な証拠）
+    // ステップ1: BOM検出（最優先、UTF-16はNULLバイトを含むのでBOM検出を先に）
     if (content.len >= 3 and
         content[0] == 0xEF and content[1] == 0xBB and content[2] == 0xBF)
     {
@@ -110,6 +105,11 @@ pub fn detectEncoding(content: []const u8) DetectionResult {
             .encoding = .UTF16BE_BOM,
             .line_ending = .LF,
         };
+    }
+
+    // ステップ2: バイナリ判定（BOM付きUTF-16を除外した後で判定）
+    if (isBinaryContent(content)) {
+        return .{ .encoding = .Unknown, .line_ending = .LF };
     }
 
     // ステップ3: Valid UTF-8判定（現代の標準）

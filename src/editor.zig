@@ -265,6 +265,25 @@ pub const Editor = struct {
         return self.getCurrentBuffer().editing_ctx.buffer;
     }
 
+    /// 指定バッファを表示している全ウィンドウをdirtyにマーク
+    /// 同一バッファを複数ウィンドウで開いている場合に使用
+    pub fn markAllViewsDirtyForBuffer(self: *Editor, buffer_id: usize, start_line: usize, end_line: ?usize) void {
+        for (self.window_manager.iterator()) |*window| {
+            if (window.buffer_id == buffer_id) {
+                window.view.markDirty(start_line, end_line);
+            }
+        }
+    }
+
+    /// 指定バッファを表示している全ウィンドウを全画面再描画にマーク
+    pub fn markAllViewsFullRedrawForBuffer(self: *Editor, buffer_id: usize) void {
+        for (self.window_manager.iterator()) |*window| {
+            if (window.buffer_id == buffer_id) {
+                window.view.markFullRedraw();
+            }
+        }
+    }
+
     /// 読み取り専用チェック（編集前に呼ぶ）
     /// 読み取り専用ならエラー表示してtrueを返す
     pub fn isReadOnly(self: *Editor) bool {
@@ -275,15 +294,16 @@ pub const Editor = struct {
         return false;
     }
 
-    /// プロンプトを設定（古いバッファを自動解放）
+    /// プロンプトを設定（スタックバッファ使用でヒープ確保を回避）
     pub fn setPrompt(self: *Editor, comptime fmt: []const u8, args: anytype) void {
-        if (self.prompt_buffer) |old| {
-            self.allocator.free(old);
-        }
-        self.prompt_buffer = std.fmt.allocPrint(self.allocator, fmt, args) catch null;
-        if (self.prompt_buffer) |prompt| {
-            self.getCurrentView().setError(prompt);
-        }
+        // 固定バッファでフォーマット（View.setErrorも固定バッファにコピーするため、ヒープ確保不要）
+        var buf: [512]u8 = undefined;
+        const prompt = std.fmt.bufPrint(&buf, fmt, args) catch {
+            // バッファが足りない場合はフォールバック
+            self.getCurrentView().setError("...");
+            return;
+        };
+        self.getCurrentView().setError(prompt);
     }
 
     /// プロンプトを解放
