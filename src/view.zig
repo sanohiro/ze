@@ -291,7 +291,7 @@ pub const View = struct {
     }
 
     // 行番号の表示幅を計算（999行まで固定、1000行以上で動的拡張）
-    pub fn getLineNumberWidth(self: *View) usize {
+    pub fn getLineNumberWidth(self: *const View) usize {
         if (!config.Editor.SHOW_LINE_NUMBERS) return 0;
 
         const total_lines = self.buffer.lineCount();
@@ -372,8 +372,13 @@ pub const View = struct {
         self.prev_top_line = self.top_line;
     }
 
+    /// 再描画が必要かどうか
+    pub fn needsRedraw(self: *const View) bool {
+        return self.needs_full_redraw or self.dirty_start != null;
+    }
+
     /// 指定行より前の行をスキャンして、ブロックコメント内で開始するかを判定
-    /// キャッシュを使用してO(n)からO(1)に最適化（top_lineが変わらない場合）
+    /// キャッシュを使用してO(n)からO(k)に最適化（kはキャッシュ位置からの差分行数）
     fn computeBlockCommentState(self: *View, target_line: usize) bool {
         // ブロックコメントがない言語なら常にfalse
         if (self.language.block_comment == null) return false;
@@ -385,13 +390,31 @@ pub const View = struct {
             }
         }
 
-        // キャッシュミス: 再計算
-        var in_block = false;
+        // キャッシュからスタートできるか確認（キャッシュ行 <= target_line の場合のみ）
+        var start_line: usize = 0;
+        var in_block: bool = false;
+        if (self.cached_block_state) |cached_state| {
+            if (self.cached_block_top_line < target_line) {
+                // キャッシュ位置からスキャン開始
+                start_line = self.cached_block_top_line;
+                in_block = cached_state;
+            }
+        }
+
+        // start_lineからtarget_lineまでスキャン
         var iter = PieceIterator.init(self.buffer);
         var line_buf = std.ArrayList(u8){};
         defer line_buf.deinit(self.allocator);
 
+        // start_lineまでスキップ
         var current_line: usize = 0;
+        while (current_line < start_line) : (current_line += 1) {
+            while (iter.next()) |ch| {
+                if (ch == '\n') break;
+            }
+        }
+
+        // start_lineからtarget_lineまでスキャン
         while (current_line < target_line) : (current_line += 1) {
             // 行を読み取る
             line_buf.clearRetainingCapacity();
@@ -515,14 +538,77 @@ pub const View = struct {
                 // 行番号の表示幅を取得
                 const line_num_display_width = self.getLineNumberWidth();
 
-                // 行番号がある場合は常に行全体を再描画
-                // （ANSIシーケンスの計算が複雑なため、シンプルな実装を優先）
-                if (line_num_display_width > 0) {
+                // 行番号がある場合、行番号部分のバイト範囲を推定してスキップ
+                // 行番号フォーマット: "\x1b[90m  N\x1b[m  " (ANSIエスケープ付き)
+                // 行番号がない、または差分が行番号より後から始まる場合は部分更新が可能
+                const line_num_byte_end = if (line_num_display_width > 0) blk: {
+                    // 行番号部分のバイト終端を探す（最初のリセットエスケープ \x1b[m の後のスペース2つ）
+                    if (std.mem.indexOf(u8, new_line, "\x1b[m  ")) |pos| {
+                        break :blk pos + 5; // "\x1b[m  ".len
+                    }
+                    // フォールバック：行全体を再描画
+                    break :blk 0;
+                } else 0;
+
+                // 差分が行番号部分にかかっている場合は行全体を再描画
+                if (line_num_display_width > 0 and start_raw < line_num_byte_end) {
                     // 行頭から全体を再描画
                     try term.moveCursor(abs_row, viewport_x);
                     try term.write(new_line);
                     // 残りをスペースで埋める（CLEAR_LINEの代わり）
                     try self.padToWidth(term, new_line, viewport_width);
+                } else if (line_num_display_width > 0) {
+                    // 行番号があるが本文部分のみの差分
+                    // 差分開始位置から画面カラム位置を計算
+                    var start = start_raw;
+                    while (start > 0 and start < new_line.len and unicode.isUtf8Continuation(new_line[start])) {
+                        start -= 1;
+                    }
+
+                    // バイト位置から画面カラム位置を計算（行番号部分をスキップ）
+                    var screen_col: usize = 0;
+                    var b: usize = line_num_byte_end;
+                    // 行番号分の表示幅を加算
+                    screen_col = line_num_display_width;
+
+                    while (b < start) {
+                        const c = new_line[b];
+                        // ANSIエスケープシーケンスをスキップ
+                        if (b + 1 < new_line.len and unicode.isAnsiEscapeStart(c, new_line[b + 1])) {
+                            b += 2;
+                            while (b < new_line.len and new_line[b] != 'm') : (b += 1) {}
+                            if (b < new_line.len) b += 1;
+                            continue;
+                        }
+
+                        if (unicode.isAsciiByte(c)) {
+                            b += 1;
+                            screen_col += 1;
+                        } else {
+                            const len = unicode.utf8SeqLen(c);
+                            if (b + len <= new_line.len) {
+                                const cp = std.unicode.utf8Decode(new_line[b..b + len]) catch {
+                                    b += 1;
+                                    screen_col += 1;
+                                    continue;
+                                };
+                                screen_col += unicode.displayWidth(cp);
+                                b += len;
+                            } else {
+                                b += 1;
+                                screen_col += 1;
+                            }
+                        }
+                    }
+
+                    // 差分部分のみ描画
+                    try term.moveCursor(abs_row, viewport_x + screen_col);
+                    try term.write(new_line[start..]);
+
+                    // 古い行の方が長い場合は残りをスペースで埋める
+                    if (old_line.len > new_line.len) {
+                        try self.padToWidth(term, new_line, viewport_width);
+                    }
                 } else {
                     // UTF-8文字境界に調整（継続バイトの途中から始まらないように）
                     var start = start_raw;
@@ -875,7 +961,7 @@ pub const View = struct {
     }
 
     /// アクティブウィンドウ用のカーソル位置を計算
-    pub fn getCursorScreenPosition(self: *View, viewport_x: usize, viewport_y: usize, viewport_width: usize) struct { row: usize, col: usize } {
+    pub fn getCursorScreenPosition(self: *const View, viewport_x: usize, viewport_y: usize, viewport_width: usize) struct { row: usize, col: usize } {
         const line_num_width = self.getLineNumberWidth();
         var screen_cursor_x = line_num_width + (if (self.cursor_x >= self.top_col) self.cursor_x - self.top_col else 0);
         // viewport幅を超えないようにクリップ（幅0の場合も考慮）

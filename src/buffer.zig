@@ -297,8 +297,8 @@ pub const Buffer = struct {
     pub fn init(allocator: std.mem.Allocator) !Buffer {
         return Buffer{
             .original = &[_]u8{},
-            .add_buffer = try std.ArrayList(u8).initCapacity(allocator, 0),
-            .pieces = try std.ArrayList(Piece).initCapacity(allocator, 0),
+            .add_buffer = try std.ArrayList(u8).initCapacity(allocator, config.Buffer.INITIAL_ADD_CAPACITY),
+            .pieces = try std.ArrayList(Piece).initCapacity(allocator, config.Buffer.INITIAL_PIECES_CAPACITY),
             .allocator = allocator,
             .owns_original = false,
             .is_mmap = false,

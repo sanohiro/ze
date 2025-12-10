@@ -44,7 +44,10 @@ const poller = @import("poller.zig");
 
 const Minibuffer = @import("services/minibuffer.zig").Minibuffer;
 const SearchService = @import("services/search_service.zig").SearchService;
-const ShellService = @import("services/shell_service.zig").ShellService;
+const shell_service_mod = @import("services/shell_service.zig");
+const ShellService = shell_service_mod.ShellService;
+const ShellOutputDest = shell_service_mod.OutputDest;
+const ShellInputSource = shell_service_mod.InputSource;
 const BufferManager = @import("services/buffer_manager.zig").BufferManager;
 const BufferState = @import("services/buffer_manager.zig").BufferState;
 const WindowManager = @import("services/window_manager.zig").WindowManager;
@@ -79,21 +82,6 @@ const EditorMode = enum {
     shell_running, // シェルコマンド実行中（C-gでキャンセル可）
     mx_command, // M-xコマンド入力中
     mx_key_describe, // M-x key: 次のキー入力を待っている
-};
-
-/// シェルコマンド出力先
-const ShellOutputDest = enum {
-    command_buffer, // Command Bufferに表示（デフォルト）
-    replace, // 入力元を置換 (>)
-    insert, // カーソル位置に挿入 (+>)
-    new_buffer, // 新規バッファ (n>)
-};
-
-/// シェルコマンド入力元
-const ShellInputSource = enum {
-    selection, // 選択範囲（なければ空）
-    buffer_all, // バッファ全体 (%)
-    current_line, // 現在行 (.)
 };
 
 /// シェルコマンドの非同期実行状態
@@ -1199,6 +1187,25 @@ pub const Editor = struct {
 
     /// 全ウィンドウをレンダリング
     fn renderAllWindows(self: *Editor) !void {
+        // 描画が必要かチェック（全ウィンドウがdirtyでないならスキップ）
+        var needs_render = false;
+        for (self.window_manager.iterator()) |*window| {
+            if (window.view.needsRedraw()) {
+                needs_render = true;
+                break;
+            }
+        }
+
+        // 描画が不要でもカーソル位置は更新する
+        if (!needs_render) {
+            // アクティブウィンドウのカーソル位置を更新
+            const window = self.window_manager.getCurrentWindowConst();
+            const pos = window.view.getCursorScreenPosition(window.x, window.y, window.width);
+            try self.terminal.moveCursor(pos.row, pos.col);
+            try self.terminal.flush();
+            return;
+        }
+
         // 描画中はカーソルを非表示（ちらつき防止）
         try self.terminal.hideCursor();
 
@@ -2525,20 +2532,7 @@ pub const Editor = struct {
             // コマンド完了 - 結果を処理
             defer self.shell_service.finish();
 
-            // ShellServiceの型をエディタの型に変換
-            const input_source: ShellInputSource = switch (result.input_source) {
-                .selection => .selection,
-                .buffer_all => .buffer_all,
-                .current_line => .current_line,
-            };
-            const output_dest: ShellOutputDest = switch (result.output_dest) {
-                .command_buffer => .command_buffer,
-                .replace => .replace,
-                .insert => .insert,
-                .new_buffer => .new_buffer,
-            };
-
-            try self.processShellResult(result.stdout, result.stderr, result.exit_status, input_source, output_dest);
+            try self.processShellResult(result.stdout, result.stderr, result.exit_status, result.input_source, result.output_dest);
             self.mode = .normal;
         }
         // まだ実行中の場合は何もしない
