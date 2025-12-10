@@ -316,22 +316,14 @@ pub fn recenter(e: *Editor) !void {
 // ウィンドウ操作
 // ========================================
 
-/// Ctrl+Tab: 次のウィンドウに切り替え
+/// Ctrl+Tab: 次のウィンドウに切り替え（WindowManager経由）
 pub fn nextWindow(e: *Editor) !void {
-    if (e.windows.items.len > 1) {
-        e.current_window_idx = (e.current_window_idx + 1) % e.windows.items.len;
-    }
+    e.window_manager.nextWindow();
 }
 
-/// Ctrl+Shift+Tab: 前のウィンドウに切り替え
+/// Ctrl+Shift+Tab: 前のウィンドウに切り替え（WindowManager経由）
 pub fn prevWindow(e: *Editor) !void {
-    if (e.windows.items.len > 1) {
-        if (e.current_window_idx == 0) {
-            e.current_window_idx = e.windows.items.len - 1;
-        } else {
-            e.current_window_idx -= 1;
-        }
-    }
+    e.window_manager.prevWindow();
 }
 
 // ========================================

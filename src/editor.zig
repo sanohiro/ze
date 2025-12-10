@@ -123,11 +123,8 @@ pub const Editor = struct {
     running: bool,
 
     // バッファとウィンドウの管理
-    buffers: std.ArrayList(*BufferState), // 全バッファのリスト
-    windows: std.ArrayList(Window), // 全ウィンドウのリスト
-    current_window_idx: usize, // 現在アクティブなウィンドウのインデックス
-    next_buffer_id: usize, // 次に割り当てるバッファID
-    next_window_id: usize, // 次に割り当てるウィンドウID
+    buffer_manager: BufferManager, // バッファマネージャー（全バッファを管理）
+    window_manager: WindowManager, // ウィンドウマネージャー（全ウィンドウを管理）
 
     // エディタ状態
     mode: EditorMode,
@@ -161,34 +158,25 @@ pub const Editor = struct {
         // ターミナルを先に初期化（サイズ取得のため）
         const terminal = try Terminal.init(allocator);
 
-        // 最初のバッファを作成（ID: 0）
-        const first_buffer = try BufferState.init(allocator, 0);
+        // BufferManagerを初期化し、最初のバッファを作成
+        var buffer_manager = BufferManager.init(allocator);
+        const first_buffer = try buffer_manager.createBuffer();
 
-        // バッファリストを作成
-        var buffers: std.ArrayList(*BufferState) = .{};
-        try buffers.append(allocator, first_buffer);
-
-        // 最初のウィンドウを作成（全画面、ステータスバーはheight内に含む）
-        var first_window = Window.init(0, 0, 0, 0, terminal.width, terminal.height);
+        // WindowManagerを初期化し、最初のウィンドウを作成
+        var window_manager = WindowManager.init(allocator, terminal.width, terminal.height);
+        const first_window = try window_manager.createWindow(first_buffer.id, 0, 0, terminal.width, terminal.height);
         first_window.view = try View.init(allocator, first_buffer.editing_ctx.buffer);
         // 言語検出（新規バッファなのでデフォルト、ファイルオープン時にmain.zigで再検出される）
         first_window.view.detectLanguage(null, null);
         // ビューポートサイズを設定（カーソル移動の境界判定に使用）
         first_window.view.setViewport(terminal.width, terminal.height);
 
-        // ウィンドウリストを作成
-        var windows: std.ArrayList(Window) = .{};
-        try windows.append(allocator, first_window);
-
         var editor = Editor{
             .terminal = terminal,
             .allocator = allocator,
             .running = true,
-            .buffers = buffers,
-            .windows = windows,
-            .current_window_idx = 0,
-            .next_buffer_id = 1,
-            .next_window_id = 1,
+            .buffer_manager = buffer_manager,
+            .window_manager = window_manager,
             .mode = .normal,
             .minibuffer = Minibuffer.init(allocator),
             .quit_after_save = false,
@@ -214,17 +202,11 @@ pub const Editor = struct {
     }
 
     pub fn deinit(self: *Editor) void {
-        // 全ウィンドウを解放
-        for (self.windows.items) |*window| {
-            window.deinit(self.allocator);
-        }
-        self.windows.deinit(self.allocator);
+        // ウィンドウマネージャーを解放（全ウィンドウを含む）
+        self.window_manager.deinit();
 
-        // 全バッファを解放
-        for (self.buffers.items) |buffer| {
-            buffer.deinit();
-        }
-        self.buffers.deinit(self.allocator);
+        // バッファマネージャーを解放（全バッファを含む）
+        self.buffer_manager.deinit();
 
         // ターミナルを解放
         self.terminal.deinit();
@@ -273,22 +255,15 @@ pub const Editor = struct {
     // ヘルパーメソッド
     // ========================================
 
-    /// 現在のウィンドウを取得
+    /// 現在のウィンドウを取得（WindowManager経由）
     pub fn getCurrentWindow(self: *Editor) *Window {
-        std.debug.assert(self.windows.items.len > 0);
-        std.debug.assert(self.current_window_idx < self.windows.items.len);
-        return &self.windows.items[self.current_window_idx];
+        return self.window_manager.getCurrentWindow();
     }
 
     /// 現在のバッファを取得
     pub fn getCurrentBuffer(self: *Editor) *BufferState {
         const window = self.getCurrentWindow();
-        for (self.buffers.items) |buffer| {
-            if (buffer.id == window.buffer_id) {
-                return buffer;
-            }
-        }
-        unreachable; // ウィンドウが参照しているバッファは必ず存在する
+        return self.buffer_manager.findById(window.buffer_id) orelse unreachable;
     }
 
     /// 現在のビューを取得
@@ -502,30 +477,19 @@ pub const Editor = struct {
         }
     }
 
-    /// 新しいバッファを作成してリストに追加
+    /// 新しいバッファを作成（BufferManager経由）
     pub fn createNewBuffer(self: *Editor) !*BufferState {
-        const new_buffer = try BufferState.init(self.allocator, self.next_buffer_id);
-        try self.buffers.append(self.allocator, new_buffer);
-        self.next_buffer_id += 1;
-        return new_buffer;
+        return try self.buffer_manager.createBuffer();
     }
 
-    /// 指定されたIDのバッファを検索
+    /// 指定されたIDのバッファを検索（BufferManager経由）
     fn findBufferById(self: *Editor, buffer_id: usize) ?*BufferState {
-        for (self.buffers.items) |buf| {
-            if (buf.id == buffer_id) return buf;
-        }
-        return null;
+        return self.buffer_manager.findById(buffer_id);
     }
 
-    /// 指定されたファイル名のバッファを検索
+    /// 指定されたファイル名のバッファを検索（BufferManager経由）
     fn findBufferByFilename(self: *Editor, filename: []const u8) ?*BufferState {
-        for (self.buffers.items) |buf| {
-            if (buf.filename) |buf_filename| {
-                if (std.mem.eql(u8, buf_filename, filename)) return buf;
-            }
-        }
-        return null;
+        return self.buffer_manager.findByFilename(filename);
     }
 
     // ========================================
@@ -747,8 +711,8 @@ pub const Editor = struct {
 
     /// *Command* バッファを取得または作成
     fn getOrCreateCommandBuffer(self: *Editor) !*BufferState {
-        // 既存の *Command* バッファを探す
-        for (self.buffers.items) |buf| {
+        // 既存の *Command* バッファを探す（BufferManager経由）
+        for (self.buffer_manager.iterator()) |buf| {
             if (buf.filename) |name| {
                 if (std.mem.eql(u8, name, "*Command*")) return buf;
             }
@@ -762,7 +726,8 @@ pub const Editor = struct {
 
     /// *Command* バッファを表示するウィンドウを探す
     fn findCommandBufferWindow(self: *Editor) ?usize {
-        for (self.windows.items, 0..) |window, idx| {
+        const windows = self.window_manager.iterator();
+        for (windows, 0..) |window, idx| {
             if (self.findBufferById(window.buffer_id)) |buf| {
                 if (buf.filename) |name| {
                     if (std.mem.eql(u8, name, "*Command*")) return idx;
@@ -784,26 +749,22 @@ pub const Editor = struct {
 
         // 画面下部に水平分割でウィンドウを開く
         // 現在のウィンドウの高さを縮める
-        const current_window = &self.windows.items[self.current_window_idx];
+        const current_window = self.window_manager.getCurrentWindow();
         const min_height: u16 = 5; // 最小高さ
         const cmd_height: u16 = 8; // コマンドバッファの高さ
 
         if (current_window.height < min_height + cmd_height) {
             // 画面が小さすぎる場合は現在のウィンドウに表示
             try self.switchToBuffer(cmd_buffer.id);
-            return self.current_window_idx;
+            return self.window_manager.current_window_idx;
         }
 
         // 現在のウィンドウを縮める
         const old_height = current_window.height;
         current_window.height = old_height - cmd_height;
 
-        // 新しいウィンドウを下部に作成
-        const new_window_id = self.next_window_id;
-        self.next_window_id += 1;
-
-        var new_window = Window.init(
-            new_window_id,
+        // 新しいウィンドウを下部に作成（WindowManager経由）
+        const new_window = try self.window_manager.createWindow(
             cmd_buffer.id,
             current_window.x,
             current_window.y + current_window.height,
@@ -818,8 +779,7 @@ pub const Editor = struct {
         // ビューポートサイズを設定
         new_window.view.setViewport(new_window.width, new_window.height);
 
-        try self.windows.append(self.allocator, new_window);
-        return self.windows.items.len - 1;
+        return self.window_manager.windowCount() - 1;
     }
 
     /// 現在のウィンドウを指定されたバッファに切り替え
@@ -844,36 +804,41 @@ pub const Editor = struct {
 
     /// 指定されたバッファを閉じる（削除）
     pub fn closeBuffer(self: *Editor, buffer_id: usize) !void {
-        // 最後のバッファは閉じられない（この後 len >= 2 が保証される）
-        if (self.buffers.items.len == 1) return error.CannotCloseLastBuffer;
+        // 最後のバッファは閉じられない
+        if (self.buffer_manager.bufferCount() == 1) return error.CannotCloseLastBuffer;
 
-        // バッファを検索して削除
-        for (self.buffers.items, 0..) |buf, i| {
+        // バッファを検索
+        const buffers = self.buffer_manager.iterator();
+        var buf_idx: ?usize = null;
+        for (buffers, 0..) |buf, i| {
             if (buf.id == buffer_id) {
-                // このバッファを使用しているウィンドウを別のバッファに切り替え
-                for (self.windows.items) |*window| {
-                    if (window.buffer_id == buffer_id) {
-                        // 次のバッファに切り替え（削除するバッファ以外）
-                        // len >= 2 が保証されているので、i==0 なら items[1] が、i>0 なら items[i-1] が存在
-                        const next_buffer = if (i > 0) self.buffers.items[i - 1] else self.buffers.items[1];
-                        window.view.deinit(self.allocator);
-                        window.view = try View.init(self.allocator, next_buffer.editing_ctx.buffer);
-                        window.buffer_id = next_buffer.id;
-                        // 言語検出（コメント強調・タブ幅など）
-                        const content_preview = next_buffer.editing_ctx.buffer.getContentPreview(512);
-                        window.view.detectLanguage(next_buffer.filename, content_preview);
-                        // ビューポートサイズを設定
-                        window.view.setViewport(window.width, window.height);
-                    }
-                }
-
-                // バッファを削除
-                buf.deinit();
-                _ = self.buffers.orderedRemove(i);
-                return;
+                buf_idx = i;
+                break;
             }
         }
-        return error.BufferNotFound;
+
+        if (buf_idx == null) return error.BufferNotFound;
+        const i = buf_idx.?;
+
+        // このバッファを使用しているウィンドウを別のバッファに切り替え
+        for (self.window_manager.iterator()) |*window| {
+            if (window.buffer_id == buffer_id) {
+                // 次のバッファに切り替え（削除するバッファ以外）
+                // bufferCount >= 2 が保証されているので、i==0 なら items[1] が、i>0 なら items[i-1] が存在
+                const next_buffer = if (i > 0) buffers[i - 1] else buffers[1];
+                window.view.deinit(self.allocator);
+                window.view = try View.init(self.allocator, next_buffer.editing_ctx.buffer);
+                window.buffer_id = next_buffer.id;
+                // 言語検出（コメント強調・タブ幅など）
+                const content_preview = next_buffer.editing_ctx.buffer.getContentPreview(512);
+                window.view.detectLanguage(next_buffer.filename, content_preview);
+                // ビューポートサイズを設定
+                window.view.setViewport(window.width, window.height);
+            }
+        }
+
+        // バッファを削除（BufferManager経由）
+        _ = self.buffer_manager.deleteBuffer(buffer_id);
     }
 
     /// バッファ一覧を表示（C-x C-b）
@@ -886,7 +851,7 @@ pub const Editor = struct {
         try writer.writeAll("  MR Buffer           Size  File\n");
         try writer.writeAll("  -- ------           ----  ----\n");
 
-        for (self.buffers.items) |buf| {
+        for (self.buffer_manager.iterator()) |buf| {
             // 変更フラグ
             const mod_char: u8 = if (buf.editing_ctx.modified) '*' else '.';
             // 読み取り専用フラグ
@@ -912,7 +877,7 @@ pub const Editor = struct {
         const buffer_list_name = "*Buffer List*";
         var buffer_list: ?*BufferState = null;
 
-        for (self.buffers.items) |buf| {
+        for (self.buffer_manager.iterator()) |buf| {
             if (buf.filename) |fname| {
                 if (std.mem.eql(u8, fname, buffer_list_name)) {
                     buffer_list = buf;
@@ -1025,7 +990,7 @@ pub const Editor = struct {
         }
 
         // バッファを検索
-        for (self.buffers.items) |buf| {
+        for (self.buffer_manager.iterator()) |buf| {
             const name = if (buf.filename) |fname| fname else "*scratch*";
             if (std.mem.eql(u8, name, buf_name)) {
                 try self.switchToBuffer(buf.id);
@@ -1038,16 +1003,7 @@ pub const Editor = struct {
 
     /// 現在のウィンドウを横（上下）に分割
     pub fn splitWindowHorizontally(self: *Editor) !void {
-        const current_window = &self.windows.items[self.current_window_idx];
-
-        // ウィンドウの高さが2未満の場合は分割できない
-        if (current_window.height < 2) {
-            return error.WindowTooSmall;
-        }
-
-        // 分割後のサイズを計算（まだ適用しない）
-        const old_height = current_window.height;
-        const new_height = old_height / 2;
+        const current_window = self.window_manager.getCurrentWindow();
 
         // バッファを取得
         const buffer_state = self.findBufferById(current_window.buffer_id) orelse return error.BufferNotFound;
@@ -1056,56 +1012,28 @@ pub const Editor = struct {
         var new_view = try View.init(self.allocator, buffer_state.editing_ctx.buffer);
         errdefer new_view.deinit(self.allocator);
 
-        // ここから先は失敗しない操作のみ
-        // 現在のウィンドウの高さを半分にする
-        current_window.height = new_height;
+        // WindowManagerで分割（ウィンドウのサイズ調整とリスト追加）
+        const result = try self.window_manager.splitHorizontally();
 
-        // 新しいウィンドウを下半分に作成
-        const new_window_id = self.next_window_id;
-        self.next_window_id += 1;
-
-        var new_window = Window.init(
-            new_window_id,
-            current_window.buffer_id, // 同じバッファを表示
-            current_window.x,
-            current_window.y + new_height,
-            current_window.width,
-            old_height - new_height,
-        );
-
-        // 分割情報を設定
-        new_window.split_type = .horizontal;
-        new_window.split_parent_id = current_window.id;
-        new_window.view = new_view;
+        // 新しいウィンドウにViewを設定
+        result.new_window.view = new_view;
 
         // 言語検出（新しいViewに言語設定を適用）
         const content_preview = buffer_state.editing_ctx.buffer.getContentPreview(512);
-        new_window.view.detectLanguage(buffer_state.filename, content_preview);
+        result.new_window.view.detectLanguage(buffer_state.filename, content_preview);
 
         // ビューポートサイズを設定（カーソル制約も行う）
-        new_window.view.setViewport(new_window.width, new_window.height);
+        result.new_window.view.setViewport(result.new_window.width, result.new_window.height);
         // 元のウィンドウもサイズが変わったのでビューポートを更新
-        current_window.view.setViewport(current_window.width, current_window.height);
-
-        // ウィンドウリストに追加
-        try self.windows.append(self.allocator, new_window);
+        result.original_window.view.setViewport(result.original_window.width, result.original_window.height);
 
         // 新しいウィンドウをアクティブにする
-        self.current_window_idx = self.windows.items.len - 1;
+        self.window_manager.setActiveWindow(result.new_window_idx);
     }
 
     /// 現在のウィンドウを縦（左右）に分割
     pub fn splitWindowVertically(self: *Editor) !void {
-        const current_window = &self.windows.items[self.current_window_idx];
-
-        // ウィンドウの幅が最小幅未満の場合は分割できない（最低10列は必要）
-        if (current_window.width < 20) {
-            return error.WindowTooSmall;
-        }
-
-        // 分割後のサイズを計算（まだ適用しない）
-        const old_width = current_window.width;
-        const new_width = old_width / 2;
+        const current_window = self.window_manager.getCurrentWindow();
 
         // バッファを取得
         const buffer_state = self.findBufferById(current_window.buffer_id) orelse return error.BufferNotFound;
@@ -1114,89 +1042,35 @@ pub const Editor = struct {
         var new_view = try View.init(self.allocator, buffer_state.editing_ctx.buffer);
         errdefer new_view.deinit(self.allocator);
 
-        // ここから先は失敗しない操作のみ
-        // 現在のウィンドウの幅を半分にする
-        current_window.width = new_width;
+        // WindowManagerで分割（ウィンドウのサイズ調整とリスト追加）
+        const result = try self.window_manager.splitVertically();
 
-        // 新しいウィンドウを右半分に作成
-        const new_window_id = self.next_window_id;
-        self.next_window_id += 1;
-
-        var new_window = Window.init(
-            new_window_id,
-            current_window.buffer_id, // 同じバッファを表示
-            current_window.x + new_width,
-            current_window.y,
-            old_width - new_width,
-            current_window.height,
-        );
-
-        // 分割情報を設定
-        new_window.split_type = .vertical;
-        new_window.split_parent_id = current_window.id;
-        new_window.view = new_view;
+        // 新しいウィンドウにViewを設定
+        result.new_window.view = new_view;
 
         // 言語検出（新しいViewに言語設定を適用）
         const content_preview = buffer_state.editing_ctx.buffer.getContentPreview(512);
-        new_window.view.detectLanguage(buffer_state.filename, content_preview);
+        result.new_window.view.detectLanguage(buffer_state.filename, content_preview);
 
         // ビューポートサイズを設定（カーソル制約も行う）
-        new_window.view.setViewport(new_window.width, new_window.height);
+        result.new_window.view.setViewport(result.new_window.width, result.new_window.height);
         // 元のウィンドウもサイズが変わったのでビューポートを更新
-        current_window.view.setViewport(current_window.width, current_window.height);
-
-        // ウィンドウリストに追加
-        try self.windows.append(self.allocator, new_window);
+        result.original_window.view.setViewport(result.original_window.width, result.original_window.height);
 
         // 新しいウィンドウをアクティブにする
-        self.current_window_idx = self.windows.items.len - 1;
+        self.window_manager.setActiveWindow(result.new_window_idx);
     }
 
     /// 現在のウィンドウを閉じる
     pub fn closeCurrentWindow(self: *Editor) !void {
-        // 最後のウィンドウは閉じられない
-        if (self.windows.items.len == 1) {
-            return error.CannotCloseSoleWindow;
-        }
-
-        // 現在のウィンドウを閉じる
-        var window = &self.windows.items[self.current_window_idx];
-        window.deinit(self.allocator);
-        _ = self.windows.orderedRemove(self.current_window_idx);
-
-        // current_window_idxを調整
-        if (self.current_window_idx >= self.windows.items.len) {
-            self.current_window_idx = self.windows.items.len - 1;
-        }
-
-        // 残ったウィンドウのサイズを再計算
-        try self.recalculateWindowSizes();
+        // WindowManagerに委譲（サイズ再計算も含む）
+        try self.window_manager.closeCurrentWindow();
     }
 
     /// 他のウィンドウをすべて閉じる (C-x 1)
     pub fn deleteOtherWindows(self: *Editor) !void {
-        // ウィンドウが1つしかなければ何もしない
-        if (self.windows.items.len == 1) {
-            return;
-        }
-
-        // 現在のウィンドウを保持
-        const current_window = self.windows.items[self.current_window_idx];
-
-        // 他のウィンドウをすべて解放
-        for (self.windows.items, 0..) |*window, i| {
-            if (i != self.current_window_idx) {
-                window.deinit(self.allocator);
-            }
-        }
-
-        // ウィンドウリストをクリアして現在のウィンドウだけ残す
-        self.windows.clearRetainingCapacity();
-        try self.windows.append(self.allocator, current_window);
-        self.current_window_idx = 0;
-
-        // ウィンドウサイズを再計算（フルスクリーン）
-        try self.recalculateWindowSizes();
+        // WindowManagerに委譲（サイズ再計算も含む）
+        self.window_manager.deleteOtherWindows();
     }
 
     pub fn loadFile(self: *Editor, path: []const u8) !void {
@@ -1309,8 +1183,8 @@ pub const Editor = struct {
         var active_cursor_col: usize = 0;
         var has_active: bool = false;
 
-        for (self.windows.items, 0..) |*window, idx| {
-            const is_active = (idx == self.current_window_idx);
+        for (self.window_manager.iterator(), 0..) |*window, idx| {
+            const is_active = (idx == self.window_manager.current_window_idx);
             const buffer_state = self.findBufferById(window.buffer_id) orelse continue;
             const buffer = buffer_state.editing_ctx.buffer;
 
@@ -1350,81 +1224,9 @@ pub const Editor = struct {
     /// 端末サイズ変更時にウィンドウサイズを再計算
     /// ウィンドウの現在のレイアウト（比率）を維持しつつ新しいサイズに調整
     fn recalculateWindowSizes(self: *Editor) !void {
-        const total_width = self.terminal.width;
-        const total_height = self.terminal.height;
-
-        if (self.windows.items.len == 0) return;
-
-        // ウィンドウが1つの場合は全画面
-        if (self.windows.items.len == 1) {
-            self.windows.items[0].x = 0;
-            self.windows.items[0].y = 0;
-            self.windows.items[0].width = total_width;
-            self.windows.items[0].height = total_height;
-            self.windows.items[0].view.setViewport(total_width, total_height);
-            return;
-        }
-
-        // 複数ウィンドウの場合：レイアウトを分析して再計算
-        // 現在の相対的な位置とサイズを計算してから新しいサイズに適用
-
-        // まず現在の全体サイズを取得（旧サイズ）
-        var old_total_width: usize = 0;
-        var old_total_height: usize = 0;
-        for (self.windows.items) |window| {
-            old_total_width = @max(old_total_width, window.x + window.width);
-            old_total_height = @max(old_total_height, window.y + window.height);
-        }
-
-        // 旧サイズが0の場合はデフォルト値を使用
-        if (old_total_width == 0) old_total_width = total_width;
-        if (old_total_height == 0) old_total_height = total_height;
-
-        // 各ウィンドウの比率を維持してリサイズ
-        for (self.windows.items) |*window| {
-            // X座標と幅を新しい幅に比例してスケール
-            const new_x = (window.x * total_width) / old_total_width;
-            const new_right = ((window.x + window.width) * total_width) / old_total_width;
-            window.x = new_x;
-            window.width = if (new_right > new_x) new_right - new_x else 1;
-
-            // Y座標と高さを新しい高さに比例してスケール
-            const new_y = (window.y * total_height) / old_total_height;
-            const new_bottom = ((window.y + window.height) * total_height) / old_total_height;
-            window.y = new_y;
-            window.height = if (new_bottom > new_y) new_bottom - new_y else 1;
-
-            // 最小サイズを保証
-            if (window.width < 10) window.width = 10;
-            if (window.height < 3) window.height = 3;
-
-            window.view.markFullRedraw();
-        }
-
-        // 境界調整：ウィンドウが画面からはみ出ないようにする
-        for (self.windows.items) |*window| {
-            if (window.x + window.width > total_width) {
-                if (window.x >= total_width) {
-                    window.x = 0;
-                    window.width = total_width;
-                } else {
-                    window.width = total_width - window.x;
-                }
-            }
-            if (window.y + window.height > total_height) {
-                if (window.y >= total_height) {
-                    window.y = 0;
-                    window.height = total_height;
-                } else {
-                    window.height = total_height - window.y;
-                }
-            }
-        }
-
-        // 全ウィンドウのビューポートを更新（カーソル制約も行う）
-        for (self.windows.items) |*window| {
-            window.view.setViewport(window.width, window.height);
-        }
+        // WindowManagerに委譲
+        self.window_manager.updateScreenSize(self.terminal.width, self.terminal.height);
+        self.window_manager.recalculateWindowSizes();
     }
 
     /// メインイベントループ
@@ -1525,7 +1327,7 @@ pub const Editor = struct {
 
     // 現在のカーソル位置の行番号を取得（dirty tracking用）
     pub fn getCurrentLine(self: *const Editor) usize {
-        const view = &self.windows.items[self.current_window_idx].view;
+        const view = &self.window_manager.getCurrentWindowConst().view;
         return view.top_line + view.cursor_y;
     }
 
@@ -1903,7 +1705,7 @@ pub const Editor = struct {
                     'c' => {
                         var modified_count: usize = 0;
                         var first_modified_name: ?[]const u8 = null;
-                        for (self.buffers.items) |buf| {
+                        for (self.buffer_manager.iterator()) |buf| {
                             if (buf.editing_ctx.modified) {
                                 modified_count += 1;
                                 if (first_modified_name == null) {
@@ -1953,9 +1755,7 @@ pub const Editor = struct {
                     '2' => self.splitWindowHorizontally() catch |err| self.showError(err),
                     '3' => self.splitWindowVertically() catch |err| self.showError(err),
                     'o' => {
-                        if (self.windows.items.len > 1) {
-                            self.current_window_idx = (self.current_window_idx + 1) % self.windows.items.len;
-                        }
+                        self.window_manager.nextWindow();
                     },
                     '0' => self.closeCurrentWindow() catch |err| self.showError(err),
                     '1' => self.deleteOtherWindows() catch |err| self.showError(err),
@@ -2663,7 +2463,7 @@ pub const Editor = struct {
         var stdin_data: ?[]const u8 = null;
         var stdin_allocated = false;
 
-        const window = &self.windows.items[self.current_window_idx];
+        const window = self.window_manager.getCurrentWindow();
 
         switch (parsed.input_source) {
             .selection => {
@@ -2759,7 +2559,7 @@ pub const Editor = struct {
 
     /// シェル実行結果を処理
     fn processShellResult(self: *Editor, stdout: []const u8, stderr: []const u8, exit_status: ?u32, input_source: ShellInputSource, output_dest: ShellOutputDest) !void {
-        const window = &self.windows.items[self.current_window_idx];
+        const window = self.window_manager.getCurrentWindow();
 
         // 結果を処理
         switch (output_dest) {
@@ -2805,8 +2605,9 @@ pub const Editor = struct {
                 cmd_buffer.editing_ctx.buffer.insertSlice(0, output) catch {};
 
                 // *Command* バッファがどこかのウィンドウに表示されているか確認
+                const windows = self.window_manager.iterator();
                 var cmd_window_idx: ?usize = null;
-                for (self.windows.items, 0..) |win, idx| {
+                for (windows, 0..) |*win, idx| {
                     if (win.buffer_id == cmd_buffer.id) {
                         cmd_window_idx = idx;
                         break;
@@ -2815,21 +2616,23 @@ pub const Editor = struct {
 
                 if (cmd_window_idx) |idx| {
                     // 既に表示されている：そのウィンドウを更新
-                    self.windows.items[idx].view.markFullRedraw();
-                    self.windows.items[idx].view.cursor_x = 0;
-                    self.windows.items[idx].view.cursor_y = 0;
-                    self.windows.items[idx].view.top_line = 0;
-                    self.windows.items[idx].view.top_col = 0;
+                    var win = &self.window_manager.iterator()[idx];
+                    win.view.markFullRedraw();
+                    win.view.cursor_x = 0;
+                    win.view.cursor_y = 0;
+                    win.view.top_line = 0;
+                    win.view.top_col = 0;
                 } else {
                     // 表示されていない：ウィンドウを分割して下に *Command* を表示
                     const new_win_idx = try self.openCommandBufferWindow();
                     // 新しいウィンドウのビューを更新（バッファが更新されているため）
-                    self.windows.items[new_win_idx].view.buffer = cmd_buffer.editing_ctx.buffer;
-                    self.windows.items[new_win_idx].view.markFullRedraw();
-                    self.windows.items[new_win_idx].view.cursor_x = 0;
-                    self.windows.items[new_win_idx].view.cursor_y = 0;
-                    self.windows.items[new_win_idx].view.top_line = 0;
-                    self.windows.items[new_win_idx].view.top_col = 0;
+                    var new_win = &self.window_manager.iterator()[new_win_idx];
+                    new_win.view.buffer = cmd_buffer.editing_ctx.buffer;
+                    new_win.view.markFullRedraw();
+                    new_win.view.cursor_x = 0;
+                    new_win.view.cursor_y = 0;
+                    new_win.view.top_line = 0;
+                    new_win.view.top_col = 0;
                 }
 
                 // カレントウィンドウはそのまま（移動しない）
@@ -2872,7 +2675,7 @@ pub const Editor = struct {
                                 }
                                 self.getCurrentBuffer().editing_ctx.modified = true;
                                 self.setCursorToPos(start);
-                                self.windows.items[self.current_window_idx].mark_pos = null; // マークをクリア
+                                self.window_manager.getCurrentWindow().mark_pos = null; // マークをクリア
                                 self.getCurrentView().markDirty(0, null);
                             }
                         } else {

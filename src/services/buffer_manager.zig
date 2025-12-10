@@ -16,7 +16,6 @@
 
 const std = @import("std");
 const Buffer = @import("../buffer.zig").Buffer;
-const UndoStack = @import("undo_manager.zig").UndoStack;
 const EditingContext = @import("../editing_context.zig").EditingContext;
 
 /// バッファ状態
