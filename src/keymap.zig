@@ -1,0 +1,208 @@
+// キーマップ（HashMapベース）
+// ランタイムでキーバインドを変更可能
+//
+// 使い方:
+// 1. Editor.initでKeymap.initを呼ぶ
+// 2. loadDefaults()でデフォルトキーバインドを登録
+// 3. handleNormalKeyでfindCtrl/findAlt/findSpecialを使う
+// 4. ユーザー設定ファイル対応時はbindCtrl等で上書き
+
+const std = @import("std");
+const Editor = @import("editor.zig").Editor;
+const input = @import("input.zig");
+
+// コマンドモジュール
+const edit = @import("commands/edit.zig");
+const movement = @import("commands/movement.zig");
+
+pub const CommandFn = *const fn (*Editor) anyerror!void;
+
+/// 特殊キーの識別子（HashMapのキーとして使用）
+pub const SpecialKey = enum(u8) {
+    arrow_up,
+    arrow_down,
+    arrow_left,
+    arrow_right,
+    page_up,
+    page_down,
+    home,
+    end_key,
+    delete,
+    backspace,
+    enter,
+    tab,
+    shift_tab,
+    ctrl_tab,
+    ctrl_shift_tab,
+    alt_delete,
+    alt_arrow_up,
+    alt_arrow_down,
+};
+
+pub const Keymap = struct {
+    ctrl_map: std.AutoHashMap(u8, CommandFn),
+    alt_map: std.AutoHashMap(u8, CommandFn),
+    special_map: std.AutoHashMap(SpecialKey, CommandFn),
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator) !Keymap {
+        return .{
+            .ctrl_map = std.AutoHashMap(u8, CommandFn).init(allocator),
+            .alt_map = std.AutoHashMap(u8, CommandFn).init(allocator),
+            .special_map = std.AutoHashMap(SpecialKey, CommandFn).init(allocator),
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *Keymap) void {
+        self.ctrl_map.deinit();
+        self.alt_map.deinit();
+        self.special_map.deinit();
+    }
+
+    // キーバインド登録
+    pub fn bindCtrl(self: *Keymap, key: u8, handler: CommandFn) !void {
+        try self.ctrl_map.put(key, handler);
+    }
+
+    pub fn bindAlt(self: *Keymap, key: u8, handler: CommandFn) !void {
+        try self.alt_map.put(key, handler);
+    }
+
+    pub fn bindSpecial(self: *Keymap, key: SpecialKey, handler: CommandFn) !void {
+        try self.special_map.put(key, handler);
+    }
+
+    // キーバインド検索
+    pub fn findCtrl(self: *Keymap, key: u8) ?CommandFn {
+        return self.ctrl_map.get(key);
+    }
+
+    pub fn findAlt(self: *Keymap, key: u8) ?CommandFn {
+        return self.alt_map.get(key);
+    }
+
+    pub fn findSpecial(self: *Keymap, key: SpecialKey) ?CommandFn {
+        return self.special_map.get(key);
+    }
+
+    /// input.Key を SpecialKey に変換
+    pub fn toSpecialKey(key: input.Key) ?SpecialKey {
+        return switch (key) {
+            .arrow_up => .arrow_up,
+            .arrow_down => .arrow_down,
+            .arrow_left => .arrow_left,
+            .arrow_right => .arrow_right,
+            .page_up => .page_up,
+            .page_down => .page_down,
+            .home => .home,
+            .end_key => .end_key,
+            .delete => .delete,
+            .backspace => .backspace,
+            .enter => .enter,
+            .tab => .tab,
+            .shift_tab => .shift_tab,
+            .ctrl_tab => .ctrl_tab,
+            .ctrl_shift_tab => .ctrl_shift_tab,
+            .alt_delete => .alt_delete,
+            .alt_arrow_up => .alt_arrow_up,
+            .alt_arrow_down => .alt_arrow_down,
+            else => null,
+        };
+    }
+
+    // デフォルトキーバインドを登録
+    pub fn loadDefaults(self: *Keymap) !void {
+        // ========================================
+        // Ctrl キーバインド
+        // ========================================
+
+        // マーク設定 (C-@ / C-Space)
+        try self.bindCtrl(0, edit.setMark);
+        try self.bindCtrl('@', edit.setMark);
+
+        // カーソル移動
+        try self.bindCtrl('f', movement.cursorRight);
+        try self.bindCtrl('b', movement.cursorLeft);
+        try self.bindCtrl('n', movement.cursorDown);
+        try self.bindCtrl('p', movement.cursorUp);
+        try self.bindCtrl('a', movement.lineStart);
+        try self.bindCtrl('e', movement.lineEnd);
+
+        // 編集
+        try self.bindCtrl('d', edit.deleteChar);
+        try self.bindCtrl('k', edit.killLine);
+        try self.bindCtrl('w', edit.killRegion);
+        try self.bindCtrl('y', edit.yank);
+
+        // その他
+        try self.bindCtrl('g', edit.clearError);
+        try self.bindCtrl('u', edit.undo);
+        try self.bindCtrl(31, edit.redo); // C-/
+        try self.bindCtrl('/', edit.redo);
+
+        // ページスクロール
+        try self.bindCtrl('v', movement.pageDown);
+
+        // 画面中央化
+        try self.bindCtrl('l', movement.recenter);
+
+        // ========================================
+        // Alt キーバインド
+        // ========================================
+
+        // 単語移動
+        try self.bindAlt('f', movement.forwardWord);
+        try self.bindAlt('b', movement.backwardWord);
+        try self.bindAlt('d', edit.deleteWord);
+
+        // コピー
+        try self.bindAlt('w', edit.copyRegion);
+
+        // バッファ移動
+        try self.bindAlt('<', movement.bufferStart);
+        try self.bindAlt('>', movement.bufferEnd);
+
+        // 段落移動
+        try self.bindAlt('{', movement.backwardParagraph);
+        try self.bindAlt('}', movement.forwardParagraph);
+
+        // 行操作
+        try self.bindAlt('^', edit.joinLine);
+        try self.bindAlt(';', edit.toggleComment);
+
+        // ページスクロール（上）
+        try self.bindAlt('v', movement.pageUp);
+
+        // ========================================
+        // 特殊キー
+        // ========================================
+
+        // 矢印キー
+        try self.bindSpecial(.arrow_up, movement.cursorUp);
+        try self.bindSpecial(.arrow_down, movement.cursorDown);
+        try self.bindSpecial(.arrow_left, movement.cursorLeft);
+        try self.bindSpecial(.arrow_right, movement.cursorRight);
+
+        // Alt+矢印
+        try self.bindSpecial(.alt_arrow_up, edit.moveLineUp);
+        try self.bindSpecial(.alt_arrow_down, edit.moveLineDown);
+        try self.bindSpecial(.alt_delete, edit.deleteWord);
+
+        // ページ
+        try self.bindSpecial(.page_down, movement.pageDown);
+        try self.bindSpecial(.page_up, movement.pageUp);
+
+        // ホーム/エンド
+        try self.bindSpecial(.home, movement.lineStart);
+        try self.bindSpecial(.end_key, movement.lineEnd);
+
+        // 編集
+        try self.bindSpecial(.delete, edit.deleteChar);
+        try self.bindSpecial(.backspace, edit.backspace);
+
+        // ウィンドウ切り替え
+        try self.bindSpecial(.ctrl_tab, movement.nextWindow);
+        try self.bindSpecial(.ctrl_shift_tab, movement.prevWindow);
+    }
+};

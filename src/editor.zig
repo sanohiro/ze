@@ -50,6 +50,10 @@ const WindowManager = @import("services/window_manager.zig").WindowManager;
 const Window = @import("services/window_manager.zig").Window;
 const SplitType = @import("services/window_manager.zig").SplitType;
 const EditingContext = @import("editing_context.zig").EditingContext;
+const Keymap = @import("keymap.zig").Keymap;
+const edit = @import("commands/edit.zig");
+const rectangle = @import("commands/rectangle.zig");
+const mx = @import("commands/mx.zig");
 
 /// エディタの状態遷移を管理するモード
 ///
@@ -150,6 +154,9 @@ pub const Editor = struct {
     shell_service: ShellService, // シェルコマンド実行サービス（履歴含む）
     search_service: SearchService, // 検索サービス（履歴含む）
 
+    // キーマップ
+    keymap: Keymap, // キーバインド設定（ランタイム変更可能）
+
     pub fn init(allocator: std.mem.Allocator) !Editor {
         // ターミナルを先に初期化（サイズ取得のため）
         const terminal = try Terminal.init(allocator);
@@ -173,7 +180,7 @@ pub const Editor = struct {
         var windows: std.ArrayList(Window) = .{};
         try windows.append(allocator, first_window);
 
-        const editor = Editor{
+        var editor = Editor{
             .terminal = terminal,
             .allocator = allocator,
             .running = true,
@@ -197,7 +204,11 @@ pub const Editor = struct {
             .replace_match_count = 0,
             .shell_service = ShellService.init(allocator),
             .search_service = SearchService.init(allocator),
+            .keymap = try Keymap.init(allocator),
         };
+
+        // デフォルトキーバインドを登録
+        try editor.keymap.loadDefaults();
 
         return editor;
     }
@@ -217,6 +228,9 @@ pub const Editor = struct {
 
         // ターミナルを解放
         self.terminal.deinit();
+
+        // キーマップを解放
+        self.keymap.deinit();
 
         // グローバルバッファの解放
         if (self.kill_ring) |text| {
@@ -289,7 +303,7 @@ pub const Editor = struct {
 
     /// 読み取り専用チェック（編集前に呼ぶ）
     /// 読み取り専用ならエラー表示してtrueを返す
-    fn isReadOnly(self: *Editor) bool {
+    pub fn isReadOnly(self: *Editor) bool {
         if (self.getCurrentBuffer().readonly) {
             self.getCurrentView().setError("Buffer is read-only");
             return true;
@@ -298,7 +312,7 @@ pub const Editor = struct {
     }
 
     /// プロンプトを設定（古いバッファを自動解放）
-    fn setPrompt(self: *Editor, comptime fmt: []const u8, args: anytype) void {
+    pub fn setPrompt(self: *Editor, comptime fmt: []const u8, args: anytype) void {
         if (self.prompt_buffer) |old| {
             self.allocator.free(old);
         }
@@ -1479,7 +1493,7 @@ pub const Editor = struct {
 
     // バッファから指定範囲のテキストを取得（削除前に使用）
     // PieceIterator.seekを使ってO(pieces + len)で効率的に取得
-    fn extractText(self: *Editor, pos: usize, len: usize) ![]u8 {
+    pub fn extractText(self: *Editor, pos: usize, len: usize) ![]u8 {
         const buffer = self.getCurrentBufferContent();
         const buf_len = buffer.len();
 
@@ -1510,7 +1524,7 @@ pub const Editor = struct {
     }
 
     // 現在のカーソル位置の行番号を取得（dirty tracking用）
-    fn getCurrentLine(self: *const Editor) usize {
+    pub fn getCurrentLine(self: *const Editor) usize {
         const view = &self.windows.items[self.current_window_idx].view;
         return view.top_line + view.cursor_y;
     }
@@ -1557,12 +1571,12 @@ pub const Editor = struct {
     }
 
     // 編集操作を記録（EditingContextに委譲）
-    fn recordInsert(self: *Editor, pos: usize, text: []const u8, cursor_pos_before_edit: usize) !void {
+    pub fn recordInsert(self: *Editor, pos: usize, text: []const u8, cursor_pos_before_edit: usize) !void {
         const buffer_state = self.getCurrentBuffer();
         try buffer_state.editing_ctx.recordInsertOp(pos, text, cursor_pos_before_edit);
     }
 
-    fn recordDelete(self: *Editor, pos: usize, text: []const u8, cursor_pos_before_edit: usize) !void {
+    pub fn recordDelete(self: *Editor, pos: usize, text: []const u8, cursor_pos_before_edit: usize) !void {
         const buffer_state = self.getCurrentBuffer();
         try buffer_state.editing_ctx.recordDeleteOp(pos, text, cursor_pos_before_edit);
     }
@@ -1573,34 +1587,8 @@ pub const Editor = struct {
         try buffer_state.editing_ctx.recordReplaceOp(pos, old_text, new_text, cursor_pos_before_edit);
     }
 
-    fn undo(self: *Editor) !void {
-        const buffer_state = self.getCurrentBuffer();
-
-        const result = try buffer_state.editing_ctx.undoWithCursor();
-        if (result == null) return;
-
-        // 画面全体を再描画
-        self.getCurrentView().markFullRedraw();
-
-        // カーソル位置を復元（保存された位置へ）
-        self.restoreCursorPos(result.?.cursor_pos);
-    }
-
-    fn redo(self: *Editor) !void {
-        const buffer_state = self.getCurrentBuffer();
-
-        const result = try buffer_state.editing_ctx.redoWithCursor();
-        if (result == null) return;
-
-        // 画面全体を再描画
-        self.getCurrentView().markFullRedraw();
-
-        // カーソル位置を復元（保存された位置へ）
-        self.restoreCursorPos(result.?.cursor_pos);
-    }
-
     // バイト位置からカーソル座標を計算して設定（grapheme cluster考慮）
-    fn setCursorToPos(self: *Editor, target_pos: usize) void {
+    pub fn setCursorToPos(self: *Editor, target_pos: usize) void {
         const buffer = self.getCurrentBufferContent();
         const view = self.getCurrentView();
         const clamped_pos = @min(target_pos, buffer.len());
@@ -1654,7 +1642,7 @@ pub const Editor = struct {
     }
 
     // エイリアス: restoreCursorPosはsetCursorToPosと同じ
-    fn restoreCursorPos(self: *Editor, target_pos: usize) void {
+    pub fn restoreCursorPos(self: *Editor, target_pos: usize) void {
         self.setCursorToPos(target_pos);
     }
 
@@ -1940,7 +1928,7 @@ pub const Editor = struct {
             },
             .char => |c| {
                 switch (c) {
-                    'h' => self.selectAll(),
+                    'h' => edit.selectAll(self) catch {},
                     'r' => {
                         self.mode = .prefix_r;
                         return true;
@@ -1985,8 +1973,8 @@ pub const Editor = struct {
         switch (key) {
             .char => |c| {
                 switch (c) {
-                    'k' => self.killRectangle(),
-                    'y' => self.yankRectangle(),
+                    'k' => rectangle.killRectangle(self),
+                    'y' => rectangle.yankRectangle(self),
                     't' => self.getCurrentView().setError("C-x r t not implemented yet"),
                     else => self.getCurrentView().setError("Unknown rectangle command"),
                 }
@@ -2181,7 +2169,7 @@ pub const Editor = struct {
                 return true;
             },
             .enter => {
-                try self.executeMxCommand();
+                try mx.execute(self);
                 return true;
             },
             else => {},
@@ -2195,44 +2183,16 @@ pub const Editor = struct {
     fn handleNormalKey(self: *Editor, key: input.Key) !void {
         switch (key) {
             .ctrl => |c| {
+                // keymapから検索
+                if (self.keymap.findCtrl(c)) |handler| {
+                    try handler(self);
+                    return;
+                }
+                // keymapにない特殊処理
                 switch (c) {
-                    0, '@' => self.setMark(),
                     'x' => {
                         self.mode = .prefix_x;
                         self.getCurrentView().setError("C-x-");
-                    },
-                    'f' => self.getCurrentView().moveCursorRight(),
-                    'b' => self.getCurrentView().moveCursorLeft(),
-                    'n' => self.getCurrentView().moveCursorDown(),
-                    'p' => self.getCurrentView().moveCursorUp(),
-                    'a' => self.getCurrentView().moveToLineStart(),
-                    'e' => self.getCurrentView().moveToLineEnd(),
-                    'd' => try self.deleteChar(),
-                    'k' => try self.killLine(),
-                    'w' => try self.killRegion(),
-                    'y' => try self.yank(),
-                    'g' => self.getCurrentView().clearError(),
-                    'u' => try self.undo(),
-                    31, '/' => try self.redo(),
-                    'v' => {
-                        const view = self.getCurrentView();
-                        const page_size = if (view.viewport_height >= 3) view.viewport_height - 2 else 1;
-                        var i: usize = 0;
-                        while (i < page_size) : (i += 1) {
-                            view.moveCursorDown();
-                        }
-                    },
-                    'l' => {
-                        const view = self.getCurrentView();
-                        const visible_lines = if (view.viewport_height >= 2) view.viewport_height - 2 else 1;
-                        const center = visible_lines / 2;
-                        const current_line = view.top_line + view.cursor_y;
-                        if (current_line >= center) {
-                            view.top_line = current_line - center;
-                        } else {
-                            view.top_line = 0;
-                        }
-                        view.cursor_y = if (current_line >= view.top_line) current_line - view.top_line else 0;
                     },
                     's' => {
                         if (self.last_search) |search_str| {
@@ -2268,6 +2228,12 @@ pub const Editor = struct {
                 }
             },
             .alt => |c| {
+                // keymapから検索
+                if (self.keymap.findAlt(c)) |handler| {
+                    try handler(self);
+                    return;
+                }
+                // keymapにない特殊処理
                 switch (c) {
                     '%' => {
                         self.mode = .query_replace_input_search;
@@ -2276,29 +2242,11 @@ pub const Editor = struct {
                         self.replace_match_count = 0;
                         self.getCurrentView().setError("Query replace: ");
                     },
-                    'f' => try self.forwardWord(),
-                    'b' => try self.backwardWord(),
-                    'd' => try self.deleteWord(),
-                    'w' => try self.copyRegion(),
                     '|' => {
                         self.mode = .shell_command;
                         self.clearInputBuffer();
                         self.prompt_prefix_len = 3;
                         self.getCurrentView().setError("| ");
-                    },
-                    '<' => self.getCurrentView().moveToBufferStart(),
-                    '>' => self.getCurrentView().moveToBufferEnd(),
-                    '{' => try self.backwardParagraph(),
-                    '}' => try self.forwardParagraph(),
-                    '^' => try self.joinLine(),
-                    ';' => try self.toggleComment(),
-                    'v' => {
-                        const view = self.getCurrentView();
-                        const page_size = if (view.viewport_height >= 3) view.viewport_height - 2 else 1;
-                        var i: usize = 0;
-                        while (i < page_size) : (i += 1) {
-                            view.moveCursorUp();
-                        }
                     },
                     'x' => {
                         self.mode = .mx_command;
@@ -2309,13 +2257,6 @@ pub const Editor = struct {
                     else => {},
                 }
             },
-            .alt_delete => try self.deleteWord(),
-            .alt_arrow_up => try self.moveLineUp(),
-            .alt_arrow_down => try self.moveLineDown(),
-            .arrow_up => self.getCurrentView().moveCursorUp(),
-            .arrow_down => self.getCurrentView().moveCursorDown(),
-            .arrow_left => self.getCurrentView().moveCursorLeft(),
-            .arrow_right => self.getCurrentView().moveCursorRight(),
             .enter => {
                 const buffer_state = self.getCurrentBuffer();
                 if (buffer_state.filename) |fname| {
@@ -2324,7 +2265,7 @@ pub const Editor = struct {
                         return;
                     }
                 }
-                const indent = self.getCurrentLineIndent();
+                const indent = edit.getCurrentLineIndent(self);
                 try self.insertChar('\n');
                 if (indent.len > 0) {
                     for (indent) |ch| {
@@ -2332,52 +2273,25 @@ pub const Editor = struct {
                     }
                 }
             },
-            .backspace => try self.backspace(),
             .tab => {
                 const window = self.getCurrentWindow();
                 if (window.mark_pos != null) {
-                    try self.indentRegion();
+                    try edit.indentRegion(self);
                 } else {
                     try self.insertChar('\t');
                 }
             },
-            .shift_tab => try self.unindentRegion(),
-            .ctrl_tab => {
-                if (self.windows.items.len > 1) {
-                    self.current_window_idx = (self.current_window_idx + 1) % self.windows.items.len;
-                }
-            },
-            .ctrl_shift_tab => {
-                if (self.windows.items.len > 1) {
-                    if (self.current_window_idx == 0) {
-                        self.current_window_idx = self.windows.items.len - 1;
-                    } else {
-                        self.current_window_idx -= 1;
+            .shift_tab => try edit.unindentRegion(self),
+            .char => |c| if (c >= 32 and c < 127) try self.insertCodepoint(c),
+            .codepoint => |cp| try self.insertCodepoint(cp),
+            else => {
+                // 特殊キーをkeymapで検索
+                if (Keymap.toSpecialKey(key)) |special_key| {
+                    if (self.keymap.findSpecial(special_key)) |handler| {
+                        try handler(self);
                     }
                 }
             },
-            .page_down => {
-                const view = self.getCurrentView();
-                const page_size = if (view.viewport_height >= 3) view.viewport_height - 2 else 1;
-                var i: usize = 0;
-                while (i < page_size) : (i += 1) {
-                    view.moveCursorDown();
-                }
-            },
-            .page_up => {
-                const view = self.getCurrentView();
-                const page_size = if (view.viewport_height >= 3) view.viewport_height - 2 else 1;
-                var i: usize = 0;
-                while (i < page_size) : (i += 1) {
-                    view.moveCursorUp();
-                }
-            },
-            .home => self.getCurrentView().moveToLineStart(),
-            .end_key => self.getCurrentView().moveToLineEnd(),
-            .delete => try self.deleteChar(),
-            .char => |c| if (c >= 32 and c < 127) try self.insertCodepoint(c),
-            .codepoint => |cp| try self.insertCodepoint(cp),
-            else => {},
         }
     }
 
@@ -2547,666 +2461,8 @@ pub const Editor = struct {
         }
     }
 
-    fn deleteChar(self: *Editor) !void {
-        if (self.isReadOnly()) return;
-        const buffer_state = self.getCurrentBuffer();
-        const buffer = self.getCurrentBufferContent();
-        const current_line = self.getCurrentLine();
-        const pos = self.getCurrentView().getCursorBufferPos();
-        if (pos >= buffer.len()) return;
-
-        // カーソル位置のgrapheme clusterのバイト数を取得
-        var iter = PieceIterator.init(buffer);
-        while (iter.global_pos < pos) {
-            _ = iter.next();
-        }
-
-        const cluster = iter.nextGraphemeCluster() catch {
-            const deleted = try self.extractText(pos, 1);
-            errdefer self.allocator.free(deleted);
-
-            try buffer.delete(pos, 1);
-            errdefer buffer.insertSlice(pos, deleted) catch unreachable; // rollback失敗は致命的
-            try self.recordDelete(pos, deleted, pos); // 編集前のカーソル位置を記録
-
-            buffer_state.editing_ctx.modified = true;
-            // 改行削除の場合は末尾まで再描画
-            if (std.mem.indexOf(u8, deleted, "\n") != null) {
-                self.getCurrentView().markDirty(current_line, null);
-            } else {
-                self.getCurrentView().markDirty(current_line, current_line);
-            }
-            self.allocator.free(deleted);
-            return;
-        };
-
-        if (cluster) |gc| {
-            const deleted = try self.extractText(pos, gc.byte_len);
-            errdefer self.allocator.free(deleted);
-
-            try buffer.delete(pos, gc.byte_len);
-            errdefer buffer.insertSlice(pos, deleted) catch unreachable; // rollback失敗は致命的
-            try self.recordDelete(pos, deleted, pos); // 編集前のカーソル位置を記録
-
-            buffer_state.editing_ctx.modified = true;
-            // 改行削除の場合は末尾まで再描画
-            if (std.mem.indexOf(u8, deleted, "\n") != null) {
-                self.getCurrentView().markDirty(current_line, null);
-            } else {
-                self.getCurrentView().markDirty(current_line, current_line);
-            }
-            self.allocator.free(deleted);
-        }
-    }
-
-    fn backspace(self: *Editor) !void {
-        if (self.isReadOnly()) return;
-        const buffer_state = self.getCurrentBuffer();
-        const buffer = self.getCurrentBufferContent();
-        const current_line = self.getCurrentLine();
-        const pos = self.getCurrentView().getCursorBufferPos();
-        if (pos == 0) return;
-
-        // 削除するgrapheme clusterのバイト数と幅を取得
-        var iter = PieceIterator.init(buffer);
-        var char_start: usize = 0;
-        var char_width: usize = 1;
-        var char_len: usize = 1;
-
-        while (iter.global_pos < pos) {
-            char_start = iter.global_pos;
-            const cluster = iter.nextGraphemeCluster() catch {
-                _ = iter.next();
-                continue;
-            };
-            if (cluster) |gc| {
-                char_width = gc.width;
-                char_len = gc.byte_len;
-            } else {
-                break;
-            }
-        }
-
-        const deleted = try self.extractText(char_start, char_len);
-        errdefer self.allocator.free(deleted);
-
-        // 改行削除の場合、削除後のカーソル位置を計算
-        const is_newline = std.mem.indexOf(u8, deleted, "\n") != null;
-
-        try buffer.delete(char_start, char_len);
-        errdefer buffer.insertSlice(char_start, deleted) catch unreachable; // rollback失敗は致命的
-        try self.recordDelete(char_start, deleted, pos); // 編集前のカーソル位置を記録
-
-        buffer_state.editing_ctx.modified = true;
-        // 改行削除の場合は末尾まで再描画
-        if (is_newline) {
-            self.getCurrentView().markDirty(current_line, null);
-        } else {
-            self.getCurrentView().markDirty(current_line, current_line);
-        }
-        self.allocator.free(deleted);
-
-        // カーソル移動
-        const view = self.getCurrentView();
-        if (view.cursor_x >= char_width) {
-            view.cursor_x -= char_width;
-            // 水平スクロール: カーソルが左端より左に行った場合
-            if (view.cursor_x < view.top_col) {
-                view.top_col = view.cursor_x;
-                view.markFullRedraw();
-            }
-        } else if (view.cursor_y > 0) {
-            view.cursor_y -= 1;
-            if (is_newline) {
-                // 改行削除の場合、削除位置（char_start）が新しいカーソル位置
-                // そこまでの行内の表示幅を計算
-                const new_line = self.getCurrentLine();
-                if (buffer.getLineStart(view.top_line + new_line)) |line_start| {
-                    var x: usize = 0;
-                    var width_iter = PieceIterator.init(buffer);
-                    width_iter.seek(line_start);
-                    while (width_iter.global_pos < char_start) {
-                        const cluster = width_iter.nextGraphemeCluster() catch break;
-                        if (cluster) |gc| {
-                            if (gc.base == '\n') break;
-                            x += gc.width;
-                        } else {
-                            break;
-                        }
-                    }
-                    view.cursor_x = x;
-                    // 水平スクロールを調整（xが大きくても小さくても対応）
-                    const line_num_width = view.getLineNumberWidth();
-                    const visible_width = if (view.viewport_width > line_num_width) view.viewport_width - line_num_width else 1;
-                    if (view.cursor_x >= view.top_col + visible_width) {
-                        view.top_col = view.cursor_x - visible_width + 1;
-                    } else if (view.cursor_x < view.top_col) {
-                        view.top_col = view.cursor_x;
-                    }
-                    view.markFullRedraw();
-                }
-            } else {
-                view.moveToLineEnd();
-            }
-        }
-    }
-
-    fn killLine(self: *Editor) !void {
-        if (self.isReadOnly()) return;
-        const buffer_state = self.getCurrentBuffer();
-        const buffer = self.getCurrentBufferContent();
-        const current_line = self.getCurrentLine();
-        const pos = self.getCurrentView().getCursorBufferPos();
-        const end_pos = buffer.findNextLineFromPos(pos);
-        const count = end_pos - pos;
-        if (count > 0) {
-            const deleted = try self.extractText(pos, count);
-            errdefer self.allocator.free(deleted);
-
-            try buffer.delete(pos, count);
-            errdefer buffer.insertSlice(pos, deleted) catch unreachable; // rollback失敗は致命的
-            try self.recordDelete(pos, deleted, pos); // 編集前のカーソル位置を記録
-
-            buffer_state.editing_ctx.modified = true;
-            // 改行削除の場合は末尾まで再描画
-            if (std.mem.indexOf(u8, deleted, "\n") != null) {
-                self.getCurrentView().markDirty(current_line, null);
-            } else {
-                self.getCurrentView().markDirty(current_line, current_line);
-            }
-            self.allocator.free(deleted);
-        }
-    }
-
-    /// M-^ 行の結合 (delete-indentation)
-    /// 現在の行の先頭インデントを削除し、前の行と結合
-    fn joinLine(self: *Editor) !void {
-        if (self.isReadOnly()) return;
-        const buffer_state = self.getCurrentBuffer();
-        const buffer = self.getCurrentBufferContent();
-        const view = self.getCurrentView();
-
-        // 現在の行の先頭位置を取得
-        const current_line = self.getCurrentLine();
-        if (current_line == 0) {
-            // 最初の行では何もしない
-            return;
-        }
-
-        // 現在の行の先頭位置を取得
-        const line_start = buffer.getLineStart(current_line) orelse return;
-
-        // 先頭のインデント（空白とタブ）をスキップして最初の非空白文字を見つける
-        var iter = PieceIterator.init(buffer);
-        iter.seek(line_start);
-        var first_non_space = line_start;
-        while (iter.next()) |ch| {
-            if (ch != ' ' and ch != '\t') {
-                first_non_space = iter.global_pos - 1;
-                break;
-            }
-        }
-
-        // 前の行の末尾位置を取得（改行の位置）
-        const prev_line_end = line_start - 1; // 前の行の改行文字の位置
-
-        // 削除範囲: 前の行の改行 + 現在の行のインデント
-        const delete_start = prev_line_end;
-        const delete_len = first_non_space - prev_line_end;
-
-        if (delete_len > 0) {
-            const deleted = try self.extractText(delete_start, delete_len);
-            errdefer self.allocator.free(deleted);
-
-            try buffer.delete(delete_start, delete_len);
-            try self.recordDelete(delete_start, deleted, view.getCursorBufferPos());
-
-            // 前の行の末尾にスペースを挿入（前の行の末尾が空白でない場合）
-            var needs_space = true;
-            if (delete_start > 0) {
-                var check_iter = PieceIterator.init(buffer);
-                check_iter.seek(delete_start - 1);
-                if (check_iter.next()) |prev_char| {
-                    if (prev_char == ' ' or prev_char == '\t') {
-                        needs_space = false;
-                    }
-                }
-            }
-
-            if (needs_space and first_non_space > line_start) {
-                try buffer.insertSlice(delete_start, " ");
-                try self.recordInsert(delete_start, " ", view.getCursorBufferPos());
-            }
-
-            buffer_state.editing_ctx.modified = true;
-            view.markDirty(current_line - 1, null);
-
-            // カーソルを結合位置に移動
-            self.setCursorToPos(delete_start);
-
-            self.allocator.free(deleted);
-        }
-    }
-
-    /// 行の複製 (duplicate-line)
-    fn duplicateLine(self: *Editor) !void {
-        if (self.isReadOnly()) return;
-        const buffer_state = self.getCurrentBuffer();
-        const buffer = self.getCurrentBufferContent();
-        const view = self.getCurrentView();
-        const current_line = self.getCurrentLine();
-
-        // 現在の行の開始・終了位置を取得
-        const line_start = buffer.getLineStart(current_line) orelse return;
-        const line_end = buffer.findNextLineFromPos(line_start);
-
-        // 行の内容を取得（改行を含む）
-        const line_len = line_end - line_start;
-        if (line_len == 0) return;
-
-        const line_content = try self.extractText(line_start, line_len);
-        defer self.allocator.free(line_content);
-
-        // 改行後に挿入（または行末に改行+内容を挿入）
-        const insert_pos = line_end;
-        var to_insert: []const u8 = undefined;
-        var allocated = false;
-
-        if (line_end < buffer.len()) {
-            // 改行がある場合はそのまま挿入
-            to_insert = line_content;
-        } else {
-            // ファイル末尾の場合は改行を追加
-            var with_newline = try self.allocator.alloc(u8, line_len + 1);
-            with_newline[0] = '\n';
-            @memcpy(with_newline[1..], line_content);
-            to_insert = with_newline;
-            allocated = true;
-        }
-        defer if (allocated) self.allocator.free(to_insert);
-
-        try buffer.insertSlice(insert_pos, to_insert);
-        try self.recordInsert(insert_pos, to_insert, view.getCursorBufferPos());
-
-        buffer_state.editing_ctx.modified = true;
-        view.markDirty(current_line, null);
-
-        // カーソルを複製した行に移動
-        view.moveCursorDown();
-    }
-
-    /// 行を上に移動
-    fn moveLineUp(self: *Editor) !void {
-        if (self.isReadOnly()) return;
-        const buffer_state = self.getCurrentBuffer();
-        const buffer = self.getCurrentBufferContent();
-        const view = self.getCurrentView();
-        const current_line = self.getCurrentLine();
-
-        if (current_line == 0) return; // 最初の行は移動できない
-
-        // 現在の行を取得
-        const line_start = buffer.getLineStart(current_line) orelse return;
-        const line_end = buffer.findNextLineFromPos(line_start);
-
-        // 前の行の開始位置
-        const prev_line_start = buffer.getLineStart(current_line - 1) orelse return;
-
-        // 現在の行の内容を取得
-        const line_len = line_end - line_start;
-        const line_content = try self.extractText(line_start, line_len);
-        defer self.allocator.free(line_content);
-
-        // 現在の行を削除
-        try buffer.delete(line_start, line_len);
-
-        // 前の行の前に挿入
-        try buffer.insertSlice(prev_line_start, line_content);
-
-        // Undo記録（単純化のためdeleteとinsertを別々に記録）
-        try self.recordDelete(line_start, line_content, view.getCursorBufferPos());
-        try self.recordInsert(prev_line_start, line_content, view.getCursorBufferPos());
-
-        buffer_state.editing_ctx.modified = true;
-        view.markDirty(current_line - 1, null);
-
-        // カーソルを移動した行に合わせる
-        view.moveCursorUp();
-    }
-
-    /// 行を下に移動
-    fn moveLineDown(self: *Editor) !void {
-        if (self.isReadOnly()) return;
-        const buffer_state = self.getCurrentBuffer();
-        const buffer = self.getCurrentBufferContent();
-        const view = self.getCurrentView();
-        const current_line = self.getCurrentLine();
-        const total_lines = buffer.lineCount();
-
-        if (current_line >= total_lines - 1) return; // 最後の行は移動できない
-
-        // 現在の行を取得
-        const line_start = buffer.getLineStart(current_line) orelse return;
-        const line_end = buffer.findNextLineFromPos(line_start);
-
-        // 次の行の終了位置
-        const next_line_end = buffer.findNextLineFromPos(line_end);
-
-        // 現在の行の内容を取得
-        const line_len = line_end - line_start;
-        const line_content = try self.extractText(line_start, line_len);
-        defer self.allocator.free(line_content);
-
-        // 現在の行を削除
-        try buffer.delete(line_start, line_len);
-
-        // 次の行の後ろに挿入（削除後なので位置調整）
-        const new_insert_pos = next_line_end - line_len;
-        try buffer.insertSlice(new_insert_pos, line_content);
-
-        // Undo記録
-        try self.recordDelete(line_start, line_content, view.getCursorBufferPos());
-        try self.recordInsert(new_insert_pos, line_content, view.getCursorBufferPos());
-
-        buffer_state.editing_ctx.modified = true;
-        view.markDirty(current_line, null);
-
-        // カーソルを移動した行に合わせる
-        view.moveCursorDown();
-    }
-
-    /// 現在の行のインデント（先頭の空白）を取得
-    fn getCurrentLineIndent(self: *Editor) []const u8 {
-        const buffer = self.getCurrentBufferContent();
-        const current_line = self.getCurrentLine();
-        const line_start = buffer.getLineStart(current_line) orelse return "";
-
-        // 行の先頭から空白文字を収集
-        var iter = PieceIterator.init(buffer);
-        iter.seek(line_start);
-
-        var indent_end: usize = line_start;
-        while (iter.next()) |ch| {
-            if (ch == ' ' or ch == '\t') {
-                indent_end = iter.global_pos;
-            } else {
-                break;
-            }
-        }
-
-        // インデント部分をスライスとして返す（最大64文字）
-        const indent_len = indent_end - line_start;
-        if (indent_len == 0) return "";
-
-        // 静的バッファに格納して返す
-        const Static = struct {
-            var buf: [64]u8 = undefined;
-        };
-
-        var idx: usize = 0;
-        iter.seek(line_start);
-        while (iter.next()) |ch| {
-            if ((ch == ' ' or ch == '\t') and idx < Static.buf.len) {
-                Static.buf[idx] = ch;
-                idx += 1;
-            } else {
-                break;
-            }
-        }
-
-        return Static.buf[0..idx];
-    }
-
-    /// インデントスタイルを検出（タブ優先かスペース優先か）
-    fn detectIndentStyle(self: *Editor) u8 {
-        const buffer = self.getCurrentBufferContent();
-        var iter = PieceIterator.init(buffer);
-
-        var tab_count: usize = 0;
-        var space_count: usize = 0;
-        var at_line_start = true;
-
-        while (iter.next()) |ch| {
-            if (ch == '\n') {
-                at_line_start = true;
-            } else if (at_line_start) {
-                if (ch == '\t') {
-                    tab_count += 1;
-                    at_line_start = false;
-                } else if (ch == ' ') {
-                    space_count += 1;
-                    // 4スペース連続でカウント
-                    if (space_count >= 4) {
-                        at_line_start = false;
-                    }
-                } else {
-                    at_line_start = false;
-                }
-            }
-        }
-
-        // タブが多ければタブ、そうでなければスペース
-        if (tab_count > space_count / 4) {
-            return '\t';
-        }
-        return ' ';
-    }
-
-    /// 選択範囲または現在行をインデント
-    fn indentRegion(self: *Editor) !void {
-        if (self.isReadOnly()) return;
-        const buffer_state = self.getCurrentBuffer();
-        const buffer = self.getCurrentBufferContent();
-        const view = self.getCurrentView();
-        const window = self.getCurrentWindow();
-
-        // インデント文字を検出
-        const indent_char = self.detectIndentStyle();
-        const indent_str: []const u8 = if (indent_char == '\t') "\t" else "    ";
-
-        // 選択範囲があればその行全体をインデント、なければ現在行のみ
-        const start_line: usize, const end_line: usize = if (window.mark_pos) |mark| blk: {
-            const cursor_pos = view.getCursorBufferPos();
-            const sel_start = @min(mark, cursor_pos);
-            const sel_end = @max(mark, cursor_pos);
-            const line1 = buffer.findLineByPos(sel_start);
-            var line2 = buffer.findLineByPos(sel_end);
-            // sel_endが行頭にあり、範囲が行をまたいでいる場合は前の行までとする
-            if (sel_end > sel_start) {
-                if (buffer.getLineStart(line2)) |ls| {
-                    if (sel_end == ls and line2 > line1) {
-                        line2 -= 1;
-                    }
-                }
-            }
-            break :blk .{ line1, line2 };
-        } else .{ self.getCurrentLine(), self.getCurrentLine() };
-
-        // 行ごとにインデント（後ろから処理してバイト位置がずれないようにする）
-        var line = end_line + 1;
-        while (line > start_line) {
-            line -= 1;
-            const line_start = buffer.getLineStart(line) orelse continue;
-            try buffer.insertSlice(line_start, indent_str);
-            try self.recordInsert(line_start, indent_str, view.getCursorBufferPos());
-        }
-
-        buffer_state.editing_ctx.modified = true;
-        view.markDirty(start_line, end_line);
-
-        // マークをクリア
-        window.mark_pos = null;
-    }
-
-    /// 選択範囲または現在行をアンインデント
-    fn unindentRegion(self: *Editor) !void {
-        if (self.isReadOnly()) return;
-        const buffer_state = self.getCurrentBuffer();
-        const buffer = self.getCurrentBufferContent();
-        const view = self.getCurrentView();
-        const window = self.getCurrentWindow();
-
-        // 選択範囲があればその行全体をアンインデント、なければ現在行のみ
-        const start_line: usize, const end_line: usize = if (window.mark_pos) |mark| blk: {
-            const cursor_pos = view.getCursorBufferPos();
-            const sel_start = @min(mark, cursor_pos);
-            const sel_end = @max(mark, cursor_pos);
-            const line1 = buffer.findLineByPos(sel_start);
-            var line2 = buffer.findLineByPos(sel_end);
-            // sel_endが行頭にあり、範囲が行をまたいでいる場合は前の行までとする
-            if (sel_end > sel_start) {
-                if (buffer.getLineStart(line2)) |ls| {
-                    if (sel_end == ls and line2 > line1) {
-                        line2 -= 1;
-                    }
-                }
-            }
-            break :blk .{ line1, line2 };
-        } else .{ self.getCurrentLine(), self.getCurrentLine() };
-
-        var any_modified = false;
-
-        // 行ごとにアンインデント（後ろから処理してバイト位置がずれないようにする）
-        var line = end_line + 1;
-        while (line > start_line) {
-            line -= 1;
-            const line_start = buffer.getLineStart(line) orelse continue;
-
-            var iter = PieceIterator.init(buffer);
-            iter.seek(line_start);
-
-            // 先頭の空白を数える
-            var spaces_to_remove: usize = 0;
-            if (iter.next()) |ch| {
-                if (ch == '\t') {
-                    spaces_to_remove = 1;
-                } else if (ch == ' ') {
-                    spaces_to_remove = 1;
-                    // 最大4スペースまで削除
-                    var count: usize = 1;
-                    while (count < 4) : (count += 1) {
-                        if (iter.next()) |next_ch| {
-                            if (next_ch == ' ') {
-                                spaces_to_remove += 1;
-                            } else {
-                                break;
-                            }
-                        } else {
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if (spaces_to_remove > 0) {
-                const deleted = try self.extractText(line_start, spaces_to_remove);
-                defer self.allocator.free(deleted);
-
-                try buffer.delete(line_start, spaces_to_remove);
-                try self.recordDelete(line_start, deleted, view.getCursorBufferPos());
-                any_modified = true;
-            }
-        }
-
-        if (any_modified) {
-            buffer_state.editing_ctx.modified = true;
-            view.markDirty(start_line, end_line);
-        }
-
-        // マークをクリア
-        window.mark_pos = null;
-    }
-
-    /// コメント切り替え (M-;)
-    fn toggleComment(self: *Editor) !void {
-        if (self.isReadOnly()) return;
-        const buffer_state = self.getCurrentBuffer();
-        const buffer = self.getCurrentBufferContent();
-        const view = self.getCurrentView();
-        const window = self.getCurrentWindow();
-
-        // 言語定義からコメント文字列を取得（なければ # を使用）
-        const line_comment = view.language.line_comment orelse "#";
-        var comment_buf: [64]u8 = undefined;
-        const comment_str = std.fmt.bufPrint(&comment_buf, "{s} ", .{line_comment}) catch "# ";
-
-        // 現在行を操作（選択範囲は将来対応）
-        const current_line = self.getCurrentLine();
-        const line_start = buffer.getLineStart(current_line) orelse return;
-
-        // 行の内容を取得（動的割り当てで任意長の行に対応）
-        const line_range = buffer.getLineRange(current_line) orelse return;
-        const max_line_len = if (line_range.end > line_range.start) line_range.end - line_range.start else 0;
-        var line_list = try std.ArrayList(u8).initCapacity(self.allocator, max_line_len);
-        defer line_list.deinit(self.allocator);
-
-        var iter = PieceIterator.init(buffer);
-        iter.seek(line_range.start);
-        while (iter.next()) |ch| {
-            if (ch == '\n') break;
-            try line_list.append(self.allocator, ch);
-        }
-        const line_content = line_list.items;
-
-        // コメント行かどうかを言語定義でチェック
-        const is_comment = view.language.isCommentLine(line_content);
-
-        if (is_comment) {
-            // アンコメント: コメント文字列を削除
-            const comment_start = view.language.findCommentStart(line_content) orelse return;
-            const comment_pos = line_start + comment_start;
-
-            // コメント文字とその後のスペースの長さを計算
-            var delete_len: usize = line_comment.len;
-            if (comment_start + line_comment.len < line_content.len and
-                line_content[comment_start + line_comment.len] == ' ')
-            {
-                delete_len += 1;
-            }
-
-            const deleted = try self.extractText(comment_pos, delete_len);
-            defer self.allocator.free(deleted);
-
-            try buffer.delete(comment_pos, delete_len);
-            try self.recordDelete(comment_pos, deleted, view.getCursorBufferPos());
-        } else {
-            // コメント: 行の先頭に "comment_str " を挿入
-            try buffer.insertSlice(line_start, comment_str);
-            try self.recordInsert(line_start, comment_str, view.getCursorBufferPos());
-        }
-
-        buffer_state.editing_ctx.modified = true;
-        view.markDirty(current_line, current_line);
-
-        // マークをクリア
-        window.mark_pos = null;
-    }
-
-    // マークを設定/解除（Ctrl+Space）
-    fn setMark(self: *Editor) void {
-        const window = self.getCurrentWindow();
-        if (window.mark_pos) |_| {
-            // マークがある場合は解除
-            window.mark_pos = null;
-            self.getCurrentView().setError("Mark deactivated");
-        } else {
-            // マークを設定
-            window.mark_pos = self.getCurrentView().getCursorBufferPos();
-            self.getCurrentView().setError("Mark set");
-        }
-    }
-
-    // 全選択（C-x h）：バッファの先頭にマークを設定し、終端にカーソルを移動
-    fn selectAll(self: *Editor) void {
-        // バッファの先頭（位置0）にマークを設定
-        const window = self.getCurrentWindow();
-        window.mark_pos = 0;
-        // カーソルをバッファの終端に移動
-        self.getCurrentView().moveToBufferEnd();
-    }
-
     // マーク位置とカーソル位置から範囲を取得（開始位置と長さを返す）
-    fn getRegion(self: *Editor) ?struct { start: usize, len: usize } {
+    pub fn getRegion(self: *Editor) ?struct { start: usize, len: usize } {
         const window = self.getCurrentWindow();
         const raw_mark = window.mark_pos orelse return null;
         const buffer = self.getCurrentBufferContent();
@@ -3222,107 +2478,6 @@ pub const Editor = struct {
         } else {
             return null; // 範囲が空
         }
-    }
-
-    // 範囲をコピー（M-w）
-    fn copyRegion(self: *Editor) !void {
-        const window = self.getCurrentWindow();
-        const region = self.getRegion() orelse {
-            self.getCurrentView().setError("No active region");
-            return;
-        };
-
-        // 既存のkill_ringを解放
-        if (self.kill_ring) |old_text| {
-            self.allocator.free(old_text);
-        }
-
-        // 範囲のテキストをコピー
-        self.kill_ring = try self.extractText(region.start, region.len);
-
-        // マークを解除
-        window.mark_pos = null;
-
-        self.getCurrentView().setError("Saved text to kill ring");
-    }
-
-    // 範囲を削除（カット）（C-w）
-    fn killRegion(self: *Editor) !void {
-        const buffer = self.getCurrentBufferContent();
-        const buffer_state = self.getCurrentBuffer();
-        const window = self.getCurrentWindow();
-        const current_line = self.getCurrentLine();
-        const region = self.getRegion() orelse {
-            self.getCurrentView().setError("No active region");
-            return;
-        };
-
-        // 既存のkill_ringを解放
-        if (self.kill_ring) |old_text| {
-            self.allocator.free(old_text);
-        }
-
-        // 範囲のテキストをコピー
-        const deleted = try self.extractText(region.start, region.len);
-        errdefer self.allocator.free(deleted);
-
-        // バッファから削除
-        try buffer.delete(region.start, region.len);
-        errdefer buffer.insertSlice(region.start, deleted) catch unreachable;
-        try self.recordDelete(region.start, deleted, self.getCurrentView().getCursorBufferPos());
-
-        // kill_ringに保存（extractTextと同じデータなので、新たにdupeせずそのまま使う）
-        self.kill_ring = deleted;
-
-        buffer_state.editing_ctx.modified = true;
-
-        // カーソルを範囲の開始位置に移動
-        self.setCursorToPos(region.start);
-
-        // マークを解除
-        window.mark_pos = null;
-
-        // 改行が含まれる場合は末尾まで再描画
-        if (std.mem.indexOf(u8, deleted, "\n") != null) {
-            self.getCurrentView().markDirty(current_line, null);
-        } else {
-            self.getCurrentView().markDirty(current_line, current_line);
-        }
-
-        self.getCurrentView().setError("Killed region");
-    }
-
-    // kill_ringの内容をペースト（C-y）
-    fn yank(self: *Editor) !void {
-        if (self.isReadOnly()) return;
-        const buffer_state = self.getCurrentBuffer();
-        const buffer = self.getCurrentBufferContent();
-        const current_line = self.getCurrentLine();
-        const text = self.kill_ring orelse {
-            self.getCurrentView().setError("Kill ring is empty");
-            return;
-        };
-
-        const pos = self.getCurrentView().getCursorBufferPos();
-
-        // バッファに挿入
-        try buffer.insertSlice(pos, text);
-        errdefer buffer.delete(pos, text.len) catch unreachable;
-        try self.recordInsert(pos, text, pos);
-
-        buffer_state.editing_ctx.modified = true;
-
-        // カーソルを挿入後の位置に移動
-        self.setCursorToPos(pos + text.len);
-
-        // 改行が含まれる場合は末尾まで再描画
-        if (std.mem.indexOf(u8, text, "\n") != null) {
-            self.getCurrentView().markDirty(current_line, null);
-        } else {
-            self.getCurrentView().markDirty(current_line, current_line);
-        }
-
-        self.getCurrentView().setError("Yanked text");
     }
 
     // インクリメンタルサーチ実行
@@ -3359,177 +2514,6 @@ pub const Editor = struct {
                 }
             }
         }
-    }
-
-    // 矩形領域の削除（C-x r k）
-    fn killRectangle(self: *Editor) void {
-        const window = self.getCurrentWindow();
-        const mark = window.mark_pos orelse {
-            self.getCurrentView().setError("No mark set");
-            return;
-        };
-
-        const cursor = self.getCurrentView().getCursorBufferPos();
-        const buffer = self.getCurrentBufferContent();
-
-        // マークとカーソルの位置から矩形の範囲を決定
-        const start_pos = @min(mark, cursor);
-        const end_pos = @max(mark, cursor);
-
-        // 開始行と終了行を取得
-        const start_line = buffer.findLineByPos(start_pos);
-        const end_line = buffer.findLineByPos(end_pos);
-
-        // 開始カラムと終了カラムを取得
-        const start_col = buffer.findColumnByPos(start_pos);
-        const end_col = buffer.findColumnByPos(end_pos);
-
-        // カラム範囲を正規化（左から右へ）
-        const left_col = @min(start_col, end_col);
-        const right_col = @max(start_col, end_col);
-
-        // 古い rectangle_ring をクリーンアップ
-        if (self.rectangle_ring) |*old_ring| {
-            for (old_ring.items) |line| {
-                self.allocator.free(line);
-            }
-            old_ring.deinit(self.allocator);
-        }
-
-        // 新しい rectangle_ring を作成
-        var rect_ring: std.ArrayList([]const u8) = .{};
-        errdefer {
-            for (rect_ring.items) |line| {
-                self.allocator.free(line);
-            }
-            rect_ring.deinit();
-        }
-
-        // 各行から矩形領域を抽出して削除
-        var line_num = start_line;
-        while (line_num <= end_line) : (line_num += 1) {
-            const line_start = buffer.getLineStart(line_num) orelse continue;
-
-            // 次の行の開始位置（または末尾）を取得
-            const next_line_start = buffer.getLineStart(line_num + 1);
-            const line_end = if (next_line_start) |nls|
-                if (nls > 0 and nls > line_start) nls - 1 else nls
-            else
-                buffer.len();
-
-            // 行内のカラム位置を探す
-            var iter = PieceIterator.init(buffer);
-            iter.seek(line_start);
-
-            var current_col: usize = 0;
-            var rect_start_pos: ?usize = null;
-            var rect_end_pos: ?usize = null;
-
-            // left_col の位置を探す
-            while (iter.global_pos < line_end and current_col < left_col) {
-                _ = iter.nextGraphemeCluster() catch break;
-                current_col += 1;
-            }
-            rect_start_pos = iter.global_pos;
-
-            // right_col の位置を探す
-            while (iter.global_pos < line_end and current_col < right_col) {
-                _ = iter.nextGraphemeCluster() catch break;
-                current_col += 1;
-            }
-            rect_end_pos = iter.global_pos;
-
-            // 矩形領域のテキストを抽出
-            if (rect_start_pos) |rsp| {
-                if (rect_end_pos) |rep| {
-                    if (rep > rsp) {
-                        // テキストを抽出
-                        var line_buf: std.ArrayList(u8) = .{};
-                        errdefer line_buf.deinit();
-
-                        var extract_iter = PieceIterator.init(buffer);
-                        extract_iter.seek(rsp);
-                        while (extract_iter.global_pos < rep) {
-                            const byte = extract_iter.next() orelse break;
-                            line_buf.append(self.allocator, byte) catch break;
-                        }
-
-                        const line_text = line_buf.toOwnedSlice(self.allocator) catch "";
-                        rect_ring.append(self.allocator, line_text) catch {
-                            self.allocator.free(line_text);
-                        };
-
-                        // バッファから削除
-                        buffer.delete(rsp, rep - rsp) catch {};
-                    }
-                }
-            }
-        }
-
-        self.rectangle_ring = rect_ring;
-        self.getCurrentView().setError("Rectangle killed");
-    }
-
-    // 矩形の貼り付け（C-x r y）
-    fn yankRectangle(self: *Editor) void {
-        if (self.getCurrentBuffer().readonly) {
-            self.getCurrentView().setError("Buffer is read-only");
-            return;
-        }
-        const rect = self.rectangle_ring orelse {
-            self.getCurrentView().setError("No rectangle to yank");
-            return;
-        };
-
-        if (rect.items.len == 0) {
-            self.getCurrentView().setError("Rectangle is empty");
-            return;
-        }
-
-        // 現在のカーソル位置を取得
-        const cursor_pos = self.getCurrentView().getCursorBufferPos();
-        const buffer = self.getCurrentBufferContent();
-        const cursor_line = buffer.findLineByPos(cursor_pos);
-        const cursor_col = buffer.findColumnByPos(cursor_pos);
-
-        // 各行の矩形テキストをカーソル位置から挿入
-        for (rect.items, 0..) |line_text, i| {
-            const target_line = cursor_line + i;
-
-            // 対象行の開始位置を取得
-            const line_start = buffer.getLineStart(target_line) orelse {
-                // 行が存在しない場合は、改行を追加して新しい行を作成
-                const buf_end = buffer.len();
-                buffer.insert(buf_end, '\n') catch continue;
-                continue;
-            };
-
-            // 対象行のカラム cursor_col の位置を探す
-            var iter = PieceIterator.init(buffer);
-            iter.seek(line_start);
-
-            // 次の行の開始位置（または末尾）を取得
-            const next_line_start = buffer.getLineStart(target_line + 1);
-            const line_end = if (next_line_start) |nls|
-                if (nls > 0 and nls > line_start) nls - 1 else nls
-            else
-                buffer.len();
-
-            var current_col: usize = 0;
-            while (iter.global_pos < line_end and current_col < cursor_col) {
-                _ = iter.nextGraphemeCluster() catch break;
-                current_col += 1;
-            }
-
-            const insert_pos = iter.global_pos;
-
-            // line_text を insert_pos に挿入
-            buffer.insertSlice(insert_pos, line_text) catch continue;
-        }
-
-        const buffer_state = self.getCurrentBuffer();
-        buffer_state.editing_ctx.modified = true;
-        self.getCurrentView().setError("Rectangle yanked");
     }
 
     // 置換：次の一致を検索してカーソルを移動
@@ -3614,293 +2598,6 @@ pub const Editor = struct {
 
         // 全画面再描画
         self.getCurrentView().markFullRedraw();
-    }
-
-    // ========================================
-    // 単語移動・削除（日本語対応）
-    // ========================================
-
-    // 文字種判定はunicode.zigで定義
-    const CharType = unicode.CharType;
-    const getCharType = unicode.getCharType;
-
-    /// 前方の単語へ移動（M-f）
-    fn forwardWord(self: *Editor) !void {
-        const buffer = self.getCurrentBufferContent();
-        const start_pos = self.getCurrentView().getCursorBufferPos();
-        if (start_pos >= buffer.len()) return;
-
-        var iter = PieceIterator.init(buffer);
-        iter.seek(start_pos);
-
-        var prev_type: ?CharType = null;
-
-        // PieceIterator.nextCodepoint()を使ってUTF-8をデコード
-        while (iter.nextCodepoint() catch null) |cp| {
-            const current_type = getCharType(cp);
-
-            if (prev_type) |pt| {
-                // 文字種が変わったら停止（ただし空白は飛ばす）
-                if (current_type != .space and pt != .space and current_type != pt) {
-                    // 今読んだ文字の前に戻る
-                    const cp_len = std.unicode.utf8CodepointSequenceLength(cp) catch 1;
-                    self.setCursorToPos(iter.global_pos - cp_len);
-                    return;
-                }
-                // 空白から非空白に変わる場合、その位置で停止
-                if (pt == .space and current_type != .space) {
-                    const cp_len = std.unicode.utf8CodepointSequenceLength(cp) catch 1;
-                    self.setCursorToPos(iter.global_pos - cp_len);
-                    return;
-                }
-            }
-
-            prev_type = current_type;
-        }
-
-        // EOFに到達
-        self.setCursorToPos(iter.global_pos);
-    }
-
-    /// 後方の単語へ移動（M-b）
-    fn backwardWord(self: *Editor) !void {
-        const buffer = self.getCurrentBufferContent();
-        const start_pos = self.getCurrentView().getCursorBufferPos();
-        if (start_pos == 0) return;
-
-        // 後方移動のため、逆方向に文字を読む
-        var pos = start_pos;
-        var prev_type: ?CharType = null;
-        var found_non_space = false;
-
-        while (pos > 0) {
-            // 1文字戻る（UTF-8先頭バイトを探す）
-            const char_start = findUtf8CharStart(buffer, pos);
-
-            // 文字を読み取る
-            var iter = PieceIterator.init(buffer);
-            iter.seek(char_start);
-            const cp = iter.nextCodepoint() catch break orelse break;
-
-            const current_type = getCharType(cp);
-
-            // 空白をスキップ
-            if (!found_non_space and current_type == .space) {
-                pos = char_start;
-                continue;
-            }
-
-            found_non_space = true;
-
-            if (prev_type) |pt| {
-                // 文字種が変わったら停止
-                if (current_type != pt) {
-                    break;
-                }
-            }
-
-            prev_type = current_type;
-            pos = char_start;
-        }
-
-        // カーソル位置を更新
-        if (pos < start_pos) {
-            self.setCursorToPos(pos);
-        }
-    }
-
-    /// UTF-8文字の先頭バイト位置を探す（後方移動用）
-    fn findUtf8CharStart(buffer: *Buffer, pos: usize) usize {
-        if (pos == 0) return 0;
-        var test_pos = pos - 1;
-        while (test_pos > 0) : (test_pos -= 1) {
-            var iter = PieceIterator.init(buffer);
-            iter.seek(test_pos);
-            const byte = iter.next() orelse break;
-            // UTF-8の先頭バイトかチェック
-            if (unicode.isUtf8Start(byte)) {
-                return test_pos;
-            }
-        }
-        return 0;
-    }
-
-    /// カーソル位置から次の単語までを削除（M-d）
-    fn deleteWord(self: *Editor) !void {
-        const buffer = self.getCurrentBufferContent();
-        const buffer_state = self.getCurrentBuffer();
-        const start_pos = self.getCurrentView().getCursorBufferPos();
-        const buf_len = buffer.len();
-        if (start_pos >= buf_len) return;
-
-        // forwardWordと同じロジックで終了位置を見つける
-        var iter = PieceIterator.init(buffer);
-        iter.seek(start_pos);
-
-        var prev_type: ?CharType = null;
-        var end_pos = start_pos;
-
-        while (iter.nextCodepoint() catch null) |cp| {
-            const current_type = getCharType(cp);
-
-            if (prev_type) |pt| {
-                // 文字種が変わったら停止（ただし空白は飛ばす）
-                if (current_type != .space and pt != .space and current_type != pt) {
-                    break;
-                }
-                // 空白から非空白に変わる場合、その位置で停止
-                if (pt == .space and current_type != .space) {
-                    break;
-                }
-            }
-
-            prev_type = current_type;
-            end_pos = iter.global_pos;
-        }
-
-        // 削除する範囲が存在する場合のみ削除
-        if (end_pos > start_pos) {
-            const delete_len = end_pos - start_pos;
-            const deleted_text = try self.extractText(start_pos, delete_len);
-            defer self.allocator.free(deleted_text);
-
-            try buffer.delete(start_pos, delete_len);
-            try self.recordDelete(start_pos, deleted_text, start_pos);
-
-            buffer_state.editing_ctx.modified = true;
-            self.getCurrentView().markFullRedraw();
-        }
-    }
-
-    /// 次の段落へ移動（M-}）
-    fn forwardParagraph(self: *Editor) !void {
-        const buffer = self.getCurrentBufferContent();
-        const start_pos = self.getCurrentView().getCursorBufferPos();
-        const buf_len = buffer.len();
-        if (start_pos >= buf_len) return;
-
-        var iter = PieceIterator.init(buffer);
-        iter.seek(start_pos);
-
-        var pos = start_pos;
-        var in_blank_line = false;
-        var found_blank_section = false;
-
-        // 現在行の終わりまで移動
-        while (iter.next()) |byte| {
-            pos += 1;
-            if (byte == '\n') break;
-        }
-
-        // 空行のブロックを探し、その後の非空白行の先頭へ移動
-        while (pos < buf_len) {
-            iter = PieceIterator.init(buffer);
-            iter.seek(pos);
-
-            // 現在行が空行かチェック
-            const line_start = pos;
-            var is_blank = true;
-            var line_end = pos;
-
-            while (iter.next()) |byte| {
-                line_end += 1;
-                if (byte == '\n') break;
-                if (byte != ' ' and byte != '\t' and byte != '\r') {
-                    is_blank = false;
-                }
-            }
-
-            if (is_blank) {
-                in_blank_line = true;
-                found_blank_section = true;
-                pos = line_end;
-            } else if (found_blank_section) {
-                // 空行の後の最初の非空白行に到達
-                self.setCursorToPos(line_start);
-                return;
-            } else {
-                pos = line_end;
-            }
-
-            if (pos >= buf_len) break;
-        }
-
-        // バッファの終端に到達
-        if (pos > start_pos) {
-            self.setCursorToPos(pos);
-        }
-    }
-
-    /// 前の段落へ移動（M-{）
-    fn backwardParagraph(self: *Editor) !void {
-        const buffer = self.getCurrentBufferContent();
-        const start_pos = self.getCurrentView().getCursorBufferPos();
-        if (start_pos == 0) return;
-
-        var pos = start_pos;
-        var found_blank_section = false;
-
-        // 現在行の先頭に移動
-        while (pos > 0) {
-            var iter = PieceIterator.init(buffer);
-            iter.seek(pos - 1);
-            const byte = iter.next() orelse break;
-            if (byte == '\n') break;
-            pos -= 1;
-        }
-
-        // 1つ前の行から開始
-        if (pos > 0) pos -= 1;
-
-        // 空行のブロックを見つけて、その前の段落の先頭へ移動
-        while (pos > 0) {
-            // 現在行の先頭を見つける
-            var line_start = pos;
-            while (line_start > 0) {
-                var iter = PieceIterator.init(buffer);
-                iter.seek(line_start - 1);
-                const byte = iter.next() orelse break;
-                if (byte == '\n') break;
-                line_start -= 1;
-            }
-
-            // 現在行が空行かチェック
-            var iter = PieceIterator.init(buffer);
-            iter.seek(line_start);
-            var is_blank = true;
-
-            while (iter.next()) |byte| {
-                if (byte == '\n') break;
-                if (byte != ' ' and byte != '\t' and byte != '\r') {
-                    is_blank = false;
-                    break;
-                }
-            }
-
-            if (is_blank) {
-                found_blank_section = true;
-                if (line_start > 0) {
-                    pos = line_start - 1;
-                } else {
-                    break;
-                }
-            } else if (found_blank_section) {
-                // 空行の前の非空白行に到達
-                self.setCursorToPos(line_start);
-                return;
-            } else {
-                if (line_start > 0) {
-                    pos = line_start - 1;
-                } else {
-                    // バッファの先頭に到達
-                    self.setCursorToPos(0);
-                    return;
-                }
-            }
-        }
-
-        // バッファの先頭に到達
-        self.setCursorToPos(0);
     }
 
     // ========================================
@@ -4248,223 +2945,6 @@ pub const Editor = struct {
                     try self.switchToBuffer(new_buffer.id);
                 }
             },
-        }
-    }
-
-    // ========================================
-    // M-x コマンド
-    // ========================================
-
-    /// M-xコマンドを実行
-    fn executeMxCommand(self: *Editor) !void {
-        const cmd_line = self.minibuffer.getContent();
-        self.minibuffer.clear();
-        self.mode = .normal;
-
-        if (cmd_line.len == 0) {
-            self.getCurrentView().clearError();
-            return;
-        }
-
-        // コマンドと引数を分割
-        var parts = std.mem.splitScalar(u8, cmd_line, ' ');
-        const cmd = parts.next() orelse "";
-        const arg = parts.next();
-
-        // コマンド実行
-        if (std.mem.eql(u8, cmd, "?") or std.mem.eql(u8, cmd, "help")) {
-            self.getCurrentView().setError("Commands: line tab indent mode revert key ro ?");
-        } else if (std.mem.eql(u8, cmd, "line")) {
-            try self.mxCmdLine(arg);
-        } else if (std.mem.eql(u8, cmd, "tab")) {
-            self.mxCmdTab(arg);
-        } else if (std.mem.eql(u8, cmd, "indent")) {
-            self.mxCmdIndent(arg);
-        } else if (std.mem.eql(u8, cmd, "mode")) {
-            self.mxCmdMode(arg);
-        } else if (std.mem.eql(u8, cmd, "revert")) {
-            try self.mxCmdRevert();
-        } else if (std.mem.eql(u8, cmd, "key")) {
-            self.mode = .mx_key_describe;
-            self.getCurrentView().setError("Press key: ");
-        } else if (std.mem.eql(u8, cmd, "ro")) {
-            self.mxCmdReadonly();
-        } else {
-            // 未知のコマンド
-            self.setPrompt("Unknown command: {s}", .{cmd});
-        }
-    }
-
-    /// line コマンド: 指定行へ移動
-    fn mxCmdLine(self: *Editor, arg: ?[]const u8) !void {
-        if (arg) |line_str| {
-            const line_num = std.fmt.parseInt(usize, line_str, 10) catch {
-                self.getCurrentView().setError("Invalid line number");
-                return;
-            };
-            if (line_num == 0) {
-                self.getCurrentView().setError("Line number must be >= 1");
-                return;
-            }
-            // 0-indexedに変換
-            const target_line = line_num - 1;
-            const view = self.getCurrentView();
-            const buffer = self.getCurrentBufferContent();
-            const total_lines = buffer.lineCount();
-            if (target_line >= total_lines) {
-                view.moveToBufferEnd();
-            } else {
-                // 指定行の先頭に移動
-                if (buffer.getLineStart(target_line)) |pos| {
-                    self.setCursorToPos(pos);
-                }
-            }
-            self.getCurrentView().clearError();
-        } else {
-            // 引数なし: 現在の行番号を表示
-            const view = self.getCurrentView();
-            const current_line = view.top_line + view.cursor_y + 1;
-            self.setPrompt("line: {d}", .{current_line});
-        }
-    }
-
-    /// tab コマンド: タブ幅の表示/設定
-    fn mxCmdTab(self: *Editor, arg: ?[]const u8) void {
-        if (arg) |width_str| {
-            const width = std.fmt.parseInt(u8, width_str, 10) catch {
-                self.getCurrentView().setError("Invalid tab width");
-                return;
-            };
-            if (width == 0 or width > 16) {
-                self.getCurrentView().setError("Tab width must be 1-16");
-                return;
-            }
-            self.getCurrentView().setTabWidth(width);
-            self.setPrompt("tab: {d}", .{width});
-        } else {
-            // 引数なし: 現在のタブ幅を表示
-            const width = self.getCurrentView().getTabWidth();
-            self.setPrompt("tab: {d}", .{width});
-        }
-    }
-
-    /// indent コマンド: インデントスタイルの表示/設定
-    fn mxCmdIndent(self: *Editor, arg: ?[]const u8) void {
-        const syntax = @import("syntax.zig");
-        if (arg) |style_str| {
-            if (std.mem.eql(u8, style_str, "space") or std.mem.eql(u8, style_str, "spaces")) {
-                self.getCurrentView().setIndentStyle(.space);
-                self.getCurrentView().setError("indent: space");
-            } else if (std.mem.eql(u8, style_str, "tab") or std.mem.eql(u8, style_str, "tabs")) {
-                self.getCurrentView().setIndentStyle(.tab);
-                self.getCurrentView().setError("indent: tab");
-            } else {
-                self.getCurrentView().setError("Usage: indent space|tab");
-            }
-        } else {
-            // 引数なし: 現在のインデントスタイルを表示
-            const style = self.getCurrentView().getIndentStyle();
-            const style_name = switch (style) {
-                .space => "space",
-                .tab => "tab",
-            };
-            self.setPrompt("indent: {s}", .{style_name});
-        }
-        _ = syntax;
-    }
-
-    /// mode コマンド: 言語モードの表示/設定
-    fn mxCmdMode(self: *Editor, arg: ?[]const u8) void {
-        const syntax = @import("syntax.zig");
-        if (arg) |mode_str| {
-            // 部分マッチで言語を検索
-            var found: ?*const syntax.LanguageDef = null;
-            for (syntax.all_languages) |lang| {
-                // 名前の部分マッチ（大文字小文字無視）
-                if (std.ascii.indexOfIgnoreCase(lang.name, mode_str) != null) {
-                    found = lang;
-                    break;
-                }
-                // 拡張子マッチ
-                for (lang.extensions) |ext| {
-                    if (std.mem.eql(u8, ext, mode_str)) {
-                        found = lang;
-                        break;
-                    }
-                }
-                if (found != null) break;
-            }
-            if (found) |lang| {
-                self.getCurrentView().setLanguage(lang);
-                self.setPrompt("mode: {s}", .{lang.name});
-            } else {
-                self.setPrompt("Unknown mode: {s}", .{mode_str});
-            }
-        } else {
-            // 引数なし: 現在のモードを表示
-            const lang = self.getCurrentView().language;
-            self.setPrompt("mode: {s}", .{lang.name});
-        }
-    }
-
-    /// revert コマンド: ファイル再読み込み
-    fn mxCmdRevert(self: *Editor) !void {
-        const buffer_state = self.getCurrentBuffer();
-        if (buffer_state.filename == null) {
-            self.getCurrentView().setError("No file to revert");
-            return;
-        }
-        if (buffer_state.editing_ctx.modified) {
-            self.getCurrentView().setError("Buffer modified. Save first or use C-x k");
-            return;
-        }
-
-        const filename = buffer_state.filename.?;
-
-        // Buffer.loadFromFileを使用（エンコーディング・改行コード処理を含む）
-        const loaded_buffer = Buffer.loadFromFile(self.allocator, filename) catch |err| {
-            self.setPrompt("Cannot open: {s}", .{@errorName(err)});
-            return;
-        };
-
-        // 古いバッファを解放して新しいバッファに置き換え
-        buffer_state.editing_ctx.buffer.deinit();
-        buffer_state.editing_ctx.buffer.* = loaded_buffer;
-        buffer_state.editing_ctx.modified = false;
-
-        // Undo/Redoスタックをクリア（リロード前の編集履歴は無効）
-        buffer_state.editing_ctx.clearUndoHistory();
-
-        // ファイルの最終更新時刻を記録
-        const file = std.fs.cwd().openFile(filename, .{}) catch null;
-        if (file) |f| {
-            defer f.close();
-            const stat = f.stat() catch null;
-            if (stat) |s| {
-                buffer_state.file_mtime = s.mtime;
-            }
-        }
-
-        // Viewのバッファ参照を更新
-        self.getCurrentView().buffer = buffer_state.editing_ctx.buffer;
-
-        // 言語検出を再実行（ファイル内容が変わった可能性があるため）
-        const content_preview = buffer_state.editing_ctx.buffer.getContentPreview(512);
-        self.getCurrentView().detectLanguage(buffer_state.filename, content_preview);
-
-        // カーソルを先頭に
-        self.getCurrentView().moveToBufferStart();
-        self.getCurrentView().setError("Reverted");
-    }
-
-    /// ro コマンド: 読み取り専用切り替え
-    fn mxCmdReadonly(self: *Editor) void {
-        const buffer_state = self.getCurrentBuffer();
-        buffer_state.readonly = !buffer_state.readonly;
-        if (buffer_state.readonly) {
-            self.getCurrentView().setError("[RO] Read-only enabled");
-        } else {
-            self.getCurrentView().setError("Read-only disabled");
         }
     }
 

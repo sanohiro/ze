@@ -418,27 +418,105 @@ perf record ./zig-out/bin/ze test.txt
 ze/
 ├── src/
 │   ├── main.zig          # エントリポイント
-│   ├── editor.zig        # エディタコア状態
+│   ├── editor.zig        # エディタコア（状態管理、モード遷移、キーディスパッチ）
 │   ├── buffer.zig        # Piece table実装
 │   ├── view.zig          # レンダリング、画面管理
 │   ├── input.zig         # 入力処理、キーパース
-│   ├── command.zig       # コマンドパーサー、実行器
-│   ├── search.zig        # 検索エンジン (SIMD)
 │   ├── terminal.zig      # 端末制御
-│   ├── window.zig        # ウィンドウ/分割管理
 │   ├── keymap.zig        # キーバインディング定義
-│   ├── builtin.zig       # 組み込みコマンド
-│   ├── pipe.zig          # パイプライン実行
-│   └── util/
-│       ├── arena.zig     # Arenaアロケータ
-│       ├── btree.zig     # B-tree索引
-│       ├── queue.zig     # ロックフリーキュー
-│       └── simd.zig      # SIMDユーティリティ
+│   ├── syntax.zig        # 言語定義
+│   ├── commands/         # ユーザー操作の実装（キーバインドに紐付く）
+│   │   ├── edit.zig      # 編集操作 (kill, yank, indent等)
+│   │   ├── movement.zig  # カーソル移動
+│   │   ├── rectangle.zig # 矩形操作
+│   │   └── mx.zig        # M-xコマンド実行
+│   └── services/         # 独立したサブシステム（状態を持つ）
+│       ├── shell_service.zig    # シェルコマンド実行
+│       ├── search_service.zig   # 検索履歴管理
+│       ├── undo_manager.zig     # Undo/Redo管理
+│       ├── buffer_manager.zig   # バッファ管理
+│       ├── window_manager.zig   # ウィンドウ管理
+│       ├── minibuffer.zig       # ミニバッファ
+│       └── mx_commands.zig      # M-xコマンドパーサー
 ├── build.zig
 ├── README.md
-└── config/
-    └── default.zig       # デフォルト設定、エイリアス
+└── test_harness_generic.zig  # E2Eテストハーネス
 ```
+
+## コード配置の指針
+
+### editor.zig に置くもの
+
+1. **状態管理**: `mode`, `windows`, `buffers`, 各種フラグ
+2. **モード遷移とキーディスパッチ**: `processKey()`, `handleNormalKey()` 等
+3. **複数サブシステムの協調**: シェル実行、検索等の複数コンポーネント連携
+
+### commands/ に置くもの
+
+**単一の操作として完結する「コマンド」** - キーバインドに紐付く操作
+
+```zig
+// シグネチャ: *Editor を受け取り、副作用を起こす
+pub fn killLine(e: *Editor) !void { ... }
+pub fn yankRectangle(e: *Editor) void { ... }
+```
+
+**判断基準**:
+- キーバインドから直接呼ばれる
+- 他のコマンドと組み合わせ可能
+- Editorの状態を変更するが、モード遷移は行わない
+
+### services/ に置くもの
+
+**状態を持つ独立したサブシステム**
+
+```zig
+// 独自の状態を持ち、Editorに依存しない（または最小限）
+pub const ShellService = struct {
+    history: ArrayList([]const u8),
+    process: ?std.process.Child,
+    pub fn start(...) !void { ... }
+    pub fn poll() ?Result { ... }
+};
+```
+
+**判断基準**:
+- 独自の状態（履歴、プロセス等）を持つ
+- Editorに依存せずテスト可能
+- 再利用可能なロジック
+
+### 判断フローチャート
+
+```
+新しい機能を追加するとき...
+
+1. 独自の状態を持つ独立したサブシステム？
+   → YES: services/ に新規ファイル
+
+2. キーバインドから呼ばれる単一操作？
+   → YES: commands/ の適切なファイルに追加
+
+3. 複数サブシステムの協調が必要？
+   → YES: editor.zig にメソッドとして追加
+
+4. モード遷移のロジック？
+   → YES: editor.zig に追加
+```
+
+### 現状の適合状況
+
+| ファイル | 責務 | 指針に適合 |
+|---------|------|-----------|
+| `editor.zig` | 状態管理、モード遷移、協調処理 | ✅ |
+| `commands/edit.zig` | kill/yank/indent等の編集操作 | ✅ |
+| `commands/movement.zig` | カーソル移動 | ✅ |
+| `commands/rectangle.zig` | 矩形操作 | ✅ |
+| `commands/mx.zig` | M-xコマンド実行 | ✅ |
+| `services/shell_service.zig` | プロセス実行、履歴管理 | ✅ |
+| `services/search_service.zig` | 検索履歴管理 | ✅ |
+| `services/undo_manager.zig` | Undo/Redo状態管理 | ✅ |
+| `services/minibuffer.zig` | 入力バッファ管理 | ✅ |
+| `services/mx_commands.zig` | コマンド文字列のパース | ✅ |
 
 ## 非目標（絶対に実装しない）
 

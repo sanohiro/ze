@@ -1,0 +1,214 @@
+const std = @import("std");
+const Editor = @import("../editor.zig").Editor;
+const Buffer = @import("../buffer.zig").Buffer;
+const syntax = @import("../syntax.zig");
+
+/// M-xコマンドを実行
+pub fn execute(e: *Editor) !void {
+    const cmd_line = e.minibuffer.getContent();
+    e.minibuffer.clear();
+    e.mode = .normal;
+
+    if (cmd_line.len == 0) {
+        e.getCurrentView().clearError();
+        return;
+    }
+
+    // コマンドと引数を分割
+    var parts = std.mem.splitScalar(u8, cmd_line, ' ');
+    const cmd = parts.next() orelse "";
+    const arg = parts.next();
+
+    // コマンド実行
+    if (std.mem.eql(u8, cmd, "?") or std.mem.eql(u8, cmd, "help")) {
+        e.getCurrentView().setError("Commands: line tab indent mode revert key ro ?");
+    } else if (std.mem.eql(u8, cmd, "line")) {
+        try cmdLine(e, arg);
+    } else if (std.mem.eql(u8, cmd, "tab")) {
+        cmdTab(e, arg);
+    } else if (std.mem.eql(u8, cmd, "indent")) {
+        cmdIndent(e, arg);
+    } else if (std.mem.eql(u8, cmd, "mode")) {
+        cmdMode(e, arg);
+    } else if (std.mem.eql(u8, cmd, "revert")) {
+        try cmdRevert(e);
+    } else if (std.mem.eql(u8, cmd, "key")) {
+        e.mode = .mx_key_describe;
+        e.getCurrentView().setError("Press key: ");
+    } else if (std.mem.eql(u8, cmd, "ro")) {
+        cmdReadonly(e);
+    } else {
+        // 未知のコマンド
+        e.setPrompt("Unknown command: {s}", .{cmd});
+    }
+}
+
+/// line コマンド: 指定行へ移動
+fn cmdLine(e: *Editor, arg: ?[]const u8) !void {
+    if (arg) |line_str| {
+        const line_num = std.fmt.parseInt(usize, line_str, 10) catch {
+            e.getCurrentView().setError("Invalid line number");
+            return;
+        };
+        if (line_num == 0) {
+            e.getCurrentView().setError("Line number must be >= 1");
+            return;
+        }
+        // 0-indexedに変換
+        const target_line = line_num - 1;
+        const view = e.getCurrentView();
+        const buffer = e.getCurrentBufferContent();
+        const total_lines = buffer.lineCount();
+        if (target_line >= total_lines) {
+            view.moveToBufferEnd();
+        } else {
+            // 指定行の先頭に移動
+            if (buffer.getLineStart(target_line)) |pos| {
+                e.setCursorToPos(pos);
+            }
+        }
+        e.getCurrentView().clearError();
+    } else {
+        // 引数なし: 現在の行番号を表示
+        const view = e.getCurrentView();
+        const current_line = view.top_line + view.cursor_y + 1;
+        e.setPrompt("line: {d}", .{current_line});
+    }
+}
+
+/// tab コマンド: タブ幅の表示/設定
+fn cmdTab(e: *Editor, arg: ?[]const u8) void {
+    if (arg) |width_str| {
+        const width = std.fmt.parseInt(u8, width_str, 10) catch {
+            e.getCurrentView().setError("Invalid tab width");
+            return;
+        };
+        if (width == 0 or width > 16) {
+            e.getCurrentView().setError("Tab width must be 1-16");
+            return;
+        }
+        e.getCurrentView().setTabWidth(width);
+        e.setPrompt("tab: {d}", .{width});
+    } else {
+        // 引数なし: 現在のタブ幅を表示
+        const width = e.getCurrentView().getTabWidth();
+        e.setPrompt("tab: {d}", .{width});
+    }
+}
+
+/// indent コマンド: インデントスタイルの表示/設定
+fn cmdIndent(e: *Editor, arg: ?[]const u8) void {
+    if (arg) |style_str| {
+        if (std.mem.eql(u8, style_str, "space") or std.mem.eql(u8, style_str, "spaces")) {
+            e.getCurrentView().setIndentStyle(.space);
+            e.getCurrentView().setError("indent: space");
+        } else if (std.mem.eql(u8, style_str, "tab") or std.mem.eql(u8, style_str, "tabs")) {
+            e.getCurrentView().setIndentStyle(.tab);
+            e.getCurrentView().setError("indent: tab");
+        } else {
+            e.getCurrentView().setError("Usage: indent space|tab");
+        }
+    } else {
+        // 引数なし: 現在のインデントスタイルを表示
+        const style = e.getCurrentView().getIndentStyle();
+        const style_name = switch (style) {
+            .space => "space",
+            .tab => "tab",
+        };
+        e.setPrompt("indent: {s}", .{style_name});
+    }
+}
+
+/// mode コマンド: 言語モードの表示/設定
+fn cmdMode(e: *Editor, arg: ?[]const u8) void {
+    if (arg) |mode_str| {
+        // 部分マッチで言語を検索
+        var found: ?*const syntax.LanguageDef = null;
+        for (syntax.all_languages) |lang| {
+            // 名前の部分マッチ（大文字小文字無視）
+            if (std.ascii.indexOfIgnoreCase(lang.name, mode_str) != null) {
+                found = lang;
+                break;
+            }
+            // 拡張子マッチ
+            for (lang.extensions) |ext| {
+                if (std.mem.eql(u8, ext, mode_str)) {
+                    found = lang;
+                    break;
+                }
+            }
+            if (found != null) break;
+        }
+        if (found) |lang| {
+            e.getCurrentView().setLanguage(lang);
+            e.setPrompt("mode: {s}", .{lang.name});
+        } else {
+            e.setPrompt("Unknown mode: {s}", .{mode_str});
+        }
+    } else {
+        // 引数なし: 現在のモードを表示
+        const lang = e.getCurrentView().language;
+        e.setPrompt("mode: {s}", .{lang.name});
+    }
+}
+
+/// revert コマンド: ファイル再読み込み
+fn cmdRevert(e: *Editor) !void {
+    const buffer_state = e.getCurrentBuffer();
+    if (buffer_state.filename == null) {
+        e.getCurrentView().setError("No file to revert");
+        return;
+    }
+    if (buffer_state.editing_ctx.modified) {
+        e.getCurrentView().setError("Buffer modified. Save first or use C-x k");
+        return;
+    }
+
+    const filename = buffer_state.filename.?;
+
+    // Buffer.loadFromFileを使用（エンコーディング・改行コード処理を含む）
+    const loaded_buffer = Buffer.loadFromFile(e.allocator, filename) catch |err| {
+        e.setPrompt("Cannot open: {s}", .{@errorName(err)});
+        return;
+    };
+
+    // 古いバッファを解放して新しいバッファに置き換え
+    buffer_state.editing_ctx.buffer.deinit();
+    buffer_state.editing_ctx.buffer.* = loaded_buffer;
+    buffer_state.editing_ctx.modified = false;
+
+    // Undo/Redoスタックをクリア（リロード前の編集履歴は無効）
+    buffer_state.editing_ctx.clearUndoHistory();
+
+    // ファイルの最終更新時刻を記録
+    const file = std.fs.cwd().openFile(filename, .{}) catch null;
+    if (file) |f| {
+        defer f.close();
+        const stat = f.stat() catch null;
+        if (stat) |s| {
+            buffer_state.file_mtime = s.mtime;
+        }
+    }
+
+    // Viewのバッファ参照を更新
+    e.getCurrentView().buffer = buffer_state.editing_ctx.buffer;
+
+    // 言語検出を再実行（ファイル内容が変わった可能性があるため）
+    const content_preview = buffer_state.editing_ctx.buffer.getContentPreview(512);
+    e.getCurrentView().detectLanguage(buffer_state.filename, content_preview);
+
+    // カーソルを先頭に
+    e.getCurrentView().moveToBufferStart();
+    e.getCurrentView().setError("Reverted");
+}
+
+/// ro コマンド: 読み取り専用切り替え
+fn cmdReadonly(e: *Editor) void {
+    const buffer_state = e.getCurrentBuffer();
+    buffer_state.readonly = !buffer_state.readonly;
+    if (buffer_state.readonly) {
+        e.getCurrentView().setError("[RO] Read-only enabled");
+    } else {
+        e.getCurrentView().setError("Read-only disabled");
+    }
+}
