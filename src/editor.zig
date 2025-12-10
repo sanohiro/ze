@@ -40,6 +40,8 @@ const HistoryType = @import("history.zig").HistoryType;
 const unicode = @import("unicode.zig");
 
 // サービス
+const poller = @import("poller.zig");
+
 const Minibuffer = @import("services/minibuffer.zig").Minibuffer;
 const SearchService = @import("services/search_service.zig").SearchService;
 const ShellService = @import("services/shell_service.zig").ShellService;
@@ -1260,47 +1262,92 @@ pub const Editor = struct {
         // バッファ付き入力リーダー（ペースト時等の大量入力でシステムコールを削減）
         var input_reader = input.InputReader.init(stdin);
 
-        while (self.running) {
-            // シグナルによる終了要求をチェック（SIGTERM, SIGHUP等）
-            if (self.terminal.checkTerminate()) {
-                // 未保存の変更があっても終了（シグナルは即座に応答すべき）
-                break;
-            }
+        // 効率的なI/O待機（epoll/kqueue）
+        // ポーリングではなくイベント駆動で、入力待機中はCPUを消費しない
+        var poll = poller.Poller.init(stdin.handle) catch {
+            // Poller初期化失敗: 従来のVTIMEポーリングにフォールバック
+            return self.runWithoutPoller(&input_reader);
+        };
+        defer poll.deinit();
 
-            // 端末サイズ変更をチェック
+        while (self.running) {
+            // 終了シグナルチェック
+            if (self.terminal.checkTerminate()) break;
+
+            // リサイズチェック
             if (try self.terminal.checkResize()) {
-                // サイズが変わったら全ウィンドウの再描画をマーク＆サイズ再計算
                 try self.recalculateWindowSizes();
             }
 
-            // カーソル位置をバッファ範囲内にクランプ（大量削除後の対策）
+            // カーソル位置補正と画面描画
             self.clampCursorPosition();
-
-            // 全ウィンドウをレンダリング
             try self.renderAllWindows();
 
-            // ミニバッファモードの場合、カーソルをステータスバーに移動
-            // （IME入力がステータスバー位置で行われるように）
+            // ミニバッファ入力中はカーソル位置を調整
             if (self.isMinibufferMode()) {
-                // カーソル位置を計算: プロンプト長 + 入力位置（表示幅）
                 const cursor_col = self.prompt_prefix_len + self.getMinibufferCursorColumn();
-                // ステータスバーの行（最下行）にカーソルを移動
                 const status_row = self.terminal.height - 1;
                 try self.terminal.moveCursor(status_row, cursor_col);
                 try self.terminal.showCursor();
                 try self.terminal.flush();
             }
 
-            // シェルコマンド実行中ならポーリング
+            // シェルコマンド実行中はその出力をポーリング
             if (self.mode == .shell_running) {
                 try self.pollShellCommand();
             }
 
-            if (try input.readKeyFromReader(&input_reader)) |key| {
-                // 何かキー入力があればエラーメッセージをクリア
-                self.getCurrentView().clearError();
+            // 入力を待機
+            // 重要: InputReaderのバッファにデータがあればkqueueをスキップ
+            // （バッファリングにより、カーネルバッファは空でもデータが残っている可能性がある）
+            if (!input_reader.hasData()) {
+                // 100msタイムアウトで待機
+                // 注意: 無限待機(null)だとPTY環境で問題が発生することがある
+                const poll_result = poll.wait(100);
+                if (poll_result == .signal) {
+                    // SIGWINCH等のシグナル: ループ先頭に戻ってリサイズチェック
+                    continue;
+                }
+                // タイムアウトでも入力チェックは行う（VTIMEモードで読み取り可能な場合がある）
+            }
 
-                // キー処理でエラーが発生したらステータスバーに表示
+            // キー入力を処理
+            if (try input.readKeyFromReader(&input_reader)) |key| {
+                self.getCurrentView().clearError();
+                self.processKey(key) catch |err| {
+                    const err_name = @errorName(err);
+                    self.getCurrentView().setError(err_name);
+                };
+            }
+        }
+    }
+
+    /// Poller初期化失敗時のフォールバック（従来のVTIMEポーリング）
+    fn runWithoutPoller(self: *Editor, input_reader: *input.InputReader) !void {
+        while (self.running) {
+            if (self.terminal.checkTerminate()) break;
+
+            if (try self.terminal.checkResize()) {
+                try self.recalculateWindowSizes();
+            }
+
+            self.clampCursorPosition();
+            try self.renderAllWindows();
+
+            if (self.isMinibufferMode()) {
+                const cursor_col = self.prompt_prefix_len + self.getMinibufferCursorColumn();
+                const status_row = self.terminal.height - 1;
+                try self.terminal.moveCursor(status_row, cursor_col);
+                try self.terminal.showCursor();
+                try self.terminal.flush();
+            }
+
+            if (self.mode == .shell_running) {
+                try self.pollShellCommand();
+            }
+
+            if (try input.readKeyFromReader(input_reader)) |key| {
+                self.getCurrentView().clearError();
                 self.processKey(key) catch |err| {
                     const err_name = @errorName(err);
                     self.getCurrentView().setError(err_name);

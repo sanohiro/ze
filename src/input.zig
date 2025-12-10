@@ -37,8 +37,13 @@ pub const InputReader = struct {
     }
 
     /// バッファ内のデータ量
-    fn available(self: *const InputReader) usize {
+    pub fn available(self: *const InputReader) usize {
         return self.end - self.start;
+    }
+
+    /// バッファにデータがあるかチェック
+    pub fn hasData(self: *const InputReader) bool {
+        return self.available() > 0;
     }
 
     /// stdinから利用可能なデータをバッファに読み込む

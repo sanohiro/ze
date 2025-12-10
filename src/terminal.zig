@@ -227,4 +227,50 @@ pub const Terminal = struct {
         try stdout.writeAll(self.buf.items);
         self.buf.clearRetainingCapacity();
     }
+
+    // ============================================================================
+    // 効率的なスクロール（差分描画の最適化）
+    // ============================================================================
+
+    /// スクロール領域を設定（1-indexed）
+    /// top_row から bottom_row までの範囲でスクロールが発生する
+    pub fn setScrollRegion(self: *Terminal, top_row: usize, bottom_row: usize) !void {
+        var buf: [32]u8 = undefined;
+        const str = try std.fmt.bufPrint(&buf, "\x1b[{d};{d}r", .{ top_row + 1, bottom_row + 1 });
+        try self.buf.appendSlice(self.allocator, str);
+    }
+
+    /// スクロール領域をリセット（全画面に戻す）
+    pub fn resetScrollRegion(self: *Terminal) !void {
+        try self.buf.appendSlice(self.allocator, "\x1b[r");
+    }
+
+    /// 画面を上にスクロール（新しい行が下から入る）
+    /// lines: スクロールする行数
+    pub fn scrollUp(self: *Terminal, lines: usize) !void {
+        var buf: [16]u8 = undefined;
+        if (lines == 1) {
+            try self.buf.appendSlice(self.allocator, "\x1b[S");
+        } else {
+            const str = try std.fmt.bufPrint(&buf, "\x1b[{d}S", .{lines});
+            try self.buf.appendSlice(self.allocator, str);
+        }
+    }
+
+    /// 画面を下にスクロール（新しい行が上から入る）
+    /// lines: スクロールする行数
+    pub fn scrollDown(self: *Terminal, lines: usize) !void {
+        var buf: [16]u8 = undefined;
+        if (lines == 1) {
+            try self.buf.appendSlice(self.allocator, "\x1b[T");
+        } else {
+            const str = try std.fmt.bufPrint(&buf, "\x1b[{d}T", .{lines});
+            try self.buf.appendSlice(self.allocator, str);
+        }
+    }
+
+    /// 行の末尾までクリア
+    pub fn clearToEndOfLine(self: *Terminal) !void {
+        try self.buf.appendSlice(self.allocator, "\x1b[K");
+    }
 };

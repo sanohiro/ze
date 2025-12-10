@@ -88,6 +88,9 @@ pub const View = struct {
     // レンダリング用スクラッチバッファ（毎行のalloc/freeを避ける）
     expanded_line: std.ArrayList(u8),
     highlighted_line: std.ArrayList(u8),
+    // スクロール最適化: 前回のtop_lineを記録して差分スクロールを検出
+    prev_top_line: usize,
+    scroll_delta: i32, // 正: 上スクロール、負: 下スクロール、0: スクロールなし
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, buffer: *Buffer) !View {
@@ -128,6 +131,8 @@ pub const View = struct {
             .cached_block_top_line = 0,
             .expanded_line = expanded_line,
             .highlighted_line = highlighted_line,
+            .prev_top_line = 0, // スクロール追跡用
+            .scroll_delta = 0, // スクロール差分
             .allocator = allocator,
         };
     }
@@ -340,6 +345,7 @@ pub const View = struct {
         self.needs_full_redraw = true;
         self.dirty_start = null;
         self.dirty_end = null;
+        self.scroll_delta = 0; // スクロール最適化をリセット
 
         // 前フレームバッファをクリア（全画面再描画なので差分計算不要）
         for (self.prev_screen.items) |*line| {
@@ -348,10 +354,42 @@ pub const View = struct {
         self.prev_screen.clearRetainingCapacity();
     }
 
+    /// 垂直スクロールをマーク（ターミナルスクロールで最適化可能）
+    /// lines: 正=下方向（内容が上へ）、負=上方向（内容が下へ）
+    pub fn markScroll(self: *View, lines: i32) void {
+        // ステータスバーを除いた表示行数
+        const visible_lines: i32 = @intCast(if (self.viewport_height >= 2) self.viewport_height - 2 else 0);
+
+        // スクロール量が画面の半分以上なら全画面再描画の方が効率的
+        const abs_lines = if (lines < 0) -lines else lines;
+        if (abs_lines >= @divTrunc(visible_lines, 2)) {
+            self.markFullRedraw();
+            return;
+        }
+
+        // スクロール差分を記録
+        self.scroll_delta = lines;
+        // 新しく見える行だけをダーティとしてマーク（バッファ行番号に変換）
+        if (lines > 0) {
+            // 下スクロール: 下端の行が新しく見える
+            const screen_start: usize = if (visible_lines > abs_lines) @intCast(visible_lines - abs_lines) else 0;
+            const buffer_start = self.top_line + screen_start;
+            const buffer_end = self.top_line + @as(usize, @intCast(visible_lines));
+            self.markDirty(buffer_start, buffer_end);
+        } else if (lines < 0) {
+            // 上スクロール: 上端の行が新しく見える
+            const buffer_start = self.top_line;
+            const buffer_end = self.top_line + @as(usize, @intCast(abs_lines));
+            self.markDirty(buffer_start, buffer_end);
+        }
+    }
+
     pub fn clearDirty(self: *View) void {
         self.dirty_start = null;
         self.dirty_end = null;
         self.needs_full_redraw = false;
+        self.scroll_delta = 0;
+        self.prev_top_line = self.top_line;
     }
 
     /// 指定行より前の行をスキャンして、ブロックコメント内で開始するかを判定
@@ -1118,7 +1156,7 @@ pub const View = struct {
             self.cursor_y -= 1;
         } else if (self.top_line > 0) {
             self.top_line -= 1;
-            self.markFullRedraw(); // スクロールで全画面再描画
+            self.markScroll(-1); // 上スクロール（ターミナルスクロール最適化）
         } else {
             return;
         }
@@ -1142,7 +1180,7 @@ pub const View = struct {
             self.cursor_y += 1;
         } else if (self.top_line + self.cursor_y + 1 < self.buffer.lineCount()) {
             self.top_line += 1;
-            self.markFullRedraw(); // スクロールで全画面再描画
+            self.markScroll(1); // 下スクロール（ターミナルスクロール最適化）
         } else {
             return;
         }

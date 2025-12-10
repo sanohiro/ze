@@ -1086,21 +1086,22 @@ pub const Buffer = struct {
         return iter.global_pos;
     }
 
-    // バイト位置から列番号を計算（グラフェムクラスタ数）
+    // バイト位置から列番号を計算（表示幅ベース）
+    // 日本語やCJK文字は2カラム、ASCII文字は1カラムとして計算
     pub fn findColumnByPos(self: *Buffer, pos: usize) usize {
         const line_num = self.findLineByPos(pos);
         const line_start = self.getLineStart(line_num) orelse 0;
 
         if (pos <= line_start) return 0;
 
-        // 行の開始位置からposまでのグラフェムクラスタ数を数える
+        // 行の開始位置からposまでの表示幅を計算
         var iter = PieceIterator.init(self);
         iter.seek(line_start);
 
         var col: usize = 0;
         while (iter.global_pos < pos) {
-            _ = iter.nextGraphemeCluster() catch break;
-            col += 1;
+            const gc = iter.nextGraphemeCluster() catch break orelse break;
+            col += gc.width; // 表示幅を加算（CJK=2, ASCII=1）
         }
         return col;
     }
