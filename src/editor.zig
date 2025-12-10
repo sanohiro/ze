@@ -1658,6 +1658,19 @@ pub const Editor = struct {
                     },
                     'p' => try self.navigateSearchHistory(true, is_forward),
                     'n' => try self.navigateSearchHistory(false, is_forward),
+                    'x' => {
+                        // C-x: 検索を終了してC-xプレフィックスモードに入る
+                        if (self.minibuffer.getContent().len > 0) {
+                            try self.search_service.addToHistory(self.minibuffer.getContent());
+                            if (self.last_search) |old_search| {
+                                self.allocator.free(old_search);
+                            }
+                            self.last_search = self.allocator.dupe(u8, self.minibuffer.getContent()) catch null;
+                        }
+                        self.endSearch();
+                        self.mode = .prefix_x;
+                        self.getCurrentView().setError("C-x-");
+                    },
                     else => {},
                 }
             },
