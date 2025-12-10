@@ -1826,7 +1826,9 @@ pub const Editor = struct {
                     'k' => rectangle.killRectangle(self) catch |err| {
                         self.getCurrentView().setError(@errorName(err));
                     },
-                    'y' => rectangle.yankRectangle(self),
+                    'y' => rectangle.yankRectangle(self) catch |err| {
+                        self.getCurrentView().setError(@errorName(err));
+                    },
                     't' => self.getCurrentView().setError("C-x r t not implemented yet"),
                     else => self.getCurrentView().setError("Unknown rectangle command"),
                 }

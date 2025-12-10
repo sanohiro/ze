@@ -1,6 +1,7 @@
 const std = @import("std");
 const Editor = @import("../editor.zig").Editor;
 const PieceIterator = @import("../buffer.zig").PieceIterator;
+const EditingContext = @import("../editing_context.zig").EditingContext;
 
 /// 矩形領域の削除（C-x r k）
 pub fn killRectangle(e: *Editor) !void {
@@ -12,6 +13,8 @@ pub fn killRectangle(e: *Editor) !void {
 
     const cursor = e.getCurrentView().getCursorBufferPos();
     const buffer = e.getCurrentBufferContent();
+    const buffer_state = e.getCurrentBuffer();
+    const editing_ctx = buffer_state.editing_ctx;
 
     // マークとカーソルの位置から矩形の範囲を決定
     const start_pos = @min(mark, cursor);
@@ -46,7 +49,21 @@ pub fn killRectangle(e: *Editor) !void {
         rect_ring.deinit(e.allocator);
     }
 
-    // 各行から矩形領域を抽出して削除
+    // 削除情報を一時保存（下から削除するため）
+    const DeleteInfo = struct {
+        pos: usize,
+        len: usize,
+        text: []const u8,
+    };
+    var delete_infos: std.ArrayList(DeleteInfo) = .{};
+    defer {
+        for (delete_infos.items) |info| {
+            e.allocator.free(info.text);
+        }
+        delete_infos.deinit(e.allocator);
+    }
+
+    // 各行から矩形領域を抽出（まだ削除しない）
     var line_num = start_line;
     while (line_num <= end_line) : (line_num += 1) {
         const line_start = buffer.getLineStart(line_num) orelse continue;
@@ -99,19 +116,37 @@ pub fn killRectangle(e: *Editor) !void {
                     errdefer e.allocator.free(line_text);
                     try rect_ring.append(e.allocator, line_text);
 
-                    // バッファから削除
-                    try buffer.delete(rsp, rep - rsp);
+                    // 削除情報を保存（テキストのコピーを作成）
+                    const text_copy = try e.allocator.dupe(u8, line_text);
+                    try delete_infos.append(e.allocator, .{
+                        .pos = rsp,
+                        .len = rep - rsp,
+                        .text = text_copy,
+                    });
                 }
             }
         }
     }
 
+    // 下から上に削除（位置がずれないように）
+    const cursor_before = editing_ctx.cursor;
+    var i = delete_infos.items.len;
+    while (i > 0) {
+        i -= 1;
+        const info = delete_infos.items[i];
+        // Undo履歴に記録
+        try editing_ctx.recordDeleteOp(info.pos, info.text, cursor_before);
+        // バッファから削除
+        try buffer.delete(info.pos, info.len);
+    }
+
     e.rectangle_ring = rect_ring;
+    e.getCurrentView().markFullRedraw();
     e.getCurrentView().setError("Rectangle killed");
 }
 
 /// 矩形の貼り付け（C-x r y）
-pub fn yankRectangle(e: *Editor) void {
+pub fn yankRectangle(e: *Editor) !void {
     if (e.getCurrentBuffer().readonly) {
         e.getCurrentView().setError("Buffer is read-only");
         return;
@@ -129,10 +164,21 @@ pub fn yankRectangle(e: *Editor) void {
     // 現在のカーソル位置を取得
     const cursor_pos = e.getCurrentView().getCursorBufferPos();
     const buffer = e.getCurrentBufferContent();
+    const buffer_state = e.getCurrentBuffer();
+    const editing_ctx = buffer_state.editing_ctx;
     const cursor_line = buffer.findLineByPos(cursor_pos);
     const cursor_col = buffer.findColumnByPos(cursor_pos);
+    const cursor_before = editing_ctx.cursor;
 
-    // 各行の矩形テキストをカーソル位置から挿入
+    // 挿入情報を収集（上から下に挿入するため、位置調整が必要）
+    const InsertInfo = struct {
+        pos: usize,
+        text: []const u8,
+    };
+    var insert_infos: std.ArrayList(InsertInfo) = .{};
+    defer insert_infos.deinit(e.allocator);
+
+    // 各行の挿入位置を計算
     for (rect.items, 0..) |line_text, i| {
         const target_line = cursor_line + i;
 
@@ -141,6 +187,8 @@ pub fn yankRectangle(e: *Editor) void {
             // 行が存在しない場合は、改行を追加して新しい行を作成
             const buf_end = buffer.len();
             buffer.insert(buf_end, '\n') catch continue;
+            // Undo記録
+            editing_ctx.recordInsertOp(buf_end, "\n", cursor_before) catch {};
             // 新しく作成した行の開始位置を取得（改行の次の位置）
             break :blk buffer.getLineStart(target_line) orelse continue;
         };
@@ -163,12 +211,20 @@ pub fn yankRectangle(e: *Editor) void {
         }
 
         const insert_pos = iter.global_pos;
-
-        // line_text を insert_pos に挿入
-        buffer.insertSlice(insert_pos, line_text) catch continue;
+        try insert_infos.append(e.allocator, .{ .pos = insert_pos, .text = line_text });
     }
 
-    const buffer_state = e.getCurrentBuffer();
-    buffer_state.editing_ctx.modified = true;
+    // 下から上に挿入（位置がずれないように）
+    var i = insert_infos.items.len;
+    while (i > 0) {
+        i -= 1;
+        const info = insert_infos.items[i];
+        // Undo履歴に記録
+        try editing_ctx.recordInsertOp(info.pos, info.text, cursor_before);
+        // バッファに挿入
+        try buffer.insertSlice(info.pos, info.text);
+    }
+
+    e.getCurrentView().markFullRedraw();
     e.getCurrentView().setError("Rectangle yanked");
 }

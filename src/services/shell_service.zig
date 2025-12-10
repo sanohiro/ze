@@ -89,6 +89,28 @@ pub const ShellService = struct {
         self.history.deinit();
     }
 
+    /// 文字列の末尾が引用符の内部にあるかどうかをチェック
+    /// シングルクォート、ダブルクォート、バックスラッシュエスケープを考慮
+    fn isInsideQuotes(s: []const u8) bool {
+        var in_single = false;
+        var in_double = false;
+        var i: usize = 0;
+        while (i < s.len) : (i += 1) {
+            const c = s[i];
+            if (c == '\\' and i + 1 < s.len) {
+                // バックスラッシュエスケープ: 次の文字をスキップ
+                i += 1;
+                continue;
+            }
+            if (c == '\'' and !in_double) {
+                in_single = !in_single;
+            } else if (c == '"' and !in_single) {
+                in_double = !in_double;
+            }
+        }
+        return in_single or in_double;
+    }
+
     /// コマンド文字列をパースしてプレフィックス/サフィックスを取り出す
     pub fn parseCommand(cmd: []const u8) ParsedCommand {
         var input_source: InputSource = .selection;
@@ -115,11 +137,13 @@ pub const ShellService = struct {
             while (cmd_start < cmd.len and cmd[cmd_start] == ' ') : (cmd_start += 1) {}
         }
 
-        // サフィックス解析（末尾から）
+        // サフィックス解析（末尾から、引用符を考慮）
         if (cmd_end > cmd_start) {
             while (cmd_end > cmd_start and cmd[cmd_end - 1] == ' ') : (cmd_end -= 1) {}
 
-            if (cmd_end > cmd_start) {
+            // 引用符の外にあるサフィックスのみ解釈
+            // 引用符状態をチェック（偶数個の引用符があれば外にいる）
+            if (cmd_end > cmd_start and !isInsideQuotes(cmd[cmd_start..cmd_end])) {
                 if (cmd_end >= 2 and cmd[cmd_end - 2] == 'n' and cmd[cmd_end - 1] == '>') {
                     output_dest = .new_buffer;
                     cmd_end -= 2;
