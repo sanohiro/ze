@@ -1150,6 +1150,124 @@ pub const Buffer = struct {
         self.line_index.invalidate();
     }
 
+    // ========================================
+    // 検索機能（コピーなし、PieceIterator使用）
+    // ========================================
+
+    /// 検索結果
+    pub const SearchMatch = struct {
+        start: usize,
+        len: usize,
+    };
+
+    /// 前方検索（コピーなし）
+    /// PieceIteratorを使ってpiece間を跨いで検索
+    pub fn searchForward(self: *const Buffer, pattern: []const u8, start_pos: usize) ?SearchMatch {
+        if (pattern.len == 0 or start_pos >= self.total_len) return null;
+
+        var iter = PieceIterator.init(self);
+        iter.seek(start_pos);
+
+        // KMPではなくシンプルな検索（パターンが短い場合に効率的）
+        var match_start: usize = start_pos;
+        var match_idx: usize = 0;
+
+        while (iter.next()) |byte| {
+            if (byte == pattern[match_idx]) {
+                if (match_idx == 0) {
+                    match_start = iter.global_pos - 1;
+                }
+                match_idx += 1;
+                if (match_idx == pattern.len) {
+                    return .{ .start = match_start, .len = pattern.len };
+                }
+            } else if (match_idx > 0) {
+                // マッチ失敗、match_start + 1から再開
+                iter.seek(match_start + 1);
+                match_idx = 0;
+            }
+        }
+
+        return null;
+    }
+
+    /// 後方検索（コピーなし）
+    /// 効率のため、チャンク単位で読み取って検索
+    pub fn searchBackward(self: *const Buffer, pattern: []const u8, start_pos: usize) ?SearchMatch {
+        if (pattern.len == 0) return null;
+
+        const search_end = @min(start_pos, self.total_len);
+        if (search_end < pattern.len) return null;
+
+        // 後方から1文字ずつ確認（シンプルな実装）
+        var pos: usize = search_end;
+        while (pos >= pattern.len) {
+            pos -= 1;
+
+            // この位置からパターンが一致するか確認
+            var iter = PieceIterator.init(self);
+            iter.seek(pos);
+
+            var matched = true;
+            for (pattern) |expected| {
+                const actual = iter.next() orelse {
+                    matched = false;
+                    break;
+                };
+                if (actual != expected) {
+                    matched = false;
+                    break;
+                }
+            }
+
+            if (matched) {
+                return .{ .start = pos, .len = pattern.len };
+            }
+
+            if (pos == 0) break;
+        }
+
+        return null;
+    }
+
+    /// 前方検索（ラップアラウンド対応）
+    pub fn searchForwardWrap(self: *const Buffer, pattern: []const u8, start_pos: usize) ?SearchMatch {
+        // まず start_pos から検索
+        if (self.searchForward(pattern, start_pos)) |match| {
+            return match;
+        }
+
+        // ラップアラウンド（先頭から start_pos まで）
+        if (start_pos > 0) {
+            if (self.searchForward(pattern, 0)) |match| {
+                if (match.start < start_pos) {
+                    return match;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// 後方検索（ラップアラウンド対応）
+    pub fn searchBackwardWrap(self: *const Buffer, pattern: []const u8, start_pos: usize) ?SearchMatch {
+        // まず start_pos まで後方検索
+        if (self.searchBackward(pattern, start_pos)) |match| {
+            return match;
+        }
+
+        // ラップアラウンド（末尾から start_pos まで）
+        if (start_pos < self.total_len) {
+            if (self.searchBackward(pattern, self.total_len)) |match| {
+                if (match.start >= start_pos) {
+                    return match;
+                }
+            }
+        }
+
+        return null;
+    }
+
     /// バッファの先頭からmax_lenバイトのプレビューを取得（言語検出用）
     /// 内部バッファへの直接参照を返すのでアロケーションなし
     /// ただし、ファイルが追加バッファを跨ぐ場合はnullを返す

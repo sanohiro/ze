@@ -2288,30 +2288,38 @@ pub const Editor = struct {
         const search_str = self.minibuffer.getContent();
         if (search_str.len == 0) return;
 
-        // バッファの全内容を取得
-        const content = try self.extractText(0, buffer.total_len);
-        defer self.allocator.free(content);
-
         const start_pos = self.getCurrentView().getCursorBufferPos();
+        const is_regex = SearchService.isRegexPattern(search_str);
 
-        // SearchServiceに検索を委譲
-        if (self.search_service.search(content, search_str, start_pos, forward, skip_current)) |match| {
+        // まずコピーなしのBuffer直接検索を試みる（リテラルパターンのみ）
+        if (self.search_service.searchBuffer(buffer, search_str, start_pos, forward, skip_current)) |match| {
             self.setCursorToPos(match.start);
-        } else {
-            // 見つからなかった場合のエラーメッセージ
-            const is_regex = SearchService.isRegexPattern(search_str);
-            if (forward) {
-                if (is_regex) {
-                    self.getCurrentView().setError("Failing I-search (regex)");
-                } else {
-                    self.getCurrentView().setError("Failing I-search");
-                }
+            return;
+        }
+
+        // 正規表現パターンの場合のみ、バッファ全体をコピーして検索
+        if (is_regex) {
+            const content = try self.extractText(0, buffer.total_len);
+            defer self.allocator.free(content);
+
+            if (self.search_service.search(content, search_str, start_pos, forward, skip_current)) |match| {
+                self.setCursorToPos(match.start);
+                return;
+            }
+        }
+
+        // 見つからなかった場合のエラーメッセージ
+        if (forward) {
+            if (is_regex) {
+                self.getCurrentView().setError("Failing I-search (regex)");
             } else {
-                if (is_regex) {
-                    self.getCurrentView().setError("Failing I-search backward (regex)");
-                } else {
-                    self.getCurrentView().setError("Failing I-search backward");
-                }
+                self.getCurrentView().setError("Failing I-search");
+            }
+        } else {
+            if (is_regex) {
+                self.getCurrentView().setError("Failing I-search backward (regex)");
+            } else {
+                self.getCurrentView().setError("Failing I-search backward");
             }
         }
     }

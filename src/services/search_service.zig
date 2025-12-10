@@ -17,6 +17,7 @@ const std = @import("std");
 const regex = @import("../regex.zig");
 const History = @import("../history.zig").History;
 const HistoryType = @import("../history.zig").HistoryType;
+const Buffer = @import("../buffer.zig").Buffer;
 
 /// 検索結果
 pub const SearchMatch = struct {
@@ -208,6 +209,31 @@ pub const SearchService = struct {
                 return self.searchBackward(content, pattern, search_from);
             }
         }
+    }
+
+    /// Buffer直接検索（コピーなし、リテラルパターンのみ）
+    /// 正規表現パターンの場合はnullを返す（呼び出し側でfallback処理が必要）
+    pub fn searchBuffer(_: *Self, buffer: *const Buffer, pattern: []const u8, start_pos: usize, forward: bool, skip_current: bool) ?SearchMatch {
+        // 正規表現パターンの場合はBuffer直接検索に対応していない
+        if (isRegexPattern(pattern)) {
+            return null; // 呼び出し側でextractText + search を使う
+        }
+
+        const search_from = if (skip_current and start_pos < buffer.len()) start_pos + 1 else start_pos;
+
+        if (forward) {
+            // 前方検索（ラップアラウンド）
+            if (buffer.searchForwardWrap(pattern, search_from)) |match| {
+                return .{ .start = match.start, .len = match.len };
+            }
+        } else {
+            // 後方検索（ラップアラウンド）
+            if (buffer.searchBackwardWrap(pattern, search_from)) |match| {
+                return .{ .start = match.start, .len = match.len };
+            }
+        }
+
+        return null;
     }
 
     // ========================================
