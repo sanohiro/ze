@@ -1,5 +1,6 @@
-// キーマップ（HashMapベース）
-// ランタイムでキーバインドを変更可能
+// キーマップ（固定長配列ベース）
+// Ctrl/Altは256要素の配列、Specialはenum直接インデックス
+// ホットパスでO(1)ルックアップを実現
 //
 // 使い方:
 // 1. Editor.initでKeymap.initを呼ぶ
@@ -17,7 +18,7 @@ const movement = @import("commands/movement.zig");
 
 pub const CommandFn = *const fn (*Editor) anyerror!void;
 
-/// 特殊キーの識別子（HashMapのキーとして使用）
+/// 特殊キーの識別子
 pub const SpecialKey = enum(u8) {
     arrow_up,
     arrow_down,
@@ -39,51 +40,50 @@ pub const SpecialKey = enum(u8) {
     alt_arrow_down,
 };
 
-pub const Keymap = struct {
-    ctrl_map: std.AutoHashMap(u8, CommandFn),
-    alt_map: std.AutoHashMap(u8, CommandFn),
-    special_map: std.AutoHashMap(SpecialKey, CommandFn),
-    allocator: std.mem.Allocator,
+const SPECIAL_KEY_COUNT = @typeInfo(SpecialKey).@"enum".fields.len;
 
-    pub fn init(allocator: std.mem.Allocator) !Keymap {
+pub const Keymap = struct {
+    // 固定長配列: O(1)ルックアップ
+    ctrl_table: [256]?CommandFn,
+    alt_table: [256]?CommandFn,
+    special_table: [SPECIAL_KEY_COUNT]?CommandFn,
+
+    pub fn init(_: std.mem.Allocator) !Keymap {
         return .{
-            .ctrl_map = std.AutoHashMap(u8, CommandFn).init(allocator),
-            .alt_map = std.AutoHashMap(u8, CommandFn).init(allocator),
-            .special_map = std.AutoHashMap(SpecialKey, CommandFn).init(allocator),
-            .allocator = allocator,
+            .ctrl_table = [_]?CommandFn{null} ** 256,
+            .alt_table = [_]?CommandFn{null} ** 256,
+            .special_table = [_]?CommandFn{null} ** SPECIAL_KEY_COUNT,
         };
     }
 
-    pub fn deinit(self: *Keymap) void {
-        self.ctrl_map.deinit();
-        self.alt_map.deinit();
-        self.special_map.deinit();
+    pub fn deinit(_: *Keymap) void {
+        // 固定長配列なので解放不要
     }
 
     // キーバインド登録
     pub fn bindCtrl(self: *Keymap, key: u8, handler: CommandFn) !void {
-        try self.ctrl_map.put(key, handler);
+        self.ctrl_table[key] = handler;
     }
 
     pub fn bindAlt(self: *Keymap, key: u8, handler: CommandFn) !void {
-        try self.alt_map.put(key, handler);
+        self.alt_table[key] = handler;
     }
 
     pub fn bindSpecial(self: *Keymap, key: SpecialKey, handler: CommandFn) !void {
-        try self.special_map.put(key, handler);
+        self.special_table[@intFromEnum(key)] = handler;
     }
 
-    // キーバインド検索
-    pub fn findCtrl(self: *Keymap, key: u8) ?CommandFn {
-        return self.ctrl_map.get(key);
+    // キーバインド検索: 配列の直接インデックスでO(1)
+    pub fn findCtrl(self: *const Keymap, key: u8) ?CommandFn {
+        return self.ctrl_table[key];
     }
 
-    pub fn findAlt(self: *Keymap, key: u8) ?CommandFn {
-        return self.alt_map.get(key);
+    pub fn findAlt(self: *const Keymap, key: u8) ?CommandFn {
+        return self.alt_table[key];
     }
 
-    pub fn findSpecial(self: *Keymap, key: SpecialKey) ?CommandFn {
-        return self.special_map.get(key);
+    pub fn findSpecial(self: *const Keymap, key: SpecialKey) ?CommandFn {
+        return self.special_table[@intFromEnum(key)];
     }
 
     /// input.Key を SpecialKey に変換
@@ -206,3 +206,43 @@ pub const Keymap = struct {
         try self.bindSpecial(.ctrl_shift_tab, movement.prevWindow);
     }
 };
+
+// ============================================
+// テスト
+// ============================================
+
+test "Keymap - ctrl lookup" {
+    var keymap = try Keymap.init(std.testing.allocator);
+    defer keymap.deinit();
+
+    try keymap.loadDefaults();
+
+    // C-f はcursorRight
+    const handler = keymap.findCtrl('f');
+    try std.testing.expect(handler != null);
+
+    // 未登録キーはnull
+    try std.testing.expect(keymap.findCtrl('z') == null);
+}
+
+test "Keymap - alt lookup" {
+    var keymap = try Keymap.init(std.testing.allocator);
+    defer keymap.deinit();
+
+    try keymap.loadDefaults();
+
+    // M-f はforwardWord
+    const handler = keymap.findAlt('f');
+    try std.testing.expect(handler != null);
+}
+
+test "Keymap - special lookup" {
+    var keymap = try Keymap.init(std.testing.allocator);
+    defer keymap.deinit();
+
+    try keymap.loadDefaults();
+
+    // 矢印キー
+    const handler = keymap.findSpecial(.arrow_up);
+    try std.testing.expect(handler != null);
+}
