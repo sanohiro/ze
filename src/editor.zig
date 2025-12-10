@@ -316,6 +316,36 @@ pub const Editor = struct {
         self.getCurrentView().clearError();
     }
 
+    /// 保存モードのキャンセル（quit_after_saveもリセット）
+    fn cancelSaveInput(self: *Editor) void {
+        self.quit_after_save = false;
+        self.cancelInput();
+    }
+
+    /// Query Replaceモードのキャンセル（replace_searchも解放）
+    fn cancelQueryReplaceInput(self: *Editor) void {
+        if (self.replace_search) |search| {
+            self.allocator.free(search);
+            self.replace_search = null;
+        }
+        self.cancelInput();
+    }
+
+    /// C-g または Escape キーかどうか判定
+    fn isCancelKey(key: input.Key) bool {
+        return switch (key) {
+            .ctrl => |c| c == 'g',
+            .escape => true,
+            else => false,
+        };
+    }
+
+    /// ミニバッファキー処理とプロンプト更新を一括実行
+    fn processMinibufferKeyWithPrompt(self: *Editor, key: input.Key, prompt: []const u8) !void {
+        _ = try self.handleMinibufferKey(key);
+        self.updateMinibufferPrompt(prompt);
+    }
+
     /// normalモードに戻りエラー表示をクリア
     fn resetToNormal(self: *Editor) void {
         self.mode = .normal;
@@ -1453,150 +1483,111 @@ pub const Editor = struct {
 
     /// ファイル名入力モード（C-x C-s で新規ファイル保存時）
     fn handleFilenameInputKey(self: *Editor, key: input.Key) !bool {
-        switch (key) {
-            .ctrl => |c| {
-                if (c == 'g') {
-                    self.mode = .normal;
-                    self.quit_after_save = false;
-                    self.clearInputBuffer();
-                    self.getCurrentView().clearError();
-                    return true;
-                }
-            },
-            .enter => {
-                if (self.minibuffer.getContent().len > 0) {
-                    const buffer_state = self.getCurrentBuffer();
-                    if (buffer_state.filename) |old| {
-                        self.allocator.free(old);
-                    }
-                    buffer_state.filename = try self.allocator.dupe(u8, self.minibuffer.getContent());
-                    self.clearInputBuffer();
-                    try self.saveFile();
-                    self.mode = .normal;
-                    if (self.quit_after_save) {
-                        self.quit_after_save = false;
-                        self.running = false;
-                    }
-                }
-                return true;
-            },
-            .escape => {
-                self.mode = .normal;
-                self.quit_after_save = false;
-                self.clearInputBuffer();
-                self.getCurrentView().clearError();
-                return true;
-            },
-            else => {},
+        if (isCancelKey(key)) {
+            self.cancelSaveInput();
+            return true;
         }
-        _ = try self.handleMinibufferKey(key);
-        self.updateMinibufferPrompt("Write file: ");
+        if (key == .enter) {
+            if (self.minibuffer.getContent().len > 0) {
+                const buffer_state = self.getCurrentBuffer();
+                if (buffer_state.filename) |old| {
+                    self.allocator.free(old);
+                }
+                buffer_state.filename = try self.allocator.dupe(u8, self.minibuffer.getContent());
+                self.clearInputBuffer();
+                try self.saveFile();
+                self.mode = .normal;
+                if (self.quit_after_save) {
+                    self.quit_after_save = false;
+                    self.running = false;
+                }
+            }
+            return true;
+        }
+        try self.processMinibufferKeyWithPrompt(key, "Write file: ");
         return true;
     }
 
     /// ファイルを開くモード（C-x C-f）
     fn handleFindFileInputKey(self: *Editor, key: input.Key) !bool {
-        switch (key) {
-            .ctrl => |c| {
-                if (c == 'g') {
-                    self.cancelInput();
-                    return true;
-                }
-            },
-            .escape => {
-                self.cancelInput();
-                return true;
-            },
-            .enter => {
-                if (self.minibuffer.getContent().len > 0) {
-                    const filename = self.minibuffer.getContent();
-                    const existing_buffer = self.findBufferByFilename(filename);
-                    if (existing_buffer) |buf| {
-                        try self.switchToBuffer(buf.id);
-                    } else {
-                        const new_buffer = try self.createNewBuffer();
-                        const filename_copy = try self.allocator.dupe(u8, filename);
-
-                        const loaded_buffer = Buffer.loadFromFile(self.allocator, filename_copy) catch |err| {
-                            self.allocator.free(filename_copy);
-                            if (err == error.FileNotFound) {
-                                new_buffer.filename = try self.allocator.dupe(u8, filename);
-                                try self.switchToBuffer(new_buffer.id);
-                                self.cancelInput();
-                                return true;
-                            } else if (err == error.BinaryFile) {
-                                _ = try self.closeBuffer(new_buffer.id);
-                                self.getCurrentView().setError("Cannot open binary file");
-                                self.mode = .normal;
-                                self.clearInputBuffer();
-                                return true;
-                            } else {
-                                _ = try self.closeBuffer(new_buffer.id);
-                                self.showError(err);
-                                self.mode = .normal;
-                                self.clearInputBuffer();
-                                return true;
-                            }
-                        };
-
-                        new_buffer.editing_ctx.buffer.deinit();
-                        new_buffer.editing_ctx.buffer.* = loaded_buffer;
-                        new_buffer.filename = filename_copy;
-                        new_buffer.editing_ctx.modified = false;
-
-                        const file = std.fs.cwd().openFile(filename_copy, .{}) catch null;
-                        if (file) |f| {
-                            defer f.close();
-                            const stat = f.stat() catch null;
-                            if (stat) |s| {
-                                new_buffer.file_mtime = s.mtime;
-                            }
-                        }
-                        try self.switchToBuffer(new_buffer.id);
-                    }
-                    self.cancelInput();
-                }
-                return true;
-            },
-            else => {},
+        if (isCancelKey(key)) {
+            self.cancelInput();
+            return true;
         }
-        _ = try self.handleMinibufferKey(key);
-        self.updateMinibufferPrompt("Find file: ");
+        if (key == .enter) {
+            if (self.minibuffer.getContent().len > 0) {
+                const filename = self.minibuffer.getContent();
+                const existing_buffer = self.findBufferByFilename(filename);
+                if (existing_buffer) |buf| {
+                    try self.switchToBuffer(buf.id);
+                } else {
+                    const new_buffer = try self.createNewBuffer();
+                    const filename_copy = try self.allocator.dupe(u8, filename);
+
+                    const loaded_buffer = Buffer.loadFromFile(self.allocator, filename_copy) catch |err| {
+                        self.allocator.free(filename_copy);
+                        if (err == error.FileNotFound) {
+                            new_buffer.filename = try self.allocator.dupe(u8, filename);
+                            try self.switchToBuffer(new_buffer.id);
+                            self.cancelInput();
+                            return true;
+                        } else if (err == error.BinaryFile) {
+                            _ = try self.closeBuffer(new_buffer.id);
+                            self.getCurrentView().setError("Cannot open binary file");
+                            self.cancelInput();
+                            return true;
+                        } else {
+                            _ = try self.closeBuffer(new_buffer.id);
+                            self.showError(err);
+                            self.cancelInput();
+                            return true;
+                        }
+                    };
+
+                    new_buffer.editing_ctx.buffer.deinit();
+                    new_buffer.editing_ctx.buffer.* = loaded_buffer;
+                    new_buffer.filename = filename_copy;
+                    new_buffer.editing_ctx.modified = false;
+
+                    const file = std.fs.cwd().openFile(filename_copy, .{}) catch null;
+                    if (file) |f| {
+                        defer f.close();
+                        const stat = f.stat() catch null;
+                        if (stat) |s| {
+                            new_buffer.file_mtime = s.mtime;
+                        }
+                    }
+                    try self.switchToBuffer(new_buffer.id);
+                }
+                self.cancelInput();
+            }
+            return true;
+        }
+        try self.processMinibufferKeyWithPrompt(key, "Find file: ");
         return true;
     }
 
     /// バッファ切り替えモード（C-x b）
     fn handleBufferSwitchInputKey(self: *Editor, key: input.Key) !bool {
-        switch (key) {
-            .ctrl => |c| {
-                if (c == 'g') {
-                    self.cancelInput();
-                    return true;
-                }
-            },
-            .escape => {
-                self.cancelInput();
-                return true;
-            },
-            .enter => {
-                if (self.minibuffer.getContent().len > 0) {
-                    const buffer_name = self.minibuffer.getContent();
-                    const found_buffer = self.findBufferByFilename(buffer_name);
-                    if (found_buffer) |buf| {
-                        try self.switchToBuffer(buf.id);
-                        self.cancelInput();
-                    } else {
-                        self.getCurrentView().setError("No such buffer");
-                        self.mode = .normal;
-                        self.clearInputBuffer();
-                    }
-                }
-                return true;
-            },
-            else => {},
+        if (isCancelKey(key)) {
+            self.cancelInput();
+            return true;
         }
-        _ = try self.handleMinibufferKey(key);
-        self.updateMinibufferPrompt("Switch to buffer: ");
+        if (key == .enter) {
+            if (self.minibuffer.getContent().len > 0) {
+                const buffer_name = self.minibuffer.getContent();
+                const found_buffer = self.findBufferByFilename(buffer_name);
+                if (found_buffer) |buf| {
+                    try self.switchToBuffer(buf.id);
+                    self.cancelInput();
+                } else {
+                    self.getCurrentView().setError("No such buffer");
+                    self.cancelInput();
+                }
+            }
+            return true;
+        }
+        try self.processMinibufferKeyWithPrompt(key, "Switch to buffer: ");
         return true;
     }
 
@@ -1792,85 +1783,54 @@ pub const Editor = struct {
 
     /// Query Replace: 検索文字列入力モード
     fn handleQueryReplaceInputSearchKey(self: *Editor, key: input.Key) !bool {
-        switch (key) {
-            .ctrl => |c| {
-                if (c == 'g') {
-                    self.cancelInput();
-                    return true;
-                }
-            },
-            .escape => {
-                self.cancelInput();
-                return true;
-            },
-            .enter => {
-                if (self.minibuffer.getContent().len > 0) {
-                    if (self.replace_search) |old| {
-                        self.allocator.free(old);
-                    }
-                    self.replace_search = try self.allocator.dupe(u8, self.minibuffer.getContent());
-                    self.clearInputBuffer();
-                    self.mode = .query_replace_input_replacement;
-                    self.setPrompt("Query replace {s} with: ", .{self.replace_search.?});
-                    self.prompt_prefix_len = 1 + 14 + self.replace_search.?.len + 7;
-                }
-                return true;
-            },
-            else => {},
+        if (isCancelKey(key)) {
+            self.cancelInput();
+            return true;
         }
-        _ = try self.handleMinibufferKey(key);
-        self.updateMinibufferPrompt("Query replace: ");
+        if (key == .enter) {
+            if (self.minibuffer.getContent().len > 0) {
+                if (self.replace_search) |old| {
+                    self.allocator.free(old);
+                }
+                self.replace_search = try self.allocator.dupe(u8, self.minibuffer.getContent());
+                self.clearInputBuffer();
+                self.mode = .query_replace_input_replacement;
+                self.setPrompt("Query replace {s} with: ", .{self.replace_search.?});
+                self.prompt_prefix_len = 1 + 14 + self.replace_search.?.len + 7;
+            }
+            return true;
+        }
+        try self.processMinibufferKeyWithPrompt(key, "Query replace: ");
         return true;
     }
 
     /// Query Replace: 置換文字列入力モード
     fn handleQueryReplaceInputReplacementKey(self: *Editor, key: input.Key) !bool {
-        switch (key) {
-            .ctrl => |c| {
-                if (c == 'g') {
-                    self.mode = .normal;
-                    self.clearInputBuffer();
-                    if (self.replace_search) |search| {
-                        self.allocator.free(search);
-                        self.replace_search = null;
-                    }
-                    self.getCurrentView().clearError();
-                    return true;
-                }
-            },
-            .escape => {
-                self.mode = .normal;
-                self.clearInputBuffer();
-                if (self.replace_search) |search| {
-                    self.allocator.free(search);
-                    self.replace_search = null;
-                }
-                self.getCurrentView().clearError();
-                return true;
-            },
-            .enter => {
-                if (self.replace_replacement) |old| {
-                    self.allocator.free(old);
-                }
-                self.replace_replacement = try self.allocator.dupe(u8, self.minibuffer.getContent());
-                self.minibuffer.clear();
+        if (isCancelKey(key)) {
+            self.cancelQueryReplaceInput();
+            return true;
+        }
+        if (key == .enter) {
+            if (self.replace_replacement) |old| {
+                self.allocator.free(old);
+            }
+            self.replace_replacement = try self.allocator.dupe(u8, self.minibuffer.getContent());
+            self.minibuffer.clear();
 
-                if (self.replace_search) |search| {
-                    const found = try self.findNextMatch(search, self.getCurrentView().getCursorBufferPos());
-                    if (found) {
-                        self.mode = .query_replace_confirm;
-                        self.setPrompt("Replace? (y)es (n)ext (!)all (q)uit", .{});
-                    } else {
-                        self.mode = .normal;
-                        self.getCurrentView().setError("No match found");
-                    }
+            if (self.replace_search) |search| {
+                const found = try self.findNextMatch(search, self.getCurrentView().getCursorBufferPos());
+                if (found) {
+                    self.mode = .query_replace_confirm;
+                    self.setPrompt("Replace? (y)es (n)ext (!)all (q)uit", .{});
                 } else {
                     self.mode = .normal;
-                    self.getCurrentView().setError("No search string");
+                    self.getCurrentView().setError("No match found");
                 }
-                return true;
-            },
-            else => {},
+            } else {
+                self.mode = .normal;
+                self.getCurrentView().setError("No search string");
+            }
+            return true;
         }
         _ = try self.handleMinibufferKey(key);
         if (self.replace_search) |search| {
