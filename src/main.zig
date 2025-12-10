@@ -30,7 +30,22 @@ fn printVersion() void {
     stdout_file.writeAll(msg) catch {};
 }
 
-pub fn main() !void {
+/// Exit codes (Unix convention)
+const EXIT_SUCCESS: u8 = 0;
+const EXIT_IO_ERROR: u8 = 1;
+const EXIT_USAGE_ERROR: u8 = 2;
+
+pub fn main() u8 {
+    return mainImpl() catch |err| {
+        const stderr_file: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Error: {}\n", .{err}) catch return EXIT_IO_ERROR;
+        stderr_file.writeAll(msg) catch {};
+        return EXIT_IO_ERROR;
+    };
+}
+
+fn mainImpl() !u8 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -46,21 +61,21 @@ pub fn main() !void {
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             printHelp();
-            return;
+            return EXIT_SUCCESS;
         } else if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v")) {
             printVersion();
-            return;
+            return EXIT_SUCCESS;
         } else if (arg.len > 0 and arg[0] == '-') {
             // 未知のオプション
             const stderr_file: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
             var buf: [256]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Unknown option: {s}\n", .{arg}) catch {
                 printHelp();
-                return;
+                return EXIT_USAGE_ERROR;
             };
             stderr_file.writeAll(msg) catch {};
             printHelp();
-            return;
+            return EXIT_USAGE_ERROR;
         } else {
             // ファイル名として扱う（バイナリチェックはloadFile内で行う）
             checked_filename = arg;
@@ -78,9 +93,9 @@ pub fn main() !void {
                 // バイナリファイルはエラー終了
                 const stderr_file: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
                 var buf: [256]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, "Error: cannot open binary file: {s}\n", .{filename}) catch return;
+                const msg = std.fmt.bufPrint(&buf, "Error: cannot open binary file: {s}\n", .{filename}) catch return EXIT_IO_ERROR;
                 stderr_file.writeAll(msg) catch {};
-                return;
+                return EXIT_IO_ERROR;
             } else if (err == error.FileNotFound) {
                 // 新規ファイルの場合、現在のバッファにファイル名を設定
                 const buffer = editor.getCurrentBuffer();
@@ -97,4 +112,5 @@ pub fn main() !void {
     // エディタを実行
     try editor.run();
     // 改行はterminal.deinit()で出力される
+    return EXIT_SUCCESS;
 }

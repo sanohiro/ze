@@ -22,6 +22,10 @@ const posix = std.posix;
 ///   --wait=<ms>    : キー送信前の待機時間（デフォルト: 500ms）
 ///   --delay=<ms>   : キー間の遅延（デフォルト: 100ms）
 ///   --show-output  : zeの出力を表示
+///   --ze=<path>    : zeバイナリのパス（デフォルト: ./zig-out/bin/ze）
+///
+/// 環境変数:
+///   ZE_BIN         : zeバイナリのパス（--zeオプションより優先度低）
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -42,8 +46,14 @@ pub fn main() !void {
     var wait_ms: u64 = 500;
     var delay_ms: u64 = 100;
     var show_output = false;
+    var ze_path: []const u8 = "./zig-out/bin/ze"; // デフォルトパス
     var key_sequences = try std.ArrayList([]const u8).initCapacity(allocator, 0);
     defer key_sequences.deinit(allocator);
+
+    // 環境変数 ZE_BIN をチェック
+    if (getenv("ZE_BIN")) |env_path| {
+        ze_path = std.mem.sliceTo(env_path, 0);
+    }
 
     // 引数を解析
     while (args.next()) |arg| {
@@ -55,6 +65,8 @@ pub fn main() !void {
             wait_ms = try std.fmt.parseInt(u64, arg[7..], 10);
         } else if (std.mem.startsWith(u8, arg, "--delay=")) {
             delay_ms = try std.fmt.parseInt(u64, arg[8..], 10);
+        } else if (std.mem.startsWith(u8, arg, "--ze=")) {
+            ze_path = arg[5..]; // コマンドライン引数が最優先
         } else if (std.mem.eql(u8, arg, "--show-output")) {
             show_output = true;
         } else {
@@ -87,7 +99,10 @@ pub fn main() !void {
         std.debug.print("  --input-file=<path>  Read key sequences from file (one per line)\n", .{});
         std.debug.print("  --wait=<ms>          Wait time before sending keys (default: 500ms)\n", .{});
         std.debug.print("  --delay=<ms>         Delay between keys (default: 100ms)\n", .{});
+        std.debug.print("  --ze=<path>          Path to ze binary (default: ./zig-out/bin/ze)\n", .{});
         std.debug.print("  --show-output        Show ze output\n\n", .{});
+        std.debug.print("Environment variables:\n", .{});
+        std.debug.print("  ZE_BIN               Path to ze binary (lower priority than --ze)\n\n", .{});
         std.debug.print("Special keys:\n", .{});
         std.debug.print("  C-<char>        Ctrl+char (e.g., C-x, C-s)\n", .{});
         std.debug.print("  M-<char>        Alt+char (e.g., M-f)\n", .{});
@@ -101,7 +116,18 @@ pub fn main() !void {
         return;
     }
 
+    // ze_path をnull終端バッファにコピー（forkした子プロセスで使用）
+    var ze_path_buf: [512]u8 = undefined;
+    if (ze_path.len >= ze_path_buf.len) {
+        std.debug.print("Error: ze path too long\n", .{});
+        return error.PathTooLong;
+    }
+    @memcpy(ze_path_buf[0..ze_path.len], ze_path);
+    ze_path_buf[ze_path.len] = 0;
+    const ze_path_z: [*:0]const u8 = @ptrCast(ze_path_buf[0..ze_path.len :0]);
+
     std.debug.print("=== Generic PTY Test Harness ===\n", .{});
+    std.debug.print("Using ze binary: {s}\n", .{ze_path});
     if (filename) |f| {
         std.debug.print("Opening file: {s}\n", .{f});
     } else {
@@ -151,16 +177,22 @@ pub fn main() !void {
         _ = setenv("TERM", "xterm-256color", 1);
 
         if (filename) |f| {
-            // ファイル指定あり
-            const argv = [_:null]?[*:0]const u8{ "./zig-out/bin/ze", @ptrCast(f.ptr), null };
+            // ファイル指定あり - filenameをnull終端にコピー
+            var fname_buf: [512]u8 = undefined;
+            if (f.len >= fname_buf.len) posix.exit(1);
+            @memcpy(fname_buf[0..f.len], f);
+            fname_buf[f.len] = 0;
+            const fname_z: [*:0]const u8 = @ptrCast(fname_buf[0..f.len :0]);
+
+            const argv = [_:null]?[*:0]const u8{ ze_path_z, fname_z, null };
             const envp = [_:null]?[*:0]const u8{null};
-            const err = posix.execveZ("/Users/hiro/Projects/ze/zig-out/bin/ze", &argv, &envp);
+            const err = posix.execveZ(ze_path_z, &argv, &envp);
             std.debug.print("execve failed: {}\n", .{err});
         } else {
             // ファイル指定なし
-            const argv = [_:null]?[*:0]const u8{ "./zig-out/bin/ze", null };
+            const argv = [_:null]?[*:0]const u8{ ze_path_z, null };
             const envp = [_:null]?[*:0]const u8{null};
-            const err = posix.execveZ("/Users/hiro/Projects/ze/zig-out/bin/ze", &argv, &envp);
+            const err = posix.execveZ(ze_path_z, &argv, &envp);
             std.debug.print("execve failed: {}\n", .{err});
         }
         posix.exit(1);
@@ -489,6 +521,8 @@ extern "c" fn setenv(
     value: [*:0]const u8,
     overwrite: c_int,
 ) c_int;
+
+extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
 
 extern "c" fn fcntl(fd: c_int, cmd: c_int, arg: c_int) c_int;
 
