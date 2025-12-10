@@ -433,11 +433,9 @@ ze/
 │   └── services/         # 独立したサブシステム（状態を持つ）
 │       ├── shell_service.zig    # シェルコマンド実行
 │       ├── search_service.zig   # 検索履歴管理
-│       ├── undo_manager.zig     # Undo/Redo管理
 │       ├── buffer_manager.zig   # バッファ管理
 │       ├── window_manager.zig   # ウィンドウ管理
-│       ├── minibuffer.zig       # ミニバッファ
-│       └── mx_commands.zig      # M-xコマンドパーサー
+│       └── minibuffer.zig       # ミニバッファ
 ├── build.zig
 ├── README.md
 └── test_harness_generic.zig  # E2Eテストハーネス
@@ -514,9 +512,9 @@ pub const ShellService = struct {
 | `commands/mx.zig` | M-xコマンド実行 | ✅ |
 | `services/shell_service.zig` | プロセス実行、履歴管理 | ✅ |
 | `services/search_service.zig` | 検索履歴管理 | ✅ |
-| `services/undo_manager.zig` | Undo/Redo状態管理 | ✅ |
+| `services/buffer_manager.zig` | バッファ管理 | ✅ |
+| `services/window_manager.zig` | ウィンドウ管理 | ✅ |
 | `services/minibuffer.zig` | 入力バッファ管理 | ✅ |
-| `services/mx_commands.zig` | コマンド文字列のパース | ✅ |
 
 ## 非目標（絶対に実装しない）
 

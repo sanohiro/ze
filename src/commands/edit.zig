@@ -784,8 +784,9 @@ pub fn getCurrentLineIndent(e: *Editor) []const u8 {
     const buffer = e.getCurrentBufferContent();
     const cursor_pos = e.getCurrentView().getCursorBufferPos();
 
-    // 現在行の開始位置を取得
-    const line_start = buffer.getLineStart(cursor_pos) orelse return "";
+    // バイト位置から行番号を取得し、その行の開始位置を取得
+    const line_num = buffer.findLineByPos(cursor_pos);
+    const line_start = buffer.getLineStart(line_num) orelse return "";
 
     // バッファからテキストを取得してインデント部分を抽出
     // 静的バッファを使用して安全にスライスを返す
