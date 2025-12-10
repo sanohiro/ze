@@ -367,17 +367,20 @@ pub const Editor = struct {
 
     /// インクリメンタルサーチを開始（C-s / C-r）
     fn startIsearch(self: *Editor, forward: bool) !void {
+        // 検索モードに入る
+        self.mode = if (forward) .isearch_forward else .isearch_backward;
+        self.search_start_pos = self.getCurrentView().getCursorBufferPos();
+
         if (self.last_search) |search_str| {
             // 前回の検索パターンがあれば、それで検索を実行
             self.minibuffer.setContent(search_str) catch {};
             self.getCurrentView().setSearchHighlight(search_str);
             try self.performSearch(forward, true);
-            self.getCurrentView().clearError();
-            self.getCurrentView().markFullRedraw();
+            const prefix = if (forward) "I-search: " else "I-search backward: ";
+            self.prompt_prefix_len = if (forward) 11 else 20;
+            self.setPrompt("{s}{s}", .{ prefix, search_str });
         } else {
             // 新規検索モードに入る
-            self.mode = if (forward) .isearch_forward else .isearch_backward;
-            self.search_start_pos = self.getCurrentView().getCursorBufferPos();
             self.clearInputBuffer();
             if (forward) {
                 self.prompt_prefix_len = 11;
