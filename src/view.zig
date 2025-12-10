@@ -418,6 +418,115 @@ pub const View = struct {
         return self.highlighted_line.items;
     }
 
+    /// 差分描画：新しい行を前フレームと比較し、変更部分のみ描画
+    /// screen_row: 画面上の行インデックス（prev_screenのインデックス）
+    /// abs_row: ターミナル上の絶対行位置
+    fn renderLineDiff(self: *View, term: *Terminal, new_line: []const u8, screen_row: usize, abs_row: usize, viewport_x: usize, viewport_width: usize) !void {
+        if (screen_row < self.prev_screen.items.len) {
+            const old_line = self.prev_screen.items[screen_row].items;
+
+            // 差分を検出
+            const min_len = @min(old_line.len, new_line.len);
+            var diff_start: ?usize = null;
+            var diff_end: usize = 0;
+
+            // 前方から差分を探す
+            for (0..min_len) |i| {
+                if (old_line[i] != new_line[i]) {
+                    if (diff_start == null) diff_start = i;
+                    diff_end = i + 1;
+                }
+            }
+
+            // 長さが違う場合は後ろも差分
+            if (old_line.len != new_line.len) {
+                if (diff_start == null) diff_start = min_len;
+                diff_end = @max(old_line.len, new_line.len);
+            }
+
+            if (diff_start) |start_raw| {
+                // 行番号の表示幅を取得
+                const line_num_display_width = self.getLineNumberWidth();
+
+                // 行番号がある場合は常に行全体を再描画
+                // （ANSIシーケンスの計算が複雑なため、シンプルな実装を優先）
+                if (line_num_display_width > 0) {
+                    // 行頭から全体を再描画
+                    try term.moveCursor(abs_row, viewport_x);
+                    try term.write(new_line);
+                    // 残りをスペースで埋める（CLEAR_LINEの代わり）
+                    try self.padToWidth(term, new_line, viewport_width);
+                } else {
+                    // UTF-8文字境界に調整（継続バイトの途中から始まらないように）
+                    var start = start_raw;
+                    while (start > 0 and start < new_line.len and unicode.isUtf8Continuation(new_line[start])) {
+                        start -= 1;
+                    }
+
+                    // バイト位置から画面カラム位置を計算
+                    // ANSIエスケープシーケンスを除外して計算
+                    var screen_col: usize = 0;
+                    var b: usize = 0;
+                    while (b < start) {
+                        const c = new_line[b];
+                        // ANSIエスケープシーケンスをスキップ
+                        if (b + 1 < new_line.len and unicode.isAnsiEscapeStart(c, new_line[b + 1])) {
+                            b += 2;
+                            while (b < new_line.len and new_line[b] != 'm') : (b += 1) {}
+                            if (b < new_line.len) b += 1;
+                            continue;
+                        }
+
+                        if (unicode.isAsciiByte(c)) {
+                            b += 1;
+                            screen_col += 1;
+                        } else {
+                            const len = unicode.utf8SeqLen(c);
+                            if (b + len <= new_line.len) {
+                                const cp = std.unicode.utf8Decode(new_line[b..b + len]) catch {
+                                    b += 1;
+                                    screen_col += 1;
+                                    continue;
+                                };
+                                screen_col += unicode.displayWidth(cp);
+                                b += len;
+                            } else {
+                                b += 1;
+                                screen_col += 1;
+                            }
+                        }
+                    }
+
+                    // 差分部分のみ描画（viewport_xオフセットを加算）
+                    try term.moveCursor(abs_row, viewport_x + screen_col);
+                    try term.write(new_line[start..]);
+
+                    // 古い行の方が長い場合は残りをスペースで埋める
+                    if (old_line.len > new_line.len) {
+                        try self.padToWidth(term, new_line, viewport_width);
+                    }
+                }
+            }
+        } else {
+            // 新しい行：全体を描画
+            try term.moveCursor(abs_row, viewport_x);
+            try term.write(new_line);
+            // 残りをスペースで埋める
+            try self.padToWidth(term, new_line, viewport_width);
+        }
+
+        // 前フレームバッファを更新
+        if (screen_row < self.prev_screen.items.len) {
+            self.prev_screen.items[screen_row].clearRetainingCapacity();
+            try self.prev_screen.items[screen_row].appendSlice(self.allocator, new_line);
+        } else {
+            // 新しい行を追加
+            var new_prev_line = std.ArrayList(u8){};
+            try new_prev_line.appendSlice(self.allocator, new_line);
+            try self.prev_screen.append(self.allocator, new_prev_line);
+        }
+    }
+
     // イテレータを再利用して行を描画（セルレベル差分描画版）
     fn renderLineWithIter(self: *View, term: *Terminal, screen_row: usize, file_line: usize, iter: *PieceIterator, line_buffer: *std.ArrayList(u8)) !bool {
         return self.renderLineWithIterOffset(term, 0, screen_row, file_line, iter, line_buffer, false);
@@ -547,110 +656,8 @@ pub const View = struct {
         // 検索ハイライトを適用
         const new_line = try self.applySearchHighlight(self.expanded_line.items);
 
-        // 前フレームと比較してセルレベル差分描画
-        if (screen_row < self.prev_screen.items.len) {
-            const old_line = self.prev_screen.items[screen_row].items;
-
-            // 差分を検出
-            const min_len = @min(old_line.len, new_line.len);
-            var diff_start: ?usize = null;
-            var diff_end: usize = 0;
-
-            // 前方から差分を探す
-            for (0..min_len) |i| {
-                if (old_line[i] != new_line[i]) {
-                    if (diff_start == null) diff_start = i;
-                    diff_end = i + 1;
-                }
-            }
-
-            // 長さが違う場合は後ろも差分
-            if (old_line.len != new_line.len) {
-                if (diff_start == null) diff_start = min_len;
-                diff_end = @max(old_line.len, new_line.len);
-            }
-
-            if (diff_start) |start_raw| {
-                // 行番号の表示幅を取得
-                const line_num_display_width = self.getLineNumberWidth();
-
-                // 行番号がある場合は常に行全体を再描画
-                // （ANSIシーケンスの計算が複雑なため、シンプルな実装を優先）
-                if (line_num_display_width > 0) {
-                    // 行頭から全体を再描画
-                    try term.moveCursor(abs_row, viewport_x);
-                    try term.write(new_line);
-                    // 残りをスペースで埋める（CLEAR_LINEの代わり）
-                    try self.padToWidth(term, new_line, viewport_width);
-                } else {
-                    // UTF-8文字境界に調整（継続バイトの途中から始まらないように）
-                    var start = start_raw;
-                    while (start > 0 and start < new_line.len and unicode.isUtf8Continuation(new_line[start])) {
-                        start -= 1;
-                    }
-
-                    // バイト位置から画面カラム位置を計算
-                    // ANSIエスケープシーケンスを除外して計算
-                    var screen_col: usize = 0;
-                    var b: usize = 0;
-                    while (b < start) {
-                        const c = new_line[b];
-                        // ANSIエスケープシーケンスをスキップ
-                        if (b + 1 < new_line.len and unicode.isAnsiEscapeStart(c, new_line[b + 1])) {
-                            b += 2;
-                            while (b < new_line.len and new_line[b] != 'm') : (b += 1) {}
-                            if (b < new_line.len) b += 1;
-                            continue;
-                        }
-
-                        if (unicode.isAsciiByte(c)) {
-                            b += 1;
-                            screen_col += 1;
-                        } else {
-                            const len = unicode.utf8SeqLen(c);
-                            if (b + len <= new_line.len) {
-                                const cp = std.unicode.utf8Decode(new_line[b..b + len]) catch {
-                                    b += 1;
-                                    screen_col += 1;
-                                    continue;
-                                };
-                                screen_col += unicode.displayWidth(cp);
-                                b += len;
-                            } else {
-                                b += 1;
-                                screen_col += 1;
-                            }
-                        }
-                    }
-
-                    // 差分部分のみ描画（viewport_xオフセットを加算）
-                    try term.moveCursor(abs_row, viewport_x + screen_col);
-                    try term.write(new_line[start..]);
-
-                    // 古い行の方が長い場合は残りをスペースで埋める
-                    if (old_line.len > new_line.len) {
-                        try self.padToWidth(term, new_line, viewport_width);
-                    }
-                }
-            }
-        } else {
-            // 新しい行：全体を描画
-            try term.moveCursor(abs_row, viewport_x);
-            try term.write(new_line);
-            // 残りをスペースで埋める
-            try self.padToWidth(term, new_line, viewport_width);
-        }
-
-        // 前フレームバッファを更新
-        if (screen_row < self.prev_screen.items.len) {
-            self.prev_screen.items[screen_row].clearRetainingCapacity();
-            try self.prev_screen.items[screen_row].appendSlice(self.allocator, new_line);
-        } else {
-            // 新しい行を追加
-            var new_prev_line = std.ArrayList(u8){};
-            try new_prev_line.appendSlice(self.allocator, new_line);
-            try self.prev_screen.append(self.allocator, new_prev_line);
-        }
+        // 差分描画と前フレームバッファ更新
+        try self.renderLineDiff(term, new_line, screen_row, abs_row, viewport_x, viewport_width);
 
         // 次の行がブロックコメント内で開始するかを返す
         return analysis.ends_in_block;
