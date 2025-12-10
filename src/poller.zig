@@ -17,6 +17,7 @@
 const std = @import("std");
 const posix = std.posix;
 const builtin = @import("builtin");
+const linux = std.os.linux;
 
 /// ポーリング結果
 pub const PollResult = enum {
@@ -123,12 +124,12 @@ pub const EpollPoller = struct {
         const epfd = try posix.epoll_create1(0);
         errdefer posix.close(epfd);
 
-        var event = posix.linux.epoll_event{
-            .events = posix.linux.EPOLL.IN,
+        var event = linux.epoll_event{
+            .events = linux.EPOLL.IN,
             .data = .{ .fd = stdin_fd },
         };
 
-        try posix.epoll_ctl(epfd, posix.linux.EPOLL.CTL_ADD, stdin_fd, &event);
+        try posix.epoll_ctl(epfd, linux.EPOLL.CTL_ADD, stdin_fd, &event);
 
         return .{ .epfd = epfd, .stdin_fd = stdin_fd };
     }
@@ -139,12 +140,12 @@ pub const EpollPoller = struct {
 
     /// 入力を待機
     pub fn wait(self: *EpollPoller, timeout_ms: ?u32) PollResult {
-        var events: [1]posix.linux.epoll_event = undefined;
+        var events: [1]linux.epoll_event = undefined;
 
         const timeout: i32 = if (timeout_ms) |ms| @intCast(ms) else -1;
 
         while (true) {
-            const result = posix.linux.epoll_wait(self.epfd, &events, 1, timeout);
+            const result = linux.epoll_wait(self.epfd, &events, 1, timeout);
 
             if (result < 0) {
                 const err = posix.errno(result);
