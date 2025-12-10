@@ -186,7 +186,7 @@ pub const History = struct {
         }
     }
 
-    /// 履歴をファイルに保存
+    /// 履歴をファイルに保存（アトミック: temp+rename方式）
     pub fn save(self: *History, history_type: HistoryType) !void {
         // ~/.ze ディレクトリを作成（存在しなければ）
         const ze_dir = try getZeDir(self.allocator);
@@ -199,17 +199,15 @@ pub const History = struct {
         const path = try getHistoryPath(self.allocator, history_type);
         defer self.allocator.free(path);
 
-        // 履歴ファイルはプライベート（0o600 = オーナーのみ読み書き可）
-        const file = try std.fs.cwd().createFile(path, .{ .mode = 0o600 });
-        defer file.close();
+        // 一時ファイルパスを作成（元のパス + ".tmp"）
+        const tmp_path = try std.fmt.allocPrint(self.allocator, "{s}.tmp", .{path});
+        defer self.allocator.free(tmp_path);
 
-        // 排他ロック（書き込みロック）を取得
-        // 他のプロセスの読み書きをブロック
-        _ = std.posix.flock(file.handle, std.posix.LOCK.EX) catch {
-            // ロック取得失敗は無視して続行（NFSなどロック非対応の場合）
-        };
-        defer {
-            _ = std.posix.flock(file.handle, std.posix.LOCK.UN) catch {};
+        // 一時ファイルに書き込み（0o600 = オーナーのみ読み書き可）
+        const file = try std.fs.cwd().createFile(tmp_path, .{ .mode = 0o600 });
+        errdefer {
+            file.close();
+            std.fs.cwd().deleteFile(tmp_path) catch {};
         }
 
         for (self.entries.items) |entry| {
@@ -219,6 +217,19 @@ pub const History = struct {
 
         // fsyncで確実にディスクに書き込み
         try file.sync();
+        file.close();
+
+        // アトミックにリネーム（既存ファイルを上書き）
+        try std.fs.cwd().rename(tmp_path, path);
+
+        // ディレクトリをsyncしてメタデータの永続化を保証
+        // 注: Zigのfs.Dirにはsyncメソッドがないため、fsyncで代替
+        if (std.fs.cwd().openDir(ze_dir, .{})) |dir| {
+            var d = dir;
+            // ディレクトリfdをfsync（POSIXのfsync(dirfd)相当）
+            std.posix.fsync(d.fd) catch {};
+            d.close();
+        } else |_| {}
     }
 };
 

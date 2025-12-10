@@ -1113,11 +1113,12 @@ pub const Buffer = struct {
         }
 
         // 境界チェック: 範囲がバッファサイズを超えていないか確認
+        // オーバーフローを避けるため、length > total - start の形で比較
         const total = self.len();
         if (start > total) {
             return error.OutOfRange;
         }
-        if (start + length > total) {
+        if (length > total - start) {
             return error.OutOfRange;
         }
 

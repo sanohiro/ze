@@ -137,11 +137,12 @@ pub fn yankRectangle(e: *Editor) void {
         const target_line = cursor_line + i;
 
         // 対象行の開始位置を取得
-        const line_start = buffer.getLineStart(target_line) orelse {
+        const line_start = buffer.getLineStart(target_line) orelse blk: {
             // 行が存在しない場合は、改行を追加して新しい行を作成
             const buf_end = buffer.len();
             buffer.insert(buf_end, '\n') catch continue;
-            continue;
+            // 新しく作成した行の開始位置を取得（改行の次の位置）
+            break :blk buffer.getLineStart(target_line) orelse continue;
         };
 
         // 対象行のカラム cursor_col の位置を探す

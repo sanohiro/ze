@@ -126,9 +126,19 @@ pub const Key = union(enum) {
     ctrl_shift_tab,
 };
 
+/// stdinから読み取り（error.Interruptedを自動リトライ）
+fn readWithRetry(stdin: std.fs.File, out: []u8) !usize {
+    while (true) {
+        return stdin.read(out) catch |err| {
+            if (err == error.Interrupted) continue; // EINTR: リトライ
+            return err;
+        };
+    }
+}
+
 pub fn readKey(stdin: std.fs.File) !?Key {
     var buf: [config.Input.BUF_SIZE]u8 = undefined;
-    const n = try stdin.read(buf[0..1]);
+    const n = try readWithRetry(stdin, buf[0..1]);
     if (n == 0) return null;
 
     const ch = buf[0];
@@ -161,7 +171,7 @@ pub fn readKey(stdin: std.fs.File) !?Key {
         // さらに読み込んでエスケープシーケンスを判定
         // VMIN=0, VTIME=1の設定により、100msでタイムアウト
         // バイトが分割到着する場合も、100ms以内なら正しく読み取れる
-        const n2 = try stdin.read(buf[1..3]);
+        const n2 = try readWithRetry(stdin, buf[1..3]);
         if (n2 == 0) {
             // タイムアウト: ESCキー単体として扱う
             return Key.escape;
@@ -182,7 +192,7 @@ pub fn readKey(stdin: std.fs.File) !?Key {
                 'F' => return Key.end_key,
                 'Z' => return Key.shift_tab,
                 '1'...'9' => {
-                    const n3 = try stdin.read(buf[3..4]);
+                    const n3 = try readWithRetry(stdin, buf[3..4]);
                     if (n3 > 0) {
                         if (buf[3] == '~') {
                             switch (buf[2]) {
@@ -195,7 +205,7 @@ pub fn readKey(stdin: std.fs.File) !?Key {
                             }
                         } else if (buf[2] == '1' and buf[3] == ';') {
                             // Alt+矢印 (ESC [1;3A / ESC [1;3B)
-                            const n4 = try stdin.read(buf[4..6]);
+                            const n4 = try readWithRetry(stdin, buf[4..6]);
                             if (n4 >= 2 and buf[4] == '3') {
                                 switch (buf[5]) {
                                     'A' => return Key.alt_arrow_up,
@@ -205,13 +215,13 @@ pub fn readKey(stdin: std.fs.File) !?Key {
                             }
                         } else if (buf[2] == '3' and buf[3] == ';') {
                             // M-delete (ESC [3;3~)
-                            const n4 = try stdin.read(buf[4..6]);
+                            const n4 = try readWithRetry(stdin, buf[4..6]);
                             if (n4 >= 2 and buf[4] == '3' and buf[5] == '~') {
                                 return Key.alt_delete;
                             }
                         } else if (buf[2] == '2' and buf[3] == '7') {
                             // Ctrl-Tab or Ctrl-Shift-Tab (ESC [27;5;9~ or ESC [27;6;9~)
-                            const n4 = try stdin.read(buf[4..9]);
+                            const n4 = try readWithRetry(stdin, buf[4..9]);
                             if (n4 >= 5 and buf[4] == ';' and buf[6] == ';' and buf[7] == '9' and buf[8] == '~') {
                                 if (buf[5] == '5') {
                                     return Key.ctrl_tab;
@@ -243,7 +253,7 @@ pub fn readKey(stdin: std.fs.File) !?Key {
 
             // continuation bytesを1バイトずつ読み取り、検証する
             while (bytes_read < len) {
-                const remaining = try stdin.read(buf[bytes_read .. bytes_read + 1]);
+                const remaining = try readWithRetry(stdin, buf[bytes_read .. bytes_read + 1]);
                 if (remaining == 0) {
                     // タイムアウト：不完全なシーケンス、置換文字を返す
                     return Key{ .codepoint = 0xFFFD };
