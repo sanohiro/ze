@@ -384,3 +384,40 @@ test "SearchService - regex cache" {
     try std.testing.expect(result3 != null);
     try std.testing.expectEqualStrings("[a-z]+", service.cached_pattern.?);
 }
+
+test "SearchService - regex backward search" {
+    const allocator = std.testing.allocator;
+    var service = SearchService.init(allocator);
+    defer service.deinit();
+
+    // content: "abc123def456"
+    //           0  3  6  9
+    const content = "abc123def456";
+
+    // 末尾から後方検索 → 最後のマッチ "456" (位置9)
+    const result1 = service.searchRegexBackward(content, "\\d+", content.len);
+    try std.testing.expect(result1 != null);
+    try std.testing.expectEqual(@as(usize, 9), result1.?.start);
+    try std.testing.expectEqual(@as(usize, 3), result1.?.len);
+
+    // 位置9から後方検索 → "123" (位置3)
+    const result2 = service.searchRegexBackward(content, "\\d+", 9);
+    try std.testing.expect(result2 != null);
+    try std.testing.expectEqual(@as(usize, 3), result2.?.start);
+}
+
+test "SearchService - regex backward wraparound" {
+    const allocator = std.testing.allocator;
+    var service = SearchService.init(allocator);
+    defer service.deinit();
+
+    // content: "abc123def456"
+    //           0  3  6  9
+    const content = "abc123def456";
+
+    // 位置3から後方検索 → "123"の前には何もない → ラップして "456"(位置9)を返すべき
+    const result = service.searchRegexBackward(content, "\\d+", 3);
+    try std.testing.expect(result != null);
+    // ラップアラウンドで start_pos より後ろのマッチを返す
+    try std.testing.expectEqual(@as(usize, 9), result.?.start);
+}
