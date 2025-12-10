@@ -800,6 +800,9 @@ pub const Editor = struct {
         // 現在のウィンドウを縮める
         const old_height = current_window.height;
         current_window.height = old_height - cmd_height;
+        // 縮めたウィンドウのViewにビューポート変更を通知
+        current_window.view.setViewport(current_window.width, current_window.height);
+        current_window.view.markFullRedraw();
 
         // 新しいウィンドウを下部に作成（WindowManager経由）
         const new_window = try self.window_manager.createWindow(

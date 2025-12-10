@@ -354,34 +354,14 @@ pub const View = struct {
         self.prev_screen.clearRetainingCapacity();
     }
 
-    /// 垂直スクロールをマーク（ターミナルスクロールで最適化可能）
+    /// 垂直スクロールをマーク
+    /// 現在の実装では全画面再描画（ターミナルスクロール最適化は未実装）
     /// lines: 正=下方向（内容が上へ）、負=上方向（内容が下へ）
     pub fn markScroll(self: *View, lines: i32) void {
-        // ステータスバーを除いた表示行数
-        const visible_lines: i32 = @intCast(if (self.viewport_height >= 2) self.viewport_height - 2 else 0);
-
-        // スクロール量が画面の半分以上なら全画面再描画の方が効率的
-        const abs_lines = if (lines < 0) -lines else lines;
-        if (abs_lines >= @divTrunc(visible_lines, 2)) {
-            self.markFullRedraw();
-            return;
-        }
-
-        // スクロール差分を記録
-        self.scroll_delta = lines;
-        // 新しく見える行だけをダーティとしてマーク（バッファ行番号に変換）
-        if (lines > 0) {
-            // 下スクロール: 下端の行が新しく見える
-            const screen_start: usize = if (visible_lines > abs_lines) @intCast(visible_lines - abs_lines) else 0;
-            const buffer_start = self.top_line + screen_start;
-            const buffer_end = self.top_line + @as(usize, @intCast(visible_lines));
-            self.markDirty(buffer_start, buffer_end);
-        } else if (lines < 0) {
-            // 上スクロール: 上端の行が新しく見える
-            const buffer_start = self.top_line;
-            const buffer_end = self.top_line + @as(usize, @intCast(abs_lines));
-            self.markDirty(buffer_start, buffer_end);
-        }
+        _ = lines;
+        // TODO: ターミナルスクロール（ESC [S / ESC [T）を使った最適化
+        // 現在は prev_screen との整合性の問題があるため全画面再描画
+        self.markFullRedraw();
     }
 
     pub fn clearDirty(self: *View) void {
@@ -432,8 +412,50 @@ pub const View = struct {
         return in_block;
     }
 
+    /// ANSIエスケープシーケンスをスキップして検索文字列を探す
+    /// 見つかった場合はバイト位置（エスケープ込み）を返す
+    fn findSkippingAnsi(line: []const u8, start: usize, search_str: []const u8) ?usize {
+        if (search_str.len == 0) return null;
+        var line_pos = start;
+        var search_match: usize = 0;
+        var match_start: ?usize = null;
+
+        while (line_pos < line.len) {
+            const c = line[line_pos];
+
+            // ANSIエスケープシーケンスをスキップ (\x1b[...m)
+            if (c == 0x1b and line_pos + 1 < line.len and line[line_pos + 1] == '[') {
+                line_pos += 2;
+                while (line_pos < line.len and line[line_pos] != 'm') : (line_pos += 1) {}
+                if (line_pos < line.len) line_pos += 1; // 'm' をスキップ
+                continue;
+            }
+
+            // 検索文字列とマッチング
+            if (c == search_str[search_match]) {
+                if (search_match == 0) {
+                    match_start = line_pos;
+                }
+                search_match += 1;
+                if (search_match == search_str.len) {
+                    return match_start;
+                }
+            } else {
+                // マッチ失敗：リセット
+                if (match_start) |ms| {
+                    // マッチ開始位置の次から再試行
+                    line_pos = ms;
+                    match_start = null;
+                }
+                search_match = 0;
+            }
+            line_pos += 1;
+        }
+        return null;
+    }
+
     /// 検索ハイライトを適用
-    /// 検索文字列がある場合、入力行にハイライト（反転表示）を適用
+    /// ANSIエスケープシーケンスを避けて検索し、ハイライト（反転表示）を適用
     /// ハイライトがある場合は highlighted_line を返し、ない場合は入力をそのまま返す
     fn applySearchHighlight(self: *View, line: []const u8) ![]const u8 {
         const search_str = self.getSearchHighlight() orelse return line;
@@ -444,13 +466,12 @@ pub const View = struct {
 
         var pos: usize = 0;
         while (pos < line.len) {
-            if (std.mem.indexOf(u8, line[pos..], search_str)) |match_offset| {
-                const match_pos = pos + match_offset;
+            if (findSkippingAnsi(line, pos, search_str)) |match_pos| {
                 // マッチ前の部分をコピー
                 try self.highlighted_line.appendSlice(self.allocator, line[pos..match_pos]);
                 // 反転表示開始
                 try self.highlighted_line.appendSlice(self.allocator, ANSI.REVERSE);
-                // マッチ部分をコピー
+                // マッチ部分をコピー（検索文字列の長さ分）
                 try self.highlighted_line.appendSlice(self.allocator, line[match_pos .. match_pos + search_str.len]);
                 // 反転表示終了
                 try self.highlighted_line.appendSlice(self.allocator, ANSI.REVERSE_OFF);
