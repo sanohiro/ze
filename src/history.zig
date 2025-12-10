@@ -199,7 +199,8 @@ pub const History = struct {
         const path = try getHistoryPath(self.allocator, history_type);
         defer self.allocator.free(path);
 
-        const file = try std.fs.cwd().createFile(path, .{});
+        // 履歴ファイルはプライベート（0o600 = オーナーのみ読み書き可）
+        const file = try std.fs.cwd().createFile(path, .{ .mode = 0o600 });
         defer file.close();
 
         // 排他ロック（書き込みロック）を取得

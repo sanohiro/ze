@@ -1086,7 +1086,7 @@ pub const Editor = struct {
     /// 他のウィンドウをすべて閉じる (C-x 1)
     pub fn deleteOtherWindows(self: *Editor) !void {
         // WindowManagerに委譲（サイズ再計算も含む）
-        self.window_manager.deleteOtherWindows();
+        try self.window_manager.deleteOtherWindows();
     }
 
     pub fn loadFile(self: *Editor, path: []const u8) !void {
@@ -1750,7 +1750,9 @@ pub const Editor = struct {
         switch (key) {
             .char => |c| {
                 switch (c) {
-                    'k' => rectangle.killRectangle(self),
+                    'k' => rectangle.killRectangle(self) catch |err| {
+                        self.getCurrentView().setError(@errorName(err));
+                    },
                     'y' => rectangle.yankRectangle(self),
                     't' => self.getCurrentView().setError("C-x r t not implemented yet"),
                     else => self.getCurrentView().setError("Unknown rectangle command"),

@@ -3,7 +3,7 @@ const Editor = @import("../editor.zig").Editor;
 const PieceIterator = @import("../buffer.zig").PieceIterator;
 
 /// 矩形領域の削除（C-x r k）
-pub fn killRectangle(e: *Editor) void {
+pub fn killRectangle(e: *Editor) !void {
     const window = e.getCurrentWindow();
     const mark = window.mark_pos orelse {
         e.getCurrentView().setError("No mark set");
@@ -43,7 +43,7 @@ pub fn killRectangle(e: *Editor) void {
         for (rect_ring.items) |line| {
             e.allocator.free(line);
         }
-        rect_ring.deinit();
+        rect_ring.deinit(e.allocator);
     }
 
     // 各行から矩形領域を抽出して削除
@@ -86,22 +86,21 @@ pub fn killRectangle(e: *Editor) void {
                 if (rep > rsp) {
                     // テキストを抽出
                     var line_buf: std.ArrayList(u8) = .{};
-                    errdefer line_buf.deinit();
+                    errdefer line_buf.deinit(e.allocator);
 
                     var extract_iter = PieceIterator.init(buffer);
                     extract_iter.seek(rsp);
                     while (extract_iter.global_pos < rep) {
                         const byte = extract_iter.next() orelse break;
-                        line_buf.append(e.allocator, byte) catch break;
+                        try line_buf.append(e.allocator, byte);
                     }
 
-                    const line_text = line_buf.toOwnedSlice(e.allocator) catch "";
-                    rect_ring.append(e.allocator, line_text) catch {
-                        e.allocator.free(line_text);
-                    };
+                    const line_text = try line_buf.toOwnedSlice(e.allocator);
+                    errdefer e.allocator.free(line_text);
+                    try rect_ring.append(e.allocator, line_text);
 
                     // バッファから削除
-                    buffer.delete(rsp, rep - rsp) catch {};
+                    try buffer.delete(rsp, rep - rsp);
                 }
             }
         }

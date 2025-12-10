@@ -340,7 +340,7 @@ pub const WindowManager = struct {
     }
 
     /// 他のウィンドウをすべて閉じる (C-x 1)
-    pub fn deleteOtherWindows(self: *Self) void {
+    pub fn deleteOtherWindows(self: *Self) !void {
         // ウィンドウが1つしかなければ何もしない
         if (self.windows.items.len == 1) {
             return;
@@ -358,7 +358,8 @@ pub const WindowManager = struct {
 
         // ウィンドウリストをクリアして現在のウィンドウだけ残す
         self.windows.clearRetainingCapacity();
-        self.windows.append(self.allocator, current_window) catch {};
+        // appendが失敗した場合は致命的エラー（ウィンドウが空になる）
+        try self.windows.append(self.allocator, current_window);
         self.current_window_idx = 0;
 
         // ウィンドウサイズを再計算（フルスクリーン）

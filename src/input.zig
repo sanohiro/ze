@@ -42,6 +42,7 @@ pub const InputReader = struct {
     }
 
     /// stdinから利用可能なデータをバッファに読み込む
+    /// シグナル割り込み(error.Interrupted)は自動的にリトライする
     fn fill(self: *InputReader) !usize {
         if (self.start > 0 and self.end == self.start) {
             // バッファが空なら先頭にリセット
@@ -58,9 +59,15 @@ pub const InputReader = struct {
         const space = config.Input.RING_BUF_SIZE - self.end;
         if (space == 0) return 0;
 
-        const n = try self.stdin.read(self.buf[self.end .. self.end + space]);
-        self.end += n;
-        return n;
+        // シグナル割り込み(SIGWINCH等)時にリトライ
+        while (true) {
+            const n = self.stdin.read(self.buf[self.end .. self.end + space]) catch |err| {
+                if (err == error.Interrupted) continue; // EINTR: リトライ
+                return err;
+            };
+            self.end += n;
+            return n;
+        }
     }
 
     /// 1バイト読み取り（バッファから、なければstdinから）

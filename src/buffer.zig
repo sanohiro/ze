@@ -1106,9 +1106,19 @@ pub const Buffer = struct {
     }
 
     // 指定範囲のテキストを取得（新しいメモリを確保）
+    // start + length がバッファサイズを超える場合は error.OutOfRange
     pub fn getRange(self: *const Buffer, allocator: std.mem.Allocator, start: usize, length: usize) ![]u8 {
         if (length == 0) {
             return try allocator.alloc(u8, 0);
+        }
+
+        // 境界チェック: 範囲がバッファサイズを超えていないか確認
+        const total = self.len();
+        if (start > total) {
+            return error.OutOfRange;
+        }
+        if (start + length > total) {
+            return error.OutOfRange;
         }
 
         const result = try allocator.alloc(u8, length);

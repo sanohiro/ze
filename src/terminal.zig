@@ -68,6 +68,9 @@ pub const Terminal = struct {
         };
 
         try self.enableRawMode();
+        // enableRawMode成功後、以降の処理で失敗した場合はrawモードを解除する
+        errdefer self.disableRawMode();
+
         try self.getWindowSize();
 
         // シグナルハンドラを設定
