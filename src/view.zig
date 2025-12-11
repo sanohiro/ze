@@ -84,6 +84,7 @@ fn stringDisplayWidth(str: []const u8) usize {
 /// start_byte: 開始バイト位置
 /// end_byte: 終了バイト位置
 /// initial_col: 初期カラム位置（行番号表示幅など）
+/// グラフェムクラスタを使用してZWJ絵文字等も正しく処理
 fn calculateScreenColumn(line: []const u8, start_byte: usize, end_byte: usize, initial_col: usize) usize {
     var screen_col: usize = initial_col;
     var b: usize = start_byte;
@@ -97,23 +98,15 @@ fn calculateScreenColumn(line: []const u8, start_byte: usize, end_byte: usize, i
             continue;
         }
 
-        if (unicode.isAsciiByte(c)) {
+        // グラフェムクラスタ単位で処理（ZWJ絵文字等を正しく扱う）
+        const remaining = line[b..@min(end_byte, line.len)];
+        if (unicode.nextGraphemeCluster(remaining)) |cluster| {
+            screen_col += cluster.display_width;
+            b += cluster.byte_len;
+        } else {
+            // フォールバック: 1バイト進める
             b += 1;
             screen_col += 1;
-        } else {
-            const len = unicode.utf8SeqLen(c);
-            if (b + len <= line.len) {
-                const cp = std.unicode.utf8Decode(line[b .. b + len]) catch {
-                    b += 1;
-                    screen_col += 1;
-                    continue;
-                };
-                screen_col += unicode.displayWidth(cp);
-                b += len;
-            } else {
-                b += 1;
-                screen_col += 1;
-            }
         }
     }
     return screen_col;
@@ -318,9 +311,10 @@ pub const View = struct {
 
     /// 出力済み行をviewport_widthまでスペースでパディング
     /// ANSIエスケープシーケンスを除いた表示幅で計算
+    /// グラフェムクラスタを使用してZWJ絵文字等も正しく処理
     fn padToWidth(self: *View, term: *Terminal, line: []const u8, viewport_width: usize) !void {
         _ = self;
-        // 表示幅を計算（ANSIエスケープシーケンスを除外）
+        // 表示幅を計算（ANSIエスケープシーケンスを除外、グラフェムクラスタ対応）
         var display_width: usize = 0;
         var i: usize = 0;
         while (i < line.len) {
@@ -330,22 +324,14 @@ pub const View = struct {
                 i += 2;
                 while (i < line.len and line[i] != 'm') : (i += 1) {}
                 if (i < line.len) i += 1;
-            } else if (unicode.isAsciiByte(c)) {
-                // ASCII
-                display_width += 1;
-                i += 1;
             } else {
-                // UTF-8: 幅を判定
-                const len = unicode.utf8SeqLen(c);
-                if (i + len <= line.len) {
-                    const cp = std.unicode.utf8Decode(line[i..][0..len]) catch {
-                        i += 1;
-                        continue;
-                    };
-                    display_width += unicode.displayWidth(cp);
-                    i += len;
+                // グラフェムクラスタ単位で処理（ZWJ絵文字等を正しく扱う）
+                if (unicode.nextGraphemeCluster(line[i..])) |cluster| {
+                    display_width += cluster.display_width;
+                    i += cluster.byte_len;
                 } else {
                     i += 1;
+                    display_width += 1;
                 }
             }
         }
@@ -786,24 +772,23 @@ pub const View = struct {
                     col += 1;
                 }
             } else {
-                // UTF-8: calculate codepoint and width
-                const len = std.unicode.utf8ByteSequenceLength(ch) catch break;
-                if (byte_idx + len > line_buffer.items.len) break;
-                const codepoint = std.unicode.utf8Decode(line_buffer.items[byte_idx .. byte_idx + len]) catch {
-                    byte_idx += 1;
-                    continue;
-                };
-                const width = unicode.displayWidth(codepoint);
-                // 水平スクロール範囲内なら追加
-                if (col >= self.top_col) {
-                    // UTF-8文字をそのままコピー
-                    var i: usize = 0;
-                    while (i < len) : (i += 1) {
-                        try self.expanded_line.append(self.allocator, line_buffer.items[byte_idx + i]);
+                // UTF-8: グラフェムクラスタ単位で処理（ZWJ絵文字等を正しく扱う）
+                const remaining = line_buffer.items[byte_idx..];
+                if (unicode.nextGraphemeCluster(remaining)) |cluster| {
+                    // 水平スクロール範囲内なら追加
+                    if (col >= self.top_col) {
+                        // グラフェムクラスタ全体をコピー
+                        var i: usize = 0;
+                        while (i < cluster.byte_len) : (i += 1) {
+                            try self.expanded_line.append(self.allocator, line_buffer.items[byte_idx + i]);
+                        }
                     }
+                    byte_idx += cluster.byte_len;
+                    col += cluster.display_width;
+                } else {
+                    // フォールバック: 1バイト進める
+                    byte_idx += 1;
                 }
-                byte_idx += len;
-                col += width;
             }
         }
 
