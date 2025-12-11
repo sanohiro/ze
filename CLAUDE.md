@@ -356,7 +356,7 @@ zig run test_harness_generic.zig -lc -- "text" "C-x" "C-s" "/tmp/wrong" "Backspa
 ### 出力先（サフィックス）
 
 - (なし): Command Buffer に表示
-- `>`: 入力元を置換
+- `>`: 入力元を置換（選択なしならカーソル位置に挿入）
 - `+>`: カーソル位置に挿入
 - `n>`: 新規バッファ
 

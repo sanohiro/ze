@@ -2689,7 +2689,15 @@ pub const Editor = struct {
                                 self.getCurrentView().markDirty(0, null);
                             }
                         } else {
-                            self.getCurrentView().setError("No selection");
+                            // 選択なしの場合はカーソル位置に挿入（+> と同じ動作）
+                            if (stdout.len > 0) {
+                                const pos = self.getCurrentView().getCursorBufferPos();
+                                const buf = self.getCurrentBufferContent();
+                                try buf.insertSlice(pos, stdout);
+                                try self.recordInsert(pos, stdout, pos);
+                                self.getCurrentBuffer().editing_ctx.modified = true;
+                                self.getCurrentView().markDirty(0, null);
+                            }
                         }
                     },
                     .buffer_all => {
