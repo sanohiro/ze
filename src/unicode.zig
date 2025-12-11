@@ -285,17 +285,18 @@ pub fn graphemeBreak(cp1: u21, cp2: u21, state: *State) bool {
 /// Calculate display width of a codepoint (East Asian Width)
 /// OPTIMIZE: ASCII fast path first, then ranges by frequency
 pub fn displayWidth(cp: u21) usize {
-    // Fast path: ASCII (most common)
-    if (cp < 0x7F) {
-        if (cp < 0x20 or cp == 0x7F) return 0; // Control chars
+    // Fast path: ASCII (most common) + DEL
+    if (cp <= 0x7F) {
+        if (cp < 0x20 or cp == 0x7F) return 0; // Control chars including DEL
         return 1;
     }
 
-    // Zero-width characters
+    // Zero-width characters (結合時のみ幅0になる文字)
+    // 注: スキントーン修飾子(0x1F3FB-0x1F3FF)は単独では幅2
+    //     グラフェムクラスタとして結合される場合はnextGraphemeClusterで処理
     if (cp == 0x200D or // ZWJ
         (cp >= 0xFE00 and cp <= 0xFE0F) or // Variation Selectors
-        (cp >= 0x0300 and cp <= 0x036F) or // Combining marks
-        (cp >= 0x1F3FB and cp <= 0x1F3FF)) // Skin tone modifiers
+        (cp >= 0x0300 and cp <= 0x036F)) // Combining marks
     {
         return 0;
     }
@@ -458,9 +459,24 @@ pub fn nextGraphemeCluster(str: []const u8) ?GraphemeCluster {
     while (byte_pos < str.len) {
         const c = str[byte_pos];
         const seq_len = utf8SeqLen(c);
-        if (byte_pos + seq_len > str.len) break;
 
-        const cp = std.unicode.utf8Decode(str[byte_pos .. byte_pos + seq_len]) catch break;
+        // 不完全なUTF-8シーケンス: 残りバイトが足りない
+        if (byte_pos + seq_len > str.len) {
+            if (first_codepoint) {
+                // 最初のバイトが不正: 1バイトを幅1として返す
+                return GraphemeCluster{ .byte_len = 1, .display_width = 1 };
+            }
+            break; // 既に有効なクラスタがある場合はそこで終了
+        }
+
+        const cp = std.unicode.utf8Decode(str[byte_pos .. byte_pos + seq_len]) catch {
+            // デコード失敗: 不正なUTF-8
+            if (first_codepoint) {
+                // 最初のバイトが不正: 1バイトを幅1として返す（置換文字相当）
+                return GraphemeCluster{ .byte_len = 1, .display_width = 1 };
+            }
+            break; // 既に有効なクラスタがある場合はそこで終了
+        };
 
         if (first_codepoint) {
             // 最初のコードポイントはクラスタの開始（ベース文字）
@@ -490,4 +506,47 @@ pub fn nextGraphemeCluster(str: []const u8) ?GraphemeCluster {
         .byte_len = byte_pos,
         .display_width = base_width,
     };
+}
+
+// Tests
+const testing = std.testing;
+
+test "displayWidth: DEL returns 0" {
+    try testing.expectEqual(@as(usize, 0), displayWidth(0x7F));
+}
+
+test "displayWidth: skin tone modifiers return 2 standalone" {
+    // Skin tone modifiers (U+1F3FB-U+1F3FF) should be width 2 when standalone
+    try testing.expectEqual(@as(usize, 2), displayWidth(0x1F3FB));
+    try testing.expectEqual(@as(usize, 2), displayWidth(0x1F3FC));
+    try testing.expectEqual(@as(usize, 2), displayWidth(0x1F3FD));
+    try testing.expectEqual(@as(usize, 2), displayWidth(0x1F3FE));
+    try testing.expectEqual(@as(usize, 2), displayWidth(0x1F3FF));
+}
+
+test "nextGraphemeCluster: ZWJ sequence returns width 2" {
+    // Family emoji (👨‍👩‍👧‍👦): 25 bytes, should be width 2
+    const family = "👨‍👩‍👧‍👦";
+    const cluster = nextGraphemeCluster(family);
+    try testing.expect(cluster != null);
+    try testing.expectEqual(@as(usize, 25), cluster.?.byte_len);
+    try testing.expectEqual(@as(usize, 2), cluster.?.display_width);
+}
+
+test "nextGraphemeCluster: invalid UTF-8 returns replacement" {
+    // Invalid UTF-8 sequence (invalid continuation byte)
+    const invalid = "\xFF\x80abc";
+    const cluster = nextGraphemeCluster(invalid);
+    try testing.expect(cluster != null);
+    try testing.expectEqual(@as(usize, 1), cluster.?.byte_len);
+    try testing.expectEqual(@as(usize, 1), cluster.?.display_width);
+}
+
+test "nextGraphemeCluster: incomplete UTF-8 returns replacement" {
+    // Incomplete UTF-8: starts 4-byte sequence but only 2 bytes
+    const incomplete = "\xF0\x9F";
+    const cluster = nextGraphemeCluster(incomplete);
+    try testing.expect(cluster != null);
+    try testing.expectEqual(@as(usize, 1), cluster.?.byte_len);
+    try testing.expectEqual(@as(usize, 1), cluster.?.display_width);
 }
