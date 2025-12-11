@@ -1284,27 +1284,72 @@ pub const Buffer = struct {
     pub fn searchForward(self: *const Buffer, pattern: []const u8, start_pos: usize) ?SearchMatch {
         if (pattern.len == 0 or start_pos >= self.total_len) return null;
 
-        var iter = PieceIterator.init(self);
-        iter.seek(start_pos);
+        // piece毎にstd.mem.indexOfを使用（SIMD最適化済み）
+        // piece境界をまたぐマッチにも対応
+        var global_pos: usize = 0;
+        var search_from = start_pos;
 
-        // KMPではなくシンプルな検索（パターンが短い場合に効率的）
-        var match_start: usize = start_pos;
-        var match_idx: usize = 0;
+        for (self.pieces.items) |piece| {
+            const piece_end = global_pos + piece.length;
 
-        while (iter.next()) |byte| {
-            if (byte == pattern[match_idx]) {
-                if (match_idx == 0) {
-                    match_start = iter.global_pos - 1;
+            // このpieceがsearch_fromを含む場合のみ検索
+            if (piece_end > search_from) {
+                const data = switch (piece.source) {
+                    .original => self.original[piece.start .. piece.start + piece.length],
+                    .add => self.add_buffer.items[piece.start .. piece.start + piece.length],
+                };
+
+                // piece内の開始位置
+                const start_in_piece = if (global_pos >= search_from) 0 else search_from - global_pos;
+
+                // piece内で検索
+                if (std.mem.indexOf(u8, data[start_in_piece..], pattern)) |rel_pos| {
+                    const match_pos = global_pos + start_in_piece + rel_pos;
+                    return .{ .start = match_pos, .len = pattern.len };
                 }
-                match_idx += 1;
-                if (match_idx == pattern.len) {
-                    return .{ .start = match_start, .len = pattern.len };
+
+                // piece境界をまたぐマッチをチェック
+                // パターンがpiece末尾から始まる可能性がある場合
+                if (pattern.len > 1 and piece.length >= 1) {
+                    const overlap_start = if (piece.length >= pattern.len - 1)
+                        piece.length - (pattern.len - 1)
+                    else
+                        0;
+
+                    // overlap部分を次のpieceと結合してチェック
+                    const overlap_data = data[overlap_start..];
+                    if (overlap_data.len > 0 and overlap_data.len < pattern.len) {
+                        // 境界マッチの候補がある場合、バイト単位でチェック
+                        var iter = PieceIterator.init(self);
+                        const check_start = global_pos + overlap_start;
+                        if (check_start >= search_from) {
+                            iter.seek(check_start);
+                            var match_idx: usize = 0;
+                            var match_start: usize = check_start;
+                            const max_check = pattern.len;
+                            var checked: usize = 0;
+
+                            while (checked < max_check) : (checked += 1) {
+                                const byte = iter.next() orelse break;
+                                if (byte == pattern[match_idx]) {
+                                    if (match_idx == 0) match_start = iter.global_pos - 1;
+                                    match_idx += 1;
+                                    if (match_idx == pattern.len) {
+                                        return .{ .start = match_start, .len = pattern.len };
+                                    }
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                    }
                 }
-            } else if (match_idx > 0) {
-                // マッチ失敗、match_start + 1から再開
-                iter.seek(match_start + 1);
-                match_idx = 0;
+
+                // 次のpieceからの検索開始位置を更新
+                search_from = piece_end;
             }
+
+            global_pos = piece_end;
         }
 
         return null;

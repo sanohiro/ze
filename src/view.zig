@@ -611,17 +611,30 @@ pub const View = struct {
         const search_str = self.getSearchHighlight() orelse return line;
         if (search_str.len == 0 or line.len == 0) return line;
 
-        // スクラッチバッファをクリアして再利用
+        // 最初のマッチを事前チェック（マッチがなければコピーせず元を返す）
+        const first_match = findSkippingAnsi(line, 0, search_str) orelse return line;
+
+        // マッチがあるのでバッファを使用
         self.highlighted_line.clearRetainingCapacity();
 
-        var pos: usize = 0;
+        // 最初のマッチ前の部分をコピー
+        try self.highlighted_line.appendSlice(self.allocator, line[0..first_match]);
+        // 反転表示開始
+        try self.highlighted_line.appendSlice(self.allocator, ANSI.REVERSE);
+        // マッチ部分をコピー
+        try self.highlighted_line.appendSlice(self.allocator, line[first_match .. first_match + search_str.len]);
+        // 反転表示終了
+        try self.highlighted_line.appendSlice(self.allocator, ANSI.REVERSE_OFF);
+        var pos: usize = first_match + search_str.len;
+
+        // 残りのマッチを処理
         while (pos < line.len) {
             if (findSkippingAnsi(line, pos, search_str)) |match_pos| {
                 // マッチ前の部分をコピー
                 try self.highlighted_line.appendSlice(self.allocator, line[pos..match_pos]);
                 // 反転表示開始
                 try self.highlighted_line.appendSlice(self.allocator, ANSI.REVERSE);
-                // マッチ部分をコピー（検索文字列の長さ分）
+                // マッチ部分をコピー
                 try self.highlighted_line.appendSlice(self.allocator, line[match_pos .. match_pos + search_str.len]);
                 // 反転表示終了
                 try self.highlighted_line.appendSlice(self.allocator, ANSI.REVERSE_OFF);
@@ -844,14 +857,27 @@ pub const View = struct {
             if (ch < config.UTF8.CONTINUATION_MASK) {
                 // ASCII
                 if (ch == '\t') {
-                    // Tabを空白に展開
+                    // Tabを空白に展開（バッチ処理で高速化）
                     const next_tab_stop = (col / tab_width + 1) * tab_width;
-                    const spaces_needed = next_tab_stop - col;
-                    var i: usize = 0;
-                    while (i < spaces_needed) : (i += 1) {
-                        // 水平スクロール範囲内なら追加
-                        if (col + i >= self.top_col and col + i < visible_end) {
-                            try self.expanded_line.append(self.allocator, ' ');
+
+                    // 水平スクロール範囲内の空白数を計算
+                    const tab_start = col;
+                    const tab_end = next_tab_stop;
+                    if (tab_end > self.top_col and tab_start < visible_end) {
+                        // 範囲内の空白数を計算
+                        const visible_start = if (tab_start >= self.top_col) tab_start else self.top_col;
+                        const visible_stop = if (tab_end <= visible_end) tab_end else visible_end;
+                        const visible_spaces = visible_stop - visible_start;
+
+                        // 8スペースのバッチで追加（事前定義の定数を使用）
+                        const spaces8: []const u8 = "        "; // 8 spaces
+                        var remaining = visible_spaces;
+                        while (remaining >= 8) {
+                            try self.expanded_line.appendSlice(self.allocator, spaces8);
+                            remaining -= 8;
+                        }
+                        if (remaining > 0) {
+                            try self.expanded_line.appendSlice(self.allocator, spaces8[0..remaining]);
                         }
                     }
                     col = next_tab_stop;
