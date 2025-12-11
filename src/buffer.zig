@@ -168,6 +168,35 @@ pub const PieceIterator = struct {
         self.global_pos = saved.global_pos;
     }
 
+    /// 現在位置から指定バイト数を効率的にコピー（スライス単位でmemcpy）
+    /// バイト単位のnext()より大幅に高速
+    pub fn copyBytes(self: *PieceIterator, dest: []u8) usize {
+        var copied: usize = 0;
+        while (copied < dest.len and self.piece_idx < self.buffer.pieces.items.len) {
+            const piece = self.buffer.pieces.items[self.piece_idx];
+            const remaining_in_piece = piece.length - self.piece_offset;
+            const to_copy = @min(remaining_in_piece, dest.len - copied);
+
+            // ソースバッファから直接スライスコピー
+            const src_slice = switch (piece.source) {
+                .original => self.buffer.original[piece.start + self.piece_offset ..][0..to_copy],
+                .add => self.buffer.add_buffer.items[piece.start + self.piece_offset ..][0..to_copy],
+            };
+            @memcpy(dest[copied..][0..to_copy], src_slice);
+
+            copied += to_copy;
+            self.piece_offset += to_copy;
+            self.global_pos += to_copy;
+
+            // piece終端に到達したら次のpieceへ
+            if (self.piece_offset >= piece.length) {
+                self.piece_idx += 1;
+                self.piece_offset = 0;
+            }
+        }
+        return copied;
+    }
+
     /// 次のグラフェムクラスタを読み取る
     ///
     /// 【グラフェムクラスタとは】
@@ -673,10 +702,14 @@ pub const Buffer = struct {
                 // Step 4: ファイルに書き込み
                 try file.writeAll(encoded);
             } else {
-                // UTF-8/UTF-8_BOM: 従来通りストリーミング書き込み
+                // UTF-8/UTF-8_BOM: バッファードライターでストリーミング書き込み
+                // システムコール回数を削減（8KBバッファ）
+                var buffered_writer = std.io.bufferedWriter(file.writer());
+                const writer = buffered_writer.writer();
+
                 // BOM付きUTF-8の場合は先頭にBOMを書き込み
                 if (self.detected_encoding == .UTF8_BOM) {
-                    try file.writeAll(&[_]u8{ 0xEF, 0xBB, 0xBF });
+                    try writer.writeAll(&[_]u8{ 0xEF, 0xBB, 0xBF });
                 }
 
                 // 改行コード変換しながら書き込み
@@ -687,10 +720,10 @@ pub const Buffer = struct {
                             .original => self.original[piece.start .. piece.start + piece.length],
                             .add => self.add_buffer.items[piece.start .. piece.start + piece.length],
                         };
-                        try file.writeAll(data);
+                        try writer.writeAll(data);
                     }
                 } else if (self.detected_line_ending == .CRLF) {
-                    // CRLF モード: LF を CRLF に変換（チャンク書き込みで高速化）
+                    // CRLF モード: LF を CRLF に変換（チャンクベースで高速化）
                     for (self.pieces.items) |piece| {
                         const data = switch (piece.source) {
                             .original => self.original[piece.start .. piece.start + piece.length],
@@ -701,20 +734,20 @@ pub const Buffer = struct {
                             if (byte == '\n') {
                                 // \n の前までを書き込み
                                 if (i > chunk_start) {
-                                    try file.writeAll(data[chunk_start..i]);
+                                    try writer.writeAll(data[chunk_start..i]);
                                 }
                                 // \r\n を書き込み
-                                try file.writeAll("\r\n");
+                                try writer.writeAll("\r\n");
                                 chunk_start = i + 1;
                             }
                         }
                         // 残りのチャンクを書き込み
                         if (chunk_start < data.len) {
-                            try file.writeAll(data[chunk_start..]);
+                            try writer.writeAll(data[chunk_start..]);
                         }
                     }
                 } else if (self.detected_line_ending == .CR) {
-                    // CR モード: LF を CR に変換（チャンク書き込みで高速化）
+                    // CR モード: LF を CR に変換（チャンクベースで高速化）
                     for (self.pieces.items) |piece| {
                         const data = switch (piece.source) {
                             .original => self.original[piece.start .. piece.start + piece.length],
@@ -725,19 +758,22 @@ pub const Buffer = struct {
                             if (byte == '\n') {
                                 // \n の前までを書き込み
                                 if (i > chunk_start) {
-                                    try file.writeAll(data[chunk_start..i]);
+                                    try writer.writeAll(data[chunk_start..i]);
                                 }
                                 // \r を書き込み
-                                try file.writeAll("\r");
+                                try writer.writeByte('\r');
                                 chunk_start = i + 1;
                             }
                         }
                         // 残りのチャンクを書き込み
                         if (chunk_start < data.len) {
-                            try file.writeAll(data[chunk_start..]);
+                            try writer.writeAll(data[chunk_start..]);
                         }
                     }
                 }
+
+                // バッファをフラッシュ
+                try buffered_writer.flush();
             }
 
             // 元のファイルのパーミッションを一時ファイルに適用
@@ -981,15 +1017,12 @@ pub const Buffer = struct {
         }
 
         // 複数pieceにまたがる削除
-        // 後ろから削除するため、降順でインデックスを収集
-        var pieces_to_remove = try std.ArrayList(usize).initCapacity(self.allocator, 0);
-        defer pieces_to_remove.deinit(self.allocator);
+        // 最適化: ArrayListを使わず直接削除（アロケーション回避）
 
-        // 終了pieceの処理（最初に追加=最大インデックス）
+        // 終了pieceの処理
         const end_piece = self.pieces.items[end_loc.piece_idx];
-        if (end_loc.offset == end_piece.length) {
-            try pieces_to_remove.append(self.allocator, end_loc.piece_idx);
-        } else {
+        const remove_end = (end_loc.offset == end_piece.length);
+        if (!remove_end) {
             self.pieces.items[end_loc.piece_idx] = .{
                 .source = end_piece.source,
                 .start = end_piece.start + end_loc.offset,
@@ -997,19 +1030,10 @@ pub const Buffer = struct {
             };
         }
 
-        // 中間のpieceを降順で追加
-        if (end_loc.piece_idx > start_loc.piece_idx + 1) {
-            var i = end_loc.piece_idx - 1;
-            while (i > start_loc.piece_idx) : (i -= 1) {
-                try pieces_to_remove.append(self.allocator, i);
-            }
-        }
-
-        // 開始pieceの処理（最後に追加=最小インデックス）
+        // 開始pieceの処理
         const start_piece = self.pieces.items[start_loc.piece_idx];
-        if (start_loc.offset == 0) {
-            try pieces_to_remove.append(self.allocator, start_loc.piece_idx);
-        } else {
+        const remove_start = (start_loc.offset == 0);
+        if (!remove_start) {
             self.pieces.items[start_loc.piece_idx] = .{
                 .source = start_piece.source,
                 .start = start_piece.start,
@@ -1017,9 +1041,17 @@ pub const Buffer = struct {
             };
         }
 
-        // 既に降順なのでソート不要、そのまま削除
-        for (pieces_to_remove.items) |idx| {
-            _ = self.pieces.orderedRemove(idx);
+        // 削除範囲を計算（降順で削除して後続インデックスがずれないように）
+        const first_to_remove = if (remove_start) start_loc.piece_idx else start_loc.piece_idx + 1;
+        const last_to_remove = if (remove_end) end_loc.piece_idx else end_loc.piece_idx - 1;
+
+        // 削除実行（降順で削除）
+        if (last_to_remove >= first_to_remove) {
+            var i = last_to_remove + 1;
+            while (i > first_to_remove) {
+                i -= 1;
+                _ = self.pieces.orderedRemove(i);
+            }
         }
         self.line_index.invalidateFrom(pos);
     }
@@ -1157,6 +1189,7 @@ pub const Buffer = struct {
 
     // 指定範囲のテキストを取得（新しいメモリを確保）
     // start + length がバッファサイズを超える場合は error.OutOfRange
+    // 最適化: スライス単位でmemcpyを使用（バイト単位ループより大幅に高速）
     pub fn getRange(self: *const Buffer, allocator: std.mem.Allocator, start: usize, length: usize) ![]u8 {
         if (length == 0) {
             return try allocator.alloc(u8, 0);
@@ -1178,10 +1211,8 @@ pub const Buffer = struct {
         var iter = PieceIterator.init(self);
         iter.seek(start);
 
-        var i: usize = 0;
-        while (i < length) : (i += 1) {
-            result[i] = iter.next() orelse break;
-        }
+        // スライス単位でコピー（バイト単位ループより高速）
+        _ = iter.copyBytes(result);
 
         return result;
     }

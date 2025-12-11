@@ -85,28 +85,62 @@ fn stringDisplayWidth(str: []const u8) usize {
 /// end_byte: 終了バイト位置
 /// initial_col: 初期カラム位置（行番号表示幅など）
 /// グラフェムクラスタを使用してZWJ絵文字等も正しく処理
+/// ASCII高速パス: ASCII文字のみの範囲は簡易計算
 fn calculateScreenColumn(line: []const u8, start_byte: usize, end_byte: usize, initial_col: usize) usize {
     var screen_col: usize = initial_col;
     var b: usize = start_byte;
+    var needs_grapheme_scan = false;
+
+    // 第1パス: ASCII高速パス（エスケープシーケンスをスキップしながら）
     while (b < end_byte) {
         const c = line[b];
         // ANSIエスケープシーケンスをスキップ
-        if (b + 1 < line.len and unicode.isAnsiEscapeStart(c, line[b + 1])) {
+        if (c == 0x1b and b + 1 < line.len and line[b + 1] == '[') {
             b += 2;
             while (b < line.len and line[b] != 'm') : (b += 1) {}
             if (b < line.len) b += 1;
             continue;
         }
 
-        // グラフェムクラスタ単位で処理（ZWJ絵文字等を正しく扱う）
-        const remaining = line[b..@min(end_byte, line.len)];
-        if (unicode.nextGraphemeCluster(remaining)) |cluster| {
-            screen_col += cluster.display_width;
-            b += cluster.byte_len;
-        } else {
-            // フォールバック: 1バイト進める
-            b += 1;
+        if (c < 0x80) {
+            // ASCII文字: 幅1
             screen_col += 1;
+            b += 1;
+        } else {
+            // 非ASCII文字: グラフェムスキャンが必要
+            needs_grapheme_scan = true;
+            break;
+        }
+    }
+
+    // 非ASCII文字が見つかった場合は残りをグラフェムクラスタ単位で処理
+    if (needs_grapheme_scan) {
+        while (b < end_byte) {
+            const c = line[b];
+            // ANSIエスケープシーケンスをスキップ
+            if (c == 0x1b and b + 1 < line.len and line[b + 1] == '[') {
+                b += 2;
+                while (b < line.len and line[b] != 'm') : (b += 1) {}
+                if (b < line.len) b += 1;
+                continue;
+            }
+
+            if (c < 0x80) {
+                // ASCII文字: 幅1
+                screen_col += 1;
+                b += 1;
+            } else {
+                // グラフェムクラスタ単位で処理（ZWJ絵文字等を正しく扱う）
+                const remaining = line[b..@min(end_byte, line.len)];
+                if (unicode.nextGraphemeCluster(remaining)) |cluster| {
+                    screen_col += cluster.display_width;
+                    b += cluster.byte_len;
+                } else {
+                    // フォールバック: 1バイト進める
+                    b += 1;
+                    screen_col += 1;
+                }
+            }
         }
     }
     return screen_col;
@@ -312,33 +346,71 @@ pub const View = struct {
     /// 出力済み行をviewport_widthまでスペースでパディング
     /// ANSIエスケープシーケンスを除いた表示幅で計算
     /// グラフェムクラスタを使用してZWJ絵文字等も正しく処理
+    /// ASCII高速パス最適化：ASCII文字のみの行は簡易計算
     fn padToWidth(self: *View, term: *Terminal, line: []const u8, viewport_width: usize) !void {
         _ = self;
-        // 表示幅を計算（ANSIエスケープシーケンスを除外、グラフェムクラスタ対応）
+        // 表示幅を計算（ANSIエスケープシーケンスを除外）
         var display_width: usize = 0;
         var i: usize = 0;
+        var needs_grapheme_scan = false;
+
+        // 第1パス: ASCII高速パス（エスケープシーケンスをスキップしながら）
         while (i < line.len) {
             const c = line[i];
-            if (i + 1 < line.len and unicode.isAnsiEscapeStart(c, line[i + 1])) {
+            if (c == 0x1b and i + 1 < line.len and line[i + 1] == '[') {
                 // ANSIエスケープシーケンスをスキップ
                 i += 2;
                 while (i < line.len and line[i] != 'm') : (i += 1) {}
                 if (i < line.len) i += 1;
+            } else if (c < 0x80) {
+                // ASCII文字: 幅1
+                display_width += 1;
+                i += 1;
             } else {
-                // グラフェムクラスタ単位で処理（ZWJ絵文字等を正しく扱う）
-                if (unicode.nextGraphemeCluster(line[i..])) |cluster| {
-                    display_width += cluster.display_width;
-                    i += cluster.byte_len;
-                } else {
-                    i += 1;
+                // 非ASCII文字: グラフェムスキャンが必要
+                needs_grapheme_scan = true;
+                break;
+            }
+        }
+
+        // 非ASCII文字が見つかった場合は残りをグラフェムクラスタ単位で処理
+        if (needs_grapheme_scan) {
+            while (i < line.len) {
+                const c = line[i];
+                if (c == 0x1b and i + 1 < line.len and line[i + 1] == '[') {
+                    // ANSIエスケープシーケンスをスキップ
+                    i += 2;
+                    while (i < line.len and line[i] != 'm') : (i += 1) {}
+                    if (i < line.len) i += 1;
+                } else if (c < 0x80) {
+                    // ASCII文字: 幅1
                     display_width += 1;
+                    i += 1;
+                } else {
+                    // グラフェムクラスタ単位で処理（ZWJ絵文字等を正しく扱う）
+                    if (unicode.nextGraphemeCluster(line[i..])) |cluster| {
+                        display_width += cluster.display_width;
+                        i += cluster.byte_len;
+                    } else {
+                        i += 1;
+                        display_width += 1;
+                    }
                 }
             }
         }
-        // 残りをスペースで埋める
+
+        // 残りをスペースで埋める（バッファリングで効率化）
         if (display_width < viewport_width) {
-            var padding = viewport_width - display_width;
-            while (padding > 0) : (padding -= 1) {
+            const padding = viewport_width - display_width;
+            // 8スペースずつバッチで書き込み
+            const batch: []const u8 = "        "; // 8 spaces
+            var remaining = padding;
+            while (remaining >= 8) {
+                try term.write(batch);
+                remaining -= 8;
+            }
+            // 残りを1文字ずつ
+            while (remaining > 0) : (remaining -= 1) {
                 try term.write(" ");
             }
         }
@@ -565,9 +637,29 @@ pub const View = struct {
     /// 差分描画：新しい行を前フレームと比較し、変更部分のみ描画
     /// screen_row: 画面上の行インデックス（prev_screenのインデックス）
     /// abs_row: ターミナル上の絶対行位置
+    /// 最適化: 長さ比較→先頭バイト比較→全体比較の段階的チェック
     fn renderLineDiff(self: *View, term: *Terminal, new_line: []const u8, screen_row: usize, abs_row: usize, viewport_x: usize, viewport_width: usize) !void {
         if (screen_row < self.prev_screen.items.len) {
             const old_line = self.prev_screen.items[screen_row].items;
+
+            // 高速パス: 長さが同じで内容も同じなら描画をスキップ
+            if (old_line.len == new_line.len) {
+                // 長さが同じ場合、先頭8バイトと末尾8バイトで高速チェック
+                const quick_check_len = 8;
+                if (old_line.len <= quick_check_len * 2) {
+                    // 短い行: 全体比較
+                    if (std.mem.eql(u8, old_line, new_line)) return;
+                } else {
+                    // 先頭と末尾をチェック
+                    const head_same = std.mem.eql(u8, old_line[0..quick_check_len], new_line[0..quick_check_len]);
+                    const tail_start = old_line.len - quick_check_len;
+                    const tail_same = std.mem.eql(u8, old_line[tail_start..], new_line[tail_start..]);
+                    if (head_same and tail_same) {
+                        // 先頭と末尾が同じなら全体比較
+                        if (std.mem.eql(u8, old_line, new_line)) return;
+                    }
+                }
+            }
 
             // 差分を検出
             const min_len = @min(old_line.len, new_line.len);
@@ -901,14 +993,21 @@ pub const View = struct {
 
             // 全画面描画 - イテレータを再利用して前進のみ
             var screen_row: usize = 0;
+            var last_rendered_file_line: usize = self.top_line;
             while (screen_row < max_lines) : (screen_row += 1) {
                 const file_line = self.top_line + screen_row;
                 if (file_line < self.buffer.lineCount()) {
                     in_block = try self.renderLineWithIterOffset(term, viewport_x, viewport_y, viewport_width, screen_row, file_line, &iter, &self.line_buffer, in_block);
+                    last_rendered_file_line = file_line;
                 } else {
                     try self.renderEmptyLineOffset(term, viewport_x, viewport_y, viewport_width, screen_row);
                 }
             }
+
+            // キャッシュを更新: 最後に描画した行の次の行の状態を保持
+            // これにより、次のレンダリングでスキャン範囲を削減
+            self.cached_block_state = in_block;
+            self.cached_block_top_line = last_rendered_file_line + 1;
 
             self.clearDirty();
         } else if (self.dirty_start) |start| {
@@ -934,14 +1033,20 @@ pub const View = struct {
 
                 // dirty範囲を描画 - イテレータを再利用
                 var screen_row = render_start;
+                var last_rendered_file_line: usize = start_file_line;
                 while (screen_row < render_end) : (screen_row += 1) {
                     const file_line = self.top_line + screen_row;
                     if (file_line < self.buffer.lineCount()) {
                         in_block = try self.renderLineWithIterOffset(term, viewport_x, viewport_y, viewport_width, screen_row, file_line, &iter, &self.line_buffer, in_block);
+                        last_rendered_file_line = file_line;
                     } else {
                         try self.renderEmptyLineOffset(term, viewport_x, viewport_y, viewport_width, screen_row);
                     }
                 }
+
+                // キャッシュを更新: 描画した最後の行の次の行の状態を保持
+                self.cached_block_state = in_block;
+                self.cached_block_top_line = last_rendered_file_line + 1;
             }
 
             self.clearDirty();

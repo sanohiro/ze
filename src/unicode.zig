@@ -447,9 +447,21 @@ pub const GraphemeCluster = struct {
 /// - ZWJシーケンス（👨‍👩‍👧‍👦等）: 最初のベース文字の幅（通常2）
 /// - 結合文字付き文字: ベース文字の幅
 /// - 国旗（🇯🇵等）: 2（2つのRegional Indicatorで1つのグリフ）
+///
+/// 最適化: ASCII高速パス（最も一般的なケースを高速処理）
 pub fn nextGraphemeCluster(str: []const u8) ?GraphemeCluster {
     if (str.len == 0) return null;
 
+    const first_byte = str[0];
+
+    // ASCII高速パス: 0x00-0x7Fは単独でグラフェムクラスタを形成
+    // ただし制御文字(0x00-0x1F, 0x7F)は幅0、印字可能文字は幅1
+    if (first_byte < 0x80) {
+        const width: usize = if (first_byte < 0x20 or first_byte == 0x7F) 0 else 1;
+        return GraphemeCluster{ .byte_len = 1, .display_width = width };
+    }
+
+    // マルチバイトUTF-8のフルパス
     var byte_pos: usize = 0;
     var base_width: usize = 0; // 最初のベース文字の幅
     var state = State{};
@@ -458,28 +470,52 @@ pub fn nextGraphemeCluster(str: []const u8) ?GraphemeCluster {
 
     while (byte_pos < str.len) {
         const c = str[byte_pos];
-        const seq_len = utf8SeqLen(c);
+
+        // インラインUTF-8シーケンス長計算（関数呼び出しを避ける）
+        const seq_len: usize = if (c < 0x80) 1 else if (c < 0xE0) 2 else if (c < 0xF0) 3 else 4;
 
         // 不完全なUTF-8シーケンス: 残りバイトが足りない
         if (byte_pos + seq_len > str.len) {
             if (first_codepoint) {
-                // 最初のバイトが不正: 1バイトを幅1として返す
                 return GraphemeCluster{ .byte_len = 1, .display_width = 1 };
             }
-            break; // 既に有効なクラスタがある場合はそこで終了
+            break;
         }
 
-        const cp = std.unicode.utf8Decode(str[byte_pos .. byte_pos + seq_len]) catch {
-            // デコード失敗: 不正なUTF-8
-            if (first_codepoint) {
-                // 最初のバイトが不正: 1バイトを幅1として返す（置換文字相当）
-                return GraphemeCluster{ .byte_len = 1, .display_width = 1 };
-            }
-            break; // 既に有効なクラスタがある場合はそこで終了
+        // インラインUTF-8デコード（2-4バイトシーケンス用の高速パス）
+        const cp: u21 = switch (seq_len) {
+            1 => @as(u21, c),
+            2 => blk: {
+                const b1 = str[byte_pos + 1];
+                if ((b1 & 0xC0) != 0x80) {
+                    if (first_codepoint) return GraphemeCluster{ .byte_len = 1, .display_width = 1 };
+                    break;
+                }
+                break :blk (@as(u21, c & 0x1F) << 6) | @as(u21, b1 & 0x3F);
+            },
+            3 => blk: {
+                const b1 = str[byte_pos + 1];
+                const b2 = str[byte_pos + 2];
+                if ((b1 & 0xC0) != 0x80 or (b2 & 0xC0) != 0x80) {
+                    if (first_codepoint) return GraphemeCluster{ .byte_len = 1, .display_width = 1 };
+                    break;
+                }
+                break :blk (@as(u21, c & 0x0F) << 12) | (@as(u21, b1 & 0x3F) << 6) | @as(u21, b2 & 0x3F);
+            },
+            4 => blk: {
+                const b1 = str[byte_pos + 1];
+                const b2 = str[byte_pos + 2];
+                const b3 = str[byte_pos + 3];
+                if ((b1 & 0xC0) != 0x80 or (b2 & 0xC0) != 0x80 or (b3 & 0xC0) != 0x80) {
+                    if (first_codepoint) return GraphemeCluster{ .byte_len = 1, .display_width = 1 };
+                    break;
+                }
+                break :blk (@as(u21, c & 0x07) << 18) | (@as(u21, b1 & 0x3F) << 12) | (@as(u21, b2 & 0x3F) << 6) | @as(u21, b3 & 0x3F);
+            },
+            else => unreachable,
         };
 
         if (first_codepoint) {
-            // 最初のコードポイントはクラスタの開始（ベース文字）
             base_width = displayWidth(cp);
             prev_cp = cp;
             byte_pos += seq_len;
@@ -489,13 +525,9 @@ pub fn nextGraphemeCluster(str: []const u8) ?GraphemeCluster {
 
         // グラフェムブレイクをチェック
         if (graphemeBreak(prev_cp, cp, &state)) {
-            // ブレイクがあるので、ここでクラスタ終了
             break;
         }
 
-        // ブレイクがないので、クラスタを継続
-        // 複数コードポイント（ZWJシーケンス等）でもベース文字の幅を使用
-        // ターミナルは複合絵文字を1グリフ（通常width=2）として描画
         prev_cp = cp;
         byte_pos += seq_len;
     }

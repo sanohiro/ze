@@ -129,22 +129,31 @@ pub fn detectEncoding(content: []const u8) DetectionResult {
 }
 
 /// 改行コードを検出（LF/CRLF/CR）
+/// 最適化: 先頭8KBのみサンプリング（大きなファイルで高速化）
 pub fn detectLineEnding(content: []const u8) LineEnding {
+    // サンプリングサイズ: 8KB（十分な改行を含む可能性が高い）
+    const sample_size: usize = 8 * 1024;
+    const sample = content[0..@min(content.len, sample_size)];
+
     var has_crlf = false;
     var has_lf = false;
     var has_cr = false;
 
     var i: usize = 0;
-    while (i < content.len) : (i += 1) {
-        if (content[i] == '\r') {
-            if (i + 1 < content.len and content[i + 1] == '\n') {
+    while (i < sample.len) : (i += 1) {
+        if (sample[i] == '\r') {
+            if (i + 1 < sample.len and sample[i + 1] == '\n') {
                 has_crlf = true;
                 i += 1; // \nをスキップ
+                // CRLFを見つけたら即座に返す（最も一般的なWindows形式）
+                return .CRLF;
             } else {
                 has_cr = true;
             }
-        } else if (content[i] == '\n') {
+        } else if (sample[i] == '\n') {
             has_lf = true;
+            // LFを見つけたらすぐに返す（Unix形式、最も一般的）
+            if (!has_cr) return .LF;
         }
     }
 
