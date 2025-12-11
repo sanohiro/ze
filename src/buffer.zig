@@ -307,12 +307,24 @@ pub const LineIndex = struct {
                 return;
             }
 
-            // 各改行の次の位置を記録
-            var iter = PieceIterator.init(buffer);
-            while (iter.next()) |ch| {
-                if (ch == '\n') {
-                    try self.line_starts.append(self.allocator, iter.global_pos);
+            // piece毎にmemchr（SIMD最適化済み）で改行を検索
+            // バイト毎のイテレーションより高速
+            var global_pos: usize = 0;
+            for (buffer.pieces.items) |piece| {
+                const data = switch (piece.source) {
+                    .original => buffer.original[piece.start .. piece.start + piece.length],
+                    .add => buffer.add_buffer.items[piece.start .. piece.start + piece.length],
+                };
+
+                var search_start: usize = 0;
+                while (std.mem.indexOfScalar(u8, data[search_start..], '\n')) |rel_pos| {
+                    const pos_in_piece = search_start + rel_pos;
+                    const newline_pos = global_pos + pos_in_piece;
+                    // 改行の次の位置を記録
+                    try self.line_starts.append(self.allocator, newline_pos + 1);
+                    search_start = pos_in_piece + 1;
                 }
+                global_pos += piece.length;
             }
 
             self.valid = true;
@@ -329,18 +341,32 @@ pub const LineIndex = struct {
         }
         self.line_starts.shrinkRetainingCapacity(keep_count);
 
-        // valid_until_posから末尾まで再スキャン
+        // valid_until_posから末尾まで再スキャン（piece毎にmemchr）
         if (buffer.total_len > 0 and buffer.pieces.items.len > 0) {
-            var iter = PieceIterator.init(buffer);
-            // valid_until_posまでスキップ
-            while (iter.global_pos < self.valid_until_pos) {
-                _ = iter.next() orelse break;
-            }
-            // 残りをスキャン
-            while (iter.next()) |ch| {
-                if (ch == '\n') {
-                    try self.line_starts.append(self.allocator, iter.global_pos);
+            var global_pos: usize = 0;
+            for (buffer.pieces.items) |piece| {
+                const piece_end = global_pos + piece.length;
+
+                // このpieceがvalid_until_pos以降を含む場合のみ処理
+                if (piece_end > self.valid_until_pos) {
+                    const data = switch (piece.source) {
+                        .original => buffer.original[piece.start .. piece.start + piece.length],
+                        .add => buffer.add_buffer.items[piece.start .. piece.start + piece.length],
+                    };
+
+                    // piece内の開始位置を計算
+                    const start_in_piece = if (global_pos >= self.valid_until_pos) 0 else self.valid_until_pos - global_pos;
+
+                    var search_start: usize = start_in_piece;
+                    while (std.mem.indexOfScalar(u8, data[search_start..], '\n')) |rel_pos| {
+                        const pos_in_piece = search_start + rel_pos;
+                        const newline_pos = global_pos + pos_in_piece;
+                        // 改行の次の位置を記録
+                        try self.line_starts.append(self.allocator, newline_pos + 1);
+                        search_start = pos_in_piece + 1;
+                    }
                 }
+                global_pos += piece.length;
             }
         }
 
@@ -702,10 +728,11 @@ pub const Buffer = struct {
                 // Step 4: ファイルに書き込み
                 try file.writeAll(encoded);
             } else {
-                // UTF-8/UTF-8_BOM: バッファードライターでストリーミング書き込み
-                // システムコール回数を削減（8KBバッファ）
-                var buffered_writer = std.io.bufferedWriter(file.writer());
-                const writer = buffered_writer.writer();
+                // UTF-8/UTF-8_BOM: Zig 0.15の新I/O API
+                // バッファを提供してシステムコール回数を削減（8KBバッファ）
+                var write_buffer: [8192]u8 = undefined;
+                var file_writer = file.writer(&write_buffer);
+                const writer = &file_writer.interface;
 
                 // BOM付きUTF-8の場合は先頭にBOMを書き込み
                 if (self.detected_encoding == .UTF8_BOM) {
@@ -760,8 +787,8 @@ pub const Buffer = struct {
                                 if (i > chunk_start) {
                                     try writer.writeAll(data[chunk_start..i]);
                                 }
-                                // \r を書き込み
-                                try writer.writeByte('\r');
+                                // \r を書き込み（writeByte → writeAllで1バイト書き込み）
+                                try writer.writeAll(&[_]u8{'\r'});
                                 chunk_start = i + 1;
                             }
                         }
@@ -773,7 +800,7 @@ pub const Buffer = struct {
                 }
 
                 // バッファをフラッシュ
-                try buffered_writer.flush();
+                try writer.flush();
             }
 
             // 元のファイルのパーミッションを一時ファイルに適用

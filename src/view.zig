@@ -188,7 +188,8 @@ pub const View = struct {
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, buffer: *Buffer) !View {
-        var line_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
+        // 典型的なライン幅（256バイト）で事前確保してリアロケーションを削減
+        var line_buffer = try std.ArrayList(u8).initCapacity(allocator, 256);
         errdefer line_buffer.deinit(allocator);
 
         // prev_screen: 24行分を事前確保（典型的なターミナルサイズ）
