@@ -72,6 +72,9 @@ pub const ShellService = struct {
 
     const Self = @This();
 
+    /// 出力バッファの上限（OOM防止）
+    const MAX_OUTPUT_SIZE: usize = 10 * 1024 * 1024; // 10MB
+
     pub fn init(allocator: std.mem.Allocator) Self {
         var history = History.init(allocator);
         history.load(.shell) catch {}; // エラーは無視
@@ -188,17 +191,19 @@ pub const ShellService = struct {
         const parsed = parseCommand(cmd_input);
         if (parsed.command.len == 0) return error.NoCommand;
 
+        // 既存の状態をクリア（リーク防止）
+        if (self.state) |old_state| {
+            self.cleanupState(old_state);
+            self.state = null;
+        }
+
         // コマンドをヒープにコピー
         const command_copy = try self.allocator.dupe(u8, parsed.command);
         errdefer self.allocator.free(command_copy);
 
         // 状態を作成
         const state = try self.allocator.create(CommandState);
-        errdefer {
-            state.stdout_buffer.deinit(self.allocator);
-            state.stderr_buffer.deinit(self.allocator);
-            self.allocator.destroy(state);
-        }
+        errdefer self.allocator.destroy(state);
 
         // 子プロセスを起動
         const argv = [_][]const u8{ "/bin/sh", "-c", command_copy };
@@ -252,27 +257,35 @@ pub const ShellService = struct {
 
         var read_buf: [8192]u8 = undefined;
 
-        // stdout から読み取り
+        // stdout から読み取り（上限チェック付き）
         if (state.child.stdout) |stdout_file| {
-            while (true) {
+            while (state.stdout_buffer.items.len < MAX_OUTPUT_SIZE) {
                 const bytes_read = stdout_file.read(&read_buf) catch |err| switch (err) {
                     error.WouldBlock => break,
                     else => break,
                 };
                 if (bytes_read == 0) break;
-                try state.stdout_buffer.appendSlice(self.allocator, read_buf[0..bytes_read]);
+                const available = MAX_OUTPUT_SIZE - state.stdout_buffer.items.len;
+                const to_append = @min(bytes_read, available);
+                if (to_append > 0) {
+                    try state.stdout_buffer.appendSlice(self.allocator, read_buf[0..to_append]);
+                }
             }
         }
 
-        // stderr から読み取り
+        // stderr から読み取り（上限チェック付き）
         if (state.child.stderr) |stderr_file| {
-            while (true) {
+            while (state.stderr_buffer.items.len < MAX_OUTPUT_SIZE) {
                 const bytes_read = stderr_file.read(&read_buf) catch |err| switch (err) {
                     error.WouldBlock => break,
                     else => break,
                 };
                 if (bytes_read == 0) break;
-                try state.stderr_buffer.appendSlice(self.allocator, read_buf[0..bytes_read]);
+                const available = MAX_OUTPUT_SIZE - state.stderr_buffer.items.len;
+                const to_append = @min(bytes_read, available);
+                if (to_append > 0) {
+                    try state.stderr_buffer.appendSlice(self.allocator, read_buf[0..to_append]);
+                }
             }
         }
 
@@ -317,19 +330,27 @@ pub const ShellService = struct {
             state.exit_status = null;
         }
 
-        // 残りのデータを読み取る
+        // 残りのデータを読み取る（上限チェック付き）
         if (state.child.stdout) |stdout_file| {
-            while (true) {
+            while (state.stdout_buffer.items.len < MAX_OUTPUT_SIZE) {
                 const bytes_read = stdout_file.read(&read_buf) catch break;
                 if (bytes_read == 0) break;
-                try state.stdout_buffer.appendSlice(self.allocator, read_buf[0..bytes_read]);
+                const available = MAX_OUTPUT_SIZE - state.stdout_buffer.items.len;
+                const to_append = @min(bytes_read, available);
+                if (to_append > 0) {
+                    try state.stdout_buffer.appendSlice(self.allocator, read_buf[0..to_append]);
+                }
             }
         }
         if (state.child.stderr) |stderr_file| {
-            while (true) {
+            while (state.stderr_buffer.items.len < MAX_OUTPUT_SIZE) {
                 const bytes_read = stderr_file.read(&read_buf) catch break;
                 if (bytes_read == 0) break;
-                try state.stderr_buffer.appendSlice(self.allocator, read_buf[0..bytes_read]);
+                const available = MAX_OUTPUT_SIZE - state.stderr_buffer.items.len;
+                const to_append = @min(bytes_read, available);
+                if (to_append > 0) {
+                    try state.stderr_buffer.appendSlice(self.allocator, read_buf[0..to_append]);
+                }
             }
         }
 
@@ -353,11 +374,18 @@ pub const ShellService = struct {
     }
 
     /// シェルコマンドをキャンセル
+    /// UIをブロックしないようノンブロッキングでプロセスを終了
     pub fn cancel(self: *Self) void {
         if (self.state) |state| {
             if (!state.child_reaped) {
-                _ = state.child.kill() catch {};
-                _ = state.child.wait() catch {};
+                // SIGKILLで強制終了（SIGTERMを無視するプロセス対策）
+                _ = std.posix.kill(state.child.id, std.posix.SIG.KILL) catch {};
+                // ノンブロッキングでwaitを試みる（ゾンビプロセス回収）
+                // 回収できなくても次のpollで処理される
+                const wait_result = std.posix.waitpid(state.child.id, std.posix.W.NOHANG);
+                if (wait_result.pid != 0) {
+                    state.child_reaped = true;
+                }
             }
             self.cleanupState(state);
         }

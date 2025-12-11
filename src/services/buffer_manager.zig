@@ -24,6 +24,7 @@ pub const BufferState = struct {
     id: usize, // バッファID（一意）
     editing_ctx: *EditingContext, // 編集コンテキスト（Buffer + cursor + undo + kill_ring）
     filename: ?[]const u8, // ファイル名（nullなら*scratch*）
+    filename_normalized: ?[]const u8, // 正規化パス（realpath結果、検索高速化用）
     readonly: bool, // 読み取り専用フラグ
     file_mtime: ?i128, // ファイルの最終更新時刻
     allocator: std.mem.Allocator,
@@ -65,6 +66,7 @@ pub const BufferState = struct {
             .id = id,
             .editing_ctx = editing_ctx,
             .filename = null,
+            .filename_normalized = null,
             .readonly = false,
             .file_mtime = null,
             .allocator = allocator,
@@ -93,6 +95,9 @@ pub const BufferState = struct {
         self.editing_ctx.deinit();
         if (self.filename) |fname| {
             self.allocator.free(fname);
+        }
+        if (self.filename_normalized) |fname_norm| {
+            self.allocator.free(fname_norm);
         }
         self.allocator.destroy(self);
     }
@@ -152,6 +157,8 @@ pub const BufferManager = struct {
 
         // ファイル名を設定
         buffer_state.filename = try self.allocator.dupe(u8, path);
+        // 正規化パスをキャッシュ（検索高速化用）
+        buffer_state.filename_normalized = std.fs.cwd().realpathAlloc(self.allocator, path) catch null;
 
         // ファイルのmtimeを取得
         const file = try std.fs.cwd().openFile(path, .{});
@@ -174,8 +181,22 @@ pub const BufferManager = struct {
     }
 
     /// バッファをファイル名で検索
+    /// パスを正規化して比較するため、相対/絶対パスの違いに関わらず同じファイルを検出
     pub fn findByFilename(self: *Self, filename: []const u8) ?*BufferState {
+        // 入力パスを正規化
+        const normalized_input = std.fs.cwd().realpathAlloc(self.allocator, filename) catch null;
+        defer if (normalized_input) |n| self.allocator.free(n);
+
         for (self.buffers.items) |buffer| {
+            // キャッシュされた正規化パスがあれば使用（高速）
+            if (buffer.filename_normalized) |buf_norm| {
+                if (normalized_input) |norm_in| {
+                    if (std.mem.eql(u8, norm_in, buf_norm)) {
+                        return buffer;
+                    }
+                }
+            }
+            // フォールバック：元のファイル名で比較
             if (buffer.filename) |buf_filename| {
                 if (std.mem.eql(u8, buf_filename, filename)) {
                     return buffer;

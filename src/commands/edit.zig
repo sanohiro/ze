@@ -559,6 +559,8 @@ pub fn setMark(e: *Editor) !void {
         window.mark_pos = e.getCurrentView().getCursorBufferPos();
         e.getCurrentView().setError("Mark set");
     }
+    // 選択範囲のハイライトが変わるので再描画
+    e.getCurrentView().markFullRedraw();
 }
 
 // ========================================

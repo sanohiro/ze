@@ -252,6 +252,14 @@ pub const Minibuffer = struct {
     fn isWhitespaceAt(text: []const u8, pos: usize) bool {
         if (pos >= text.len) return false;
         const c = text[pos];
-        return c == ' ' or c == '\t' or c == '\n' or c == '\r';
+        // ASCII空白
+        if (c == ' ' or c == '\t' or c == '\n' or c == '\r') return true;
+        // 全角スペース (U+3000 = 0xE3 0x80 0x80)
+        if (c == 0xE3 and pos + 2 < text.len) {
+            if (text[pos + 1] == 0x80 and text[pos + 2] == 0x80) {
+                return true;
+            }
+        }
+        return false;
     }
 };

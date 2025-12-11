@@ -148,6 +148,9 @@ pub const Editor = struct {
     search_service: SearchService, // 検索サービス（履歴含む）
     macro_service: MacroService, // キーボードマクロサービス
 
+    // UI状態
+    spinner_frame: u8, // シェル実行中のスピナーフレーム
+
     // キーマップ
     keymap: Keymap, // キーバインド設定（ランタイム変更可能）
 
@@ -191,6 +194,7 @@ pub const Editor = struct {
             .shell_service = ShellService.init(allocator),
             .search_service = SearchService.init(allocator),
             .macro_service = MacroService.init(allocator),
+            .spinner_frame = 0,
             .keymap = try Keymap.init(allocator),
         };
 
@@ -261,9 +265,15 @@ pub const Editor = struct {
     }
 
     /// 現在のバッファを取得
+    /// 不変条件: ウィンドウは常に有効なバッファを参照する（closeBuffer時に検証）
     pub fn getCurrentBuffer(self: *Editor) *BufferState {
         const window = self.getCurrentWindow();
-        return self.buffer_manager.findById(window.buffer_id) orelse unreachable;
+        return self.buffer_manager.findById(window.buffer_id) orelse {
+            // バッファが見つからない場合は不変条件違反
+            // デバッグ用に情報を出力
+            std.log.err("Buffer not found: window.buffer_id={d}", .{window.buffer_id});
+            unreachable;
+        };
     }
 
     /// 現在のビューを取得
@@ -547,6 +557,24 @@ pub const Editor = struct {
     /// 指定されたファイル名のバッファを検索（BufferManager経由）
     fn findBufferByFilename(self: *Editor, filename: []const u8) ?*BufferState {
         return self.buffer_manager.findByFilename(filename);
+    }
+
+    /// ベース名（ファイル名部分のみ）でバッファを検索
+    /// C-x bでの補完用：test.txtと入力して/path/to/test.txtにマッチさせる
+    fn findBufferByBasename(self: *Editor, basename: []const u8) ?*BufferState {
+        for (self.buffer_manager.iterator()) |buf| {
+            if (buf.filename) |filename| {
+                // パスからファイル名部分を抽出
+                const buf_basename = if (std.mem.lastIndexOf(u8, filename, "/")) |idx|
+                    filename[idx + 1 ..]
+                else
+                    filename;
+                if (std.mem.eql(u8, buf_basename, basename)) {
+                    return buf;
+                }
+            }
+        }
+        return null;
     }
 
     // ========================================
@@ -1250,6 +1278,11 @@ pub const Editor = struct {
             self.allocator.free(old_name);
         }
         buffer_state.filename = new_filename;
+        // 正規化パスをキャッシュ更新
+        if (buffer_state.filename_normalized) |old_norm| {
+            self.allocator.free(old_norm);
+        }
+        buffer_state.filename_normalized = std.fs.cwd().realpathAlloc(self.allocator, path) catch null;
 
         // Undo/Redoスタックをクリア
         buffer_state.editing_ctx.clearUndoHistory();
@@ -1720,6 +1753,8 @@ pub const Editor = struct {
                     new_buffer.editing_ctx.buffer.deinit();
                     new_buffer.editing_ctx.buffer.* = loaded_buffer;
                     new_buffer.filename = filename_copy;
+                    // 正規化パスをキャッシュ
+                    new_buffer.filename_normalized = std.fs.cwd().realpathAlloc(self.allocator, filename_copy) catch null;
                     new_buffer.editing_ctx.modified = false;
 
                     const file = std.fs.cwd().openFile(filename_copy, .{}) catch null;
@@ -1749,7 +1784,12 @@ pub const Editor = struct {
         if (key == .enter) {
             if (self.minibuffer.getContent().len > 0) {
                 const buffer_name = self.minibuffer.getContent();
-                const found_buffer = self.findBufferByFilename(buffer_name);
+                // まず完全パスで検索
+                var found_buffer = self.findBufferByFilename(buffer_name);
+                // 見つからなければベース名で検索
+                if (found_buffer == null) {
+                    found_buffer = self.findBufferByBasename(buffer_name);
+                }
                 if (found_buffer) |buf| {
                     try self.switchToBuffer(buf.id);
                     self.cancelInput();
@@ -2553,8 +2593,9 @@ pub const Editor = struct {
         // カーソルを置換後の位置に移動
         self.setCursorToPos(match_pos + replacement.len);
 
-        // 全画面再描画
-        self.getCurrentView().markFullRedraw();
+        // 置換した行から再描画（差分レンダリング）
+        const current_line = buffer.findLineByPos(match_pos);
+        self.getCurrentView().markDirty(current_line, null);
     }
 
     // ========================================
@@ -2648,13 +2689,16 @@ pub const Editor = struct {
                 // 現在行
                 const line_num = self.getCurrentView().top_line + self.getCurrentView().cursor_y;
                 var buffer = self.getCurrentBufferContent();
-                const line_start = buffer.getLineStart(line_num) orelse 0;
-                const next_line_start = buffer.getLineStart(line_num + 1);
-                const line_end = if (next_line_start) |ns| ns else buffer.total_len;
-                if (line_end > line_start) {
-                    stdin_data = try buffer.getRange(self.allocator, line_start, line_end - line_start);
-                    stdin_allocated = true;
+                // 行が存在しない場合（バッファ末尾より下）はstdin空のまま
+                if (buffer.getLineStart(line_num)) |line_start| {
+                    const next_line_start = buffer.getLineStart(line_num + 1);
+                    const line_end = if (next_line_start) |ns| ns else buffer.total_len;
+                    if (line_end > line_start) {
+                        stdin_data = try buffer.getRange(self.allocator, line_start, line_end - line_start);
+                        stdin_allocated = true;
+                    }
                 }
+                // getLineStartがnullの場合、stdin_dataはnullのまま（空入力）
             },
         }
 
@@ -2690,8 +2734,14 @@ pub const Editor = struct {
             defer self.mode = .normal; // エラー時も必ずモード復帰
 
             try self.processShellResult(result.stdout, result.stderr, result.exit_status, result.input_source, result.output_dest);
+        } else {
+            // まだ実行中 - スピナーを更新
+            const spinner_chars = [_]u8{ '|', '/', '-', '\\' };
+            self.spinner_frame = @intCast((self.spinner_frame +% 1) % spinner_chars.len);
+            var msg_buf: [64]u8 = undefined;
+            const msg = std.fmt.bufPrint(&msg_buf, "Running {c} (C-g to cancel)", .{spinner_chars[self.spinner_frame]}) catch "Running...";
+            self.getCurrentView().setError(msg);
         }
-        // まだ実行中の場合は何もしない
     }
 
     /// シェルコマンドをキャンセル

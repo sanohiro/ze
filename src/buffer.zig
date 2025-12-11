@@ -1513,15 +1513,8 @@ pub const Buffer = struct {
             // 前のpieceへ
             if (current_piece_idx == 0) break;
             current_piece_idx -= 1;
-            current_piece_start = if (use_stack_buf and current_piece_idx > 0)
-                piece_ends[current_piece_idx - 1]
-            else if (current_piece_idx == 0)
-                0
-            else blk: {
-                var sum: usize = 0;
-                for (pieces[0..current_piece_idx]) |p| sum += p.length;
-                break :blk sum;
-            };
+            // 前のpieceの開始位置 = 現在位置 - 前のpieceの長さ（O(1)）
+            current_piece_start -= pieces[current_piece_idx].length;
 
             // piece境界をまたぐパターンのチェック
             // 前のpieceの末尾 + 現在のpieceの先頭でマッチする可能性

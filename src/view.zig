@@ -303,6 +303,8 @@ pub const View = struct {
         const len = @min(msg.len, self.error_msg_buf.len);
         @memcpy(self.error_msg_buf[0..len], msg[0..len]);
         self.error_msg_len = len;
+        // ステータスバーを再描画するためにdirtyをマーク
+        self.needs_full_redraw = true;
     }
 
     // エラーメッセージを取得
@@ -313,7 +315,11 @@ pub const View = struct {
 
     // エラーメッセージをクリア
     pub fn clearError(self: *View) void {
-        self.error_msg_len = 0;
+        if (self.error_msg_len > 0) {
+            self.error_msg_len = 0;
+            // ステータスバーを再描画するためにdirtyをマーク
+            self.needs_full_redraw = true;
+        }
     }
 
     // 検索ハイライトを設定（固定バッファにコピー）
@@ -521,7 +527,8 @@ pub const View = struct {
 
         // start_lineからtarget_lineまでスキャン
         var iter = PieceIterator.init(self.buffer);
-        var line_buf = std.ArrayList(u8){};
+        // 行バッファを事前に確保（再アロケーション削減）
+        var line_buf = std.ArrayList(u8).initCapacity(self.allocator, 256) catch return false;
         defer line_buf.deinit(self.allocator);
 
         // start_lineまでスキップ
@@ -555,43 +562,61 @@ pub const View = struct {
 
     /// ANSIエスケープシーケンスをスキップして検索文字列を探す
     /// 見つかった場合はバイト位置（エスケープ込み）を返す
+    /// 線形時間O(n)で走査（ANSIスキップ用の連続位置を追跡）
     fn findSkippingAnsi(line: []const u8, start: usize, search_str: []const u8) ?usize {
         if (search_str.len == 0) return null;
+        if (line.len < start + search_str.len) return null;
+
+        // ANSIを除いたテキスト位置を追跡するシンプルな検索
+        // startからスキャンし、ANSIシーケンスを飛ばしながら検索
         var line_pos = start;
-        var search_match: usize = 0;
-        var match_start: ?usize = null;
 
-        while (line_pos < line.len) {
-            const c = line[line_pos];
-
+        outer: while (line_pos + search_str.len <= line.len) {
             // ANSIエスケープシーケンスをスキップ (\x1b[...m)
-            if (c == 0x1b and line_pos + 1 < line.len and line[line_pos + 1] == '[') {
-                line_pos += 2;
-                while (line_pos < line.len and line[line_pos] != 'm') : (line_pos += 1) {}
-                if (line_pos < line.len) line_pos += 1; // 'm' をスキップ
-                continue;
+            while (line_pos < line.len and line[line_pos] == 0x1b) {
+                if (line_pos + 1 < line.len and line[line_pos + 1] == '[') {
+                    line_pos += 2;
+                    while (line_pos < line.len and line[line_pos] != 'm') : (line_pos += 1) {}
+                    if (line_pos < line.len) line_pos += 1; // 'm' をスキップ
+                } else {
+                    break;
+                }
             }
 
-            // 検索文字列とマッチング
-            if (c == search_str[search_match]) {
-                if (search_match == 0) {
-                    match_start = line_pos;
+            if (line_pos + search_str.len > line.len) return null;
+
+            // この位置でマッチを試みる
+            const match_start = line_pos;
+            var search_idx: usize = 0;
+
+            while (search_idx < search_str.len) {
+                // ANSIシーケンスをスキップ
+                while (line_pos < line.len and line[line_pos] == 0x1b) {
+                    if (line_pos + 1 < line.len and line[line_pos + 1] == '[') {
+                        line_pos += 2;
+                        while (line_pos < line.len and line[line_pos] != 'm') : (line_pos += 1) {}
+                        if (line_pos < line.len) line_pos += 1;
+                    } else {
+                        break;
+                    }
                 }
-                search_match += 1;
-                if (search_match == search_str.len) {
-                    return match_start;
+
+                if (line_pos >= line.len) return null;
+
+                if (line[line_pos] == search_str[search_idx]) {
+                    search_idx += 1;
+                    line_pos += 1;
+                } else {
+                    // マッチ失敗：開始位置の次から再試行
+                    line_pos = match_start + 1;
+                    continue :outer;
                 }
-            } else {
-                // マッチ失敗：リセット
-                if (match_start) |ms| {
-                    // マッチ開始位置の次から再試行
-                    line_pos = ms;
-                    match_start = null;
-                }
-                search_match = 0;
             }
-            line_pos += 1;
+
+            // 全文字マッチ成功
+            return match_start;
         }
+
         return null;
     }
 
