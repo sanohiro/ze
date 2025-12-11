@@ -66,7 +66,7 @@ Advanced text processing is delegated to existing tools like `sort`, `jq`, `awk`
 | Destination | Output |
 |-------------|--------|
 | (none) | Display in command buffer |
-| `>` | Replace source |
+| `>` | Replace source (insert at cursor if no selection) |
 | `+>` | Insert at cursor |
 | `n>` | New buffer |
 

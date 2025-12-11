@@ -84,7 +84,7 @@ Regex supported: `\d+` for digits, `^TODO` for TODO at line start.
 
 **Destination:**
 - (none): show in command buffer
-- `>`: replace source
+- `>`: replace source (insert at cursor if no selection)
 - `+>`: insert at cursor
 - `n>`: new buffer
 
