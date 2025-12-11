@@ -12,12 +12,13 @@ const unicode = @import("../unicode.zig");
 // 共通ヘルパー関数
 // ========================================
 
-/// 削除操作後のdirtyマークを適切に設定
+/// テキスト変更後のdirtyマークを適切に設定
 /// 改行を含む場合は現在行以降全体、そうでなければ現在行のみ
 /// 同一バッファを表示している全ウィンドウを更新
-fn markDirtyAfterDelete(e: *Editor, current_line: usize, deleted_text: []const u8) void {
+/// 挿入・削除どちらにも使用可能
+fn markDirtyForText(e: *Editor, current_line: usize, text: []const u8) void {
     const buffer_id = e.getCurrentBuffer().id;
-    if (std.mem.indexOf(u8, deleted_text, "\n") != null) {
+    if (std.mem.indexOf(u8, text, "\n") != null) {
         e.markAllViewsDirtyForBuffer(buffer_id, current_line, null);
     } else {
         e.markAllViewsDirtyForBuffer(buffer_id, current_line, current_line);
@@ -43,7 +44,7 @@ fn deleteRangeCommon(e: *Editor, start: usize, len: usize, cursor_pos_for_undo: 
     try e.recordDelete(start, deleted, cursor_pos_for_undo);
 
     buffer_state.editing_ctx.modified = true;
-    markDirtyAfterDelete(e, current_line, deleted);
+    markDirtyForText(e, current_line, deleted);
 
     return deleted;
 }
@@ -113,7 +114,7 @@ pub fn deleteChar(e: *Editor) !void {
         try e.recordDelete(pos, deleted, pos);
 
         buffer_state.editing_ctx.modified = true;
-        markDirtyAfterDelete(e, current_line, deleted);
+        markDirtyForText(e, current_line, deleted);
         e.allocator.free(deleted);
         return;
     };
@@ -127,7 +128,7 @@ pub fn deleteChar(e: *Editor) !void {
         try e.recordDelete(pos, deleted, pos);
 
         buffer_state.editing_ctx.modified = true;
-        markDirtyAfterDelete(e, current_line, deleted);
+        markDirtyForText(e, current_line, deleted);
         e.allocator.free(deleted);
     }
 }
@@ -165,7 +166,7 @@ pub fn backspace(e: *Editor) !void {
     try e.recordDelete(char_start, deleted, pos);
 
     buffer_state.editing_ctx.modified = true;
-    markDirtyAfterDelete(e, current_line, deleted);
+    markDirtyForText(e, current_line, deleted);
     e.allocator.free(deleted);
 
     // カーソル移動
@@ -271,7 +272,7 @@ pub fn yank(e: *Editor) !void {
 
     e.setCursorToPos(pos + text.len);
 
-    markDirtyAfterDelete(e, current_line, text);
+    markDirtyForText(e, current_line, text);
 
     e.getCurrentView().setError("Yanked text");
 }

@@ -891,26 +891,8 @@ pub const EditingContext = struct {
     // 内部ヘルパー
     // ========================================
 
+    /// 内部用：現在のカーソル位置でInsertを記録
     fn recordInsert(self: *EditingContext, pos: usize, text: []const u8) !void {
-        // 連続した挿入操作をグループ化
-        // 条件: 直前の操作も挿入で、位置が連続している場合
-        if (self.undo_stack.items.len > 0) {
-            const last = &self.undo_stack.items[self.undo_stack.items.len - 1];
-            if (last.op == .insert and last.groupable and
-                last.position + last.data.len == pos and
-                !containsNewline(text) and !containsNewline(last.data))
-            {
-                // 既存のエントリにデータを追加
-                const new_len = last.data.len + text.len;
-                const new_data = try self.allocator.alloc(u8, new_len);
-                @memcpy(new_data[0..last.data.len], last.data);
-                @memcpy(new_data[last.data.len..], text);
-                self.allocator.free(last.data);
-                last.data = new_data;
-                last.cursor_after = pos + text.len;
-                return;
-            }
-        }
         try self.recordInsertOp(pos, text, self.cursor);
     }
 
@@ -918,40 +900,8 @@ pub const EditingContext = struct {
         return std.mem.indexOf(u8, text, "\n") != null;
     }
 
+    /// 内部用：現在のカーソル位置でDeleteを記録
     fn recordDelete(self: *EditingContext, pos: usize, text: []const u8) !void {
-        // 連続した削除操作をグループ化
-        // 条件: 直前の操作も削除で、位置が連続している場合（Backspace）
-        if (self.undo_stack.items.len > 0) {
-            const last = &self.undo_stack.items[self.undo_stack.items.len - 1];
-            if (last.op == .delete and last.groupable and
-                !containsNewline(text) and !containsNewline(last.data))
-            {
-                // Backspaceの場合: 削除位置が直前のエントリの直前
-                if (pos + text.len == last.position) {
-                    // 先頭に追加（Backspaceは逆順に文字を削除）
-                    const new_len = last.data.len + text.len;
-                    const new_data = try self.allocator.alloc(u8, new_len);
-                    @memcpy(new_data[0..text.len], text);
-                    @memcpy(new_data[text.len..], last.data);
-                    self.allocator.free(last.data);
-                    last.data = new_data;
-                    last.position = pos;
-                    last.cursor_after = pos;
-                    return;
-                }
-                // Delete (C-d)の場合: 削除位置が同じ
-                if (pos == last.position) {
-                    // 末尾に追加
-                    const new_len = last.data.len + text.len;
-                    const new_data = try self.allocator.alloc(u8, new_len);
-                    @memcpy(new_data[0..last.data.len], last.data);
-                    @memcpy(new_data[last.data.len..], text);
-                    self.allocator.free(last.data);
-                    last.data = new_data;
-                    return;
-                }
-            }
-        }
         try self.recordDeleteOp(pos, text, self.cursor);
     }
 
