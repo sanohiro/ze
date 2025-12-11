@@ -59,6 +59,7 @@ const Window = window_manager_mod.Window;
 const SplitType = window_manager_mod.SplitType;
 const EditingContext = @import("editing_context").EditingContext;
 const Keymap = @import("keymap").Keymap;
+const MacroService = @import("macro_service").MacroService;
 const edit = @import("commands_edit");
 const rectangle = @import("commands_rectangle");
 const mx = @import("commands_mx");
@@ -86,6 +87,7 @@ const EditorMode = enum {
     shell_running, // シェルコマンド実行中（C-gでキャンセル可）
     mx_command, // M-xコマンド入力中
     mx_key_describe, // M-x key: 次のキー入力を待っている
+    macro_repeat, // マクロ再生後の連打待機（eで再実行）
 };
 
 /// シェルコマンドの非同期実行状態
@@ -144,6 +146,7 @@ pub const Editor = struct {
     // サービス
     shell_service: ShellService, // シェルコマンド実行サービス（履歴含む）
     search_service: SearchService, // 検索サービス（履歴含む）
+    macro_service: MacroService, // キーボードマクロサービス
 
     // キーマップ
     keymap: Keymap, // キーバインド設定（ランタイム変更可能）
@@ -187,6 +190,7 @@ pub const Editor = struct {
             .replace_match_count = 0,
             .shell_service = ShellService.init(allocator),
             .search_service = SearchService.init(allocator),
+            .macro_service = MacroService.init(allocator),
             .keymap = try Keymap.init(allocator),
         };
 
@@ -244,6 +248,7 @@ pub const Editor = struct {
         // サービスのクリーンアップ
         self.shell_service.deinit();
         self.search_service.deinit();
+        self.macro_service.deinit();
     }
 
     // ========================================
@@ -970,6 +975,91 @@ pub const Editor = struct {
 
         // バッファ一覧に切り替え
         try self.switchToBuffer(buf.id);
+    }
+
+    /// ヘルプ画面を表示
+    pub fn showHelp(self: *Editor) !void {
+        const help_text =
+            \\ze - Zero-latency Editor
+            \\
+            \\NAVIGATION
+            \\  C-f/C-b     Forward/backward char     M-f/M-b     Forward/backward word
+            \\  C-n/C-p     Next/previous line        C-v/M-v     Page down/up
+            \\  C-a/C-e     Beginning/end of line     M-</M->     Beginning/end of buffer
+            \\  C-l         Center cursor on screen
+            \\
+            \\EDITING
+            \\  C-d         Delete char               M-d         Delete word
+            \\  C-k         Kill to end of line       C-u/C-/     Undo/redo
+            \\  C-Space     Set/unset mark            C-w/M-w     Cut/copy
+            \\  C-y         Paste                     M-^         Join lines
+            \\  Tab/S-Tab   Indent/unindent           M-;         Toggle comment
+            \\  M-Up/Down   Move line up/down
+            \\
+            \\SEARCH & REPLACE
+            \\  C-s/C-r     Search forward/backward   M-%         Query replace
+            \\
+            \\FILE
+            \\  C-x C-f     Open file                 C-x C-s     Save
+            \\  C-x C-w     Save as                   C-x C-c     Quit
+            \\
+            \\WINDOW & BUFFER
+            \\  C-x 2/3     Split horizontal/vertical C-x o       Next window
+            \\  C-x 0/1     Close window/others       C-x b       Switch buffer
+            \\  C-x C-b     Buffer list               C-x k       Kill buffer
+            \\
+            \\MACRO
+            \\  C-x (       Start recording           C-x )       Stop recording
+            \\  C-x e       Execute macro             e           Repeat (after C-x e)
+            \\
+            \\SHELL (M-|)
+            \\  [source] | cmd [dest]     Source: (selection), %, .  Dest: (show), >, +>, n>
+            \\
+            \\OTHER
+            \\  M-x         Execute command           M-?         This help
+            \\  C-g/Esc     Cancel
+            \\
+            \\M-x COMMANDS: line N, tab, indent, mode, key, revert, ro, ?
+        ;
+
+        // "*Help*"という名前のバッファを探す
+        const help_buffer_name = "*Help*";
+        var help_buffer: ?*BufferState = null;
+
+        for (self.buffer_manager.iterator()) |buf| {
+            if (buf.filename) |fname| {
+                if (std.mem.eql(u8, fname, help_buffer_name)) {
+                    help_buffer = buf;
+                    break;
+                }
+            }
+        }
+
+        if (help_buffer == null) {
+            // 新しいバッファを作成
+            const new_buffer = try self.createNewBuffer();
+            new_buffer.filename = try self.allocator.dupe(u8, help_buffer_name);
+            new_buffer.readonly = true;
+            help_buffer = new_buffer;
+        }
+
+        const buf = help_buffer.?;
+
+        // バッファの内容をクリアしてヘルプを挿入
+        if (buf.editing_ctx.buffer.total_len > 0) {
+            try buf.editing_ctx.buffer.delete(0, buf.editing_ctx.buffer.total_len);
+        }
+        try buf.editing_ctx.buffer.insertSlice(0, help_text);
+        buf.editing_ctx.modified = false;
+
+        // ヘルプバッファに切り替え
+        try self.switchToBuffer(buf.id);
+
+        // カーソルを先頭に
+        const view = self.getCurrentView();
+        view.top_line = 0;
+        view.cursor_x = 0;
+        view.cursor_y = 0;
     }
 
     /// *Buffer List*からバッファを選択して切り替え
@@ -1845,6 +1935,9 @@ pub const Editor = struct {
                     },
                     '0' => self.closeCurrentWindow() catch |err| self.showError(err),
                     '1' => self.deleteOtherWindows() catch |err| self.showError(err),
+                    '(' => self.startMacroRecording(),
+                    ')' => self.stopMacroRecording(),
+                    'e' => self.executeMacro() catch |err| self.showError(err),
                     else => self.getCurrentView().setError("Unknown command"),
                 }
             },
@@ -2085,6 +2178,7 @@ pub const Editor = struct {
                         self.prompt_prefix_len = 3;
                         self.getCurrentView().setError(": ");
                     },
+                    '?' => try self.showHelp(),
                     else => {},
                 }
             },
@@ -2225,7 +2319,18 @@ pub const Editor = struct {
                 self.mode = .normal;
                 return;
             },
+            .macro_repeat => {
+                self.handleMacroRepeatKey(key) catch |err| self.showError(err);
+                return;
+            },
             .normal => {},
+        }
+
+        // マクロ記録中ならキーを記録（マクロ制御キーは除外）
+        if (self.macro_service.isRecording() and !self.macro_service.isPlaying()) {
+            if (!self.isMacroControlKey(key)) {
+                self.macro_service.recordKey(key) catch {};
+            }
         }
 
         // 通常モード
@@ -2796,6 +2901,105 @@ pub const Editor = struct {
                 }
             },
         }
+    }
+
+    // ========================================
+    // マクロ機能
+    // ========================================
+
+    /// マクロ制御キーかどうか判定（C-x (, C-x ), C-x e）
+    fn isMacroControlKey(_: *Editor, key: input.Key) bool {
+        // C-xキーはマクロに記録しない（プレフィックスとして処理される）
+        if (key == .ctrl) {
+            if (key.ctrl == 'x') return true;
+        }
+        return false;
+    }
+
+    /// マクロ記録を開始
+    fn startMacroRecording(self: *Editor) void {
+        if (self.macro_service.isRecording()) {
+            self.getCurrentView().setError("Already recording macro");
+            return;
+        }
+        if (self.macro_service.isPlaying()) {
+            self.getCurrentView().setError("Cannot record while playing");
+            return;
+        }
+        self.macro_service.startRecording();
+        self.getCurrentView().setError("Defining kbd macro...");
+    }
+
+    /// マクロ記録を終了
+    fn stopMacroRecording(self: *Editor) void {
+        if (!self.macro_service.isRecording()) {
+            self.getCurrentView().setError("Not recording macro");
+            return;
+        }
+        self.macro_service.stopRecording();
+        const count = self.macro_service.lastMacroKeyCount();
+        if (count > 0) {
+            self.setPrompt("Keyboard macro defined ({d} keys)", .{count});
+        } else {
+            self.getCurrentView().setError("Empty macro, previous kept");
+        }
+    }
+
+    /// マクロを実行
+    fn executeMacro(self: *Editor) anyerror!void {
+        if (self.macro_service.isRecording()) {
+            // 記録中にC-x eが押された場合、記録を終了してから実行
+            self.macro_service.stopRecording();
+        }
+
+        try self.executeMacroInternal();
+
+        // 連打モードに移行
+        self.mode = .macro_repeat;
+        self.getCurrentView().setError("Press e to repeat macro");
+    }
+
+    /// マクロの内部実行（processKeyを使わない）
+    fn executeMacroInternal(self: *Editor) anyerror!void {
+        const macro = self.macro_service.getLastMacro() orelse {
+            self.getCurrentView().setError("No kbd macro defined");
+            return;
+        };
+
+        self.macro_service.beginPlayback();
+        defer self.macro_service.endPlayback();
+
+        for (macro) |key| {
+            try self.handleNormalKey(key);
+        }
+    }
+
+    /// マクロ連打モードのキー処理
+    fn handleMacroRepeatKey(self: *Editor, key: input.Key) anyerror!void {
+        switch (key) {
+            .char => |c| {
+                if (c == 'e') {
+                    // マクロを再実行
+                    try self.executeMacroInternal();
+                    // モードはmacro_repeatのまま
+                    self.getCurrentView().setError("Press e to repeat macro");
+                    return;
+                }
+            },
+            .ctrl => |c| {
+                if (c == 'g') {
+                    // キャンセル
+                    self.mode = .normal;
+                    self.getCurrentView().clearError();
+                    return;
+                }
+            },
+            else => {},
+        }
+
+        // 他のキーは通常処理に戻す
+        self.mode = .normal;
+        try self.handleNormalKey(key);
     }
 
     /// キーの説明を返す

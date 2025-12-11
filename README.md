@@ -157,11 +157,8 @@ ze highlights comments only. This is intentional:
 - Multi-buffer, window splitting
 - Shell integration (M-|)
 - Comment/indent settings for 48 languages
-
-### Planned
-
-- [ ] In-app help (`C-h ?`)
-- [ ] Keyboard macros (`C-x (` / `)` / `e`)
+- Keyboard macros (`C-x (` / `)` / `e`)
+- In-app help (`M-?`)
 
 ---
 

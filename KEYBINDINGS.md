@@ -98,6 +98,18 @@ Regex supported: `\d+` for digits, `^TODO` for TODO at line start.
 % | grep TODO n>       # Extract TODOs to new buffer
 ```
 
+## Keyboard Macro
+
+| Key | Action |
+|-----|--------|
+| `C-x (` | Start recording macro |
+| `C-x )` | Stop recording macro |
+| `C-x e` | Execute last macro |
+| `e` | Repeat macro (after `C-x e`) |
+| `C-g` | Cancel recording |
+
+Record a sequence of keystrokes, then replay it. Press `e` repeatedly after `C-x e` to execute multiple times.
+
 ## M-x Commands
 
 | Command | Action |
@@ -115,6 +127,7 @@ Regex supported: `\d+` for digits, `^TODO` for TODO at line start.
 
 | Key | Action |
 |-----|--------|
+| `M-?` | Show help |
 | `C-g` | Cancel current operation |
 | `Escape` | Cancel / close prompt |
 

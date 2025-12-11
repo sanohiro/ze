@@ -176,6 +176,16 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // services/macro_service <- input
+    const macro_service_mod = b.addModule("macro_service", .{
+        .root_source_file = b.path("src/services/macro_service.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "input", .module = input_mod },
+        },
+    });
+
     // editor用の全依存関係リスト
     const editor_imports = &[_]std.Build.Module.Import{
         .{ .name = "buffer", .module = buffer_mod },
@@ -194,6 +204,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "window_manager", .module = window_manager_mod },
         .{ .name = "editing_context", .module = editing_context_mod },
         .{ .name = "syntax", .module = syntax_mod },
+        .{ .name = "macro_service", .module = macro_service_mod },
     };
 
     // commands/edit <- buffer, unicode (editorは循環参照になるので後で追加)
@@ -329,6 +340,7 @@ pub fn build(b: *std.Build) void {
         "tests/services/search_service_test.zig",
         "tests/services/shell_service_test.zig",
         "tests/services/window_manager_test.zig",
+        "tests/services/macro_service_test.zig",
     };
 
     const test_step = b.step("test", "Run unit tests");
@@ -355,6 +367,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "search_service", .module = search_service_mod },
                 .{ .name = "shell_service", .module = shell_service_mod },
                 .{ .name = "window_manager", .module = window_manager_mod },
+                .{ .name = "macro_service", .module = macro_service_mod },
             },
         });
         const unit_tests = b.addTest(.{
