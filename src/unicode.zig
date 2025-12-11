@@ -427,3 +427,60 @@ pub inline fn normalizeFullwidth(cp: u21) u21 {
     }
     return cp;
 }
+
+/// グラフェムクラスタの情報
+pub const GraphemeCluster = struct {
+    /// クラスタのバイト長
+    byte_len: usize,
+    /// クラスタの表示幅（カラム数）
+    display_width: usize,
+};
+
+/// 次のグラフェムクラスタを取得する
+/// 文字列の先頭から1つのグラフェムクラスタを読み取り、そのバイト長と表示幅を返す
+/// ZWJシーケンス（家族絵文字など）や結合文字を正しく処理する
+pub fn nextGraphemeCluster(str: []const u8) ?GraphemeCluster {
+    if (str.len == 0) return null;
+
+    var byte_pos: usize = 0;
+    var total_width: usize = 0;
+    var state = State{};
+    var prev_cp: u21 = 0;
+    var first_codepoint = true;
+
+    while (byte_pos < str.len) {
+        const c = str[byte_pos];
+        const seq_len = utf8SeqLen(c);
+        if (byte_pos + seq_len > str.len) break;
+
+        const cp = std.unicode.utf8Decode(str[byte_pos .. byte_pos + seq_len]) catch break;
+
+        if (first_codepoint) {
+            // 最初のコードポイントはクラスタの開始
+            total_width = displayWidth(cp);
+            prev_cp = cp;
+            byte_pos += seq_len;
+            first_codepoint = false;
+            continue;
+        }
+
+        // グラフェムブレイクをチェック
+        if (graphemeBreak(prev_cp, cp, &state)) {
+            // ブレイクがあるので、ここでクラスタ終了
+            break;
+        }
+
+        // ブレイクがないので、クラスタを継続
+        // ZWJ、結合文字、変異セレクタなどは幅0として処理済み
+        total_width += displayWidth(cp);
+        prev_cp = cp;
+        byte_pos += seq_len;
+    }
+
+    if (byte_pos == 0) return null;
+
+    return GraphemeCluster{
+        .byte_len = byte_pos,
+        .display_width = total_width,
+    };
+}

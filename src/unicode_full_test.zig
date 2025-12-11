@@ -335,6 +335,9 @@ test "Grapheme Break: Regional Indicators (GB12, GB13)" {
     // Second pair: 🇺🇸 (USA) - should break because we already have a pair
     try testing.expect(unicode.graphemeBreak(RI_P, RI_U, &state));
     try testing.expect(!state.regional); // State should be reset
+
+    // Third pair: continue with 🇸 (using RI_S)
+    try testing.expect(!unicode.graphemeBreak(RI_U, RI_S, &state));
 }
 
 test "Grapheme Break: Emoji ZWJ sequences (GB11)" {
@@ -360,6 +363,13 @@ test "Grapheme Break: Emoji ZWJ sequences (GB11)" {
 
     // ZWJ × 👧
     try testing.expect(!unicode.graphemeBreak(zwj, girl, &state));
+
+    // 👧 × ZWJ
+    state.xpic = true; // Reset for next segment
+    try testing.expect(!unicode.graphemeBreak(girl, zwj, &state));
+
+    // ZWJ × 👦
+    try testing.expect(!unicode.graphemeBreak(zwj, boy, &state));
 }
 
 test "Grapheme Break: Hangul syllables (GB6, GB7, GB8)" {
@@ -369,8 +379,11 @@ test "Grapheme Break: Hangul syllables (GB6, GB7, GB8)" {
     // GB7: (LV | V) × (V | T)
     // GB8: (LVT | T) × T
 
-    // These are tested implicitly by the Hangul text handling
-    // Hangul composition is complex but should not break within syllables
+    // Basic Hangul syllable test: 가 (U+AC00 = LV) + 나 (U+B098)
+    // LV type syllable should break before another syllable
+    const ga: u21 = 0xAC00; // 가 (LV type)
+    const na: u21 = 0xB098; // 나
+    try testing.expect(unicode.graphemeBreak(ga, na, &state));
 }
 
 test "Edge case: Empty string" {

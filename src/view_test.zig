@@ -3,8 +3,22 @@ const testing = std.testing;
 const Buffer = @import("buffer.zig").Buffer;
 const View = @import("view.zig").View;
 
+/// テストコンテキスト構造体
+/// 重要: ViewはBufferへのポインタを保持するため、
+/// この構造体内でポインタの整合性を保つ必要がある
+const TestContext = struct {
+    buffer: Buffer,
+    view: View,
+
+    pub fn deinit(self: *TestContext) void {
+        self.view.deinit();
+        self.buffer.deinit();
+    }
+};
+
 // ViewのテストヘルパーでTerminalのダミーを渡す
-fn createTestView(allocator: std.mem.Allocator, content: []const u8) !struct { buffer: Buffer, view: View } {
+// 注意: 戻り値をローカル変数に格納した後、view.bufferポインタを更新する必要がある
+fn createTestView(allocator: std.mem.Allocator, content: []const u8) !TestContext {
     var buffer = try Buffer.init(allocator);
     errdefer buffer.deinit();
 
@@ -13,8 +27,20 @@ fn createTestView(allocator: std.mem.Allocator, content: []const u8) !struct { b
         try buffer.insertSlice(0, content);
     }
 
-    const view = try View.init(allocator, &buffer);
-    return .{ .buffer = buffer, .view = view };
+    // 仮のポインタでViewを初期化（後で修正）
+    var view = try View.init(allocator, &buffer);
+    errdefer view.deinit();
+
+    // 戻り値の構造体を作成
+    // 注意: この時点ではview.bufferは無効なポインタを指している
+    // 呼び出し側でfixBufferPointerを呼ぶ必要がある
+    return TestContext{ .buffer = buffer, .view = view };
+}
+
+/// テストコンテキストのbufferポインタを修正する
+/// createTestViewの直後に呼び出す必要がある
+fn fixBufferPointer(ctx: *TestContext) void {
+    ctx.view.buffer = &ctx.buffer;
 }
 
 // カーソル位置の内部状態をチェック
@@ -28,7 +54,8 @@ test "Cursor movement - basic ASCII" {
     const allocator = testing.allocator;
     const content = "Hello\nWorld\n";
     var ctx = try createTestView(allocator, content);
-    defer ctx.buffer.deinit();
+    fixBufferPointer(&ctx);
+    defer ctx.deinit();
 
     // 初期位置: (0, 0)
     try checkCursorPos(&ctx.view, 0, 0, 0);
@@ -54,7 +81,8 @@ test "Cursor movement - emoji positioning" {
     const allocator = testing.allocator;
     const content = "☹️😀👋🌍";
     var ctx = try createTestView(allocator, content);
-    defer ctx.buffer.deinit();
+    fixBufferPointer(&ctx);
+    defer ctx.deinit();
 
     // 初期位置
     try checkCursorPos(&ctx.view, 0, 0, 0);
@@ -100,7 +128,8 @@ test "Cursor movement - emoji in text" {
     const allocator = testing.allocator;
     const content = "Hello ☹️ World";
     var ctx = try createTestView(allocator, content);
-    defer ctx.buffer.deinit();
+    fixBufferPointer(&ctx);
+    defer ctx.deinit();
 
     // 各文字を1つずつ移動して確認
     // H
@@ -156,7 +185,8 @@ test "Cursor movement - multiline with emoji" {
     const allocator = testing.allocator;
     const content = "Test 👋 Test\nHello\n";
     var ctx = try createTestView(allocator, content);
-    defer ctx.buffer.deinit();
+    fixBufferPointer(&ctx);
+    defer ctx.deinit();
 
     // 1行目の "Test " まで
     for (0..5) |_| {
@@ -189,7 +219,8 @@ test "Cursor movement - Japanese characters" {
     const allocator = testing.allocator;
     const content = "日本語テスト";
     var ctx = try createTestView(allocator, content);
-    defer ctx.buffer.deinit();
+    fixBufferPointer(&ctx);
+    defer ctx.deinit();
 
     // 初期位置
     try checkCursorPos(&ctx.view, 0, 0, 0);

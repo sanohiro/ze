@@ -38,7 +38,7 @@ const ANSI = struct {
 };
 
 /// UTF-8文字列を表示幅（カラム数）制限内でトランケート
-/// 絵文字や全角文字の表示幅を正しく計算し、文字境界を守る
+/// グラフェムクラスタ単位で処理し、ZWJシーケンス等を途中で分断しない
 fn truncateUtf8(str: []const u8, max_columns: usize) []const u8 {
     if (max_columns == 0) return str[0..0];
 
@@ -46,20 +46,14 @@ fn truncateUtf8(str: []const u8, max_columns: usize) []const u8 {
     var byte_pos: usize = 0;
 
     while (byte_pos < str.len) {
-        const c = str[byte_pos];
-        const seq_len = unicode.utf8SeqLen(c);
+        // グラフェムクラスタ単位で処理
+        const cluster = unicode.nextGraphemeCluster(str[byte_pos..]) orelse break;
 
-        if (byte_pos + seq_len > str.len) break;
+        // このクラスタを追加すると制限を超える場合は終了
+        if (col + cluster.display_width > max_columns) break;
 
-        // コードポイントをデコードして表示幅を取得
-        const cp = std.unicode.utf8Decode(str[byte_pos .. byte_pos + seq_len]) catch break;
-        const width = unicode.displayWidth(cp);
-
-        // この文字を追加すると制限を超える場合は終了
-        if (col + width > max_columns) break;
-
-        col += width;
-        byte_pos += seq_len;
+        col += cluster.display_width;
+        byte_pos += cluster.byte_len;
     }
 
     return str[0..byte_pos];
