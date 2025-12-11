@@ -37,19 +37,72 @@ const ANSI = struct {
     const GRAY = "\x1b[90m";
 };
 
-/// UTF-8文字列をバイト数制限内でトランケート（文字境界を守る）
-/// 日本語などマルチバイト文字を途中で切らないようにする
-fn truncateUtf8(str: []const u8, max_bytes: usize) []const u8 {
-    if (str.len <= max_bytes) return str;
-    if (max_bytes == 0) return str[0..0];
+/// UTF-8文字列を表示幅（カラム数）制限内でトランケート
+/// 絵文字や全角文字の表示幅を正しく計算し、文字境界を守る
+fn truncateUtf8(str: []const u8, max_columns: usize) []const u8 {
+    if (max_columns == 0) return str[0..0];
 
-    // max_bytesから後ろに戻って、継続バイトでない位置を見つける
-    var end = max_bytes;
-    while (end > 0) {
-        if (!unicode.isUtf8Continuation(str[end])) break;
-        end -= 1;
+    var col: usize = 0;
+    var byte_pos: usize = 0;
+
+    while (byte_pos < str.len) {
+        const c = str[byte_pos];
+        const seq_len = unicode.utf8SeqLen(c);
+
+        if (byte_pos + seq_len > str.len) break;
+
+        // コードポイントをデコードして表示幅を取得
+        const cp = std.unicode.utf8Decode(str[byte_pos .. byte_pos + seq_len]) catch break;
+        const width = unicode.displayWidth(cp);
+
+        // この文字を追加すると制限を超える場合は終了
+        if (col + width > max_columns) break;
+
+        col += width;
+        byte_pos += seq_len;
     }
-    return str[0..end];
+
+    return str[0..byte_pos];
+}
+
+/// バイト位置から画面カラム位置を計算（ANSIエスケープシーケンスをスキップ）
+/// line: 対象の行データ
+/// start_byte: 開始バイト位置
+/// end_byte: 終了バイト位置
+/// initial_col: 初期カラム位置（行番号表示幅など）
+fn calculateScreenColumn(line: []const u8, start_byte: usize, end_byte: usize, initial_col: usize) usize {
+    var screen_col: usize = initial_col;
+    var b: usize = start_byte;
+    while (b < end_byte) {
+        const c = line[b];
+        // ANSIエスケープシーケンスをスキップ
+        if (b + 1 < line.len and unicode.isAnsiEscapeStart(c, line[b + 1])) {
+            b += 2;
+            while (b < line.len and line[b] != 'm') : (b += 1) {}
+            if (b < line.len) b += 1;
+            continue;
+        }
+
+        if (unicode.isAsciiByte(c)) {
+            b += 1;
+            screen_col += 1;
+        } else {
+            const len = unicode.utf8SeqLen(c);
+            if (b + len <= line.len) {
+                const cp = std.unicode.utf8Decode(line[b .. b + len]) catch {
+                    b += 1;
+                    screen_col += 1;
+                    continue;
+                };
+                screen_col += unicode.displayWidth(cp);
+                b += len;
+            } else {
+                b += 1;
+                screen_col += 1;
+            }
+        }
+    }
+    return screen_col;
 }
 
 pub const View = struct {
@@ -559,47 +612,14 @@ pub const View = struct {
                     try self.padToWidth(term, new_line, viewport_width);
                 } else if (line_num_display_width > 0) {
                     // 行番号があるが本文部分のみの差分
-                    // 差分開始位置から画面カラム位置を計算
+                    // UTF-8文字境界に調整
                     var start = start_raw;
                     while (start > 0 and start < new_line.len and unicode.isUtf8Continuation(new_line[start])) {
                         start -= 1;
                     }
 
                     // バイト位置から画面カラム位置を計算（行番号部分をスキップ）
-                    var screen_col: usize = 0;
-                    var b: usize = line_num_byte_end;
-                    // 行番号分の表示幅を加算
-                    screen_col = line_num_display_width;
-
-                    while (b < start) {
-                        const c = new_line[b];
-                        // ANSIエスケープシーケンスをスキップ
-                        if (b + 1 < new_line.len and unicode.isAnsiEscapeStart(c, new_line[b + 1])) {
-                            b += 2;
-                            while (b < new_line.len and new_line[b] != 'm') : (b += 1) {}
-                            if (b < new_line.len) b += 1;
-                            continue;
-                        }
-
-                        if (unicode.isAsciiByte(c)) {
-                            b += 1;
-                            screen_col += 1;
-                        } else {
-                            const len = unicode.utf8SeqLen(c);
-                            if (b + len <= new_line.len) {
-                                const cp = std.unicode.utf8Decode(new_line[b..b + len]) catch {
-                                    b += 1;
-                                    screen_col += 1;
-                                    continue;
-                                };
-                                screen_col += unicode.displayWidth(cp);
-                                b += len;
-                            } else {
-                                b += 1;
-                                screen_col += 1;
-                            }
-                        }
-                    }
+                    const screen_col = calculateScreenColumn(new_line, line_num_byte_end, start, line_num_display_width);
 
                     // 差分部分のみ描画
                     try term.moveCursor(abs_row, viewport_x + screen_col);
@@ -616,39 +636,8 @@ pub const View = struct {
                         start -= 1;
                     }
 
-                    // バイト位置から画面カラム位置を計算
-                    // ANSIエスケープシーケンスを除外して計算
-                    var screen_col: usize = 0;
-                    var b: usize = 0;
-                    while (b < start) {
-                        const c = new_line[b];
-                        // ANSIエスケープシーケンスをスキップ
-                        if (b + 1 < new_line.len and unicode.isAnsiEscapeStart(c, new_line[b + 1])) {
-                            b += 2;
-                            while (b < new_line.len and new_line[b] != 'm') : (b += 1) {}
-                            if (b < new_line.len) b += 1;
-                            continue;
-                        }
-
-                        if (unicode.isAsciiByte(c)) {
-                            b += 1;
-                            screen_col += 1;
-                        } else {
-                            const len = unicode.utf8SeqLen(c);
-                            if (b + len <= new_line.len) {
-                                const cp = std.unicode.utf8Decode(new_line[b..b + len]) catch {
-                                    b += 1;
-                                    screen_col += 1;
-                                    continue;
-                                };
-                                screen_col += unicode.displayWidth(cp);
-                                b += len;
-                            } else {
-                                b += 1;
-                                screen_col += 1;
-                            }
-                        }
-                    }
+                    // バイト位置から画面カラム位置を計算（ANSIエスケープシーケンスをスキップ）
+                    const screen_col = calculateScreenColumn(new_line, 0, start, 0);
 
                     // 差分部分のみ描画（viewport_xオフセットを加算）
                     try term.moveCursor(abs_row, viewport_x + screen_col);
