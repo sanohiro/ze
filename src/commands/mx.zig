@@ -3,6 +3,32 @@ const Editor = @import("../editor.zig").Editor;
 const Buffer = @import("../buffer.zig").Buffer;
 const syntax = @import("../syntax.zig");
 
+/// コマンドハンドラの型
+const CommandHandler = union(enum) {
+    with_arg: *const fn (*Editor, ?[]const u8) anyerror!void,
+    no_arg: *const fn (*Editor) anyerror!void,
+    special: *const fn (*Editor) void, // モード遷移など特殊処理
+};
+
+/// M-xコマンド定義
+const Command = struct {
+    name: []const u8,
+    alias: ?[]const u8 = null,
+    handler: CommandHandler,
+};
+
+/// コマンドテーブル（comptime生成）
+const commands = [_]Command{
+    .{ .name = "?", .alias = "help", .handler = .{ .special = cmdHelp } },
+    .{ .name = "line", .handler = .{ .with_arg = cmdLine } },
+    .{ .name = "tab", .handler = .{ .with_arg = cmdTab } },
+    .{ .name = "indent", .handler = .{ .with_arg = cmdIndent } },
+    .{ .name = "mode", .handler = .{ .with_arg = cmdMode } },
+    .{ .name = "revert", .handler = .{ .no_arg = cmdRevert } },
+    .{ .name = "key", .handler = .{ .special = cmdKeyDescribe } },
+    .{ .name = "ro", .handler = .{ .special = cmdReadonly } },
+};
+
 /// M-xコマンドを実行
 pub fn execute(e: *Editor) !void {
     const cmd_line = e.minibuffer.getContent();
@@ -19,28 +45,33 @@ pub fn execute(e: *Editor) !void {
     const cmd = parts.next() orelse "";
     const arg = parts.next();
 
-    // コマンド実行
-    if (std.mem.eql(u8, cmd, "?") or std.mem.eql(u8, cmd, "help")) {
-        e.getCurrentView().setError("Commands: line tab indent mode revert key ro ?");
-    } else if (std.mem.eql(u8, cmd, "line")) {
-        try cmdLine(e, arg);
-    } else if (std.mem.eql(u8, cmd, "tab")) {
-        cmdTab(e, arg);
-    } else if (std.mem.eql(u8, cmd, "indent")) {
-        cmdIndent(e, arg);
-    } else if (std.mem.eql(u8, cmd, "mode")) {
-        cmdMode(e, arg);
-    } else if (std.mem.eql(u8, cmd, "revert")) {
-        try cmdRevert(e);
-    } else if (std.mem.eql(u8, cmd, "key")) {
-        e.mode = .mx_key_describe;
-        e.getCurrentView().setError("Press key: ");
-    } else if (std.mem.eql(u8, cmd, "ro")) {
-        cmdReadonly(e);
-    } else {
-        // 未知のコマンド
-        e.setPrompt("Unknown command: {s}", .{cmd});
+    // コマンドテーブルから検索
+    inline for (commands) |command| {
+        if (std.mem.eql(u8, cmd, command.name) or
+            (command.alias != null and std.mem.eql(u8, cmd, command.alias.?)))
+        {
+            switch (command.handler) {
+                .with_arg => |handler| try handler(e, arg),
+                .no_arg => |handler| try handler(e),
+                .special => |handler| handler(e),
+            }
+            return;
+        }
     }
+
+    // 未知のコマンド
+    e.setPrompt("Unknown command: {s}", .{cmd});
+}
+
+/// help コマンド: コマンド一覧を表示
+fn cmdHelp(e: *Editor) void {
+    e.getCurrentView().setError("Commands: line tab indent mode revert key ro ?");
+}
+
+/// key コマンド: キー説明モードに入る
+fn cmdKeyDescribe(e: *Editor) void {
+    e.mode = .mx_key_describe;
+    e.getCurrentView().setError("Press key: ");
 }
 
 /// line コマンド: 指定行へ移動
@@ -77,7 +108,7 @@ fn cmdLine(e: *Editor, arg: ?[]const u8) !void {
 }
 
 /// tab コマンド: タブ幅の表示/設定
-fn cmdTab(e: *Editor, arg: ?[]const u8) void {
+fn cmdTab(e: *Editor, arg: ?[]const u8) !void {
     if (arg) |width_str| {
         const width = std.fmt.parseInt(u8, width_str, 10) catch {
             e.getCurrentView().setError("Invalid tab width");
@@ -97,7 +128,7 @@ fn cmdTab(e: *Editor, arg: ?[]const u8) void {
 }
 
 /// indent コマンド: インデントスタイルの表示/設定
-fn cmdIndent(e: *Editor, arg: ?[]const u8) void {
+fn cmdIndent(e: *Editor, arg: ?[]const u8) !void {
     if (arg) |style_str| {
         if (std.mem.eql(u8, style_str, "space") or std.mem.eql(u8, style_str, "spaces")) {
             e.getCurrentView().setIndentStyle(.space);
@@ -120,7 +151,7 @@ fn cmdIndent(e: *Editor, arg: ?[]const u8) void {
 }
 
 /// mode コマンド: 言語モードの表示/設定
-fn cmdMode(e: *Editor, arg: ?[]const u8) void {
+fn cmdMode(e: *Editor, arg: ?[]const u8) !void {
     if (arg) |mode_str| {
         // 部分マッチで言語を検索
         var found: ?*const syntax.LanguageDef = null;

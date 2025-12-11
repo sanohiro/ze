@@ -763,32 +763,7 @@ pub const Editor = struct {
     }
 
     /// 文字列の表示幅（カラム数）を計算
-    fn stringDisplayWidth(str: []const u8) usize {
-        var width: usize = 0;
-        var i: usize = 0;
-        while (i < str.len) {
-            const c = str[i];
-            if (unicode.isAsciiByte(c)) {
-                width += 1;
-                i += 1;
-            } else {
-                const len = unicode.utf8SeqLen(c);
-                if (i + len <= str.len) {
-                    const cp = std.unicode.utf8Decode(str[i .. i + len]) catch {
-                        i += 1;
-                        width += 1;
-                        continue;
-                    };
-                    width += unicode.displayWidth(cp);
-                    i += len;
-                } else {
-                    i += 1;
-                    width += 1;
-                }
-            }
-        }
-        return width;
-    }
+    const stringDisplayWidth = unicode.stringDisplayWidth;
 
     /// *Command* バッファを取得または作成
     fn getOrCreateCommandBuffer(self: *Editor) !*BufferState {

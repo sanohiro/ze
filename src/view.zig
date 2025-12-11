@@ -29,14 +29,8 @@ const syntax = @import("syntax.zig");
 const encoding = @import("encoding.zig");
 const unicode = @import("unicode.zig");
 
-// ANSIエスケープシーケンス定数
-const ANSI = struct {
-    const RESET = "\x1b[m";
-    const REVERSE = "\x1b[7m";
-    const REVERSE_OFF = "\x1b[27m";
-    const GRAY = "\x1b[90m";
-    const DIM = "\x1b[2m"; // 薄い表示
-};
+// ANSIエスケープシーケンス定数（config.ANSIを参照）
+const ANSI = config.ANSI;
 
 /// 全角空白（U+3000）のUTF-8バイト列
 const FULLWIDTH_SPACE: []const u8 = "\u{3000}"; // 0xE3 0x80 0x80
@@ -73,17 +67,7 @@ fn truncateUtf8(str: []const u8, max_columns: usize) TruncateResult {
 }
 
 /// UTF-8文字列の表示幅（カラム数）を計算
-/// nextGraphemeClusterを使用して絵文字や全角文字の幅を正しく計算
-fn stringDisplayWidth(str: []const u8) usize {
-    var width: usize = 0;
-    var pos: usize = 0;
-    while (pos < str.len) {
-        const cluster = unicode.nextGraphemeCluster(str[pos..]) orelse break;
-        width += cluster.display_width;
-        pos += cluster.byte_len;
-    }
-    return width;
-}
+const stringDisplayWidth = unicode.stringDisplayWidth;
 
 /// バイト位置から画面カラム位置を計算（ANSIエスケープシーケンスをスキップ）
 /// line: 対象の行データ
@@ -626,11 +610,11 @@ pub const View = struct {
         // 最初のマッチ前の部分をコピー
         try self.highlighted_line.appendSlice(self.allocator, line[0..first_match]);
         // 反転表示開始
-        try self.highlighted_line.appendSlice(self.allocator, ANSI.REVERSE);
+        try self.highlighted_line.appendSlice(self.allocator, ANSI.INVERT);
         // マッチ部分をコピー
         try self.highlighted_line.appendSlice(self.allocator, line[first_match .. first_match + search_str.len]);
         // 反転表示終了
-        try self.highlighted_line.appendSlice(self.allocator, ANSI.REVERSE_OFF);
+        try self.highlighted_line.appendSlice(self.allocator, ANSI.INVERT_OFF);
         var pos: usize = first_match + search_str.len;
 
         // 残りのマッチを処理
@@ -639,11 +623,11 @@ pub const View = struct {
                 // マッチ前の部分をコピー
                 try self.highlighted_line.appendSlice(self.allocator, line[pos..match_pos]);
                 // 反転表示開始
-                try self.highlighted_line.appendSlice(self.allocator, ANSI.REVERSE);
+                try self.highlighted_line.appendSlice(self.allocator, ANSI.INVERT);
                 // マッチ部分をコピー
                 try self.highlighted_line.appendSlice(self.allocator, line[match_pos .. match_pos + search_str.len]);
                 // 反転表示終了
-                try self.highlighted_line.appendSlice(self.allocator, ANSI.REVERSE_OFF);
+                try self.highlighted_line.appendSlice(self.allocator, ANSI.INVERT_OFF);
                 pos = match_pos + search_str.len;
             } else {
                 // これ以上マッチなし：残りをコピー

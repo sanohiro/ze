@@ -838,6 +838,55 @@ pub const Buffer = struct {
         return null;
     }
 
+    /// 指定位置からコードポイントをデコード（イテレータなし）
+    pub fn decodeCodepointAt(self: *const Buffer, pos: usize) ?u21 {
+        const first_byte = self.getByteAt(pos) orelse return null;
+
+        // ASCII
+        if (first_byte < 0x80) {
+            return @as(u21, first_byte);
+        }
+
+        // UTF-8のバイト数を判定
+        const byte_len = std.unicode.utf8ByteSequenceLength(first_byte) catch return null;
+
+        if (byte_len == 1) {
+            return @as(u21, first_byte);
+        }
+
+        // マルチバイト文字を読み取る
+        var bytes: [4]u8 = undefined;
+        bytes[0] = first_byte;
+
+        var i: usize = 1;
+        while (i < byte_len) : (i += 1) {
+            bytes[i] = self.getByteAt(pos + i) orelse return null;
+        }
+
+        return std.unicode.utf8Decode(bytes[0..byte_len]) catch null;
+    }
+
+    /// UTF-8文字の先頭バイト位置を探す（後方移動用）
+    pub fn findUtf8CharStart(self: *const Buffer, pos: usize) usize {
+        if (pos == 0) return 0;
+        var test_pos = pos - 1;
+        // getByteAtを使用してイテレータ作成を回避
+        while (test_pos > 0) : (test_pos -= 1) {
+            const byte = self.getByteAt(test_pos) orelse break;
+            // UTF-8の先頭バイトかチェック（continuation byteでなければ先頭）
+            if (unicode.isUtf8Start(byte)) {
+                return test_pos;
+            }
+        }
+        // pos=0もチェック
+        if (self.getByteAt(0)) |byte| {
+            if (unicode.isUtf8Start(byte)) {
+                return 0;
+            }
+        }
+        return 0;
+    }
+
     fn findPieceAt(self: *const Buffer, pos: usize) ?struct { piece_idx: usize, offset: usize } {
         var current_pos: usize = 0;
 

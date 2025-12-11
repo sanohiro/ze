@@ -18,26 +18,29 @@ pub const Terminal = struct {
 
 /// ANSIエスケープシーケンス
 pub const ANSI = struct {
+    // === 画面制御 ===
     /// 画面全体をクリア
     pub const CLEAR_SCREEN = "\x1b[2J";
-
     /// カーソルをホーム位置へ
     pub const CURSOR_HOME = "\x1b[H";
-
     /// 行末までクリア
     pub const CLEAR_LINE = "\x1b[K";
-
     /// カーソルを非表示
     pub const HIDE_CURSOR = "\x1b[?25l";
-
     /// カーソルを表示
     pub const SHOW_CURSOR = "\x1b[?25h";
 
-    /// 反転表示
-    pub const INVERT = "\x1b[7m";
-
+    // === 表示属性 ===
     /// 表示属性リセット
     pub const RESET = "\x1b[m";
+    /// 反転表示
+    pub const INVERT = "\x1b[7m";
+    /// 反転表示解除
+    pub const INVERT_OFF = "\x1b[27m";
+    /// 薄い表示（dim）
+    pub const DIM = "\x1b[2m";
+    /// グレー（明るい黒）
+    pub const GRAY = "\x1b[90m";
 };
 
 /// UTF-8関連の定数

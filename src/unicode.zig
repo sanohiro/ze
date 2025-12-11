@@ -540,6 +540,19 @@ pub fn nextGraphemeCluster(str: []const u8) ?GraphemeCluster {
     };
 }
 
+/// 文字列の表示幅（カラム数）を計算
+/// グラフェムクラスタを使用してZWJ絵文字等も正しく処理
+pub fn stringDisplayWidth(str: []const u8) usize {
+    var width: usize = 0;
+    var pos: usize = 0;
+    while (pos < str.len) {
+        const cluster = nextGraphemeCluster(str[pos..]) orelse break;
+        width += cluster.display_width;
+        pos += cluster.byte_len;
+    }
+    return width;
+}
+
 // Tests
 const testing = std.testing;
 
