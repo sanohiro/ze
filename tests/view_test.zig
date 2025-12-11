@@ -1,7 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
-const Buffer = @import("buffer.zig").Buffer;
-const View = @import("view.zig").View;
+const Buffer = @import("buffer").Buffer;
+const View = @import("view").View;
 
 /// テストコンテキスト構造体
 /// 重要: ViewはBufferへのポインタを保持するため、

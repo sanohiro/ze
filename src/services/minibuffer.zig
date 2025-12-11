@@ -13,8 +13,8 @@
 // ============================================================================
 
 const std = @import("std");
-const unicode = @import("../unicode.zig");
-const input = @import("../input.zig");
+const unicode = @import("unicode");
+const input = @import("input");
 
 /// ミニバッファ
 pub const Minibuffer = struct {
@@ -255,72 +255,3 @@ pub const Minibuffer = struct {
         return c == ' ' or c == '\t' or c == '\n' or c == '\r';
     }
 };
-
-// ============================================================================
-// テスト
-// ============================================================================
-
-test "Minibuffer - basic operations" {
-    const allocator = std.testing.allocator;
-    var mb = Minibuffer.init(allocator);
-    defer mb.deinit();
-
-    try mb.insertAtCursor("hello");
-    try std.testing.expectEqualStrings("hello", mb.getContent());
-    try std.testing.expectEqual(@as(usize, 5), mb.cursor);
-
-    mb.backspace();
-    try std.testing.expectEqualStrings("hell", mb.getContent());
-
-    mb.moveToStart();
-    try std.testing.expectEqual(@as(usize, 0), mb.cursor);
-
-    mb.delete();
-    try std.testing.expectEqualStrings("ell", mb.getContent());
-}
-
-test "Minibuffer - cursor movement" {
-    const allocator = std.testing.allocator;
-    var mb = Minibuffer.init(allocator);
-    defer mb.deinit();
-
-    try mb.insertAtCursor("hello world");
-
-    mb.moveToStart();
-    try std.testing.expectEqual(@as(usize, 0), mb.cursor);
-
-    mb.moveRight();
-    try std.testing.expectEqual(@as(usize, 1), mb.cursor);
-
-    mb.moveToEnd();
-    try std.testing.expectEqual(@as(usize, 11), mb.cursor);
-
-    mb.moveLeft();
-    try std.testing.expectEqual(@as(usize, 10), mb.cursor);
-}
-
-test "Minibuffer - word operations" {
-    const allocator = std.testing.allocator;
-    var mb = Minibuffer.init(allocator);
-    defer mb.deinit();
-
-    try mb.insertAtCursor("hello world test");
-
-    mb.moveWordBackward();
-    try std.testing.expectEqual(@as(usize, 12), mb.cursor);
-
-    mb.moveWordBackward();
-    try std.testing.expectEqual(@as(usize, 6), mb.cursor);
-
-    mb.moveWordForward();
-    try std.testing.expectEqual(@as(usize, 12), mb.cursor);
-}
-
-test "Minibuffer - prompt" {
-    const allocator = std.testing.allocator;
-    var mb = Minibuffer.init(allocator);
-    defer mb.deinit();
-
-    mb.setPrompt("Search: ");
-    try std.testing.expectEqualStrings("Search: ", mb.getPrompt());
-}

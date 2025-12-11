@@ -27,37 +27,41 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const Buffer = @import("buffer.zig").Buffer;
-const Piece = @import("buffer.zig").Piece;
-const PieceIterator = @import("buffer.zig").PieceIterator;
-const View = @import("view.zig").View;
-const Terminal = @import("terminal.zig").Terminal;
-const input = @import("input.zig");
-const config = @import("config.zig");
-const regex = @import("regex.zig");
-const History = @import("history.zig").History;
-const HistoryType = @import("history.zig").HistoryType;
-const unicode = @import("unicode.zig");
+const buffer_mod = @import("buffer");
+const Buffer = buffer_mod.Buffer;
+const Piece = buffer_mod.Piece;
+const PieceIterator = buffer_mod.PieceIterator;
+const View = @import("view").View;
+const Terminal = @import("terminal").Terminal;
+const input = @import("input");
+const config = @import("config");
+const regex = @import("regex");
+const history_mod = @import("history");
+const History = history_mod.History;
+const HistoryType = history_mod.HistoryType;
+const unicode = @import("unicode");
 
 // サービス
-const poller = @import("poller.zig");
+const poller = @import("poller");
 
-const Minibuffer = @import("services/minibuffer.zig").Minibuffer;
-const SearchService = @import("services/search_service.zig").SearchService;
-const shell_service_mod = @import("services/shell_service.zig");
+const Minibuffer = @import("minibuffer").Minibuffer;
+const SearchService = @import("search_service").SearchService;
+const shell_service_mod = @import("shell_service");
 const ShellService = shell_service_mod.ShellService;
 const ShellOutputDest = shell_service_mod.OutputDest;
 const ShellInputSource = shell_service_mod.InputSource;
-const BufferManager = @import("services/buffer_manager.zig").BufferManager;
-const BufferState = @import("services/buffer_manager.zig").BufferState;
-const WindowManager = @import("services/window_manager.zig").WindowManager;
-const Window = @import("services/window_manager.zig").Window;
-const SplitType = @import("services/window_manager.zig").SplitType;
-const EditingContext = @import("editing_context.zig").EditingContext;
-const Keymap = @import("keymap.zig").Keymap;
-const edit = @import("commands/edit.zig");
-const rectangle = @import("commands/rectangle.zig");
-const mx = @import("commands/mx.zig");
+const buffer_manager_mod = @import("buffer_manager");
+const BufferManager = buffer_manager_mod.BufferManager;
+const BufferState = buffer_manager_mod.BufferState;
+const window_manager_mod = @import("window_manager");
+const WindowManager = window_manager_mod.WindowManager;
+const Window = window_manager_mod.Window;
+const SplitType = window_manager_mod.SplitType;
+const EditingContext = @import("editing_context").EditingContext;
+const Keymap = @import("keymap").Keymap;
+const edit = @import("commands_edit");
+const rectangle = @import("commands_rectangle");
+const mx = @import("commands_mx");
 
 /// エディタの状態遷移を管理するモード
 ///

@@ -1,6 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
-const input = @import("input.zig");
+const input = @import("input");
 
 test "Enter key recognition: \\r" {
     // テスト: \r は Enter として認識される

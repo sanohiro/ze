@@ -15,8 +15,8 @@
 // ============================================================================
 
 const std = @import("std");
-const Buffer = @import("../buffer.zig").Buffer;
-const EditingContext = @import("../editing_context.zig").EditingContext;
+const Buffer = @import("buffer").Buffer;
+const EditingContext = @import("editing_context").EditingContext;
 
 /// バッファ状態
 /// EditingContextを内包し、ファイル情報を追加する
@@ -239,56 +239,3 @@ pub const BufferManager = struct {
         return names;
     }
 };
-
-// ============================================================================
-// テスト
-// ============================================================================
-
-test "BufferManager - create buffer" {
-    const allocator = std.testing.allocator;
-    var bm = BufferManager.init(allocator);
-    defer bm.deinit();
-
-    const buffer = try bm.createBuffer();
-    try std.testing.expectEqual(@as(usize, 0), buffer.id);
-    try std.testing.expectEqual(@as(usize, 1), bm.bufferCount());
-}
-
-test "BufferManager - find by id" {
-    const allocator = std.testing.allocator;
-    var bm = BufferManager.init(allocator);
-    defer bm.deinit();
-
-    const buffer1 = try bm.createBuffer();
-    const buffer2 = try bm.createBuffer();
-
-    const found = bm.findById(buffer1.id);
-    try std.testing.expect(found != null);
-    try std.testing.expectEqual(buffer1.id, found.?.id);
-
-    const found2 = bm.findById(buffer2.id);
-    try std.testing.expect(found2 != null);
-    try std.testing.expectEqual(buffer2.id, found2.?.id);
-}
-
-test "BufferManager - delete buffer" {
-    const allocator = std.testing.allocator;
-    var bm = BufferManager.init(allocator);
-    defer bm.deinit();
-
-    const buffer = try bm.createBuffer();
-    try std.testing.expectEqual(@as(usize, 1), bm.bufferCount());
-
-    const deleted = bm.deleteBuffer(buffer.id);
-    try std.testing.expect(deleted);
-    try std.testing.expectEqual(@as(usize, 0), bm.bufferCount());
-}
-
-test "BufferState - getName" {
-    const allocator = std.testing.allocator;
-    var bm = BufferManager.init(allocator);
-    defer bm.deinit();
-
-    const buffer = try bm.createBuffer();
-    try std.testing.expectEqualStrings("*scratch*", buffer.getName());
-}

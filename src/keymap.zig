@@ -18,12 +18,12 @@ const CtrlCode = struct {
     /// Ctrl+/ (Unit Separator)
     const SLASH: u8 = 31;
 };
-const Editor = @import("editor.zig").Editor;
-const input = @import("input.zig");
+const Editor = @import("editor").Editor;
+const input = @import("input");
 
 // コマンドモジュール
-const edit = @import("commands/edit.zig");
-const movement = @import("commands/movement.zig");
+const edit = @import("commands_edit");
+const movement = @import("commands_movement");
 
 pub const CommandFn = *const fn (*Editor) anyerror!void;
 
@@ -215,43 +215,3 @@ pub const Keymap = struct {
         try self.bindSpecial(.ctrl_shift_tab, movement.prevWindow);
     }
 };
-
-// ============================================
-// テスト
-// ============================================
-
-test "Keymap - ctrl lookup" {
-    var keymap = try Keymap.init(std.testing.allocator);
-    defer keymap.deinit();
-
-    try keymap.loadDefaults();
-
-    // C-f はcursorRight
-    const handler = keymap.findCtrl('f');
-    try std.testing.expect(handler != null);
-
-    // 未登録キーはnull
-    try std.testing.expect(keymap.findCtrl('z') == null);
-}
-
-test "Keymap - alt lookup" {
-    var keymap = try Keymap.init(std.testing.allocator);
-    defer keymap.deinit();
-
-    try keymap.loadDefaults();
-
-    // M-f はforwardWord
-    const handler = keymap.findAlt('f');
-    try std.testing.expect(handler != null);
-}
-
-test "Keymap - special lookup" {
-    var keymap = try Keymap.init(std.testing.allocator);
-    defer keymap.deinit();
-
-    try keymap.loadDefaults();
-
-    // 矢印キー
-    const handler = keymap.findSpecial(.arrow_up);
-    try std.testing.expect(handler != null);
-}

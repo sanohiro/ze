@@ -1,10 +1,10 @@
 const std = @import("std");
 const testing = std.testing;
-const buffer_mod = @import("buffer.zig");
+const buffer_mod = @import("buffer");
 const Buffer = buffer_mod.Buffer;
 const PieceIterator = buffer_mod.PieceIterator;
-const View = @import("view.zig").View;
-const unicode = @import("unicode.zig");
+const View = @import("view").View;
+const unicode = @import("unicode");
 
 // 包括的なUnicodeテスト
 
@@ -211,10 +211,6 @@ test "Unicode: Fullwidth forms" {
 test "Cursor movement: Complex emoji sequences" {
     const allocator = testing.allocator;
 
-    const DummyTerminal = struct {
-        width: usize = 80,
-        height: usize = 24,
-    };
 
     var buffer = try Buffer.init(allocator);
     defer buffer.deinit();
@@ -224,25 +220,21 @@ test "Cursor movement: Complex emoji sequences" {
     try buffer.insertSlice(0, family);
 
     var view = try View.init(allocator, &buffer);
-    var dummy_term = DummyTerminal{};
+    defer view.deinit(allocator);
 
     // Should move over entire family as one unit
-    view.moveCursorRight(@ptrCast(&dummy_term));
+    view.moveCursorRight();
     try testing.expectEqual(@as(usize, 2), view.cursor_x);
 
     // Should not move further (at end)
     const pos_before = view.cursor_x;
-    view.moveCursorRight(@ptrCast(&dummy_term));
+    view.moveCursorRight();
     try testing.expectEqual(pos_before, view.cursor_x);
 }
 
 test "Cursor movement: Multiple flags in sequence" {
     const allocator = testing.allocator;
 
-    const DummyTerminal = struct {
-        width: usize = 80,
-        height: usize = 24,
-    };
 
     var buffer = try Buffer.init(allocator);
     defer buffer.deinit();
@@ -251,16 +243,16 @@ test "Cursor movement: Multiple flags in sequence" {
     try buffer.insertSlice(0, flags);
 
     var view = try View.init(allocator, &buffer);
-    var dummy_term = DummyTerminal{};
+    defer view.deinit(allocator);
 
     // Move through each flag
-    view.moveCursorRight(@ptrCast(&dummy_term));
+    view.moveCursorRight();
     try testing.expectEqual(@as(usize, 2), view.cursor_x); // 🇯🇵
 
-    view.moveCursorRight(@ptrCast(&dummy_term));
+    view.moveCursorRight();
     try testing.expectEqual(@as(usize, 4), view.cursor_x); // 🇺🇸
 
-    view.moveCursorRight(@ptrCast(&dummy_term));
+    view.moveCursorRight();
     try testing.expectEqual(@as(usize, 6), view.cursor_x); // 🇬🇧
 
     // Move back
@@ -277,10 +269,6 @@ test "Cursor movement: Multiple flags in sequence" {
 test "Cursor movement: Mixed ASCII, CJK, and emoji" {
     const allocator = testing.allocator;
 
-    const DummyTerminal = struct {
-        width: usize = 80,
-        height: usize = 24,
-    };
 
     var buffer = try Buffer.init(allocator);
     defer buffer.deinit();
@@ -289,26 +277,26 @@ test "Cursor movement: Mixed ASCII, CJK, and emoji" {
     try buffer.insertSlice(0, mixed);
 
     var view = try View.init(allocator, &buffer);
-    var dummy_term = DummyTerminal{};
+    defer view.deinit(allocator);
 
     // H (width 1)
-    view.moveCursorRight(@ptrCast(&dummy_term));
+    view.moveCursorRight();
     try testing.expectEqual(@as(usize, 1), view.cursor_x);
 
     // i (width 1)
-    view.moveCursorRight(@ptrCast(&dummy_term));
+    view.moveCursorRight();
     try testing.expectEqual(@as(usize, 2), view.cursor_x);
 
     // 日 (width 2)
-    view.moveCursorRight(@ptrCast(&dummy_term));
+    view.moveCursorRight();
     try testing.expectEqual(@as(usize, 4), view.cursor_x);
 
     // 本 (width 2)
-    view.moveCursorRight(@ptrCast(&dummy_term));
+    view.moveCursorRight();
     try testing.expectEqual(@as(usize, 6), view.cursor_x);
 
     // 🌍 (width 2)
-    view.moveCursorRight(@ptrCast(&dummy_term));
+    view.moveCursorRight();
     try testing.expectEqual(@as(usize, 8), view.cursor_x);
 }
 
@@ -417,18 +405,14 @@ test "Stress test: Long line with mixed content" {
     try buffer.insertSlice(0, line);
 
     var view = try View.init(allocator, &buffer);
-    const DummyTerminal = struct {
-        width: usize = 80,
-        height: usize = 24,
-    };
-    var dummy_term = DummyTerminal{};
+    defer view.deinit(allocator);
 
     // Move to end
     var moves: usize = 0;
     const max_moves: usize = 100; // Safety limit
     while (moves < max_moves) : (moves += 1) {
         const old_x = view.cursor_x;
-        view.moveCursorRight(@ptrCast(&dummy_term));
+        view.moveCursorRight();
         if (view.cursor_x == old_x) break; // Reached end
     }
 

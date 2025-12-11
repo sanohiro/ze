@@ -1,7 +1,7 @@
 const std = @import("std");
-const Editor = @import("../editor.zig").Editor;
-const PieceIterator = @import("../buffer.zig").PieceIterator;
-const EditingContext = @import("../editing_context.zig").EditingContext;
+const Editor = @import("editor").Editor;
+const PieceIterator = @import("buffer").PieceIterator;
+const EditingContext = @import("editing_context").EditingContext;
 
 /// 矩形領域の削除（C-x r k）
 pub fn killRectangle(e: *Editor) !void {

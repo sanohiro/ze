@@ -14,7 +14,7 @@
 // ============================================================================
 
 const std = @import("std");
-const View = @import("../view.zig").View;
+const View = @import("view").View;
 
 /// ウィンドウ分割タイプ
 pub const SplitType = enum {
@@ -403,26 +403,3 @@ pub const WindowManager = struct {
         return self.windows.items;
     }
 };
-
-// ============================================================================
-// テスト
-// ============================================================================
-
-test "WindowManager - basic operations" {
-    const allocator = std.testing.allocator;
-    var wm = WindowManager.init(allocator, 80, 24);
-    defer wm.deinit();
-
-    // 最初は空
-    try std.testing.expectEqual(@as(usize, 0), wm.windowCount());
-}
-
-test "WindowManager - screen size update" {
-    const allocator = std.testing.allocator;
-    var wm = WindowManager.init(allocator, 80, 24);
-    defer wm.deinit();
-
-    wm.updateScreenSize(120, 40);
-    try std.testing.expectEqual(@as(usize, 120), wm.screen_width);
-    try std.testing.expectEqual(@as(usize, 40), wm.screen_height);
-}

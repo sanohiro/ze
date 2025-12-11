@@ -1,7 +1,7 @@
 const std = @import("std");
-const Editor = @import("../editor.zig").Editor;
-const Buffer = @import("../buffer.zig").Buffer;
-const syntax = @import("../syntax.zig");
+const Editor = @import("editor").Editor;
+const Buffer = @import("buffer").Buffer;
+const syntax = @import("syntax");
 
 /// コマンドハンドラの型
 const CommandHandler = union(enum) {

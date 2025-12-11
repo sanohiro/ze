@@ -2,10 +2,11 @@
 // カーソル移動、単語移動、段落移動、ページスクロール、ウィンドウ切り替え
 
 const std = @import("std");
-const Editor = @import("../editor.zig").Editor;
-const Buffer = @import("../buffer.zig").Buffer;
-const PieceIterator = @import("../buffer.zig").PieceIterator;
-const unicode = @import("../unicode.zig");
+const Editor = @import("editor").Editor;
+const buffer_mod = @import("buffer");
+const Buffer = buffer_mod.Buffer;
+const PieceIterator = buffer_mod.PieceIterator;
+const unicode = @import("unicode");
 
 // ========================================
 // 基本カーソル移動

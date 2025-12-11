@@ -31,9 +31,9 @@
 // ============================================================================
 
 const std = @import("std");
-const unicode = @import("unicode.zig");
-const config = @import("config.zig");
-const encoding = @import("encoding.zig");
+const unicode = @import("unicode");
+const config = @import("config");
+const encoding = @import("encoding");
 
 /// ピースのソース（元ファイル or 追加バッファ）
 pub const PieceSource = enum {
@@ -1622,22 +1622,3 @@ pub const Buffer = struct {
         return null;
     }
 };
-
-// 空バッファのテスト
-test "empty buffer initialization" {
-    const testing = std.testing;
-    var buffer = try Buffer.init(testing.allocator);
-    defer buffer.deinit();
-    
-    try testing.expectEqual(@as(usize, 0), buffer.total_len);
-    try testing.expectEqual(@as(usize, 0), buffer.pieces.items.len);
-    
-    // lineCount を呼んでもクラッシュしないことを確認
-    const lines = buffer.lineCount();
-    try testing.expectEqual(@as(usize, 1), lines);
-    
-    // getLineStart も確認
-    const start = buffer.getLineStart(0);
-    try testing.expect(start != null);
-    try testing.expectEqual(@as(usize, 0), start.?);
-}

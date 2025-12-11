@@ -21,8 +21,8 @@
 // ============================================================================
 
 const std = @import("std");
-const config = @import("config.zig");
-const unicode = @import("unicode.zig");
+const config = @import("config");
+const unicode = @import("unicode");
 
 /// 入力バッファ付きリーダー
 /// 複数バイトを一度に読み取ってシステムコールを削減する

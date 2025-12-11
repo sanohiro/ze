@@ -1,7 +1,7 @@
 const std = @import("std");
 const build_options = @import("build_options");
-const Editor = @import("editor.zig").Editor;
-const View = @import("view.zig").View;
+const Editor = @import("editor").Editor;
+const View = @import("view").View;
 
 const version = build_options.version;
 

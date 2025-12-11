@@ -107,6 +107,29 @@ zig build test
 ./run_all_tests.sh
 ```
 
+### ユニットテストの構成
+
+テストファイルは `tests/` ディレクトリに配置し、`src/` と同じディレクトリ構造を維持する：
+
+```
+src/buffer.zig           → tests/buffer_test.zig
+src/unicode.zig          → tests/unicode_test.zig
+src/services/minibuffer.zig → tests/services/minibuffer_test.zig
+```
+
+**テストファイルの命名規則**: `<元ファイル名>_test.zig`
+
+**テスト追加時の手順**:
+1. `tests/` に対応するテストファイルを作成（または既存ファイルに追加）
+2. `build.zig` の `test_files` 配列にパスを追加
+3. 必要なモジュールが `imports` に含まれているか確認
+4. `zig build test` で全テストが通ることを確認
+
+**ソースファイルにテストを書かない理由**:
+- テストコードがプロダクションバイナリに含まれない
+- テストの依存関係が明確になる
+- テストファイルの変更がプロダクションコードの再コンパイルを引き起こさない
+
 ### 統合テストスイート
 
 すべての機能を網羅する自動テストスイート (106テスト、22カテゴリ):
@@ -516,6 +539,24 @@ ze/
 │       ├── buffer_manager.zig   # バッファ管理
 │       ├── window_manager.zig   # ウィンドウ管理
 │       └── minibuffer.zig       # ミニバッファ
+├── tests/                # ユニットテスト（src/と同じ構造）
+│   ├── buffer_test.zig
+│   ├── editing_context_test.zig
+│   ├── history_test.zig
+│   ├── input_test.zig
+│   ├── keymap_test.zig
+│   ├── regex_test.zig
+│   ├── syntax_test.zig
+│   ├── unicode_test.zig
+│   ├── view_test.zig
+│   ├── comprehensive_test.zig
+│   └── services/         # サービスのテスト
+│       ├── buffer_manager_test.zig
+│       ├── minibuffer_test.zig
+│       ├── search_service_test.zig
+│       ├── shell_service_test.zig
+│       └── window_manager_test.zig
+├── test_data/            # E2Eテスト用データ
 ├── build.zig
 ├── README.md
 └── test_harness_generic.zig  # E2Eテストハーネス

@@ -19,7 +19,7 @@
 // ============================================================================
 
 const std = @import("std");
-const config = @import("config.zig");
+const config = @import("config");
 
 /// サポートするエンコーディング
 pub const Encoding = enum {

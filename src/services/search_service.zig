@@ -14,10 +14,11 @@
 // ============================================================================
 
 const std = @import("std");
-const regex = @import("../regex.zig");
-const History = @import("../history.zig").History;
-const HistoryType = @import("../history.zig").HistoryType;
-const Buffer = @import("../buffer.zig").Buffer;
+const regex = @import("regex");
+const history_mod = @import("history");
+const History = history_mod.History;
+const HistoryType = history_mod.HistoryType;
+const Buffer = @import("buffer").Buffer;
 
 /// 検索結果
 pub const SearchMatch = struct {
@@ -294,130 +295,3 @@ pub const SearchService = struct {
         return self.history.current_index != null;
     }
 };
-
-// ============================================================================
-// テスト
-// ============================================================================
-
-test "SearchService - literal forward search" {
-    const allocator = std.testing.allocator;
-    var service = SearchService.init(allocator);
-    defer service.deinit();
-
-    const content = "hello world hello";
-    const result = service.searchForward(content, "hello", 0);
-    try std.testing.expect(result != null);
-    try std.testing.expectEqual(@as(usize, 0), result.?.start);
-    try std.testing.expectEqual(@as(usize, 5), result.?.len);
-
-    // 2番目のマッチを検索
-    const result2 = service.searchForward(content, "hello", 1);
-    try std.testing.expect(result2 != null);
-    try std.testing.expectEqual(@as(usize, 12), result2.?.start);
-}
-
-test "SearchService - literal backward search" {
-    const allocator = std.testing.allocator;
-    var service = SearchService.init(allocator);
-    defer service.deinit();
-
-    const content = "hello world hello";
-    const result = service.searchBackward(content, "hello", content.len);
-    try std.testing.expect(result != null);
-    try std.testing.expectEqual(@as(usize, 12), result.?.start);
-}
-
-test "SearchService - wraparound search" {
-    const allocator = std.testing.allocator;
-    var service = SearchService.init(allocator);
-    defer service.deinit();
-
-    const content = "hello world";
-    // 末尾から検索、先頭にラップアラウンド
-    const result = service.searchForward(content, "hello", 10);
-    try std.testing.expect(result != null);
-    try std.testing.expectEqual(@as(usize, 0), result.?.start);
-}
-
-test "SearchService - no match" {
-    const allocator = std.testing.allocator;
-    var service = SearchService.init(allocator);
-    defer service.deinit();
-
-    const content = "hello world";
-    const result = service.searchForward(content, "xyz", 0);
-    try std.testing.expect(result == null);
-}
-
-test "SearchService - isRegexPattern" {
-    try std.testing.expect(SearchService.isRegexPattern("\\d+"));
-    try std.testing.expect(SearchService.isRegexPattern("^hello"));
-    try std.testing.expect(SearchService.isRegexPattern("world$"));
-    try std.testing.expect(!SearchService.isRegexPattern("hello"));
-    try std.testing.expect(!SearchService.isRegexPattern("world"));
-}
-
-test "SearchService - regex cache" {
-    const allocator = std.testing.allocator;
-    var service = SearchService.init(allocator);
-    defer service.deinit();
-
-    const content = "test123 foo456 bar789";
-
-    // 最初の検索でキャッシュ作成
-    const result1 = service.searchRegexForward(content, "\\d+", 0);
-    try std.testing.expect(result1 != null);
-    try std.testing.expectEqual(@as(usize, 4), result1.?.start);
-    try std.testing.expectEqual(@as(usize, 3), result1.?.len);
-
-    // キャッシュがあることを確認
-    try std.testing.expect(service.cached_pattern != null);
-    try std.testing.expectEqualStrings("\\d+", service.cached_pattern.?);
-
-    // 同じパターンで2番目のマッチを検索（キャッシュを使用）
-    const result2 = service.searchRegexForward(content, "\\d+", 7);
-    try std.testing.expect(result2 != null);
-    try std.testing.expectEqual(@as(usize, 10), result2.?.start);
-
-    // パターンが変わるとキャッシュが更新される
-    const result3 = service.searchRegexForward(content, "[a-z]+", 0);
-    try std.testing.expect(result3 != null);
-    try std.testing.expectEqualStrings("[a-z]+", service.cached_pattern.?);
-}
-
-test "SearchService - regex backward search" {
-    const allocator = std.testing.allocator;
-    var service = SearchService.init(allocator);
-    defer service.deinit();
-
-    // content: "abc123def456"
-    //           0  3  6  9
-    const content = "abc123def456";
-
-    // 末尾から後方検索 → 最後のマッチ "456" (位置9)
-    const result1 = service.searchRegexBackward(content, "\\d+", content.len);
-    try std.testing.expect(result1 != null);
-    try std.testing.expectEqual(@as(usize, 9), result1.?.start);
-    try std.testing.expectEqual(@as(usize, 3), result1.?.len);
-
-    // 位置9から後方検索 → "123" (位置3)
-    const result2 = service.searchRegexBackward(content, "\\d+", 9);
-    try std.testing.expect(result2 != null);
-    try std.testing.expectEqual(@as(usize, 3), result2.?.start);
-}
-
-test "SearchService - regex backward wraparound" {
-    const allocator = std.testing.allocator;
-    var service = SearchService.init(allocator);
-    defer service.deinit();
-
-    // content: "abc123def456"
-    //           0  3  6  9
-    const content = "abc123def456";
-
-    // 位置3から後方検索 → "123"の前には何もない → ラップして "456"(位置9)を返すべき
-    const result = service.searchRegexBackward(content, "\\d+", 3);
-    try std.testing.expect(result != null);
-    // ラップアラウンドで start_pos より後ろのマッチを返す
-    try std.testing.expectEqual(@as(usize, 9), result.?.start);
-}

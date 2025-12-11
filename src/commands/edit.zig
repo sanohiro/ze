@@ -3,10 +3,11 @@
 // joinLine, toggleComment, moveLineUp, moveLineDown, deleteWord, setMark, clearError
 
 const std = @import("std");
-const Editor = @import("../editor.zig").Editor;
-const Buffer = @import("../buffer.zig").Buffer;
-const PieceIterator = @import("../buffer.zig").PieceIterator;
-const unicode = @import("../unicode.zig");
+const Editor = @import("editor").Editor;
+const buffer_mod = @import("buffer");
+const Buffer = buffer_mod.Buffer;
+const PieceIterator = buffer_mod.PieceIterator;
+const unicode = @import("unicode");
 
 // ========================================
 // 共通ヘルパー関数

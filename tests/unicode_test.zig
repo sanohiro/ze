@@ -1,6 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
-const unicode = @import("unicode.zig");
+const unicode = @import("unicode");
 
 // Unicode全範囲の包括的テスト
 // Unicode 15.0準拠
@@ -59,10 +59,13 @@ test "Unicode: Variation Selectors (0xFE00-0xFE0F)" {
 }
 
 test "Unicode: Emoji skin tone modifiers (0x1F3FB-0x1F3FF)" {
+    // スキントーン修飾子は絵文字の一部として表示される
+    // 単独で使用した場合は幅2として扱われる実装もある
     var cp: u21 = 0x1F3FB;
     while (cp <= 0x1F3FF) : (cp += 1) {
         const width = unicode.displayWidth(cp);
-        try testing.expectEqual(@as(usize, 0), width);
+        // 実装によっては0または2
+        try testing.expect(width == 0 or width == 2);
     }
 }
 
@@ -476,4 +479,46 @@ test "Sample text from many scripts" {
         // Should have processed some characters
         try testing.expect(count > 0);
     }
+}
+
+// Tests from src/unicode.zig
+
+test "displayWidth: DEL returns 0" {
+    try testing.expectEqual(@as(usize, 0), unicode.displayWidth(0x7F));
+}
+
+test "displayWidth: skin tone modifiers return 2 standalone" {
+    // Skin tone modifiers (U+1F3FB-U+1F3FF) should be width 2 when standalone
+    try testing.expectEqual(@as(usize, 2), unicode.displayWidth(0x1F3FB));
+    try testing.expectEqual(@as(usize, 2), unicode.displayWidth(0x1F3FC));
+    try testing.expectEqual(@as(usize, 2), unicode.displayWidth(0x1F3FD));
+    try testing.expectEqual(@as(usize, 2), unicode.displayWidth(0x1F3FE));
+    try testing.expectEqual(@as(usize, 2), unicode.displayWidth(0x1F3FF));
+}
+
+test "nextGraphemeCluster: ZWJ sequence returns width 2" {
+    // Family emoji (👨‍👩‍👧‍👦): 25 bytes, should be width 2
+    const family = "👨‍👩‍👧‍👦";
+    const cluster = unicode.nextGraphemeCluster(family);
+    try testing.expect(cluster != null);
+    try testing.expectEqual(@as(usize, 25), cluster.?.byte_len);
+    try testing.expectEqual(@as(usize, 2), cluster.?.display_width);
+}
+
+test "nextGraphemeCluster: invalid UTF-8 returns replacement" {
+    // Invalid UTF-8 sequence (invalid continuation byte)
+    const invalid = "\xFF\x80abc";
+    const cluster = unicode.nextGraphemeCluster(invalid);
+    try testing.expect(cluster != null);
+    try testing.expectEqual(@as(usize, 1), cluster.?.byte_len);
+    try testing.expectEqual(@as(usize, 1), cluster.?.display_width);
+}
+
+test "nextGraphemeCluster: incomplete UTF-8 returns replacement" {
+    // Incomplete UTF-8: starts 4-byte sequence but only 2 bytes
+    const incomplete = "\xF0\x9F";
+    const cluster = unicode.nextGraphemeCluster(incomplete);
+    try testing.expect(cluster != null);
+    try testing.expectEqual(@as(usize, 1), cluster.?.byte_len);
+    try testing.expectEqual(@as(usize, 1), cluster.?.display_width);
 }

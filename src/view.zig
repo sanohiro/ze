@@ -21,13 +21,14 @@
 // ============================================================================
 
 const std = @import("std");
-const Buffer = @import("buffer.zig").Buffer;
-const PieceIterator = @import("buffer.zig").PieceIterator;
-const Terminal = @import("terminal.zig").Terminal;
-const config = @import("config.zig");
-const syntax = @import("syntax.zig");
-const encoding = @import("encoding.zig");
-const unicode = @import("unicode.zig");
+const buffer_mod = @import("buffer");
+const Buffer = buffer_mod.Buffer;
+const PieceIterator = buffer_mod.PieceIterator;
+const Terminal = @import("terminal").Terminal;
+const config = @import("config");
+const syntax = @import("syntax");
+const encoding = @import("encoding");
+const unicode = @import("unicode");
 
 // ANSIエスケープシーケンス定数（config.ANSIを参照）
 const ANSI = config.ANSI;

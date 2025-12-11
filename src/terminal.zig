@@ -21,7 +21,7 @@
 const std = @import("std");
 const posix = std.posix;
 const io = std.io;
-const config = @import("config.zig");
+const config = @import("config");
 
 /// グローバルリサイズフラグ（SIGWINCHハンドラから設定）
 var g_resize_pending = std.atomic.Value(bool).init(false);

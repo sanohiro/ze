@@ -14,8 +14,9 @@
 // ============================================================================
 
 const std = @import("std");
-const History = @import("../history.zig").History;
-const HistoryType = @import("../history.zig").HistoryType;
+const history_mod = @import("history");
+const History = history_mod.History;
+const HistoryType = history_mod.HistoryType;
 
 /// シェルコマンド出力先
 pub const OutputDest = enum {
@@ -428,73 +429,3 @@ pub const ShellService = struct {
         self.state = null;
     }
 };
-
-// ============================================================================
-// テスト
-// ============================================================================
-
-test "parseCommand - basic" {
-    const result = ShellService.parseCommand("echo hello");
-    try std.testing.expectEqual(InputSource.selection, result.input_source);
-    try std.testing.expectEqual(OutputDest.command_buffer, result.output_dest);
-    try std.testing.expectEqualStrings("echo hello", result.command);
-}
-
-test "parseCommand - with pipe prefix" {
-    const result = ShellService.parseCommand("| sort");
-    try std.testing.expectEqual(InputSource.selection, result.input_source);
-    try std.testing.expectEqual(OutputDest.command_buffer, result.output_dest);
-    try std.testing.expectEqualStrings("sort", result.command);
-}
-
-test "parseCommand - buffer all" {
-    const result = ShellService.parseCommand("% | sort >");
-    try std.testing.expectEqual(InputSource.buffer_all, result.input_source);
-    try std.testing.expectEqual(OutputDest.replace, result.output_dest);
-    try std.testing.expectEqualStrings("sort", result.command);
-}
-
-test "parseCommand - current line" {
-    const result = ShellService.parseCommand(". | sh >");
-    try std.testing.expectEqual(InputSource.current_line, result.input_source);
-    try std.testing.expectEqual(OutputDest.replace, result.output_dest);
-    try std.testing.expectEqualStrings("sh", result.command);
-}
-
-test "parseCommand - new buffer" {
-    const result = ShellService.parseCommand("| grep TODO n>");
-    try std.testing.expectEqual(InputSource.selection, result.input_source);
-    try std.testing.expectEqual(OutputDest.new_buffer, result.output_dest);
-    try std.testing.expectEqualStrings("grep TODO", result.command);
-}
-
-test "parseCommand - insert" {
-    const result = ShellService.parseCommand("| date +>");
-    try std.testing.expectEqual(InputSource.selection, result.input_source);
-    try std.testing.expectEqual(OutputDest.insert, result.output_dest);
-    try std.testing.expectEqualStrings("date", result.command);
-}
-
-test "parseCommand - suffix inside single quotes" {
-    // 引用符内の n> はサフィックスとして認識しない
-    const result = ShellService.parseCommand("printf 'n>'");
-    try std.testing.expectEqual(InputSource.selection, result.input_source);
-    try std.testing.expectEqual(OutputDest.command_buffer, result.output_dest);
-    try std.testing.expectEqualStrings("printf 'n>'", result.command);
-}
-
-test "parseCommand - suffix inside double quotes" {
-    // ダブルクォート内の +> もサフィックスとして認識しない
-    const result = ShellService.parseCommand("echo \"+>\"");
-    try std.testing.expectEqual(InputSource.selection, result.input_source);
-    try std.testing.expectEqual(OutputDest.command_buffer, result.output_dest);
-    try std.testing.expectEqualStrings("echo \"+>\"", result.command);
-}
-
-test "parseCommand - suffix outside quotes" {
-    // 引用符の外にある n> はサフィックスとして認識
-    const result = ShellService.parseCommand("echo 'hello' n>");
-    try std.testing.expectEqual(InputSource.selection, result.input_source);
-    try std.testing.expectEqual(OutputDest.new_buffer, result.output_dest);
-    try std.testing.expectEqualStrings("echo 'hello'", result.command);
-}

@@ -19,9 +19,10 @@
 // ============================================================================
 
 const std = @import("std");
-const Buffer = @import("buffer.zig").Buffer;
-const PieceIterator = @import("buffer.zig").PieceIterator;
-const unicode = @import("unicode.zig");
+const buffer_mod = @import("buffer");
+const Buffer = buffer_mod.Buffer;
+const PieceIterator = buffer_mod.PieceIterator;
+const unicode = @import("unicode");
 
 /// 変更の種類
 pub const ChangeType = enum {
@@ -488,16 +489,19 @@ pub const EditingContext = struct {
         const deleted = try self.extractText(pos, actual_count);
         errdefer self.allocator.free(deleted);
 
+        // 改行を含むかで影響範囲を決定（freeする前に判定）
+        const has_newline = std.mem.indexOf(u8, deleted, "\n") != null;
+
         // バッファから削除
         try self.buffer.delete(pos, actual_count);
 
-        // Undo記録
+        // Undo記録（recordDeleteOp内でコピーされる）
         try self.recordDelete(pos, deleted);
 
-        self.modified = true;
+        // recordDeleteが成功したらextractTextの結果を解放
+        self.allocator.free(deleted);
 
-        // 改行を含むかで影響範囲を決定
-        const has_newline = std.mem.indexOf(u8, deleted, "\n") != null;
+        self.modified = true;
         self.notifyChange(.{
             .change_type = .delete,
             .position = pos,
@@ -917,118 +921,3 @@ pub const EditingContext = struct {
         return result[0..i];
     }
 };
-
-// ============================================================================
-// テスト
-// ============================================================================
-
-test "basic insert and delete" {
-    const allocator = std.testing.allocator;
-    var ctx = try EditingContext.init(allocator);
-    defer ctx.deinit();
-
-    try ctx.insert("hello");
-    try std.testing.expectEqual(@as(usize, 5), ctx.len());
-    try std.testing.expectEqual(@as(usize, 5), ctx.cursor);
-
-    try ctx.backspace();
-    try std.testing.expectEqual(@as(usize, 4), ctx.len());
-}
-
-test "undo and redo" {
-    const allocator = std.testing.allocator;
-    var ctx = try EditingContext.init(allocator);
-    defer ctx.deinit();
-
-    try ctx.insert("abc");
-    try std.testing.expectEqual(@as(usize, 3), ctx.len());
-
-    _ = try ctx.undo();
-    try std.testing.expectEqual(@as(usize, 0), ctx.len());
-
-    _ = try ctx.redo();
-    try std.testing.expectEqual(@as(usize, 3), ctx.len());
-}
-
-test "undo grouping for consecutive inserts" {
-    const allocator = std.testing.allocator;
-    var ctx = try EditingContext.init(allocator);
-    defer ctx.deinit();
-
-    // 連続した挿入はグループ化される
-    try ctx.insertChar('h');
-    try ctx.insertChar('e');
-    try ctx.insertChar('l');
-    try ctx.insertChar('l');
-    try ctx.insertChar('o');
-    try std.testing.expectEqual(@as(usize, 5), ctx.len());
-
-    // 1回のUndoで全て取り消される
-    _ = try ctx.undo();
-    try std.testing.expectEqual(@as(usize, 0), ctx.len());
-}
-
-test "undo grouping for consecutive backspaces" {
-    const allocator = std.testing.allocator;
-    var ctx = try EditingContext.init(allocator);
-    defer ctx.deinit();
-
-    try ctx.insert("hello");
-    try std.testing.expectEqual(@as(usize, 5), ctx.len());
-
-    // Undoスタックをクリアして削除操作のグループ化をテスト
-    ctx.clearUndoHistory();
-
-    // 連続したBackspace
-    try ctx.backspace(); // o
-    try ctx.backspace(); // l
-    try ctx.backspace(); // l
-    try std.testing.expectEqual(@as(usize, 2), ctx.len());
-
-    // 1回のUndoで全て復元される
-    _ = try ctx.undo();
-    try std.testing.expectEqual(@as(usize, 5), ctx.len());
-}
-
-test "selection and copy" {
-    const allocator = std.testing.allocator;
-    var ctx = try EditingContext.init(allocator);
-    defer ctx.deinit();
-
-    try ctx.insert("hello world");
-    ctx.mark = 0;
-    ctx.cursor = 5;
-
-    try ctx.copyRegion();
-    try std.testing.expect(ctx.kill_ring != null);
-    try std.testing.expectEqualStrings("hello", ctx.kill_ring.?);
-}
-
-test "cursor movement" {
-    const allocator = std.testing.allocator;
-    var ctx = try EditingContext.init(allocator);
-    defer ctx.deinit();
-
-    try ctx.insert("hello\nworld");
-    try std.testing.expectEqual(@as(usize, 11), ctx.cursor);
-
-    // 先頭に移動
-    ctx.moveBeginningOfBuffer();
-    try std.testing.expectEqual(@as(usize, 0), ctx.cursor);
-
-    // 前進
-    ctx.moveForward();
-    try std.testing.expectEqual(@as(usize, 1), ctx.cursor);
-
-    // 行末に移動
-    ctx.moveEndOfLine();
-    try std.testing.expectEqual(@as(usize, 5), ctx.cursor);
-
-    // 次の行へ
-    ctx.moveNextLine();
-    try std.testing.expectEqual(@as(usize, 1), ctx.getCursorLine());
-
-    // 行頭へ
-    ctx.moveBeginningOfLine();
-    try std.testing.expectEqual(@as(usize, 6), ctx.cursor);
-}
