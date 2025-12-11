@@ -37,10 +37,17 @@ const ANSI = struct {
     const GRAY = "\x1b[90m";
 };
 
+/// truncateUtf8の戻り値
+const TruncateResult = struct {
+    slice: []const u8,
+    display_width: usize,
+};
+
 /// UTF-8文字列を表示幅（カラム数）制限内でトランケート
 /// グラフェムクラスタ単位で処理し、ZWJシーケンス等を途中で分断しない
-fn truncateUtf8(str: []const u8, max_columns: usize) []const u8 {
-    if (max_columns == 0) return str[0..0];
+/// スライスと表示幅の両方を返す（二重デコード回避）
+fn truncateUtf8(str: []const u8, max_columns: usize) TruncateResult {
+    if (max_columns == 0) return .{ .slice = str[0..0], .display_width = 0 };
 
     var col: usize = 0;
     var byte_pos: usize = 0;
@@ -56,25 +63,18 @@ fn truncateUtf8(str: []const u8, max_columns: usize) []const u8 {
         byte_pos += cluster.byte_len;
     }
 
-    return str[0..byte_pos];
+    return .{ .slice = str[0..byte_pos], .display_width = col };
 }
 
 /// UTF-8文字列の表示幅（カラム数）を計算
-/// 絵文字や全角文字の幅を正しく計算する
+/// nextGraphemeClusterを使用して絵文字や全角文字の幅を正しく計算
 fn stringDisplayWidth(str: []const u8) usize {
     var width: usize = 0;
-    var i: usize = 0;
-    while (i < str.len) {
-        const c = str[i];
-        const seq_len = unicode.utf8SeqLen(c);
-        if (i + seq_len > str.len) break;
-        const cp = std.unicode.utf8Decode(str[i .. i + seq_len]) catch {
-            i += 1;
-            width += 1;
-            continue;
-        };
-        width += unicode.displayWidth(cp);
-        i += seq_len;
+    var pos: usize = 0;
+    while (pos < str.len) {
+        const cluster = unicode.nextGraphemeCluster(str[pos..]) orelse break;
+        width += cluster.display_width;
+        pos += cluster.byte_len;
     }
     return width;
 }
@@ -727,6 +727,7 @@ pub const View = struct {
         var col: usize = 0; // 論理カラム位置（行全体での位置）
         const visible_width = if (viewport_width > line_num_width) viewport_width - line_num_width else 1;
         const visible_end = self.top_col + visible_width; // 表示範囲の終端（行番号幅を除く）
+        const tab_width = self.getTabWidth(); // ループ前にホイスト（最適化）
 
         // コメントスパンがある場合のみ追跡（最適化：span_count==0なら完全スキップ）
         const has_spans = analysis.span_count > 0;
@@ -763,7 +764,7 @@ pub const View = struct {
                 // ASCII
                 if (ch == '\t') {
                     // Tabを空白に展開
-                    const next_tab_stop = (col / self.getTabWidth() + 1) * self.getTabWidth();
+                    const next_tab_stop = (col / tab_width + 1) * tab_width;
                     const spaces_needed = next_tab_stop - col;
                     var i: usize = 0;
                     while (i < spaces_needed) : (i += 1) {
@@ -995,10 +996,9 @@ pub const View = struct {
             try term.write(config.ANSI.INVERT);
             var msg_buf: [config.Editor.STATUS_BUF_SIZE]u8 = undefined;
             const status = try std.fmt.bufPrint(&msg_buf, " {s}", .{msg});
-            const display_status = truncateUtf8(status, viewport_width);
-            try term.write(display_status);
-            const display_width = stringDisplayWidth(display_status);
-            const padding = if (display_width < viewport_width) viewport_width - display_width else 0;
+            const truncated = truncateUtf8(status, viewport_width);
+            try term.write(truncated.slice);
+            const padding = if (truncated.display_width < viewport_width) viewport_width - truncated.display_width else 0;
             for (0..padding) |_| {
                 try term.write(" ");
             }
@@ -1032,20 +1032,18 @@ pub const View = struct {
         if (total_content >= viewport_width) {
             // 幅が足りない場合は左側を優先して切り捨て
             const max_left = if (viewport_width > right_width) viewport_width - right_width else viewport_width;
-            const display_left = truncateUtf8(left_part, max_left);
-            try term.write(display_left);
+            const trunc_left = truncateUtf8(left_part, max_left);
+            try term.write(trunc_left.slice);
             // 右側は表示できる分だけ
-            const display_left_width = stringDisplayWidth(display_left);
-            if (viewport_width > display_left_width) {
-                const remaining = viewport_width - display_left_width;
-                const display_right = truncateUtf8(right_part, remaining);
+            if (viewport_width > trunc_left.display_width) {
+                const remaining = viewport_width - trunc_left.display_width;
+                const trunc_right = truncateUtf8(right_part, remaining);
                 // パディング
-                const display_right_width = stringDisplayWidth(display_right);
-                const pad = if (remaining > display_right_width) remaining - display_right_width else 0;
+                const pad = if (remaining > trunc_right.display_width) remaining - trunc_right.display_width else 0;
                 for (0..pad) |_| {
                     try term.write(" ");
                 }
-                try term.write(display_right);
+                try term.write(trunc_right.slice);
             }
         } else {
             // 通常表示: 左 + パディング + 右
