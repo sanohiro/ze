@@ -388,8 +388,9 @@ test "Grapheme Break: Hangul syllables (GB6, GB7, GB8)" {
 
 test "Edge case: Empty string" {
     // No crashes or errors on empty input
-    var state = unicode.State{};
-    _ = state;
+    // nextGraphemeClusterが空文字列でnullを返すことを確認
+    const result = unicode.nextGraphemeCluster("");
+    try testing.expect(result == null);
 }
 
 test "Edge case: Maximum codepoint" {

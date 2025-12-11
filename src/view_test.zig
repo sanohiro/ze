@@ -7,11 +7,12 @@ const View = @import("view.zig").View;
 /// 重要: ViewはBufferへのポインタを保持するため、
 /// この構造体内でポインタの整合性を保つ必要がある
 const TestContext = struct {
+    allocator: std.mem.Allocator,
     buffer: Buffer,
     view: View,
 
     pub fn deinit(self: *TestContext) void {
-        self.view.deinit();
+        self.view.deinit(self.allocator);
         self.buffer.deinit();
     }
 };
@@ -29,12 +30,12 @@ fn createTestView(allocator: std.mem.Allocator, content: []const u8) !TestContex
 
     // 仮のポインタでViewを初期化（後で修正）
     var view = try View.init(allocator, &buffer);
-    errdefer view.deinit();
+    errdefer view.deinit(allocator);
 
     // 戻り値の構造体を作成
     // 注意: この時点ではview.bufferは無効なポインタを指している
     // 呼び出し側でfixBufferPointerを呼ぶ必要がある
-    return TestContext{ .buffer = buffer, .view = view };
+    return TestContext{ .allocator = allocator, .buffer = buffer, .view = view };
 }
 
 /// テストコンテキストのbufferポインタを修正する

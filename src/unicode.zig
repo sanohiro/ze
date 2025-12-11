@@ -439,11 +439,18 @@ pub const GraphemeCluster = struct {
 /// 次のグラフェムクラスタを取得する
 /// 文字列の先頭から1つのグラフェムクラスタを読み取り、そのバイト長と表示幅を返す
 /// ZWJシーケンス（家族絵文字など）や結合文字を正しく処理する
+///
+/// 【表示幅の計算ルール】
+/// ターミナルはグラフェムクラスタ全体を1つのグリフとして描画する。
+/// - 単一コードポイント: そのコードポイントのdisplayWidth
+/// - ZWJシーケンス（👨‍👩‍👧‍👦等）: 最初のベース文字の幅（通常2）
+/// - 結合文字付き文字: ベース文字の幅
+/// - 国旗（🇯🇵等）: 2（2つのRegional Indicatorで1つのグリフ）
 pub fn nextGraphemeCluster(str: []const u8) ?GraphemeCluster {
     if (str.len == 0) return null;
 
     var byte_pos: usize = 0;
-    var total_width: usize = 0;
+    var base_width: usize = 0; // 最初のベース文字の幅
     var state = State{};
     var prev_cp: u21 = 0;
     var first_codepoint = true;
@@ -456,8 +463,8 @@ pub fn nextGraphemeCluster(str: []const u8) ?GraphemeCluster {
         const cp = std.unicode.utf8Decode(str[byte_pos .. byte_pos + seq_len]) catch break;
 
         if (first_codepoint) {
-            // 最初のコードポイントはクラスタの開始
-            total_width = displayWidth(cp);
+            // 最初のコードポイントはクラスタの開始（ベース文字）
+            base_width = displayWidth(cp);
             prev_cp = cp;
             byte_pos += seq_len;
             first_codepoint = false;
@@ -471,8 +478,8 @@ pub fn nextGraphemeCluster(str: []const u8) ?GraphemeCluster {
         }
 
         // ブレイクがないので、クラスタを継続
-        // ZWJ、結合文字、変異セレクタなどは幅0として処理済み
-        total_width += displayWidth(cp);
+        // 複数コードポイント（ZWJシーケンス等）でもベース文字の幅を使用
+        // ターミナルは複合絵文字を1グリフ（通常width=2）として描画
         prev_cp = cp;
         byte_pos += seq_len;
     }
@@ -481,6 +488,6 @@ pub fn nextGraphemeCluster(str: []const u8) ?GraphemeCluster {
 
     return GraphemeCluster{
         .byte_len = byte_pos,
-        .display_width = total_width,
+        .display_width = base_width,
     };
 }
