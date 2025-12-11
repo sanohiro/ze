@@ -35,7 +35,13 @@ const ANSI = struct {
     const REVERSE = "\x1b[7m";
     const REVERSE_OFF = "\x1b[27m";
     const GRAY = "\x1b[90m";
+    const DIM = "\x1b[2m"; // 薄い表示
 };
+
+/// 全角空白（U+3000）のUTF-8バイト列
+const FULLWIDTH_SPACE: []const u8 = "\u{3000}"; // 0xE3 0x80 0x80
+/// 全角空白の視覚表示用（薄いグレーの「□」+ リセット）
+const FULLWIDTH_SPACE_VISUAL: []const u8 = ANSI.DIM ++ "□" ++ ANSI.RESET;
 
 /// truncateUtf8の戻り値
 const TruncateResult = struct {
@@ -896,10 +902,18 @@ pub const View = struct {
                 if (unicode.nextGraphemeCluster(remaining)) |cluster| {
                     // 水平スクロール範囲内なら追加
                     if (col >= self.top_col) {
-                        // グラフェムクラスタ全体をコピー
-                        var i: usize = 0;
-                        while (i < cluster.byte_len) : (i += 1) {
-                            try self.expanded_line.append(self.allocator, line_buffer.items[byte_idx + i]);
+                        // 全角空白（U+3000）を視覚的に表示
+                        if (cluster.byte_len == 3 and
+                            remaining[0] == 0xE3 and remaining[1] == 0x80 and remaining[2] == 0x80)
+                        {
+                            // 全角空白 → 薄い「□」に置換（幅2）
+                            try self.expanded_line.appendSlice(self.allocator, FULLWIDTH_SPACE_VISUAL);
+                        } else {
+                            // グラフェムクラスタ全体をコピー
+                            var i: usize = 0;
+                            while (i < cluster.byte_len) : (i += 1) {
+                                try self.expanded_line.append(self.allocator, line_buffer.items[byte_idx + i]);
+                            }
                         }
                     }
                     byte_idx += cluster.byte_len;
