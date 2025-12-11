@@ -719,7 +719,7 @@ pub const Editor = struct {
 
     /// ミニバッファのプロンプトを更新（カーソル位置も保持）
     fn updateMinibufferPrompt(self: *Editor, prefix: []const u8) void {
-        self.prompt_prefix_len = prefix.len;
+        self.prompt_prefix_len = stringDisplayWidth(prefix);
         self.setPrompt("{s}{s}", .{ prefix, self.minibuffer.getContent() });
     }
 
@@ -753,6 +753,34 @@ pub const Editor = struct {
             }
         }
         return col;
+    }
+
+    /// 文字列の表示幅（カラム数）を計算
+    fn stringDisplayWidth(str: []const u8) usize {
+        var width: usize = 0;
+        var i: usize = 0;
+        while (i < str.len) {
+            const c = str[i];
+            if (unicode.isAsciiByte(c)) {
+                width += 1;
+                i += 1;
+            } else {
+                const len = unicode.utf8SeqLen(c);
+                if (i + len <= str.len) {
+                    const cp = std.unicode.utf8Decode(str[i .. i + len]) catch {
+                        i += 1;
+                        width += 1;
+                        continue;
+                    };
+                    width += unicode.displayWidth(cp);
+                    i += len;
+                } else {
+                    i += 1;
+                    width += 1;
+                }
+            }
+        }
+        return width;
     }
 
     /// *Command* バッファを取得または作成
@@ -1880,7 +1908,7 @@ pub const Editor = struct {
                 self.clearInputBuffer();
                 self.mode = .query_replace_input_replacement;
                 self.setPrompt("Query replace {s} with: ", .{self.replace_search.?});
-                self.prompt_prefix_len = 1 + 14 + self.replace_search.?.len + 7;
+                self.prompt_prefix_len = 1 + 14 + stringDisplayWidth(self.replace_search.?) + 7;
             }
             return true;
         }

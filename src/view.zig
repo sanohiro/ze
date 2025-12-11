@@ -65,6 +65,26 @@ fn truncateUtf8(str: []const u8, max_columns: usize) []const u8 {
     return str[0..byte_pos];
 }
 
+/// UTF-8文字列の表示幅（カラム数）を計算
+/// 絵文字や全角文字の幅を正しく計算する
+fn stringDisplayWidth(str: []const u8) usize {
+    var width: usize = 0;
+    var i: usize = 0;
+    while (i < str.len) {
+        const c = str[i];
+        const seq_len = unicode.utf8SeqLen(c);
+        if (i + seq_len > str.len) break;
+        const cp = std.unicode.utf8Decode(str[i .. i + seq_len]) catch {
+            i += 1;
+            width += 1;
+            continue;
+        };
+        width += unicode.displayWidth(cp);
+        i += seq_len;
+    }
+    return width;
+}
+
 /// バイト位置から画面カラム位置を計算（ANSIエスケープシーケンスをスキップ）
 /// line: 対象の行データ
 /// start_byte: 開始バイト位置
@@ -983,7 +1003,8 @@ pub const View = struct {
             const status = try std.fmt.bufPrint(&msg_buf, " {s}", .{msg});
             const display_status = truncateUtf8(status, viewport_width);
             try term.write(display_status);
-            const padding = if (display_status.len < viewport_width) viewport_width - display_status.len else 0;
+            const display_width = stringDisplayWidth(display_status);
+            const padding = if (display_width < viewport_width) viewport_width - display_width else 0;
             for (0..padding) |_| {
                 try term.write(" ");
             }
@@ -1009,22 +1030,24 @@ pub const View = struct {
         // ステータスバーを反転表示で開始
         try term.write(config.ANSI.INVERT);
 
-        // 左側を表示
-        const left_len = left_part.len;
-        const right_len = right_part.len;
-        const total_content = left_len + right_len;
+        // 左側・右側の表示幅を計算（バイト数ではなく表示幅）
+        const left_width = stringDisplayWidth(left_part);
+        const right_width = stringDisplayWidth(right_part);
+        const total_content = left_width + right_width;
 
         if (total_content >= viewport_width) {
             // 幅が足りない場合は左側を優先して切り捨て
-            const max_left = if (viewport_width > right_len) viewport_width - right_len else viewport_width;
+            const max_left = if (viewport_width > right_width) viewport_width - right_width else viewport_width;
             const display_left = truncateUtf8(left_part, max_left);
             try term.write(display_left);
             // 右側は表示できる分だけ
-            if (viewport_width > display_left.len) {
-                const remaining = viewport_width - display_left.len;
+            const display_left_width = stringDisplayWidth(display_left);
+            if (viewport_width > display_left_width) {
+                const remaining = viewport_width - display_left_width;
                 const display_right = truncateUtf8(right_part, remaining);
                 // パディング
-                const pad = remaining - display_right.len;
+                const display_right_width = stringDisplayWidth(display_right);
+                const pad = if (remaining > display_right_width) remaining - display_right_width else 0;
                 for (0..pad) |_| {
                     try term.write(" ");
                 }
