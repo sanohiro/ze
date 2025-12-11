@@ -24,6 +24,30 @@ fn markDirtyAfterDelete(e: *Editor, current_line: usize, deleted_text: []const u
     }
 }
 
+/// 範囲削除の共通処理
+/// readonly check、extract、delete、record、modified、dirty markを一括処理
+/// 戻り値: 削除したテキスト（呼び出し側でfree必要）、またはnull（削除なし/readonly）
+fn deleteRangeCommon(e: *Editor, start: usize, len: usize, cursor_pos_for_undo: usize) !?[]const u8 {
+    if (e.isReadOnly()) return null;
+    if (len == 0) return null;
+
+    const buffer_state = e.getCurrentBuffer();
+    const buffer = e.getCurrentBufferContent();
+    const current_line = e.getCurrentLine();
+
+    const deleted = try e.extractText(start, len);
+    errdefer e.allocator.free(deleted);
+
+    try buffer.delete(start, len);
+    errdefer buffer.insertSlice(start, deleted) catch unreachable;
+    try e.recordDelete(start, deleted, cursor_pos_for_undo);
+
+    buffer_state.editing_ctx.modified = true;
+    markDirtyAfterDelete(e, current_line, deleted);
+
+    return deleted;
+}
+
 /// 編集後のdirtyマーク（同一バッファを表示している全ウィンドウを更新）
 fn markDirtyAll(e: *Editor, start_line: usize, end_line: ?usize) void {
     const buffer_id = e.getCurrentBuffer().id;
@@ -195,23 +219,11 @@ pub fn backspace(e: *Editor) !void {
 
 /// C-k: 行末まで削除
 pub fn killLine(e: *Editor) !void {
-    if (e.isReadOnly()) return;
-    const buffer_state = e.getCurrentBuffer();
     const buffer = e.getCurrentBufferContent();
-    const current_line = e.getCurrentLine();
     const pos = e.getCurrentView().getCursorBufferPos();
     const end_pos = buffer.findNextLineFromPos(pos);
-    const count = end_pos - pos;
-    if (count > 0) {
-        const deleted = try e.extractText(pos, count);
-        errdefer e.allocator.free(deleted);
 
-        try buffer.delete(pos, count);
-        errdefer buffer.insertSlice(pos, deleted) catch unreachable;
-        try e.recordDelete(pos, deleted, pos);
-
-        buffer_state.editing_ctx.modified = true;
-        markDirtyAfterDelete(e, current_line, deleted);
+    if (try deleteRangeCommon(e, pos, end_pos - pos, pos)) |deleted| {
         e.allocator.free(deleted);
     }
 }
@@ -274,37 +286,22 @@ pub fn yank(e: *Editor) !void {
 
 /// C-w: 選択範囲を削除してkill ringに保存
 pub fn killRegion(e: *Editor) !void {
-    if (e.isReadOnly()) return;
-    const buffer = e.getCurrentBufferContent();
-    const buffer_state = e.getCurrentBuffer();
     const window = e.getCurrentWindow();
-    const current_line = e.getCurrentLine();
     const region = e.getRegion() orelse {
         e.getCurrentView().setError("No active region");
         return;
     };
 
+    const deleted = try deleteRangeCommon(e, region.start, region.len, e.getCurrentView().getCursorBufferPos()) orelse return;
+
+    // kill ringに保存（freeせずに所有権移転）
     if (e.kill_ring) |old_text| {
         e.allocator.free(old_text);
     }
-
-    const deleted = try e.extractText(region.start, region.len);
-    errdefer e.allocator.free(deleted);
-
-    try buffer.delete(region.start, region.len);
-    errdefer buffer.insertSlice(region.start, deleted) catch unreachable;
-    try e.recordDelete(region.start, deleted, e.getCurrentView().getCursorBufferPos());
-
     e.kill_ring = deleted;
 
-    buffer_state.editing_ctx.modified = true;
-
     e.setCursorToPos(region.start);
-
     window.mark_pos = null;
-
-    markDirtyAfterDelete(e, current_line, deleted);
-
     e.getCurrentView().setError("Killed region");
 }
 
@@ -520,13 +517,11 @@ pub fn moveLineDown(e: *Editor) !void {
 
 /// M-d: カーソル位置から次の単語までを削除
 pub fn deleteWord(e: *Editor) !void {
-    if (e.isReadOnly()) return;
     const buffer = e.getCurrentBufferContent();
-    const buffer_state = e.getCurrentBuffer();
     const start_pos = e.getCurrentView().getCursorBufferPos();
-    const buf_len = buffer.len();
-    if (start_pos >= buf_len) return;
+    if (start_pos >= buffer.len()) return;
 
+    // 単語境界を探索
     var iter = PieceIterator.init(buffer);
     iter.seek(start_pos);
 
@@ -549,15 +544,9 @@ pub fn deleteWord(e: *Editor) !void {
         end_pos = iter.global_pos;
     }
 
-    if (end_pos > start_pos) {
-        const delete_len = end_pos - start_pos;
-        const deleted_text = try e.extractText(start_pos, delete_len);
-        defer e.allocator.free(deleted_text);
-
-        try buffer.delete(start_pos, delete_len);
-        try e.recordDelete(start_pos, deleted_text, start_pos);
-
-        buffer_state.editing_ctx.modified = true;
+    if (try deleteRangeCommon(e, start_pos, end_pos - start_pos, start_pos)) |deleted| {
+        e.allocator.free(deleted);
+        // 単語削除は全体再描画（行番号変動の可能性）
         markFullRedrawAll(e);
     }
 }
