@@ -2312,13 +2312,26 @@ pub const Editor = struct {
             return;
         }
 
-        // 正規表現パターンの場合のみ、バッファ全体をコピーして検索
+        // 正規表現パターンの場合のみ、バッファをコピーして検索
+        // 大きなファイルでは検索範囲を制限して体感速度を維持
         if (is_regex) {
-            const content = try self.extractText(0, buffer.total_len);
+            const max_search_size: usize = 1024 * 1024; // 1MB
+            const search_start: usize = if (buffer.total_len > max_search_size and start_pos > max_search_size / 2)
+                start_pos - max_search_size / 2
+            else
+                0;
+            const search_end: usize = @min(buffer.total_len, search_start + max_search_size);
+            const search_len = search_end - search_start;
+
+            const content = try self.extractText(search_start, search_len);
             defer self.allocator.free(content);
 
-            if (self.search_service.search(content, search_str, start_pos, forward, skip_current)) |match| {
-                self.setCursorToPos(match.start);
+            // 検索開始位置を調整（抽出したテキスト内での相対位置）
+            const adjusted_start = if (start_pos > search_start) start_pos - search_start else 0;
+
+            if (self.search_service.search(content, search_str, adjusted_start, forward, skip_current)) |match| {
+                // 見つかった位置を元のバッファ位置に変換
+                self.setCursorToPos(match.start + search_start);
                 return;
             }
         }

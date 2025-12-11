@@ -755,21 +755,24 @@ fn detectIndentStyle(e: *Editor) u8 {
     const buffer = e.getCurrentBufferContent();
     var iter = PieceIterator.init(buffer);
 
-    var tab_count: usize = 0;
-    var space_count: usize = 0;
+    var tab_lines: usize = 0; // タブでインデントされた行数
+    var space_lines: usize = 0; // スペースでインデントされた行数
+    var line_spaces: usize = 0; // 現在行のスペース数
     var at_line_start = true;
 
     while (iter.next()) |ch| {
         if (ch == '\n') {
             at_line_start = true;
+            line_spaces = 0; // 改行ごとにリセット
         } else if (at_line_start) {
             if (ch == '\t') {
-                tab_count += 1;
+                tab_lines += 1;
                 at_line_start = false;
             } else if (ch == ' ') {
-                space_count += 1;
-                // 4スペース連続でカウント
-                if (space_count >= 4) {
+                line_spaces += 1;
+                // 4スペース連続でスペースインデント行としてカウント
+                if (line_spaces >= 4) {
+                    space_lines += 1;
                     at_line_start = false;
                 }
             } else {
@@ -778,8 +781,8 @@ fn detectIndentStyle(e: *Editor) u8 {
         }
     }
 
-    // タブが多ければタブ、そうでなければスペース
-    if (tab_count > space_count / 4) {
+    // タブ行が多ければタブ、そうでなければスペース
+    if (tab_lines > space_lines) {
         return '\t';
     }
     return ' ';

@@ -89,13 +89,13 @@ pub const ShellService = struct {
         self.history.deinit();
     }
 
-    /// 文字列の末尾が引用符の内部にあるかどうかをチェック
+    /// 指定位置が引用符の内部にあるかどうかをチェック
     /// シングルクォート、ダブルクォート、バックスラッシュエスケープを考慮
-    fn isInsideQuotes(s: []const u8) bool {
+    fn isPositionInsideQuotes(s: []const u8, pos: usize) bool {
         var in_single = false;
         var in_double = false;
         var i: usize = 0;
-        while (i < s.len) : (i += 1) {
+        while (i < pos and i < s.len) : (i += 1) {
             const c = s[i];
             if (c == '\\' and i + 1 < s.len) {
                 // バックスラッシュエスケープ: 次の文字をスキップ
@@ -142,21 +142,30 @@ pub const ShellService = struct {
             while (cmd_end > cmd_start and cmd[cmd_end - 1] == ' ') : (cmd_end -= 1) {}
 
             // 引用符の外にあるサフィックスのみ解釈
-            // 引用符状態をチェック（偶数個の引用符があれば外にいる）
-            if (cmd_end > cmd_start and !isInsideQuotes(cmd[cmd_start..cmd_end])) {
+            // サフィックスの開始位置が引用符内かどうかをチェック
+            if (cmd_end > cmd_start) {
                 if (cmd_end >= 2 and cmd[cmd_end - 2] == 'n' and cmd[cmd_end - 1] == '>') {
-                    output_dest = .new_buffer;
-                    cmd_end -= 2;
+                    // n> の位置（cmd_end - 2）が引用符外ならサフィックスとして解釈
+                    if (!isPositionInsideQuotes(cmd, cmd_end - 2)) {
+                        output_dest = .new_buffer;
+                        cmd_end -= 2;
+                    }
                 } else if (cmd_end >= 2 and cmd[cmd_end - 2] == '+' and cmd[cmd_end - 1] == '>') {
-                    output_dest = .insert;
-                    cmd_end -= 2;
+                    // +> の位置が引用符外ならサフィックスとして解釈
+                    if (!isPositionInsideQuotes(cmd, cmd_end - 2)) {
+                        output_dest = .insert;
+                        cmd_end -= 2;
+                    }
                 } else if (cmd[cmd_end - 1] == '>') {
-                    if (cmd_end >= 2 and cmd[cmd_end - 2] == ' ') {
-                        output_dest = .replace;
-                        cmd_end -= 1;
-                    } else if (cmd_end == 1) {
-                        output_dest = .replace;
-                        cmd_end -= 1;
+                    // > の位置が引用符外で、かつスペースの後ならサフィックスとして解釈
+                    if (!isPositionInsideQuotes(cmd, cmd_end - 1)) {
+                        if (cmd_end >= 2 and cmd[cmd_end - 2] == ' ') {
+                            output_dest = .replace;
+                            cmd_end -= 1;
+                        } else if (cmd_end == 1) {
+                            output_dest = .replace;
+                            cmd_end -= 1;
+                        }
                     }
                 }
             }
@@ -464,4 +473,28 @@ test "parseCommand - insert" {
     try std.testing.expectEqual(InputSource.selection, result.input_source);
     try std.testing.expectEqual(OutputDest.insert, result.output_dest);
     try std.testing.expectEqualStrings("date", result.command);
+}
+
+test "parseCommand - suffix inside single quotes" {
+    // 引用符内の n> はサフィックスとして認識しない
+    const result = ShellService.parseCommand("printf 'n>'");
+    try std.testing.expectEqual(InputSource.selection, result.input_source);
+    try std.testing.expectEqual(OutputDest.command_buffer, result.output_dest);
+    try std.testing.expectEqualStrings("printf 'n>'", result.command);
+}
+
+test "parseCommand - suffix inside double quotes" {
+    // ダブルクォート内の +> もサフィックスとして認識しない
+    const result = ShellService.parseCommand("echo \"+>\"");
+    try std.testing.expectEqual(InputSource.selection, result.input_source);
+    try std.testing.expectEqual(OutputDest.command_buffer, result.output_dest);
+    try std.testing.expectEqualStrings("echo \"+>\"", result.command);
+}
+
+test "parseCommand - suffix outside quotes" {
+    // 引用符の外にある n> はサフィックスとして認識
+    const result = ShellService.parseCommand("echo 'hello' n>");
+    try std.testing.expectEqual(InputSource.selection, result.input_source);
+    try std.testing.expectEqual(OutputDest.new_buffer, result.output_dest);
+    try std.testing.expectEqualStrings("echo 'hello'", result.command);
 }
