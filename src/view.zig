@@ -164,7 +164,8 @@ pub const View = struct {
         var line_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
         errdefer line_buffer.deinit(allocator);
 
-        var prev_screen = try std.ArrayList(std.ArrayList(u8)).initCapacity(allocator, 0);
+        // prev_screen: 24行分を事前確保（典型的なターミナルサイズ）
+        var prev_screen = try std.ArrayList(std.ArrayList(u8)).initCapacity(allocator, 24);
         errdefer prev_screen.deinit(allocator);
 
         var expanded_line = try std.ArrayList(u8).initCapacity(allocator, 256);
@@ -676,8 +677,9 @@ pub const View = struct {
             self.prev_screen.items[screen_row].clearRetainingCapacity();
             try self.prev_screen.items[screen_row].appendSlice(self.allocator, new_line);
         } else {
-            // 新しい行を追加
-            var new_prev_line = std.ArrayList(u8){};
+            // 新しい行を追加（事前に容量確保してアロケーション回数を削減）
+            const line_capacity = @max(new_line.len, self.viewport_width * 4);
+            var new_prev_line = try std.ArrayList(u8).initCapacity(self.allocator, line_capacity);
             try new_prev_line.appendSlice(self.allocator, new_line);
             try self.prev_screen.append(self.allocator, new_prev_line);
         }
@@ -851,8 +853,9 @@ pub const View = struct {
             // 残りをスペースで埋める
             try self.padToWidth(term, empty_line, viewport_width);
 
-            // 前フレームバッファ追加
-            var new_prev_line = std.ArrayList(u8){};
+            // 前フレームバッファ追加（事前に容量確保）
+            const line_capacity = @max(empty_line.len, self.viewport_width * 4);
+            var new_prev_line = try std.ArrayList(u8).initCapacity(self.allocator, line_capacity);
             try new_prev_line.appendSlice(self.allocator, empty_line);
             try self.prev_screen.append(self.allocator, new_prev_line);
         }

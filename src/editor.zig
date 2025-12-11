@@ -121,6 +121,7 @@ pub const Editor = struct {
     quit_after_save: bool,
     prompt_buffer: ?[]const u8, // allocPrintで作成したプロンプト文字列
     prompt_prefix_len: usize, // プロンプト文字列のプレフィックス長（カーソル位置計算用）
+    cached_prompt_prefix: ?[]const u8, // プレフィックスキャッシュ（再計算回避）
 
     // グローバルバッファ（全バッファで共有）
     kill_ring: ?[]const u8,
@@ -171,6 +172,7 @@ pub const Editor = struct {
             .quit_after_save = false,
             .prompt_buffer = null,
             .prompt_prefix_len = 0,
+            .cached_prompt_prefix = null,
             .kill_ring = null,
             .rectangle_ring = null,
             .search_start_pos = null,
@@ -718,8 +720,13 @@ pub const Editor = struct {
     }
 
     /// ミニバッファのプロンプトを更新（カーソル位置も保持）
+    /// プレフィックスが同じ場合はstringDisplayWidth計算をスキップ（最適化）
     fn updateMinibufferPrompt(self: *Editor, prefix: []const u8) void {
-        self.prompt_prefix_len = stringDisplayWidth(prefix);
+        // プレフィックスが変わった場合のみ再計算
+        if (self.cached_prompt_prefix == null or self.cached_prompt_prefix.?.ptr != prefix.ptr) {
+            self.prompt_prefix_len = stringDisplayWidth(prefix);
+            self.cached_prompt_prefix = prefix;
+        }
         self.setPrompt("{s}{s}", .{ prefix, self.minibuffer.getContent() });
     }
 
