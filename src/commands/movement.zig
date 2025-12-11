@@ -105,10 +105,8 @@ pub fn backwardWord(e: *Editor) !void {
         // 1文字戻る（UTF-8先頭バイトを探す）
         const char_start = findUtf8CharStart(buffer, pos);
 
-        // 文字を読み取る
-        var iter = PieceIterator.init(buffer);
-        iter.seek(char_start);
-        const cp = iter.nextCodepoint() catch break orelse break;
+        // getByteAtでUTF-8バイト列を読み取り、コードポイントをデコード
+        const cp = decodeCodepointAt(buffer, char_start) orelse break;
 
         const current_type = unicode.getCharType(cp);
 
@@ -330,17 +328,50 @@ pub fn prevWindow(e: *Editor) !void {
 // ヘルパー関数
 // ========================================
 
+/// 指定位置からコードポイントをデコード（イテレータなし）
+fn decodeCodepointAt(buffer: *Buffer, pos: usize) ?u21 {
+    const first_byte = buffer.getByteAt(pos) orelse return null;
+
+    // ASCII
+    if (first_byte < 0x80) {
+        return @as(u21, first_byte);
+    }
+
+    // UTF-8のバイト数を判定
+    const len = std.unicode.utf8ByteSequenceLength(first_byte) catch return null;
+
+    if (len == 1) {
+        return @as(u21, first_byte);
+    }
+
+    // マルチバイト文字を読み取る
+    var bytes: [4]u8 = undefined;
+    bytes[0] = first_byte;
+
+    var i: usize = 1;
+    while (i < len) : (i += 1) {
+        bytes[i] = buffer.getByteAt(pos + i) orelse return null;
+    }
+
+    return std.unicode.utf8Decode(bytes[0..len]) catch null;
+}
+
 /// UTF-8文字の先頭バイト位置を探す（後方移動用）
 fn findUtf8CharStart(buffer: *Buffer, pos: usize) usize {
     if (pos == 0) return 0;
     var test_pos = pos - 1;
+    // getByteAtを使用してイテレータ作成を回避
     while (test_pos > 0) : (test_pos -= 1) {
-        var iter = PieceIterator.init(buffer);
-        iter.seek(test_pos);
-        const byte = iter.next() orelse break;
-        // UTF-8の先頭バイトかチェック
+        const byte = buffer.getByteAt(test_pos) orelse break;
+        // UTF-8の先頭バイトかチェック（continuation byteでなければ先頭）
         if (unicode.isUtf8Start(byte)) {
             return test_pos;
+        }
+    }
+    // pos=0もチェック
+    if (buffer.getByteAt(0)) |byte| {
+        if (unicode.isUtf8Start(byte)) {
+            return 0;
         }
     }
     return 0;

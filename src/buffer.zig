@@ -820,6 +820,24 @@ pub const Buffer = struct {
         return self.total_len;
     }
 
+    /// 指定位置のバイトを取得（O(pieces)だが、イテレータ作成よりも軽量）
+    pub fn getByteAt(self: *const Buffer, pos: usize) ?u8 {
+        if (pos >= self.total_len) return null;
+
+        var current_pos: usize = 0;
+        for (self.pieces.items) |piece| {
+            if (pos < current_pos + piece.length) {
+                const offset = pos - current_pos;
+                return switch (piece.source) {
+                    .original => self.original[piece.start + offset],
+                    .add => self.add_buffer.items[piece.start + offset],
+                };
+            }
+            current_pos += piece.length;
+        }
+        return null;
+    }
+
     fn findPieceAt(self: *const Buffer, pos: usize) ?struct { piece_idx: usize, offset: usize } {
         var current_pos: usize = 0;
 
@@ -1363,35 +1381,132 @@ pub const Buffer = struct {
         const search_end = @min(start_pos, self.total_len);
         if (search_end < pattern.len) return null;
 
-        // 後方から1文字ずつ確認（シンプルな実装）
-        var pos: usize = search_end;
-        while (pos >= pattern.len) {
-            pos -= 1;
+        // piece毎にstd.mem.lastIndexOfを使用して後方検索（O(n)）
+        // pieceを逆順に走査し、各piece内でlastIndexOfを使う
+        const pieces = self.pieces.items;
+        if (pieces.len == 0) return null;
 
-            // この位置からパターンが一致するか確認
-            var iter = PieceIterator.init(self);
-            iter.seek(pos);
+        // 各pieceの終了位置を計算しながら、search_endを含むpieceを特定
+        var piece_ends: [256]usize = undefined; // 小さい固定バッファ（大きい場合はフォールバック）
+        const use_stack_buf = pieces.len <= 256;
 
-            var matched = true;
-            for (pattern) |expected| {
-                const actual = iter.next() orelse {
-                    matched = false;
+        if (use_stack_buf) {
+            var cumulative: usize = 0;
+            for (pieces, 0..) |piece, i| {
+                cumulative += piece.length;
+                piece_ends[i] = cumulative;
+            }
+        }
+
+        // search_endを含むpieceのインデックスを見つける
+        var piece_start: usize = 0;
+        var start_piece_idx: usize = pieces.len;
+        {
+            var cumulative: usize = 0;
+            for (pieces, 0..) |piece, i| {
+                if (cumulative + piece.length >= search_end) {
+                    start_piece_idx = i;
+                    piece_start = cumulative;
                     break;
+                }
+                cumulative += piece.length;
+            }
+        }
+
+        if (start_piece_idx >= pieces.len) {
+            // search_endがバッファ外
+            if (pieces.len > 0) {
+                start_piece_idx = pieces.len - 1;
+                piece_start = if (use_stack_buf and start_piece_idx > 0)
+                    piece_ends[start_piece_idx - 1]
+                else blk: {
+                    var sum: usize = 0;
+                    for (pieces[0..start_piece_idx]) |p| sum += p.length;
+                    break :blk sum;
                 };
-                if (actual != expected) {
-                    matched = false;
-                    break;
+            } else {
+                return null;
+            }
+        }
+
+        // 逆順にpieceを走査
+        var current_piece_idx: usize = start_piece_idx;
+        var current_piece_start: usize = piece_start;
+
+        while (true) {
+            const piece = pieces[current_piece_idx];
+            const data = switch (piece.source) {
+                .original => self.original[piece.start .. piece.start + piece.length],
+                .add => self.add_buffer.items[piece.start .. piece.start + piece.length],
+            };
+
+            // このpiece内での検索範囲を決定
+            const search_limit = if (current_piece_idx == start_piece_idx)
+                search_end - current_piece_start
+            else
+                piece.length;
+
+            if (search_limit >= pattern.len) {
+                // piece内で後方検索
+                if (std.mem.lastIndexOf(u8, data[0..search_limit], pattern)) |rel_pos| {
+                    const global_pos = current_piece_start + rel_pos;
+                    // マッチがpiece境界をまたがないか確認
+                    if (rel_pos + pattern.len <= piece.length) {
+                        return .{ .start = global_pos, .len = pattern.len };
+                    }
+                    // 境界またぎの場合、実際にマッチするか確認
+                    if (self.verifyMatch(global_pos, pattern)) {
+                        return .{ .start = global_pos, .len = pattern.len };
+                    }
                 }
             }
 
-            if (matched) {
-                return .{ .start = pos, .len = pattern.len };
-            }
+            // 前のpieceへ
+            if (current_piece_idx == 0) break;
+            current_piece_idx -= 1;
+            current_piece_start = if (use_stack_buf and current_piece_idx > 0)
+                piece_ends[current_piece_idx - 1]
+            else if (current_piece_idx == 0)
+                0
+            else blk: {
+                var sum: usize = 0;
+                for (pieces[0..current_piece_idx]) |p| sum += p.length;
+                break :blk sum;
+            };
 
-            if (pos == 0) break;
+            // piece境界をまたぐパターンのチェック
+            // 前のpieceの末尾 + 現在のpieceの先頭でマッチする可能性
+            if (current_piece_idx + 1 < pieces.len) {
+                const boundary_start = current_piece_start + pieces[current_piece_idx].length - pattern.len + 1;
+                if (boundary_start < current_piece_start + pieces[current_piece_idx].length) {
+                    const check_start = @max(boundary_start, current_piece_start);
+                    var check_pos = current_piece_start + pieces[current_piece_idx].length - 1;
+                    while (check_pos >= check_start and check_pos >= pattern.len - 1) : (check_pos -= 1) {
+                        if (self.verifyMatch(check_pos - pattern.len + 1, pattern)) {
+                            const match_pos = check_pos - pattern.len + 1;
+                            if (match_pos + pattern.len <= search_end) {
+                                return .{ .start = match_pos, .len = pattern.len };
+                            }
+                        }
+                        if (check_pos == 0) break;
+                    }
+                }
+            }
         }
 
         return null;
+    }
+
+    /// 指定位置からパターンが一致するか確認（piece境界またぎ対応）
+    fn verifyMatch(self: *const Buffer, pos: usize, pattern: []const u8) bool {
+        var iter = PieceIterator.init(self);
+        iter.seek(pos);
+
+        for (pattern) |expected| {
+            const actual = iter.next() orelse return false;
+            if (actual != expected) return false;
+        }
+        return true;
     }
 
     /// 前方検索（ラップアラウンド対応）
