@@ -102,9 +102,7 @@ pub fn deleteChar(e: *Editor) !void {
 
     // カーソル位置のgrapheme clusterのバイト数を取得
     var iter = PieceIterator.init(buffer);
-    while (iter.global_pos < pos) {
-        _ = iter.next();
-    }
+    iter.seek(pos);
 
     const cluster = iter.nextGraphemeCluster() catch {
         const deleted = try e.extractText(pos, 1);
@@ -144,23 +142,17 @@ pub fn backspace(e: *Editor) !void {
     if (pos == 0) return;
 
     // 削除するgrapheme clusterのバイト数と幅を取得
+    // 前の文字の開始位置を見つけてそこから cluster を読む
+    const char_start = buffer.findUtf8CharStart(pos - 1);
     var iter = PieceIterator.init(buffer);
-    var char_start: usize = 0;
-    var char_width: usize = 1;
-    var char_len: usize = 1;
+    iter.seek(char_start);
 
-    while (iter.global_pos < pos) {
-        char_start = iter.global_pos;
-        const cluster = iter.nextGraphemeCluster() catch {
-            _ = iter.next();
-            continue;
-        };
-        if (cluster) |gc| {
-            char_width = gc.width;
-            char_len = gc.byte_len;
-        } else {
-            break;
-        }
+    var char_width: usize = 1;
+    var char_len: usize = pos - char_start; // デフォルト
+
+    if (iter.nextGraphemeCluster() catch null) |gc| {
+        char_width = gc.width;
+        char_len = gc.byte_len;
     }
 
     const deleted = try e.extractText(char_start, char_len);

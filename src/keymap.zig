@@ -9,6 +9,15 @@
 // 4. ユーザー設定ファイル対応時はbindCtrl等で上書き
 
 const std = @import("std");
+
+/// Ctrl+キーの制御文字コード
+/// 印字できない制御文字に対する定数（可読性のため）
+const CtrlCode = struct {
+    /// Ctrl+@ または Ctrl+Space (NUL)
+    const SPACE: u8 = 0;
+    /// Ctrl+/ (Unit Separator)
+    const SLASH: u8 = 31;
+};
 const Editor = @import("editor.zig").Editor;
 const input = @import("input.zig");
 
@@ -118,7 +127,7 @@ pub const Keymap = struct {
         // ========================================
 
         // マーク設定 (C-@ / C-Space)
-        try self.bindCtrl(0, edit.setMark);
+        try self.bindCtrl(CtrlCode.SPACE, edit.setMark);
         try self.bindCtrl('@', edit.setMark);
 
         // カーソル移動
@@ -138,7 +147,7 @@ pub const Keymap = struct {
         // その他
         try self.bindCtrl('g', edit.clearError);
         try self.bindCtrl('u', edit.undo);
-        try self.bindCtrl(31, edit.redo); // C-/
+        try self.bindCtrl(CtrlCode.SLASH, edit.redo); // C-/
         try self.bindCtrl('/', edit.redo);
 
         // ページスクロール

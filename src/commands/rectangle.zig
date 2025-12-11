@@ -5,6 +5,8 @@ const EditingContext = @import("../editing_context.zig").EditingContext;
 
 /// 矩形領域の削除（C-x r k）
 pub fn killRectangle(e: *Editor) !void {
+    if (e.isReadOnly()) return;
+
     const window = e.getCurrentWindow();
     const mark = window.mark_pos orelse {
         e.getCurrentView().setError("No mark set");
@@ -83,17 +85,21 @@ pub fn killRectangle(e: *Editor) !void {
         var rect_start_pos: ?usize = null;
         var rect_end_pos: ?usize = null;
 
-        // left_col の位置を探す
+        // left_col の位置を探す（表示幅を考慮）
         while (iter.global_pos < line_end and current_col < left_col) {
-            _ = iter.nextGraphemeCluster() catch break;
-            current_col += 1;
+            const gc = iter.nextGraphemeCluster() catch break;
+            if (gc) |cluster| {
+                current_col += cluster.width;
+            } else break;
         }
         rect_start_pos = iter.global_pos;
 
-        // right_col の位置を探す
+        // right_col の位置を探す（表示幅を考慮）
         while (iter.global_pos < line_end and current_col < right_col) {
-            _ = iter.nextGraphemeCluster() catch break;
-            current_col += 1;
+            const gc = iter.nextGraphemeCluster() catch break;
+            if (gc) |cluster| {
+                current_col += cluster.width;
+            } else break;
         }
         rect_end_pos = iter.global_pos;
 
@@ -141,16 +147,18 @@ pub fn killRectangle(e: *Editor) !void {
     }
 
     e.rectangle_ring = rect_ring;
-    e.getCurrentView().markFullRedraw();
+
+    // modified と dirty を設定
+    buffer_state.editing_ctx.modified = true;
+    e.markAllViewsDirtyForBuffer(buffer_state.id, start_line, null);
+
+    window.mark_pos = null;
     e.getCurrentView().setError("Rectangle killed");
 }
 
 /// 矩形の貼り付け（C-x r y）
 pub fn yankRectangle(e: *Editor) !void {
-    if (e.getCurrentBuffer().readonly) {
-        e.getCurrentView().setError("Buffer is read-only");
-        return;
-    }
+    if (e.isReadOnly()) return;
     const rect = e.rectangle_ring orelse {
         e.getCurrentView().setError("No rectangle to yank");
         return;
@@ -206,8 +214,10 @@ pub fn yankRectangle(e: *Editor) !void {
 
         var current_col: usize = 0;
         while (iter.global_pos < line_end and current_col < cursor_col) {
-            _ = iter.nextGraphemeCluster() catch break;
-            current_col += 1;
+            const gc = iter.nextGraphemeCluster() catch break;
+            if (gc) |cluster| {
+                current_col += cluster.width;
+            } else break;
         }
 
         const insert_pos = iter.global_pos;
@@ -225,6 +235,9 @@ pub fn yankRectangle(e: *Editor) !void {
         try buffer.insertSlice(info.pos, info.text);
     }
 
-    e.getCurrentView().markFullRedraw();
+    // modified と dirty を設定
+    buffer_state.editing_ctx.modified = true;
+    e.markAllViewsDirtyForBuffer(buffer_state.id, cursor_line, null);
+
     e.getCurrentView().setError("Rectangle yanked");
 }

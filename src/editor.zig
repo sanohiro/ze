@@ -853,6 +853,7 @@ pub const Editor = struct {
         window.view.deinit(self.allocator);
         window.view = new_view;
         window.buffer_id = buffer_id;
+        window.mark_pos = null; // 前のバッファのマークをクリア
 
         // 言語検出（新しいViewに言語設定を適用）
         const content_preview = buffer_state.editing_ctx.buffer.getContentPreview(512);
@@ -888,6 +889,7 @@ pub const Editor = struct {
                 window.view.deinit(self.allocator);
                 window.view = try View.init(self.allocator, next_buffer.editing_ctx.buffer);
                 window.buffer_id = next_buffer.id;
+                window.mark_pos = null; // 前のバッファのマークをクリア
                 // 言語検出（コメント強調・タブ幅など）
                 const content_preview = next_buffer.editing_ctx.buffer.getContentPreview(512);
                 window.view.detectLanguage(next_buffer.filename, content_preview);
@@ -2576,9 +2578,9 @@ pub const Editor = struct {
         if (try self.shell_service.poll()) |result| {
             // コマンド完了 - 結果を処理
             defer self.shell_service.finish();
+            defer self.mode = .normal; // エラー時も必ずモード復帰
 
             try self.processShellResult(result.stdout, result.stderr, result.exit_status, result.input_source, result.output_dest);
-            self.mode = .normal;
         }
         // まだ実行中の場合は何もしない
     }
