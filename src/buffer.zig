@@ -279,13 +279,22 @@ pub const LineIndex = struct {
     }
 
     /// 指定位置以降を無効化（インクリメンタル更新用）
-    /// 編集位置より前のキャッシュは保持される
+    /// 編集位置を含む行の開始位置から再スキャンが必要
     pub fn invalidateFrom(self: *LineIndex, pos: usize) void {
         if (!self.valid) return; // 既に無効なら何もしない
 
-        // posより前の行は保持
-        if (pos < self.valid_until_pos) {
-            self.valid_until_pos = pos;
+        // posを含む行の開始位置を見つける
+        // この行の開始位置より前の行は保持される
+        var line_start_pos: usize = 0;
+        for (self.line_starts.items) |start| {
+            if (start > pos) break;
+            line_start_pos = start;
+        }
+
+        // valid_until_posを「posを含む行の開始位置」に設定
+        // これより前の行のみ保持される
+        if (line_start_pos < self.valid_until_pos) {
+            self.valid_until_pos = line_start_pos;
         }
         self.valid = false;
     }
@@ -333,13 +342,22 @@ pub const LineIndex = struct {
         }
 
         // インクリメンタル更新: valid_until_pos以降のみ再スキャン
-        // まずvalid_until_pos以降の行エントリを削除
+        // まずvalid_until_posより後の行エントリを削除
+        // 注意: valid_until_posは「編集された行の開始位置」なので、それ以前の行は保持
         var keep_count: usize = 0;
         for (self.line_starts.items, 0..) |start, i| {
             if (start >= self.valid_until_pos) break;
             keep_count = i + 1;
         }
         self.line_starts.shrinkRetainingCapacity(keep_count);
+
+        // valid_until_posが行の開始位置なら追加（バッファの先頭でない場合のみ）
+        // invalidateFromで設定されるvalid_until_posは必ず行の開始位置
+        if (self.valid_until_pos > 0 and
+            (keep_count == 0 or self.line_starts.items[keep_count - 1] != self.valid_until_pos))
+        {
+            try self.line_starts.append(self.allocator, self.valid_until_pos);
+        }
 
         // valid_until_posから末尾まで再スキャン（piece毎にmemchr）
         if (buffer.total_len > 0 and buffer.pieces.items.len > 0) {

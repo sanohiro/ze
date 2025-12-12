@@ -340,6 +340,37 @@ pub fn main() !void {
 /// キーシーケンス文字列をバイト列に変換
 fn parseKeySequence(allocator: std.mem.Allocator, seq: []const u8) ![]const u8 {
     // 特殊キーのマッピング
+
+    // C-; (シェル連携) - ESC + ; で送信
+    if (std.mem.eql(u8, seq, "C-;")) {
+        const result = try allocator.alloc(u8, 2);
+        result[0] = 0x1B;
+        result[1] = ';';
+        return result;
+    }
+
+    // C-h (ヘルプ) - 0x08 (Backspace扱いされることもあるが、zeではC-hとして扱う)
+    if (std.mem.eql(u8, seq, "C-h")) {
+        const result = try allocator.alloc(u8, 1);
+        result[0] = 8; // 0x08
+        return result;
+    }
+
+    // C-v (ページダウン)
+    if (std.mem.eql(u8, seq, "C-v")) {
+        const result = try allocator.alloc(u8, 1);
+        result[0] = 22; // 0x16
+        return result;
+    }
+
+    // M-v (ページアップ) - ESC + v
+    if (std.mem.eql(u8, seq, "M-v")) {
+        const result = try allocator.alloc(u8, 2);
+        result[0] = 0x1B;
+        result[1] = 'v';
+        return result;
+    }
+
     if (std.mem.startsWith(u8, seq, "C-") and seq.len == 3) {
         // Ctrl+文字
         const char = seq[2];
@@ -358,7 +389,7 @@ fn parseKeySequence(allocator: std.mem.Allocator, seq: []const u8) ![]const u8 {
         result[0] = ctrl_char;
         return result;
     } else if (std.mem.startsWith(u8, seq, "M-") and seq.len == 3) {
-        // Alt+文字 (ESC + 文字)
+        // Alt+文字 (ESC + 文字) - M-}, M-{, M-% など
         const result = try allocator.alloc(u8, 2);
         result[0] = 0x1B; // ESC
         result[1] = seq[2];
