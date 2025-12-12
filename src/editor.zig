@@ -1472,8 +1472,10 @@ pub const Editor = struct {
 
             // ミニバッファ入力中はカーソル位置を調整
             if (self.isMinibufferMode()) {
+                const window = self.getCurrentWindow();
                 const cursor_col = self.prompt_prefix_len + self.getMinibufferCursorColumn();
-                const status_row = self.terminal.height - 1;
+                // 現在のウィンドウのステータスバー行（ウィンドウの最下行）
+                const status_row = window.y + window.height - 1;
                 try self.terminal.moveCursor(status_row, cursor_col);
                 try self.terminal.showCursor();
                 try self.terminal.flush();
@@ -1522,8 +1524,10 @@ pub const Editor = struct {
             try self.renderAllWindows();
 
             if (self.isMinibufferMode()) {
+                const window = self.getCurrentWindow();
                 const cursor_col = self.prompt_prefix_len + self.getMinibufferCursorColumn();
-                const status_row = self.terminal.height - 1;
+                // 現在のウィンドウのステータスバー行（ウィンドウの最下行）
+                const status_row = window.y + window.height - 1;
                 try self.terminal.moveCursor(status_row, cursor_col);
                 try self.terminal.showCursor();
                 try self.terminal.flush();
