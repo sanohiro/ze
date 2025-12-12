@@ -1891,7 +1891,13 @@ pub const Editor = struct {
                         self.mode = .prefix_x;
                         self.getCurrentView().setError("C-x-");
                     },
-                    else => {},
+                    else => {
+                        // C-f/C-b/C-a/C-e/C-y等はミニバッファ共通処理へ
+                        if (try self.handleMinibufferKey(key)) {
+                            const prefix = if (is_forward) "I-search: " else "I-search backward: ";
+                            self.setPrompt("{s}{s}", .{ prefix, self.minibuffer.getContent() });
+                        }
+                    },
                 }
             },
             .arrow_up => try self.navigateSearchHistory(true, is_forward),
