@@ -296,6 +296,18 @@ fn pageScroll(e: *Editor, direction: enum { up, down }) void {
     }
 }
 
+/// スクロールジェスチャー: 3行上にスクロール（カーソル画面位置固定）
+pub fn scrollUp(e: *Editor) !void {
+    const view = e.getCurrentView();
+    view.scrollViewport(-3);
+}
+
+/// スクロールジェスチャー: 3行下にスクロール（カーソル画面位置固定）
+pub fn scrollDown(e: *Editor) !void {
+    const view = e.getCurrentView();
+    view.scrollViewport(3);
+}
+
 // ========================================
 // 画面操作
 // ========================================

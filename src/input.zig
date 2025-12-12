@@ -156,6 +156,8 @@ pub const Key = union(enum) {
     page_down,
     shift_page_up,
     shift_page_down,
+    scroll_up,
+    scroll_down,
     home,
     end_key,
     insert,
@@ -223,9 +225,15 @@ pub fn readKeyFromReader(reader: *InputReader) !?Key {
                 'Z' => return Key.shift_tab,
                 'M' => {
                     // マウスイベント（X10形式）: ESC [ M <button> <x> <y>
-                    // スクロールジェスチャーを含む。3バイト読んで無視する。
-                    _ = try reader.readBytes(buf[3..6]);
-                    return null; // 無視して次のキーを待つ
+                    // button byte = 32 + button_code
+                    // scroll up: 32 + 64 = 96, scroll down: 32 + 65 = 97
+                    const n = try reader.readBytes(buf[3..6]);
+                    if (n >= 1) {
+                        const button = buf[3];
+                        if (button == 96) return Key.scroll_up;
+                        if (button == 97) return Key.scroll_down;
+                    }
+                    return null; // その他のマウスイベントは無視
                 },
                 '<' => {
                     // SGR拡張マウスイベント: ESC [ < ... m/M

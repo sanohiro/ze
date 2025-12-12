@@ -1696,6 +1696,51 @@ pub const View = struct {
         }
     }
 
+    /// ビューポートをスクロール（カーソルの画面内位置は固定）
+    /// lines: 正=下スクロール、負=上スクロール
+    pub fn scrollViewport(self: *View, lines: i32) void {
+        const total_lines = self.buffer.lineCount();
+        if (total_lines == 0) return;
+
+        if (lines > 0) {
+            // 下スクロール
+            const delta: usize = @intCast(lines);
+            const max_top = if (total_lines > 1) total_lines - 1 else 0;
+            if (self.top_line + delta <= max_top) {
+                self.top_line += delta;
+            } else {
+                self.top_line = max_top;
+            }
+            self.markScroll(@intCast(delta));
+        } else if (lines < 0) {
+            // 上スクロール
+            const delta: usize = @intCast(-lines);
+            if (self.top_line >= delta) {
+                self.top_line -= delta;
+            } else {
+                self.top_line = 0;
+            }
+            self.markScroll(-@as(i32, @intCast(delta)));
+        }
+
+        // カーソルがファイル末尾を超えないように調整
+        const max_line = if (total_lines > 0) total_lines - 1 else 0;
+        if (self.top_line + self.cursor_y > max_line) {
+            if (self.top_line <= max_line) {
+                self.cursor_y = max_line - self.top_line;
+            } else {
+                self.top_line = max_line;
+                self.cursor_y = 0;
+            }
+        }
+
+        // カーソル位置が行の幅を超えている場合は行末に移動
+        const line_width = self.getCurrentLineWidth();
+        if (self.cursor_x > line_width) {
+            self.cursor_x = line_width;
+        }
+    }
+
     pub fn moveToLineStart(self: *View) void {
         // 水平スクロールがあった場合は再描画が必要
         if (self.top_col != 0) {

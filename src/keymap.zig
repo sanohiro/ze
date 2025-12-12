@@ -41,6 +41,8 @@ pub const SpecialKey = enum(u8) {
     page_down,
     shift_page_up,
     shift_page_down,
+    scroll_up,
+    scroll_down,
     home,
     end_key,
     delete,
@@ -137,6 +139,8 @@ pub const Keymap = struct {
             .page_down => .page_down,
             .shift_page_up => .shift_page_up,
             .shift_page_down => .shift_page_down,
+            .scroll_up => .scroll_up,
+            .scroll_down => .scroll_down,
             .home => .home,
             .end_key => .end_key,
             .delete => .delete,
@@ -268,6 +272,10 @@ pub const Keymap = struct {
         // Shift+ページ（選択移動）
         try self.bindSpecial(.shift_page_up, movement.selectPageUp);
         try self.bindSpecial(.shift_page_down, movement.selectPageDown);
+
+        // スクロールジェスチャー（トラックパッド）
+        try self.bindSpecial(.scroll_up, movement.scrollUp);
+        try self.bindSpecial(.scroll_down, movement.scrollDown);
 
         // ホーム/エンド
         try self.bindSpecial(.home, movement.lineStart);

@@ -13,6 +13,7 @@
 | `C-a` / `C-e` | Beginning/end of line |
 | `M-f` / `M-b` | Forward/backward one word |
 | `C-v` / `M-v` | Page down/up |
+| Scroll gesture | Scroll view 3 lines, cursor stays (trackpad) |
 | `M-<` / `M->` | Beginning/end of buffer |
 | `C-l` | Center cursor line on screen |
 
