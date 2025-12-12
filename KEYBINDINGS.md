@@ -64,7 +64,7 @@ Regex supported: `\d+` for digits, `^TODO` for TODO at line start.
 | `C-x C-b` | Buffer list |
 | `C-x k` | Kill buffer |
 
-Note: `C-Tab` also works for window switching in terminals that support it (iTerm2, WezTerm, etc.).
+Note: `C-Tab` also works in some terminals (may require configuration).
 
 ## Shell Integration
 
