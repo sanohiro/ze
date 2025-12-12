@@ -564,9 +564,11 @@ pub fn setMark(e: *Editor) !void {
     const window = e.getCurrentWindow();
     if (window.mark_pos) |_| {
         window.mark_pos = null;
+        window.shift_select = false;
         e.getCurrentView().setError("Mark deactivated");
     } else {
         window.mark_pos = e.getCurrentView().getCursorBufferPos();
+        window.shift_select = false; // C-Spaceで設定したマークは矢印キーで解除しない
         e.getCurrentView().setError("Mark set");
     }
     // 選択範囲のハイライトが変わるので再描画

@@ -343,6 +343,8 @@ fn ensureMark(e: *Editor) void {
     if (window.mark_pos == null) {
         window.mark_pos = e.getCurrentView().getCursorBufferPos();
     }
+    // Shift+矢印で選択したことを記録（通常矢印で解除される）
+    window.shift_select = true;
 }
 
 /// Shift+Up: 選択しながら上に移動

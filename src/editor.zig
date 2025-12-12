@@ -2356,10 +2356,15 @@ pub const Editor = struct {
             else => {
                 // 特殊キーをkeymapで検索
                 if (Keymap.toSpecialKey(key)) |special_key| {
-                    // 矢印キー・ページキー（Shiftなし）で選択解除
+                    // Shift+矢印で選択した場合のみ、通常矢印キーで選択解除
+                    // C-Spaceで設定したマークは維持する
+                    const window = self.getCurrentWindow();
                     switch (special_key) {
                         .arrow_up, .arrow_down, .arrow_left, .arrow_right, .page_up, .page_down, .home, .end_key, .alt_arrow_left, .alt_arrow_right => {
-                            self.getCurrentWindow().mark_pos = null;
+                            if (window.shift_select) {
+                                window.mark_pos = null;
+                                window.shift_select = false;
+                            }
                         },
                         else => {},
                     }

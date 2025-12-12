@@ -33,6 +33,7 @@ pub const Window = struct {
     width: usize, // ウィンドウの幅
     height: usize, // ウィンドウの高さ
     mark_pos: ?usize, // 範囲選択のマーク位置
+    shift_select: bool, // Shift+矢印で選択中かどうか（通常矢印で解除される）
     split_type: SplitType, // このウィンドウがどの分割で作られたか
     split_parent_id: ?usize, // 分割元ウィンドウのID
 
@@ -46,6 +47,7 @@ pub const Window = struct {
             .width = width,
             .height = height,
             .mark_pos = null,
+            .shift_select = false,
             .split_type = .none,
             .split_parent_id = null,
         };
