@@ -47,17 +47,7 @@ pub const Terminal = struct {
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) !Terminal {
-        const stdin: std.fs.File = .{ .handle = posix.STDIN_FILENO };
-
-        // stdin が TTY かどうかを確認
-        if (!posix.isatty(stdin.handle)) {
-            // stderrに出力（std.debug.printは避ける）
-            const stderr: std.fs.File = .{ .handle = posix.STDERR_FILENO };
-            stderr.writeAll("Error: stdin is not a TTY. ze requires a terminal.\n") catch {};
-            return error.NotATty;
-        }
-
-        const original = try posix.tcgetattr(stdin.handle);
+        const original = try posix.tcgetattr(posix.STDIN_FILENO);
 
         var self = Terminal{
             .original_termios = original,
@@ -133,7 +123,6 @@ pub const Terminal = struct {
     }
 
     fn enableRawMode(self: *Terminal) !void {
-        const stdin: std.fs.File = .{ .handle = posix.STDIN_FILENO };
         var raw = self.original_termios;
 
         // 入力フラグ: BREAK無効、CR→NL変換無効、パリティ無効、8bit文字
@@ -159,12 +148,11 @@ pub const Terminal = struct {
         raw.cc[@intFromEnum(posix.V.MIN)] = 0;
         raw.cc[@intFromEnum(posix.V.TIME)] = 1;
 
-        try posix.tcsetattr(stdin.handle, .FLUSH, raw);
+        try posix.tcsetattr(posix.STDIN_FILENO, .FLUSH, raw);
     }
 
     fn disableRawMode(self: *Terminal) !void {
-        const stdin: std.fs.File = .{ .handle = posix.STDIN_FILENO };
-        try posix.tcsetattr(stdin.handle, .FLUSH, self.original_termios);
+        try posix.tcsetattr(posix.STDIN_FILENO, .FLUSH, self.original_termios);
     }
 
     fn getWindowSize(self: *Terminal) !void {

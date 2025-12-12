@@ -1492,7 +1492,7 @@ pub const Editor = struct {
 
         // 効率的なI/O待機（epoll/kqueue）
         // ポーリングではなくイベント駆動で、入力待機中はCPUを消費しない
-        var poll = poller.Poller.init(stdin.handle) catch {
+        var poll = poller.Poller.init(std.posix.STDIN_FILENO) catch {
             // Poller初期化失敗: 従来のVTIMEポーリングにフォールバック
             return self.runWithoutPoller(&input_reader);
         };
