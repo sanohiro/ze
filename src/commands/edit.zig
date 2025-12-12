@@ -389,7 +389,6 @@ pub fn toggleComment(e: *Editor) !void {
     const buffer_state = e.getCurrentBuffer();
     const buffer = e.getCurrentBufferContent();
     const view = e.getCurrentView();
-    const window = e.getCurrentWindow();
 
     const line_comment = view.language.line_comment orelse "#";
     var comment_buf: [64]u8 = undefined;
@@ -437,7 +436,7 @@ pub fn toggleComment(e: *Editor) !void {
     buffer_state.editing_ctx.modified = true;
     markDirtyAll(e, current_line, current_line);
 
-    window.mark_pos = null;
+    // 選択範囲は維持（連続操作のため）
 }
 
 /// Alt+Up: 行を上に移動
@@ -624,7 +623,6 @@ pub fn indentRegion(e: *Editor) !void {
     const buffer_state = e.getCurrentBuffer();
     const buffer = e.getCurrentBufferContent();
     const view = e.getCurrentView();
-    const window = e.getCurrentWindow();
 
     // インデント文字を検出
     const indent_char = detectIndentStyle(e);
@@ -647,8 +645,7 @@ pub fn indentRegion(e: *Editor) !void {
     buffer_state.editing_ctx.modified = true;
     markDirtyAll(e, start_line, end_line);
 
-    // マークをクリア
-    window.mark_pos = null;
+    // 選択範囲は維持（連続操作のため）
 }
 
 /// 選択範囲または現在行をアンインデント
@@ -657,7 +654,6 @@ pub fn unindentRegion(e: *Editor) !void {
     const buffer_state = e.getCurrentBuffer();
     const buffer = e.getCurrentBufferContent();
     const view = e.getCurrentView();
-    const window = e.getCurrentWindow();
 
     // 選択範囲があればその行全体をアンインデント、なければ現在行のみ
     const range = getSelectedLineRange(e);
@@ -713,8 +709,7 @@ pub fn unindentRegion(e: *Editor) !void {
         markDirtyAll(e, start_line, end_line);
     }
 
-    // マークをクリア
-    window.mark_pos = null;
+    // 選択範囲は維持（連続操作のため）
 }
 
 /// 全選択（C-x h）：バッファの先頭にマークを設定し、終端にカーソルを移動
