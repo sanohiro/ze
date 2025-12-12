@@ -180,6 +180,9 @@ pub const Keymap = struct {
         try self.bindAlt('^', edit.joinLine);
         try self.bindAlt(';', edit.toggleComment);
 
+        // ウィンドウ切り替え（C-x oの短縮版）
+        try self.bindAlt('o', movement.nextWindow);
+
         // ページスクロール（上）
         try self.bindAlt('v', movement.pageUp);
 
