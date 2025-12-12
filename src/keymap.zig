@@ -33,8 +33,14 @@ pub const SpecialKey = enum(u8) {
     arrow_down,
     arrow_left,
     arrow_right,
+    shift_arrow_up,
+    shift_arrow_down,
+    shift_arrow_left,
+    shift_arrow_right,
     page_up,
     page_down,
+    shift_page_up,
+    shift_page_down,
     home,
     end_key,
     delete,
@@ -102,8 +108,14 @@ pub const Keymap = struct {
             .arrow_down => .arrow_down,
             .arrow_left => .arrow_left,
             .arrow_right => .arrow_right,
+            .shift_arrow_up => .shift_arrow_up,
+            .shift_arrow_down => .shift_arrow_down,
+            .shift_arrow_left => .shift_arrow_left,
+            .shift_arrow_right => .shift_arrow_right,
             .page_up => .page_up,
             .page_down => .page_down,
+            .shift_page_up => .shift_page_up,
+            .shift_page_down => .shift_page_down,
             .home => .home,
             .end_key => .end_key,
             .delete => .delete,
@@ -196,6 +208,12 @@ pub const Keymap = struct {
         try self.bindSpecial(.arrow_left, movement.cursorLeft);
         try self.bindSpecial(.arrow_right, movement.cursorRight);
 
+        // Shift+矢印（選択移動）
+        try self.bindSpecial(.shift_arrow_up, movement.selectUp);
+        try self.bindSpecial(.shift_arrow_down, movement.selectDown);
+        try self.bindSpecial(.shift_arrow_left, movement.selectLeft);
+        try self.bindSpecial(.shift_arrow_right, movement.selectRight);
+
         // Alt+矢印
         try self.bindSpecial(.alt_arrow_up, edit.moveLineUp);
         try self.bindSpecial(.alt_arrow_down, edit.moveLineDown);
@@ -204,6 +222,10 @@ pub const Keymap = struct {
         // ページ
         try self.bindSpecial(.page_down, movement.pageDown);
         try self.bindSpecial(.page_up, movement.pageUp);
+
+        // Shift+ページ（選択移動）
+        try self.bindSpecial(.shift_page_up, movement.selectPageUp);
+        try self.bindSpecial(.shift_page_down, movement.selectPageDown);
 
         // ホーム/エンド
         try self.bindSpecial(.home, movement.lineStart);

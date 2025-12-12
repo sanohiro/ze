@@ -117,8 +117,14 @@ pub const Key = union(enum) {
     arrow_down,
     arrow_left,
     arrow_right,
+    shift_arrow_up,
+    shift_arrow_down,
+    shift_arrow_left,
+    shift_arrow_right,
     page_up,
     page_down,
+    shift_page_up,
+    shift_page_down,
     home,
     end_key,
     delete,
@@ -196,13 +202,39 @@ pub fn readKeyFromReader(reader: *InputReader) !?Key {
                                 else => {},
                             }
                         } else if (buf[2] == '1' and buf[3] == ';') {
+                            // ESC [ 1 ; <modifier> <key>
+                            // modifier: 2=Shift, 3=Alt, 5=Ctrl, 6=Ctrl+Shift
                             const n4 = try reader.readBytes(buf[4..6]);
-                            if (n4 >= 2 and buf[4] == '3') {
-                                switch (buf[5]) {
-                                    'A' => return Key.alt_arrow_up,
-                                    'B' => return Key.alt_arrow_down,
-                                    else => {},
+                            if (n4 >= 2) {
+                                if (buf[4] == '2') {
+                                    // Shift+矢印キー
+                                    switch (buf[5]) {
+                                        'A' => return Key.shift_arrow_up,
+                                        'B' => return Key.shift_arrow_down,
+                                        'C' => return Key.shift_arrow_right,
+                                        'D' => return Key.shift_arrow_left,
+                                        else => {},
+                                    }
+                                } else if (buf[4] == '3') {
+                                    // Alt+矢印キー
+                                    switch (buf[5]) {
+                                        'A' => return Key.alt_arrow_up,
+                                        'B' => return Key.alt_arrow_down,
+                                        else => {},
+                                    }
                                 }
+                            }
+                        } else if (buf[2] == '5' and buf[3] == ';') {
+                            // ESC [ 5 ; 2 ~ = Shift+PageUp
+                            const n4 = try reader.readBytes(buf[4..6]);
+                            if (n4 >= 2 and buf[4] == '2' and buf[5] == '~') {
+                                return Key.shift_page_up;
+                            }
+                        } else if (buf[2] == '6' and buf[3] == ';') {
+                            // ESC [ 6 ; 2 ~ = Shift+PageDown
+                            const n4 = try reader.readBytes(buf[4..6]);
+                            if (n4 >= 2 and buf[4] == '2' and buf[5] == '~') {
+                                return Key.shift_page_down;
                             }
                         } else if (buf[2] == '3' and buf[3] == ';') {
                             const n4 = try reader.readBytes(buf[4..6]);

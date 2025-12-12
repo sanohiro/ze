@@ -2267,6 +2267,13 @@ pub const Editor = struct {
             else => {
                 // 特殊キーをkeymapで検索
                 if (Keymap.toSpecialKey(key)) |special_key| {
+                    // 矢印キー・ページキー（Shiftなし）で選択解除
+                    switch (special_key) {
+                        .arrow_up, .arrow_down, .arrow_left, .arrow_right, .page_up, .page_down, .home, .end_key => {
+                            self.getCurrentWindow().mark_pos = null;
+                        },
+                        else => {},
+                    }
                     if (self.keymap.findSpecial(special_key)) |handler| {
                         try handler(self);
                     }

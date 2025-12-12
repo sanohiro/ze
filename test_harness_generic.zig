@@ -579,6 +579,66 @@ fn parseKeySequence(allocator: std.mem.Allocator, seq: []const u8) ![]const u8 {
         result[1] = '[';
         result[2] = 'Z';
         return result;
+    } else if (std.mem.eql(u8, seq, "S-Up")) {
+        // Shift+Up (ESC [1;2A)
+        const result = try allocator.alloc(u8, 6);
+        result[0] = 0x1B;
+        result[1] = '[';
+        result[2] = '1';
+        result[3] = ';';
+        result[4] = '2';
+        result[5] = 'A';
+        return result;
+    } else if (std.mem.eql(u8, seq, "S-Down")) {
+        // Shift+Down (ESC [1;2B)
+        const result = try allocator.alloc(u8, 6);
+        result[0] = 0x1B;
+        result[1] = '[';
+        result[2] = '1';
+        result[3] = ';';
+        result[4] = '2';
+        result[5] = 'B';
+        return result;
+    } else if (std.mem.eql(u8, seq, "S-Right")) {
+        // Shift+Right (ESC [1;2C)
+        const result = try allocator.alloc(u8, 6);
+        result[0] = 0x1B;
+        result[1] = '[';
+        result[2] = '1';
+        result[3] = ';';
+        result[4] = '2';
+        result[5] = 'C';
+        return result;
+    } else if (std.mem.eql(u8, seq, "S-Left")) {
+        // Shift+Left (ESC [1;2D)
+        const result = try allocator.alloc(u8, 6);
+        result[0] = 0x1B;
+        result[1] = '[';
+        result[2] = '1';
+        result[3] = ';';
+        result[4] = '2';
+        result[5] = 'D';
+        return result;
+    } else if (std.mem.eql(u8, seq, "S-PageUp")) {
+        // Shift+PageUp (ESC [5;2~)
+        const result = try allocator.alloc(u8, 6);
+        result[0] = 0x1B;
+        result[1] = '[';
+        result[2] = '5';
+        result[3] = ';';
+        result[4] = '2';
+        result[5] = '~';
+        return result;
+    } else if (std.mem.eql(u8, seq, "S-PageDown")) {
+        // Shift+PageDown (ESC [6;2~)
+        const result = try allocator.alloc(u8, 6);
+        result[0] = 0x1B;
+        result[1] = '[';
+        result[2] = '6';
+        result[3] = ';';
+        result[4] = '2';
+        result[5] = '~';
+        return result;
     } else if (std.mem.eql(u8, seq, "C-Tab")) {
         // Ctrl+Tab (ESC [27;5;9~) - zeが期待する形式
         const result = try allocator.alloc(u8, 9);

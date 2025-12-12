@@ -334,6 +334,54 @@ pub fn prevWindow(e: *Editor) !void {
 }
 
 // ========================================
+// 選択移動（Shift+矢印キー）
+// ========================================
+
+/// マークがなければ現在位置に設定（選択開始）
+fn ensureMark(e: *Editor) void {
+    const window = e.getCurrentWindow();
+    if (window.mark_pos == null) {
+        window.mark_pos = e.getCurrentView().getCursorBufferPos();
+    }
+}
+
+/// Shift+Up: 選択しながら上に移動
+pub fn selectUp(e: *Editor) !void {
+    ensureMark(e);
+    e.getCurrentView().moveCursorUp();
+}
+
+/// Shift+Down: 選択しながら下に移動
+pub fn selectDown(e: *Editor) !void {
+    ensureMark(e);
+    e.getCurrentView().moveCursorDown();
+}
+
+/// Shift+Left: 選択しながら左に移動
+pub fn selectLeft(e: *Editor) !void {
+    ensureMark(e);
+    e.getCurrentView().moveCursorLeft();
+}
+
+/// Shift+Right: 選択しながら右に移動
+pub fn selectRight(e: *Editor) !void {
+    ensureMark(e);
+    e.getCurrentView().moveCursorRight();
+}
+
+/// Shift+PageUp: 選択しながらページ上に移動
+pub fn selectPageUp(e: *Editor) !void {
+    ensureMark(e);
+    pageScroll(e, .up);
+}
+
+/// Shift+PageDown: 選択しながらページ下に移動
+pub fn selectPageDown(e: *Editor) !void {
+    ensureMark(e);
+    pageScroll(e, .down);
+}
+
+// ========================================
 // ヘルパー関数
 // ========================================
 // decodeCodepointAt, findUtf8CharStart は Buffer に移動済み
