@@ -16,6 +16,23 @@
 | `M-<` / `M->` | Beginning/end of buffer |
 | `C-l` | Center cursor line on screen |
 
+## Shift-Select (Selection Movement)
+
+Hold Shift while moving to auto-set mark and extend selection.
+Moving without Shift clears the selection.
+
+| Key | Action |
+|-----|--------|
+| `Shift+Arrow` | Select character/line |
+| `Shift+PageUp/Down` | Select by page |
+| `Shift+Alt+Left/Right` | Select by word |
+| `Shift+Alt+Up/Down` | Select line by line |
+| `M-F` / `M-B` | Select by word (Alt+Shift+f/b) |
+| `M-V` | Select page up (Alt+Shift+v) |
+| `Alt+Left/Right` | Move by word (clears selection) |
+
+**Note:** `Shift+C-f/b/n/p/v` not supported (indistinguishable in standard terminals).
+
 ## Editing
 
 | Key | Action |
