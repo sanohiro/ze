@@ -250,12 +250,13 @@ pub const View = struct {
     }
 
     /// 選択範囲を設定（Emacsのmark/pointに対応）
+    /// 注: カーソル移動のたびに呼ばれるため、常に再描画をトリガーする
     pub fn setSelection(self: *View, start: ?usize, end: ?usize) void {
-        const changed = self.selection_start != start or self.selection_end != end;
         self.selection_start = start;
         self.selection_end = end;
-        if (changed) {
-            self.markFullRedraw(); // 選択範囲が変わったら再描画
+        // 選択範囲がある場合は常に再描画（カーソル移動で範囲が変わるため）
+        if (start != null and end != null) {
+            self.markFullRedraw();
         }
     }
 

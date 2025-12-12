@@ -1346,6 +1346,20 @@ pub const Editor = struct {
 
     /// 全ウィンドウをレンダリング
     fn renderAllWindows(self: *Editor) !void {
+        // 選択範囲を先に更新（needsRedraw判定の前に必要）
+        for (self.window_manager.iterator(), 0..) |*window, idx| {
+            const is_active = (idx == self.window_manager.current_window_idx);
+            if (is_active and window.mark_pos != null) {
+                const cursor_pos = window.view.getCursorBufferPos();
+                const mark = window.mark_pos.?;
+                const sel_start = @min(mark, cursor_pos);
+                const sel_end = @max(mark, cursor_pos);
+                window.view.setSelection(sel_start, sel_end);
+            } else {
+                window.view.clearSelection();
+            }
+        }
+
         // 描画が必要かチェック（全ウィンドウがdirtyでないならスキップ）
         var needs_render = false;
         for (self.window_manager.iterator()) |*window| {
@@ -1377,17 +1391,6 @@ pub const Editor = struct {
             const is_active = (idx == self.window_manager.current_window_idx);
             const buffer_state = self.findBufferById(window.buffer_id) orelse continue;
             const buffer = buffer_state.editing_ctx.buffer;
-
-            // 選択範囲をViewに設定（アクティブウィンドウのみ）
-            if (is_active and window.mark_pos != null) {
-                const cursor_pos = window.view.getCursorBufferPos();
-                const mark = window.mark_pos.?;
-                const sel_start = @min(mark, cursor_pos);
-                const sel_end = @max(mark, cursor_pos);
-                window.view.setSelection(sel_start, sel_end);
-            } else {
-                window.view.clearSelection();
-            }
 
             try window.view.renderInBounds(
                 &self.terminal,
