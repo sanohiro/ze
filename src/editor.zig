@@ -109,9 +109,27 @@ const EditorMode = enum {
 // ShellCommandState: services/shell_service.zig に移動済み
 // ========================================
 
-// ========================================
-// Editor: エディタ本体（複数バッファ・ウィンドウを管理）
-// ========================================
+/// Editor: zeエディタのコアとなる構造体
+///
+/// 【マルチバッファ・マルチウィンドウ】
+/// Emacs風のアーキテクチャを採用:
+/// - BufferManager: 全バッファを管理（複数ファイルを同時に開ける）
+/// - WindowManager: 全ウィンドウを管理（画面分割に対応）
+/// - 同じバッファを複数ウィンドウで表示可能（編集は共有）
+///
+/// 【メインループ】
+/// ```
+/// while (running) {
+///     processKey()        // キー入力処理
+///     pollShellCommand()  // シェルコマンドの非同期ポーリング
+///     render()            // 画面描画（差分描画）
+/// }
+/// ```
+///
+/// 【パフォーマンス最適化】
+/// - 差分描画: View.renderInBounds()で変更部分のみ描画
+/// - マルチウィンドウ: markAllViewsDirtyForBuffer()で同一バッファの全Viewを更新
+/// - 非同期シェル: UIをブロックせずにコマンド実行
 pub const Editor = struct {
     // グローバルリソース
     terminal: Terminal,

@@ -41,12 +41,21 @@ pub const ReplaceState = struct {
     match_count: usize, // 置換回数
 };
 
-/// 検索サービス
+/// 検索サービス: 検索・置換機能を提供
+///
+/// 【最適化】
+/// - 正規表現のコンパイル結果をキャッシュ（同パターンで再コンパイル不要）
+/// - リテラル検索はBuffer直接検索（コピーなし、SIMD最適化）
+/// - 正規表現検索のみ範囲制限（1MB）で体感速度を維持
+///
+/// 【検索モード】
+/// - リテラル: 特殊文字がなければそのまま文字列検索
+/// - 正規表現: []、()、*、+、?、|、.、^、$、\ を含む場合
 pub const SearchService = struct {
     allocator: std.mem.Allocator,
-    history: History,
-    compiled_regex: ?regex.Regex,
-    cached_pattern: ?[]const u8, // キャッシュされたパターン文字列
+    history: History, // 検索履歴（永続化対応）
+    compiled_regex: ?regex.Regex, // コンパイル済み正規表現（キャッシュ）
+    cached_pattern: ?[]const u8, // キャッシュ中のパターン文字列
 
     const Self = @This();
 

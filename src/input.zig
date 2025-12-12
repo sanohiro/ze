@@ -24,13 +24,26 @@ const std = @import("std");
 const config = @import("config");
 const unicode = @import("unicode");
 
-/// 入力バッファ付きリーダー
-/// 複数バイトを一度に読み取ってシステムコールを削減する
+/// 入力バッファ付きリーダー（リングバッファ方式）
+///
+/// 【目的】
+/// stdinからの読み取りでシステムコール回数を削減する。
+/// 大量入力（ペースト操作など）で特に効果的。
+///
+/// 【動作】
+/// - バッファサイズ: 4KB（config.Input.RING_BUF_SIZE）
+/// - 半分以上消費したらデータを先頭に移動（compaction）
+/// - EINTR（シグナル割り込み）は自動リトライ
+///
+/// 【パフォーマンス効果】
+/// - 1バイトずつread()を呼ぶ場合: 毎回システムコール発生
+/// - バッファ付き: 4KB分まとめて読んで使い回し
+/// - ペースト時の速度が大幅に向上
 pub const InputReader = struct {
     stdin: std.fs.File,
-    buf: [config.Input.RING_BUF_SIZE]u8 = undefined,
-    start: usize = 0, // 読み取り開始位置
-    end: usize = 0, // データ終端位置
+    buf: [config.Input.RING_BUF_SIZE]u8 = undefined, // 4KBの固定バッファ
+    start: usize = 0, // 読み取り開始位置（消費済み）
+    end: usize = 0, // データ終端位置（書き込み済み）
 
     pub fn init(stdin: std.fs.File) InputReader {
         return .{ .stdin = stdin };
@@ -103,8 +116,20 @@ pub const InputReader = struct {
     }
 };
 
-/// 解釈されたキー入力
-/// charは1バイトASCII、codepointは非ASCII UTF-8文字
+/// 解釈されたキー入力（エスケープシーケンスをデコード済み）
+///
+/// 【種類】
+/// - char: 印刷可能ASCII文字（0x20-0x7E）
+/// - codepoint: 非ASCII UTF-8文字（日本語、絵文字等）
+/// - ctrl: Ctrl+文字（C-a = 1, C-b = 2, ...）
+/// - alt: Alt+文字（M-f, M-bなど）
+/// - 特殊キー: arrow_*, page_*, home, end_key, delete等
+///
+/// 【エスケープシーケンス例】
+/// ESC [ A → arrow_up
+/// ESC [ 1 ; 2 A → shift_arrow_up
+/// ESC [ 1 ; 3 A → alt_arrow_up
+/// ESC f → alt + 'f'
 pub const Key = union(enum) {
     char: u8,
     codepoint: u21, // UTF-8文字
