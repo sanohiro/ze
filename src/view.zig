@@ -783,17 +783,20 @@ pub const View = struct {
     ///
     /// 【is_cursor_line】
     /// カーソル行の場合、マッチに下線を追加して現在位置を強調
-    fn applySearchHighlight(self: *View, line: []const u8, is_cursor_line: bool) ![]const u8 {
+    ///
+    /// 【content_start】
+    /// 検索対象の開始バイト位置（行番号等のプレフィックスをスキップ）
+    fn applySearchHighlight(self: *View, line: []const u8, is_cursor_line: bool, content_start: usize) ![]const u8 {
         const search_str = self.getSearchHighlight() orelse return line;
         if (search_str.len == 0 or line.len == 0) return line;
 
         // 正規表現モードか確認
         if (self.is_regex_highlight) {
-            return self.applyRegexHighlight(line, is_cursor_line);
+            return self.applyRegexHighlight(line, is_cursor_line, content_start);
         }
 
-        // リテラルモード: 最初のマッチを事前チェック（マッチがなければコピーせず元を返す）
-        const first_match = findSkippingAnsi(line, 0, search_str) orelse return line;
+        // リテラルモード: content_start以降で最初のマッチを探す
+        const first_match = findSkippingAnsi(line, content_start, search_str) orelse return line;
 
         // カーソル行は反転+下線、それ以外は反転のみ
         const highlight_start = if (is_cursor_line) ANSI.INVERT ++ ANSI.UNDERLINE else ANSI.INVERT;
@@ -802,7 +805,7 @@ pub const View = struct {
         // マッチがあるのでバッファを使用
         self.highlighted_line.clearRetainingCapacity();
 
-        // 最初のマッチ前の部分をコピー
+        // 最初のマッチ前の部分をコピー（行番号部分を含む）
         try self.highlighted_line.appendSlice(self.allocator, line[0..first_match]);
         // ハイライト開始
         try self.highlighted_line.appendSlice(self.allocator, highlight_start);
@@ -837,19 +840,49 @@ pub const View = struct {
     ///
     /// 【処理フロー】
     /// 1. コンパイル済み正規表現がなければ元を返す
-    /// 2. 正規表現で全マッチを見つける
-    /// 3. マッチ部分をハイライト表示
-    fn applyRegexHighlight(self: *View, line: []const u8, is_cursor_line: bool) ![]const u8 {
+    /// 2. ANSIエスケープを除いた可視テキストを抽出（content_start以降のみ）
+    /// 3. 可視テキストに対して正規表現マッチ
+    /// 4. マッチ位置を元の行位置にマッピングしてハイライト
+    ///
+    /// 【content_start】
+    /// 検索対象の開始バイト位置（行番号等のプレフィックスをスキップ）
+    fn applyRegexHighlight(self: *View, line: []const u8, is_cursor_line: bool, content_start: usize) ![]const u8 {
         // コンパイル済み正規表現がなければ元を返す
         var re = self.compiled_highlight_regex orelse return line;
 
-        // 最初のマッチを事前チェック
-        const first_match_result = re.search(line, 0) orelse return line;
-        const first_match_start = first_match_result.start;
-        const first_match_len = first_match_result.end - first_match_result.start;
+        // ANSIエスケープを除いた可視テキストと位置マッピングを構築
+        // visible_to_raw[i] = 可視位置iに対応する元の行の開始位置
+        // content_start以降のみを検索対象とする（行番号部分をスキップ）
+        var visible_text = try std.ArrayList(u8).initCapacity(self.allocator, line.len);
+        defer visible_text.deinit(self.allocator);
+        var visible_to_raw = try std.ArrayList(usize).initCapacity(self.allocator, line.len + 1);
+        defer visible_to_raw.deinit(self.allocator);
 
-        // 空マッチの場合はスキップ（無限ループ防止）
-        if (first_match_len == 0) return line;
+        // content_start以降から処理開始（行番号部分をスキップ）
+        var raw_pos: usize = content_start;
+        while (raw_pos < line.len) {
+            // ANSIエスケープシーケンスをスキップ (\x1b[...m)
+            if (line[raw_pos] == 0x1b and raw_pos + 1 < line.len and line[raw_pos + 1] == '[') {
+                raw_pos += 2;
+                while (raw_pos < line.len and line[raw_pos] != 'm') : (raw_pos += 1) {}
+                if (raw_pos < line.len) raw_pos += 1; // 'm' をスキップ
+            } else {
+                // 可視文字を追加
+                visible_to_raw.appendAssumeCapacity(raw_pos);
+                visible_text.appendAssumeCapacity(line[raw_pos]);
+                raw_pos += 1;
+            }
+        }
+        // 終端位置を追加（マッチ末尾の計算用）
+        visible_to_raw.appendAssumeCapacity(line.len);
+
+        if (visible_text.items.len == 0) return line;
+
+        // 可視テキストに対して正規表現マッチ
+        const first_match_result = re.search(visible_text.items, 0) orelse return line;
+
+        // 空マッチの場合はスキップ
+        if (first_match_result.end == first_match_result.start) return line;
 
         // カーソル行は反転+下線、それ以外は反転のみ
         const highlight_start = if (is_cursor_line) ANSI.INVERT ++ ANSI.UNDERLINE else ANSI.INVERT;
@@ -858,43 +891,62 @@ pub const View = struct {
         // マッチがあるのでバッファを使用
         self.highlighted_line.clearRetainingCapacity();
 
-        // 最初のマッチ前の部分をコピー
-        try self.highlighted_line.appendSlice(self.allocator, line[0..first_match_start]);
+        // 元の行位置にマッピングしてハイライトを適用
+        var visible_pos: usize = 0;
+        var last_raw_pos: usize = 0;
+
+        // 最初のマッチを処理
+        var match_start_vis = first_match_result.start;
+        var match_end_vis = first_match_result.end;
+        var match_start_raw = visible_to_raw.items[match_start_vis];
+        var match_end_raw = visible_to_raw.items[match_end_vis];
+
+        // マッチ前の部分をコピー
+        try self.highlighted_line.appendSlice(self.allocator, line[0..match_start_raw]);
         // ハイライト開始
         try self.highlighted_line.appendSlice(self.allocator, highlight_start);
         // マッチ部分をコピー
-        try self.highlighted_line.appendSlice(self.allocator, line[first_match_start .. first_match_start + first_match_len]);
+        try self.highlighted_line.appendSlice(self.allocator, line[match_start_raw..match_end_raw]);
         // ハイライト終了
         try self.highlighted_line.appendSlice(self.allocator, highlight_end);
-        var pos: usize = first_match_start + first_match_len;
+
+        visible_pos = match_end_vis;
+        last_raw_pos = match_end_raw;
 
         // 残りのマッチを処理
-        while (pos < line.len) {
-            if (re.search(line, pos)) |match_result| {
-                const match_start = match_result.start;
-                const match_len = match_result.end - match_result.start;
-
-                // 空マッチの場合は1バイト進めて続行
-                if (match_len == 0) {
-                    pos += 1;
+        while (visible_pos < visible_text.items.len) {
+            if (re.search(visible_text.items, visible_pos)) |match_result| {
+                if (match_result.end == match_result.start) {
+                    visible_pos += 1;
                     continue;
                 }
 
+                match_start_vis = match_result.start;
+                match_end_vis = match_result.end;
+                match_start_raw = visible_to_raw.items[match_start_vis];
+                match_end_raw = visible_to_raw.items[match_end_vis];
+
                 // マッチ前の部分をコピー
-                try self.highlighted_line.appendSlice(self.allocator, line[pos..match_start]);
+                try self.highlighted_line.appendSlice(self.allocator, line[last_raw_pos..match_start_raw]);
                 // ハイライト開始
                 try self.highlighted_line.appendSlice(self.allocator, highlight_start);
                 // マッチ部分をコピー
-                try self.highlighted_line.appendSlice(self.allocator, line[match_start .. match_start + match_len]);
+                try self.highlighted_line.appendSlice(self.allocator, line[match_start_raw..match_end_raw]);
                 // ハイライト終了
                 try self.highlighted_line.appendSlice(self.allocator, highlight_end);
-                pos = match_start + match_len;
+
+                visible_pos = match_end_vis;
+                last_raw_pos = match_end_raw;
             } else {
-                // これ以上マッチなし：残りをコピー
-                try self.highlighted_line.appendSlice(self.allocator, line[pos..]);
                 break;
             }
         }
+
+        // 残りをコピー
+        if (last_raw_pos < line.len) {
+            try self.highlighted_line.appendSlice(self.allocator, line[last_raw_pos..]);
+        }
+
         return self.highlighted_line.items;
     }
 
@@ -1112,6 +1164,8 @@ pub const View = struct {
             const line_num_str = std.fmt.bufPrint(&num_buf, "\x1b[90m{d: >[1]}\x1b[m  ", .{ file_line + 1, num_width }) catch "";
             try self.expanded_line.appendSlice(self.allocator, line_num_str);
         }
+        // 行番号のバイト長を記録（検索ハイライトで行番号をスキップするため）
+        const content_start_byte = self.expanded_line.items.len;
 
         // grapheme-aware rendering with tab expansion and horizontal scrolling
         var byte_idx: usize = 0;
@@ -1258,8 +1312,9 @@ pub const View = struct {
         }
 
         // 検索ハイライトを適用（カーソル行は下線で強調）
+        // content_start_byte以降のみを検索対象とする（行番号をスキップ）
         const is_cursor_line = (screen_row == self.cursor_y);
-        const new_line = try self.applySearchHighlight(self.expanded_line.items, is_cursor_line);
+        const new_line = try self.applySearchHighlight(self.expanded_line.items, is_cursor_line, content_start_byte);
 
         // 差分描画と前フレームバッファ更新
         try self.renderLineDiff(term, new_line, screen_row, abs_row, viewport_x, viewport_width);

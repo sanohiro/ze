@@ -103,6 +103,8 @@ echo "=== カテゴリ 4: 検索機能 ==="
 run_test "4.1 英語で検索" --file=test_data/test_search_pages.txt "C-s" "T" "a" "r" "g" "e" "t" "Enter" "C-x" "C-c"
 run_test "4.2 次を検索 (C-s C-s)" --file=test_data/test_search_pages.txt "C-s" "T" "a" "r" "Enter" "C-s" "C-x" "C-c"
 run_test "4.3 検索キャンセル (C-g)" --file=test_data/test_search_pages.txt "C-s" "test" "C-g" "C-x" "C-c"
+run_test "4.4 正規表現検索 (C-M-s)" --file=test_data/test_comma.txt "C-M-s" "," "$" "Enter" "C-x" "C-c"
+run_test "4.5 正規表現後方検索 (C-M-r)" --file=test_data/test_comma.txt "M->" "C-M-r" "," "$" "Enter" "C-x" "C-c"
 
 echo
 echo "=== カテゴリ 5: 日本語対応 ==="
