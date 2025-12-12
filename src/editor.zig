@@ -1466,6 +1466,11 @@ pub const Editor = struct {
                 try self.recalculateWindowSizes();
             }
 
+            // シェルコマンド実行中はその出力をポーリング（描画前に処理）
+            if (self.mode == .shell_running) {
+                try self.pollShellCommand();
+            }
+
             // カーソル位置補正と画面描画
             self.clampCursorPosition();
             try self.renderAllWindows();
@@ -1479,11 +1484,6 @@ pub const Editor = struct {
                 try self.terminal.moveCursor(status_row, cursor_col);
                 try self.terminal.showCursor();
                 try self.terminal.flush();
-            }
-
-            // シェルコマンド実行中はその出力をポーリング
-            if (self.mode == .shell_running) {
-                try self.pollShellCommand();
             }
 
             // 入力を待機
@@ -1520,6 +1520,11 @@ pub const Editor = struct {
                 try self.recalculateWindowSizes();
             }
 
+            // シェルコマンド実行中はその出力をポーリング（描画前に処理）
+            if (self.mode == .shell_running) {
+                try self.pollShellCommand();
+            }
+
             self.clampCursorPosition();
             try self.renderAllWindows();
 
@@ -1531,10 +1536,6 @@ pub const Editor = struct {
                 try self.terminal.moveCursor(status_row, cursor_col);
                 try self.terminal.showCursor();
                 try self.terminal.flush();
-            }
-
-            if (self.mode == .shell_running) {
-                try self.pollShellCommand();
             }
 
             if (try input.readKeyFromReader(input_reader)) |key| {
