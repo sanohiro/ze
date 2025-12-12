@@ -705,6 +705,13 @@ pub const Editor = struct {
                         self.minibuffer.killLine();
                         return true;
                     },
+                    'y' => {
+                        // kill ringからペースト
+                        if (self.kill_ring) |text| {
+                            try self.minibuffer.insertAtCursor(text);
+                        }
+                        return true;
+                    },
                     else => return false,
                 }
             },
@@ -1919,7 +1926,14 @@ pub const Editor = struct {
                 }
                 self.endSearch();
             },
-            else => {},
+            else => {
+                // その他のキーはミニバッファ共通処理にフォールバック
+                // (C-f/C-b/C-a/C-e/M-f/M-b/左右矢印など)
+                if (try self.handleMinibufferKey(key)) {
+                    const prefix = if (is_forward) "I-search: " else "I-search backward: ";
+                    self.setPrompt("{s}{s}", .{ prefix, self.minibuffer.getContent() });
+                }
+            },
         }
         return true;
     }
