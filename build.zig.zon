@@ -1,6 +1,6 @@
 .{
     .name = .ze,
-    .version = "0.8.0",
+    .version = "0.8.1",
     .fingerprint = 0xa9d116540b6957d2,
     .paths = .{""},
 }
