@@ -57,11 +57,14 @@ Regex supported: `\d+` for digits, `^TODO` for TODO at line start.
 |-----|--------|
 | `C-x 2` | Split horizontal |
 | `C-x 3` | Split vertical |
-| `C-x o` | Switch to next window |
+| `M-o` | Switch to next window |
+| `C-x o` | Switch to next window (same as M-o) |
 | `C-x 0` / `C-x 1` | Close window/close others |
 | `C-x b` | Switch buffer |
 | `C-x C-b` | Buffer list |
 | `C-x k` | Kill buffer |
+
+Note: `C-Tab` also works for window switching in terminals that support it (iTerm2, WezTerm, etc.).
 
 ## Shell Integration
 
