@@ -2544,7 +2544,8 @@ pub const Editor = struct {
 
         // まずコピーなしのBuffer直接検索を試みる（リテラルパターンのみ）
         if (self.search_service.searchBuffer(buffer, search_str, start_pos, forward, skip_current)) |match| {
-            self.setCursorToPos(match.start);
+            // Emacs風：マッチ終端にカーソルを置く
+            self.setCursorToPos(match.start + match.len);
             return;
         }
 
@@ -2566,8 +2567,8 @@ pub const Editor = struct {
             const adjusted_start = if (start_pos > search_start) start_pos - search_start else 0;
 
             if (self.search_service.search(content, search_str, adjusted_start, forward, skip_current)) |match| {
-                // 見つかった位置を元のバッファ位置に変換
-                self.setCursorToPos(match.start + search_start);
+                // 見つかった位置を元のバッファ位置に変換（Emacs風：マッチ終端）
+                self.setCursorToPos(match.start + match.len + search_start);
                 return;
             }
         }
