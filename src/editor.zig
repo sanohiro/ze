@@ -2207,8 +2207,8 @@ pub const Editor = struct {
                 }
             },
             .alt => |c| {
-                // 小文字のM-f, M-bは選択解除（大文字のM-F, M-Bは選択維持）
-                if (c == 'f' or c == 'b') {
+                // 小文字のM-f, M-b, M-vは選択解除（大文字のM-F, M-B, M-Vは選択維持）
+                if (c == 'f' or c == 'b' or c == 'v') {
                     self.getCurrentWindow().mark_pos = null;
                 }
                 // keymapから検索
@@ -2273,7 +2273,7 @@ pub const Editor = struct {
                 if (Keymap.toSpecialKey(key)) |special_key| {
                     // 矢印キー・ページキー（Shiftなし）で選択解除
                     switch (special_key) {
-                        .arrow_up, .arrow_down, .arrow_left, .arrow_right, .page_up, .page_down, .home, .end_key => {
+                        .arrow_up, .arrow_down, .arrow_left, .arrow_right, .page_up, .page_down, .home, .end_key, .alt_arrow_left, .alt_arrow_right => {
                             self.getCurrentWindow().mark_pos = null;
                         },
                         else => {},

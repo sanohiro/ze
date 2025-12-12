@@ -113,6 +113,12 @@ pub const Key = union(enum) {
     alt_delete,
     alt_arrow_up,
     alt_arrow_down,
+    alt_arrow_left,
+    alt_arrow_right,
+    shift_alt_arrow_up,
+    shift_alt_arrow_down,
+    shift_alt_arrow_left,
+    shift_alt_arrow_right,
     arrow_up,
     arrow_down,
     arrow_left,
@@ -207,7 +213,7 @@ pub fn readKeyFromReader(reader: *InputReader) !?Key {
                             const n4 = try reader.readBytes(buf[4..6]);
                             if (n4 >= 2) {
                                 if (buf[4] == '2') {
-                                    // Shift+矢印キー
+                                    // Shift+矢印キー (modifier 2)
                                     switch (buf[5]) {
                                         'A' => return Key.shift_arrow_up,
                                         'B' => return Key.shift_arrow_down,
@@ -216,10 +222,21 @@ pub fn readKeyFromReader(reader: *InputReader) !?Key {
                                         else => {},
                                     }
                                 } else if (buf[4] == '3') {
-                                    // Alt+矢印キー
+                                    // Alt+矢印キー (modifier 3)
                                     switch (buf[5]) {
                                         'A' => return Key.alt_arrow_up,
                                         'B' => return Key.alt_arrow_down,
+                                        'C' => return Key.alt_arrow_right,
+                                        'D' => return Key.alt_arrow_left,
+                                        else => {},
+                                    }
+                                } else if (buf[4] == '4') {
+                                    // Shift+Alt+矢印キー (modifier 4)
+                                    switch (buf[5]) {
+                                        'A' => return Key.shift_alt_arrow_up,
+                                        'B' => return Key.shift_alt_arrow_down,
+                                        'C' => return Key.shift_alt_arrow_right,
+                                        'D' => return Key.shift_alt_arrow_left,
                                         else => {},
                                     }
                                 }

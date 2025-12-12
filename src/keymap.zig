@@ -53,6 +53,12 @@ pub const SpecialKey = enum(u8) {
     alt_delete,
     alt_arrow_up,
     alt_arrow_down,
+    alt_arrow_left,
+    alt_arrow_right,
+    shift_alt_arrow_up,
+    shift_alt_arrow_down,
+    shift_alt_arrow_left,
+    shift_alt_arrow_right,
 };
 
 const SPECIAL_KEY_COUNT = @typeInfo(SpecialKey).@"enum".fields.len;
@@ -128,6 +134,12 @@ pub const Keymap = struct {
             .alt_delete => .alt_delete,
             .alt_arrow_up => .alt_arrow_up,
             .alt_arrow_down => .alt_arrow_down,
+            .alt_arrow_left => .alt_arrow_left,
+            .alt_arrow_right => .alt_arrow_right,
+            .shift_alt_arrow_up => .shift_alt_arrow_up,
+            .shift_alt_arrow_down => .shift_alt_arrow_down,
+            .shift_alt_arrow_left => .shift_alt_arrow_left,
+            .shift_alt_arrow_right => .shift_alt_arrow_right,
             else => null,
         };
     }
@@ -202,6 +214,9 @@ pub const Keymap = struct {
         // ページスクロール（上）
         try self.bindAlt('v', movement.pageUp);
 
+        // 選択しながらページスクロール（上）(Alt+Shift+v = M-V)
+        try self.bindAlt('V', movement.selectPageUpAlt);
+
         // ========================================
         // 特殊キー
         // ========================================
@@ -221,7 +236,15 @@ pub const Keymap = struct {
         // Alt+矢印
         try self.bindSpecial(.alt_arrow_up, edit.moveLineUp);
         try self.bindSpecial(.alt_arrow_down, edit.moveLineDown);
+        try self.bindSpecial(.alt_arrow_left, movement.backwardWord);
+        try self.bindSpecial(.alt_arrow_right, movement.forwardWord);
         try self.bindSpecial(.alt_delete, edit.deleteWord);
+
+        // Shift+Alt+矢印（選択しながら単語/行移動）
+        try self.bindSpecial(.shift_alt_arrow_up, movement.selectUp);
+        try self.bindSpecial(.shift_alt_arrow_down, movement.selectDown);
+        try self.bindSpecial(.shift_alt_arrow_left, movement.selectBackwardWord);
+        try self.bindSpecial(.shift_alt_arrow_right, movement.selectForwardWord);
 
         // ページ
         try self.bindSpecial(.page_down, movement.pageDown);

@@ -572,6 +572,46 @@ fn parseKeySequence(allocator: std.mem.Allocator, seq: []const u8) ![]const u8 {
         result[4] = '3';
         result[5] = 'B';
         return result;
+    } else if (std.mem.eql(u8, seq, "M-Left")) {
+        // Alt+Left (ESC [1;3D)
+        const result = try allocator.alloc(u8, 6);
+        result[0] = 0x1B;
+        result[1] = '[';
+        result[2] = '1';
+        result[3] = ';';
+        result[4] = '3';
+        result[5] = 'D';
+        return result;
+    } else if (std.mem.eql(u8, seq, "M-Right")) {
+        // Alt+Right (ESC [1;3C)
+        const result = try allocator.alloc(u8, 6);
+        result[0] = 0x1B;
+        result[1] = '[';
+        result[2] = '1';
+        result[3] = ';';
+        result[4] = '3';
+        result[5] = 'C';
+        return result;
+    } else if (std.mem.eql(u8, seq, "S-M-Left")) {
+        // Shift+Alt+Left (ESC [1;4D)
+        const result = try allocator.alloc(u8, 6);
+        result[0] = 0x1B;
+        result[1] = '[';
+        result[2] = '1';
+        result[3] = ';';
+        result[4] = '4';
+        result[5] = 'D';
+        return result;
+    } else if (std.mem.eql(u8, seq, "S-M-Right")) {
+        // Shift+Alt+Right (ESC [1;4C)
+        const result = try allocator.alloc(u8, 6);
+        result[0] = 0x1B;
+        result[1] = '[';
+        result[2] = '1';
+        result[3] = ';';
+        result[4] = '4';
+        result[5] = 'C';
+        return result;
     } else if (std.mem.eql(u8, seq, "S-Tab")) {
         // Shift+Tab (ESC [Z)
         const result = try allocator.alloc(u8, 3);
