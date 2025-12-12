@@ -2774,7 +2774,8 @@ pub const Editor = struct {
 
             try self.processShellResult(result.stdout, result.stderr, result.exit_status, result.input_source, result.output_dest);
 
-            // 完了後に再描画をマーク（ステータスバー更新のため）
+            // 完了後にステータスバーをクリアして再描画
+            self.getCurrentView().clearError();
             self.getCurrentView().markFullRedraw();
         } else {
             // まだ実行中 - スピナーを更新
