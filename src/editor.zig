@@ -2448,13 +2448,15 @@ pub const Editor = struct {
             }
             // 改行は行シフトを起こすため、prev_screenキャッシュが無効になる
             // markDirtyでは差分描画が壊れるので全画面再描画が必要
-            view.markFullRedraw();
+            // 同一バッファを表示している全ウィンドウを更新
+            self.markAllViewsFullRedrawForBuffer(buffer_state.id);
             view.cursor_x = 0;
             view.top_col = 0; // 水平スクロールもリセット
         } else {
             // 通常文字
             const view = self.getCurrentView();
-            view.markDirty(current_line, current_line);
+            // 同一バッファを表示している全ウィンドウを更新
+            self.markAllViewsDirtyForBuffer(buffer_state.id, current_line, current_line);
 
             // カーソル移動（タブは特別扱い）
             if (codepoint == '\t') {
@@ -2633,13 +2635,14 @@ pub const Editor = struct {
 
         // 置換した行から再描画
         // 検索文字列・置換文字列に改行が含まれる場合は行数が変わるため全画面再描画
+        // 同一バッファを表示している全ウィンドウを更新
         const has_newline = std.mem.indexOf(u8, search, "\n") != null or
             std.mem.indexOf(u8, replacement, "\n") != null;
         if (has_newline) {
-            self.getCurrentView().markFullRedraw();
+            self.markAllViewsFullRedrawForBuffer(buffer_state.id);
         } else {
             const current_line = buffer.findLineByPos(match_pos);
-            self.getCurrentView().markDirty(current_line, current_line);
+            self.markAllViewsDirtyForBuffer(buffer_state.id, current_line, current_line);
         }
     }
 
@@ -2920,7 +2923,8 @@ pub const Editor = struct {
                                 self.setCursorToPos(start);
                                 self.window_manager.getCurrentWindow().mark_pos = null; // マークをクリア
                                 // シェル出力は行数が変わる可能性があるため全画面再描画
-                                self.getCurrentView().markFullRedraw();
+                                // 同一バッファを表示している全ウィンドウを更新
+                                self.markAllViewsFullRedrawForBuffer(self.getCurrentBuffer().id);
                             }
                         } else {
                             // 選択なしの場合はカーソル位置に挿入（+> と同じ動作）
@@ -2931,7 +2935,8 @@ pub const Editor = struct {
                                 try self.recordInsert(pos, stdout, pos);
                                 self.getCurrentBuffer().editing_ctx.modified = true;
                                 // シェル出力は行数が変わる可能性があるため全画面再描画
-                                self.getCurrentView().markFullRedraw();
+                                // 同一バッファを表示している全ウィンドウを更新
+                                self.markAllViewsFullRedrawForBuffer(self.getCurrentBuffer().id);
                             }
                         }
                     },
@@ -2952,7 +2957,8 @@ pub const Editor = struct {
                         self.getCurrentBuffer().editing_ctx.modified = true;
                         self.setCursorToPos(0);
                         // シェル出力は行数が変わる可能性があるため全画面再描画
-                        self.getCurrentView().markFullRedraw();
+                        // 同一バッファを表示している全ウィンドウを更新
+                        self.markAllViewsFullRedrawForBuffer(self.getCurrentBuffer().id);
                     },
                     .current_line => {
                         // 現在行を置換
@@ -2974,7 +2980,8 @@ pub const Editor = struct {
                         self.getCurrentBuffer().editing_ctx.modified = true;
                         self.setCursorToPos(line_start);
                         // シェル出力は行数が変わる可能性があるため全画面再描画
-                        self.getCurrentView().markFullRedraw();
+                        // 同一バッファを表示している全ウィンドウを更新
+                        self.markAllViewsFullRedrawForBuffer(self.getCurrentBuffer().id);
                     },
                 }
             },
@@ -2987,7 +2994,8 @@ pub const Editor = struct {
                     try self.recordInsert(pos, stdout, pos);
                     self.getCurrentBuffer().editing_ctx.modified = true;
                     // シェル出力は行数が変わる可能性があるため全画面再描画
-                    self.getCurrentView().markFullRedraw();
+                    // 同一バッファを表示している全ウィンドウを更新
+                    self.markAllViewsFullRedrawForBuffer(self.getCurrentBuffer().id);
                 }
             },
             .new_buffer => {
