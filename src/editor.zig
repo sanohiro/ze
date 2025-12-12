@@ -1287,6 +1287,8 @@ pub const Editor = struct {
             // メッセージを即座に表示するため、ステータスバーを描画してフラッシュ
             try self.renderAllWindows();
         }
+        // エラー時もLoadingメッセージをクリア
+        errdefer view.clearError();
 
         // 新しいバッファを先にロード（失敗しても古いバッファは残る）
         var new_buffer = try Buffer.loadFromFile(self.allocator, path);
