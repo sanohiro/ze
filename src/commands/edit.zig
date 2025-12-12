@@ -410,10 +410,18 @@ pub fn toggleComment(e: *Editor) !void {
     }
     const line_content = line_list.items;
 
-    const is_comment = view.language.isCommentLine(line_content);
+    // コメント行かどうか判定（言語定義がない場合もフォールバックの # をチェック）
+    const is_comment = if (view.language.line_comment != null)
+        view.language.isCommentLine(line_content)
+    else
+        isCommentWithPrefix(line_content, line_comment);
 
     if (is_comment) {
-        const comment_start = view.language.findCommentStart(line_content) orelse return;
+        // コメント開始位置を取得（言語定義がない場合もフォールバック）
+        const comment_start = if (view.language.line_comment != null)
+            view.language.findCommentStart(line_content) orelse return
+        else
+            findCommentStartWithPrefix(line_content, line_comment) orelse return;
         const comment_pos = line_start + comment_start;
 
         var delete_len: usize = line_comment.len;
@@ -813,4 +821,40 @@ pub fn getCurrentLineIndent(e: *Editor) []const u8 {
     }
 
     return Static.buf[0..indent_len];
+}
+
+// ========================================
+// ヘルパー関数
+// ========================================
+
+/// 指定のプレフィックスでコメント行かどうか判定（言語定義がない場合のフォールバック用）
+fn isCommentWithPrefix(line: []const u8, prefix: []const u8) bool {
+    // 行頭の空白をスキップ
+    var i: usize = 0;
+    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) {
+        i += 1;
+    }
+    if (i >= line.len) return false;
+
+    // プレフィックスをチェック
+    if (i + prefix.len <= line.len and std.mem.startsWith(u8, line[i..], prefix)) {
+        return true;
+    }
+    return false;
+}
+
+/// 指定のプレフィックスでコメント開始位置を検索（言語定義がない場合のフォールバック用）
+fn findCommentStartWithPrefix(line: []const u8, prefix: []const u8) ?usize {
+    // 行頭の空白をスキップ
+    var i: usize = 0;
+    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) {
+        i += 1;
+    }
+    if (i >= line.len) return null;
+
+    // プレフィックスをチェック
+    if (i + prefix.len <= line.len and std.mem.startsWith(u8, line[i..], prefix)) {
+        return i;
+    }
+    return null;
 }
