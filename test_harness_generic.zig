@@ -552,6 +552,22 @@ fn parseKeySequence(allocator: std.mem.Allocator, seq: []const u8) ![]const u8 {
         result[1] = '[';
         result[2] = 'F';
         return result;
+    } else if (std.mem.eql(u8, seq, "Insert")) {
+        // Insert key (ESC [2~)
+        const result = try allocator.alloc(u8, 4);
+        result[0] = 0x1B;
+        result[1] = '[';
+        result[2] = '2';
+        result[3] = '~';
+        return result;
+    } else if (std.mem.eql(u8, seq, "Delete")) {
+        // Delete key (ESC [3~)
+        const result = try allocator.alloc(u8, 4);
+        result[0] = 0x1B;
+        result[1] = '[';
+        result[2] = '3';
+        result[3] = '~';
+        return result;
     } else if (std.mem.eql(u8, seq, "M-Up")) {
         // Alt+Up (ESC [1;3A)
         const result = try allocator.alloc(u8, 6);

@@ -1117,6 +1117,7 @@ pub const View = struct {
         is_active: bool,
         modified: bool,
         readonly: bool,
+        overwrite: bool,
         line_ending: anytype,
         file_encoding: encoding.Encoding,
         filename: ?[]const u8,
@@ -1216,7 +1217,7 @@ pub const View = struct {
         }
 
         // ステータスバーの描画
-        try self.renderStatusBarAt(term, viewport_x, viewport_y + viewport_height - 1, viewport_width, modified, readonly, line_ending, file_encoding, filename);
+        try self.renderStatusBarAt(term, viewport_x, viewport_y + viewport_height - 1, viewport_width, modified, readonly, overwrite, line_ending, file_encoding, filename);
         // 注意: flush()とカーソル表示は呼び出し元で一括して行う（複数ウィンドウ時の効率化のため）
     }
 
@@ -1234,17 +1235,17 @@ pub const View = struct {
     }
 
     /// 従来のrender（後方互換性のため）- 全画面レンダリング
-    pub fn render(self: *View, term: *Terminal, modified: bool, readonly: bool, line_ending: anytype, file_encoding: encoding.Encoding, filename: ?[]const u8) !void {
-        try self.renderInBounds(term, 0, 0, term.width, term.height, true, modified, readonly, line_ending, file_encoding, filename);
+    pub fn render(self: *View, term: *Terminal, modified: bool, readonly: bool, overwrite: bool, line_ending: anytype, file_encoding: encoding.Encoding, filename: ?[]const u8) !void {
+        try self.renderInBounds(term, 0, 0, term.width, term.height, true, modified, readonly, overwrite, line_ending, file_encoding, filename);
     }
 
-    pub fn renderStatusBar(self: *View, term: *Terminal, modified: bool, readonly: bool, line_ending: anytype, file_encoding: encoding.Encoding, filename: ?[]const u8) !void {
-        try self.renderStatusBarAt(term, 0, term.height - 1, term.width, modified, readonly, line_ending, file_encoding, filename);
+    pub fn renderStatusBar(self: *View, term: *Terminal, modified: bool, readonly: bool, overwrite: bool, line_ending: anytype, file_encoding: encoding.Encoding, filename: ?[]const u8) !void {
+        try self.renderStatusBarAt(term, 0, term.height - 1, term.width, modified, readonly, overwrite, line_ending, file_encoding, filename);
     }
 
     /// 指定行にステータスバーを描画
     /// 新デザイン: " *filename                          L42 C8  UTF-8(LF)  Zig"
-    pub fn renderStatusBarAt(self: *View, term: *Terminal, viewport_x: usize, row: usize, viewport_width: usize, modified: bool, readonly: bool, line_ending: anytype, file_encoding: encoding.Encoding, filename: ?[]const u8) !void {
+    pub fn renderStatusBarAt(self: *View, term: *Terminal, viewport_x: usize, row: usize, viewport_width: usize, modified: bool, readonly: bool, overwrite: bool, line_ending: anytype, file_encoding: encoding.Encoding, filename: ?[]const u8) !void {
         try term.moveCursor(row, viewport_x);
 
         // メッセージがあればそれを優先表示（従来通り）
@@ -1269,13 +1270,14 @@ pub const View = struct {
         const fname = if (filename) |f| f else "[No Name]";
         const left_part = try std.fmt.bufPrint(&left_buf, " {c}{s}{s}", .{ modified_char, readonly_str, fname });
 
-        // 右側: 位置 | エンコード(改行)
+        // 右側: 位置 | エンコード(改行) | OVR
         var right_buf: [64]u8 = undefined;
         const current_line = self.top_line + self.cursor_y + 1;
         const current_col = self.cursor_x + 1;
         const le_str = line_ending.toString(); // LF, CRLF, CR を正しく表示
         const enc_str = file_encoding.toString();
-        const right_part = try std.fmt.bufPrint(&right_buf, "L{d} C{d}  {s}({s}) ", .{ current_line, current_col, enc_str, le_str });
+        const ovr_str = if (overwrite) " OVR" else "";
+        const right_part = try std.fmt.bufPrint(&right_buf, "L{d} C{d}  {s}({s}){s} ", .{ current_line, current_col, enc_str, le_str, ovr_str });
 
         // ステータスバーを反転表示で開始
         try term.write(config.ANSI.INVERT);

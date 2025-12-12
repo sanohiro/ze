@@ -133,6 +133,7 @@ pub const Key = union(enum) {
     shift_page_down,
     home,
     end_key,
+    insert,
     delete,
     backspace,
     enter,
@@ -201,8 +202,9 @@ pub fn readKeyFromReader(reader: *InputReader) !?Key {
                         if (buf[3] == '~') {
                             switch (buf[2]) {
                                 '1', '7' => return Key.home,
-                                '4', '8' => return Key.end_key,
+                                '2' => return Key.insert,
                                 '3' => return Key.delete,
+                                '4', '8' => return Key.end_key,
                                 '5' => return Key.page_up,
                                 '6' => return Key.page_down,
                                 else => {},
@@ -340,6 +342,7 @@ pub fn keyToString(key: Key, buf: []u8) ![]const u8 {
         .page_down => "PgDn",
         .home => "Home",
         .end_key => "End",
+        .insert => "Ins",
         .delete => "Del",
         .backspace => "BS",
         .enter => "Enter",

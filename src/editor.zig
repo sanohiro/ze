@@ -151,6 +151,7 @@ pub const Editor = struct {
 
     // UI状態
     spinner_frame: u8, // シェル実行中のスピナーフレーム
+    overwrite_mode: bool, // 上書きモード（Insertキーでトグル）
 
     // キーマップ
     keymap: Keymap, // キーバインド設定（ランタイム変更可能）
@@ -196,6 +197,7 @@ pub const Editor = struct {
             .search_service = SearchService.init(allocator),
             .macro_service = MacroService.init(allocator),
             .spinner_frame = 0,
+            .overwrite_mode = false,
             .keymap = try Keymap.init(allocator),
         };
 
@@ -1414,6 +1416,7 @@ pub const Editor = struct {
                 is_active,
                 buffer_state.editing_ctx.modified,
                 buffer_state.readonly,
+                self.overwrite_mode,
                 buffer.detected_line_ending,
                 buffer.detected_encoding,
                 buffer_state.filename,
@@ -2312,6 +2315,14 @@ pub const Editor = struct {
                 }
             },
             .shift_tab => try edit.unindentRegion(self),
+            .insert => {
+                self.overwrite_mode = !self.overwrite_mode;
+                if (self.overwrite_mode) {
+                    self.getCurrentView().setError("Overwrite mode enabled");
+                } else {
+                    self.getCurrentView().setError("Insert mode enabled");
+                }
+            },
             .char => |c| if (c >= 32 and c < 127) try self.insertCodepoint(c),
             .codepoint => |cp| try self.insertCodepoint(cp),
             else => {
@@ -2464,6 +2475,17 @@ pub const Editor = struct {
         const len = std.unicode.utf8Encode(codepoint, &buf) catch return error.InvalidUtf8;
 
         const pos = self.getCurrentView().getCursorBufferPos();
+
+        // 上書きモード：行末・改行以外では現在位置の文字を削除
+        if (self.overwrite_mode and codepoint != '\n') {
+            // 現在位置の文字を確認（改行でなければ削除）
+            const current_byte = buffer.getByteAt(pos);
+            if (current_byte != null and current_byte.? != '\n') {
+                // 現在位置のUTF-8文字の長さを取得して削除
+                const char_len = std.unicode.utf8ByteSequenceLength(current_byte.?) catch 1;
+                try buffer.delete(pos, char_len);
+            }
+        }
 
         // バッファ変更を先に実行
         try buffer.insertSlice(pos, buf[0..len]);
