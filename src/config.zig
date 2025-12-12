@@ -30,6 +30,18 @@ pub const ANSI = struct {
     /// カーソルを表示
     pub const SHOW_CURSOR = "\x1b[?25h";
 
+    // === Alternate Screen Buffer ===
+    /// 代替画面バッファを有効化（終了時に元の画面に戻る）
+    pub const ENTER_ALT_SCREEN = "\x1b[?1049h";
+    /// 代替画面バッファを無効化（元の画面に戻る）
+    pub const EXIT_ALT_SCREEN = "\x1b[?1049l";
+
+    // === マウスイベント ===
+    /// マウスボタンイベントを有効化（スクロールを含む）
+    pub const ENABLE_MOUSE = "\x1b[?1000h";
+    /// マウスボタンイベントを無効化
+    pub const DISABLE_MOUSE = "\x1b[?1000l";
+
     // === 表示属性 ===
     /// 表示属性リセット
     pub const RESET = "\x1b[m";

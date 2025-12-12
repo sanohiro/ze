@@ -77,6 +77,12 @@ pub const Terminal = struct {
         self.setupSigwinch();
         self.setupTerminateSignals();
 
+        // 代替画面バッファを有効化（終了時に元の画面に戻る）
+        // マウスイベントを有効化（スクロールジェスチャーをキャプチャして無視）
+        const stdout: std.fs.File = .{ .handle = posix.STDOUT_FILENO };
+        stdout.writeAll(config.ANSI.ENTER_ALT_SCREEN) catch {};
+        stdout.writeAll(config.ANSI.ENABLE_MOUSE) catch {};
+
         return self;
     }
 
@@ -114,14 +120,13 @@ pub const Terminal = struct {
     }
 
     pub fn deinit(self: *Terminal) void {
-        // 画面をクリアしてカーソルを表示
-        self.clear() catch {};
+        // マウスイベントを無効化
+        self.write(config.ANSI.DISABLE_MOUSE) catch {};
+        // カーソルを表示
         self.showCursor() catch {};
+        // 代替画面バッファを終了（元の画面に戻る）
+        self.write(config.ANSI.EXIT_ALT_SCREEN) catch {};
         self.flush() catch {};
-
-        // 改行を出力（zshの%記号を防ぐ）
-        const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
-        stdout.writeAll("\n") catch {};
 
         self.disableRawMode() catch {};
         self.buf.deinit(self.allocator);

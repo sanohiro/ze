@@ -221,6 +221,20 @@ pub fn readKeyFromReader(reader: *InputReader) !?Key {
                 'H' => return Key.home,
                 'F' => return Key.end_key,
                 'Z' => return Key.shift_tab,
+                'M' => {
+                    // マウスイベント（X10形式）: ESC [ M <button> <x> <y>
+                    // スクロールジェスチャーを含む。3バイト読んで無視する。
+                    _ = try reader.readBytes(buf[3..6]);
+                    return null; // 無視して次のキーを待つ
+                },
+                '<' => {
+                    // SGR拡張マウスイベント: ESC [ < ... m/M
+                    // 'm'または'M'が来るまで読み捨てる
+                    while (try reader.readByte()) |b| {
+                        if (b == 'm' or b == 'M') break;
+                    }
+                    return null; // 無視して次のキーを待つ
+                },
                 '1'...'9' => {
                     const n3 = try reader.readBytes(buf[3..4]);
                     if (n3 > 0) {
