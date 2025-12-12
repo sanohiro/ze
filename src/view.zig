@@ -28,6 +28,7 @@ const Terminal = @import("terminal").Terminal;
 const config = @import("config");
 const syntax = @import("syntax");
 const encoding = @import("encoding");
+const regex = @import("regex");
 const unicode = @import("unicode");
 
 // ANSIエスケープシーケンス定数（config.ANSIを参照）
@@ -217,6 +218,8 @@ pub const View = struct {
     error_msg_len: usize,
     search_highlight_buf: [256]u8, // 検索パターン（固定バッファ）
     search_highlight_len: usize,
+    is_regex_highlight: bool, // 正規表現ハイライトモード
+    compiled_highlight_regex: ?regex.Regex, // コンパイル済み正規表現（キャッシュ）
     selection_start: ?usize, // 選択開始位置
     selection_end: ?usize, // 選択終了位置
 
@@ -264,6 +267,8 @@ pub const View = struct {
             .prev_screen = prev_screen,
             .search_highlight_buf = undefined,
             .search_highlight_len = 0,
+            .is_regex_highlight = false,
+            .compiled_highlight_regex = null,
             .cached_line_num_width = 0,
             .language = &syntax.lang_text, // デフォルトはテキストモード
             .tab_width = null, // 言語デフォルトを使用
@@ -381,6 +386,10 @@ pub const View = struct {
         // レンダリング用スクラッチバッファのクリーンアップ
         self.expanded_line.deinit(allocator);
         self.highlighted_line.deinit(allocator);
+        // 正規表現キャッシュのクリーンアップ
+        if (self.compiled_highlight_regex) |*r| {
+            r.deinit();
+        }
     }
 
     // エラーメッセージを設定（固定バッファにコピー）
@@ -409,12 +418,30 @@ pub const View = struct {
 
     // 検索ハイライトを設定（固定バッファにコピー）
     pub fn setSearchHighlight(self: *View, search_str: ?[]const u8) void {
+        self.setSearchHighlightEx(search_str, false);
+    }
+
+    /// 正規表現フラグ付きの検索ハイライト設定
+    pub fn setSearchHighlightEx(self: *View, search_str: ?[]const u8, is_regex: bool) void {
+        // 前の正規表現キャッシュをクリア
+        if (self.compiled_highlight_regex) |*r| {
+            r.deinit();
+            self.compiled_highlight_regex = null;
+        }
+
         if (search_str) |str| {
             const len = @min(str.len, self.search_highlight_buf.len);
             @memcpy(self.search_highlight_buf[0..len], str[0..len]);
             self.search_highlight_len = len;
+            self.is_regex_highlight = is_regex;
+
+            // 正規表現モードならコンパイル
+            if (is_regex and len > 0) {
+                self.compiled_highlight_regex = regex.Regex.compile(self.allocator, self.search_highlight_buf[0..len]) catch null;
+            }
         } else {
             self.search_highlight_len = 0;
+            self.is_regex_highlight = false;
         }
         // ハイライトが変わったので全画面再描画
         self.markFullRedraw();
@@ -747,9 +774,8 @@ pub const View = struct {
     /// 3. マッチがあればhighlighted_lineバッファを使用してハイライト付き行を構築
     ///
     /// 【ANSIエスケープシーケンス対応】
-    /// findSkippingAnsi()を使用してANSI色コード内でマッチしないようにする。
-    /// 例: "\x1b[90mhello\x1b[m" で "hello" を検索すると、
-    /// ANSIコード部分ではなくテキスト部分のみマッチ。
+    /// リテラル検索ではfindSkippingAnsi()を使用してANSI色コード内でマッチしないようにする。
+    /// 正規表現検索では生テキストに対して直接マッチング。
     ///
     /// 【戻り値】
     /// - マッチなし: 入力lineをそのまま返す（アロケーションなし）
@@ -761,7 +787,12 @@ pub const View = struct {
         const search_str = self.getSearchHighlight() orelse return line;
         if (search_str.len == 0 or line.len == 0) return line;
 
-        // 最初のマッチを事前チェック（マッチがなければコピーせず元を返す）
+        // 正規表現モードか確認
+        if (self.is_regex_highlight) {
+            return self.applyRegexHighlight(line, is_cursor_line);
+        }
+
+        // リテラルモード: 最初のマッチを事前チェック（マッチがなければコピーせず元を返す）
         const first_match = findSkippingAnsi(line, 0, search_str) orelse return line;
 
         // カーソル行は反転+下線、それ以外は反転のみ
@@ -793,6 +824,71 @@ pub const View = struct {
                 // ハイライト終了
                 try self.highlighted_line.appendSlice(self.allocator, highlight_end);
                 pos = match_pos + search_str.len;
+            } else {
+                // これ以上マッチなし：残りをコピー
+                try self.highlighted_line.appendSlice(self.allocator, line[pos..]);
+                break;
+            }
+        }
+        return self.highlighted_line.items;
+    }
+
+    /// 正規表現検索ハイライトを適用
+    ///
+    /// 【処理フロー】
+    /// 1. コンパイル済み正規表現がなければ元を返す
+    /// 2. 正規表現で全マッチを見つける
+    /// 3. マッチ部分をハイライト表示
+    fn applyRegexHighlight(self: *View, line: []const u8, is_cursor_line: bool) ![]const u8 {
+        // コンパイル済み正規表現がなければ元を返す
+        var re = self.compiled_highlight_regex orelse return line;
+
+        // 最初のマッチを事前チェック
+        const first_match_result = re.search(line, 0) orelse return line;
+        const first_match_start = first_match_result.start;
+        const first_match_len = first_match_result.end - first_match_result.start;
+
+        // 空マッチの場合はスキップ（無限ループ防止）
+        if (first_match_len == 0) return line;
+
+        // カーソル行は反転+下線、それ以外は反転のみ
+        const highlight_start = if (is_cursor_line) ANSI.INVERT ++ ANSI.UNDERLINE else ANSI.INVERT;
+        const highlight_end = if (is_cursor_line) ANSI.UNDERLINE_OFF ++ ANSI.INVERT_OFF else ANSI.INVERT_OFF;
+
+        // マッチがあるのでバッファを使用
+        self.highlighted_line.clearRetainingCapacity();
+
+        // 最初のマッチ前の部分をコピー
+        try self.highlighted_line.appendSlice(self.allocator, line[0..first_match_start]);
+        // ハイライト開始
+        try self.highlighted_line.appendSlice(self.allocator, highlight_start);
+        // マッチ部分をコピー
+        try self.highlighted_line.appendSlice(self.allocator, line[first_match_start .. first_match_start + first_match_len]);
+        // ハイライト終了
+        try self.highlighted_line.appendSlice(self.allocator, highlight_end);
+        var pos: usize = first_match_start + first_match_len;
+
+        // 残りのマッチを処理
+        while (pos < line.len) {
+            if (re.search(line, pos)) |match_result| {
+                const match_start = match_result.start;
+                const match_len = match_result.end - match_result.start;
+
+                // 空マッチの場合は1バイト進めて続行
+                if (match_len == 0) {
+                    pos += 1;
+                    continue;
+                }
+
+                // マッチ前の部分をコピー
+                try self.highlighted_line.appendSlice(self.allocator, line[pos..match_start]);
+                // ハイライト開始
+                try self.highlighted_line.appendSlice(self.allocator, highlight_start);
+                // マッチ部分をコピー
+                try self.highlighted_line.appendSlice(self.allocator, line[match_start .. match_start + match_len]);
+                // ハイライト終了
+                try self.highlighted_line.appendSlice(self.allocator, highlight_end);
+                pos = match_start + match_len;
             } else {
                 // これ以上マッチなし：残りをコピー
                 try self.highlighted_line.appendSlice(self.allocator, line[pos..]);

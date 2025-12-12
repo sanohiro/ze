@@ -226,7 +226,7 @@ pub const SearchService = struct {
         return regex.isRegexPattern(pattern);
     }
 
-    /// 統合検索（パターンに応じてリテラル/正規表現を選択）
+    /// 統合検索（パターンに応じてリテラル/正規表現を選択）- 後方互換性のため残す
     pub fn search(self: *Self, content: []const u8, pattern: []const u8, start_pos: usize, forward: bool, skip_current: bool) ?SearchMatch {
         if (forward) {
             // 前方検索: カーソル位置+1から検索
@@ -252,14 +252,37 @@ pub const SearchService = struct {
         }
     }
 
-    /// Buffer直接検索（コピーなし、リテラルパターンのみ）
-    /// 正規表現パターンの場合はnullを返す（呼び出し側でfallback処理が必要）
-    pub fn searchBuffer(_: *Self, buffer: *const Buffer, pattern: []const u8, start_pos: usize, forward: bool, skip_current: bool) ?SearchMatch {
-        // 正規表現パターンの場合はBuffer直接検索に対応していない
-        if (isRegexPattern(pattern)) {
-            return null; // 呼び出し側でextractText + search を使う
+    /// 正規表現検索（常に正規表現として処理）
+    pub fn searchRegex(self: *Self, content: []const u8, pattern: []const u8, start_pos: usize, forward: bool, skip_current: bool) ?SearchMatch {
+        if (forward) {
+            const search_from = if (skip_current and start_pos < content.len) start_pos + 1 else start_pos;
+            return self.searchRegexForward(content, pattern, search_from);
+        } else {
+            // 正規表現の後方検索では、パターン長が可変なのでstart_posから検索
+            const search_from = if (skip_current and start_pos > 0) start_pos - 1 else start_pos;
+            return self.searchRegexBackward(content, pattern, search_from);
         }
+    }
 
+    /// リテラル検索（常にリテラルとして処理）
+    pub fn searchLiteral(self: *Self, content: []const u8, pattern: []const u8, start_pos: usize, forward: bool, skip_current: bool) ?SearchMatch {
+        if (forward) {
+            const search_from = if (skip_current and start_pos < content.len) start_pos + 1 else start_pos;
+            return self.searchForward(content, pattern, search_from);
+        } else {
+            const search_from = if (skip_current and start_pos >= pattern.len)
+                start_pos - pattern.len
+            else if (skip_current)
+                0
+            else
+                start_pos;
+            return self.searchBackward(content, pattern, search_from);
+        }
+    }
+
+    /// Buffer直接検索（コピーなし、リテラル検索専用）
+    /// 呼び出し側が既にリテラル検索であることを確認している前提
+    pub fn searchBuffer(_: *Self, buffer: *const Buffer, pattern: []const u8, start_pos: usize, forward: bool, skip_current: bool) ?SearchMatch {
         if (forward) {
             // 前方検索: カーソル位置+1から検索（現在のマッチをスキップ）
             const search_from = if (skip_current and start_pos < buffer.len()) start_pos + 1 else start_pos;

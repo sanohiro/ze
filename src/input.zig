@@ -135,6 +135,7 @@ pub const Key = union(enum) {
     codepoint: u21, // UTF-8文字
     ctrl: u8,
     alt: u8,
+    ctrl_alt: u8, // Ctrl+Alt+文字（C-M-s等）
     alt_delete,
     alt_arrow_up,
     alt_arrow_down,
@@ -205,6 +206,13 @@ pub fn readKeyFromReader(reader: *InputReader) !?Key {
         // まず1バイトだけ読む
         const first_byte = try reader.readByte() orelse return Key.escape;
         buf[1] = first_byte;
+
+        // Ctrl+Alt+文字（ESC + Ctrl文字）: C-M-s = ESC + 0x13
+        if (first_byte >= 1 and first_byte <= 26) {
+            // Ctrl+文字を元の文字に復元してctrl_altとして返す
+            // 例: 0x13 (C-s) -> 's' (0x73)
+            return Key{ .ctrl_alt = first_byte + 'a' - 1 };
+        }
 
         // Alt+印刷可能ASCII文字（ESC + 文字）
         if (first_byte >= 0x20 and first_byte < 0x7F and first_byte != '[') {
@@ -378,6 +386,7 @@ pub fn keyToString(key: Key, buf: []u8) ![]const u8 {
         },
         .ctrl => |c| try std.fmt.bufPrint(buf, "C-{c}", .{c}),
         .alt => |c| try std.fmt.bufPrint(buf, "M-{c}", .{c}),
+        .ctrl_alt => |c| try std.fmt.bufPrint(buf, "C-M-{c}", .{c}),
         .alt_delete => "M-Del",
         .alt_arrow_up => "M-↑",
         .alt_arrow_down => "M-↓",

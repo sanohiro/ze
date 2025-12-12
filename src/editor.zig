@@ -155,11 +155,14 @@ pub const Editor = struct {
     // 検索状態（グローバル）
     search_start_pos: ?usize,
     last_search: ?[]const u8,
+    is_regex_search: bool, // 正規表現検索モード（C-M-s / C-M-r）
 
     // 置換状態（グローバル）
+    is_regex_replace: bool, // 正規表現置換モード（C-M-%）
     replace_search: ?[]const u8,
     replace_replacement: ?[]const u8,
     replace_current_pos: ?usize,
+    replace_match_len: ?usize, // 正規表現の場合、パターン長 != マッチ長
     replace_match_count: usize,
 
     // サービス
@@ -207,9 +210,12 @@ pub const Editor = struct {
             .rectangle_ring = null,
             .search_start_pos = null,
             .last_search = null,
+            .is_regex_search = false,
+            .is_regex_replace = false,
             .replace_search = null,
             .replace_replacement = null,
             .replace_current_pos = null,
+            .replace_match_len = null,
             .replace_match_count = 0,
             .shell_service = ShellService.init(allocator),
             .search_service = SearchService.init(allocator),
@@ -425,28 +431,75 @@ pub const Editor = struct {
 
     /// インクリメンタルサーチを開始（C-s / C-r）
     fn startIsearch(self: *Editor, forward: bool) !void {
+        self.is_regex_search = false; // リテラル検索
+        self.startIsearchCommon(forward);
+    }
+
+    /// 正規表現インクリメンタルサーチを開始（C-M-s / C-M-r）
+    fn startRegexIsearch(self: *Editor, forward: bool) !void {
+        self.is_regex_search = true; // 正規表現検索
+        self.startIsearchCommon(forward);
+    }
+
+    /// Query Replace開始（M-%）
+    fn startQueryReplace(self: *Editor) void {
+        self.is_regex_replace = false;
+        self.startQueryReplaceCommon();
+    }
+
+    /// 正規表現Query Replace開始（C-M-%）
+    fn startRegexQueryReplace(self: *Editor) !void {
+        self.is_regex_replace = true;
+        self.startQueryReplaceCommon();
+    }
+
+    /// Query Replace共通処理
+    fn startQueryReplaceCommon(self: *Editor) void {
+        self.mode = .query_replace_input_search;
+        self.clearInputBuffer();
+        self.replace_match_count = 0;
+
+        const prompt_base = if (self.is_regex_replace) "Query replace regexp" else "Query replace";
+
+        // 前回の値があればデフォルトとして表示
+        if (self.replace_search) |prev| {
+            self.setPrompt("{s} (default {s}): ", .{ prompt_base, prev });
+            const base_len: usize = if (self.is_regex_replace) 34 else 27; // "Query replace regexp (default ): " or "Query replace (default ): "
+            self.prompt_prefix_len = base_len + stringDisplayWidth(prev);
+        } else {
+            const base_len: usize = if (self.is_regex_replace) 23 else 16; // "Query replace regexp: " or "Query replace: "
+            self.prompt_prefix_len = base_len;
+            self.setPrompt("{s}: ", .{prompt_base});
+        }
+    }
+
+    /// I-search共通処理
+    fn startIsearchCommon(self: *Editor, forward: bool) void {
         // 検索モードに入る
         self.mode = if (forward) .isearch_forward else .isearch_backward;
         self.search_start_pos = self.getCurrentView().getCursorBufferPos();
 
+        const prefix = if (self.is_regex_search)
+            (if (forward) "Regexp I-search: " else "Regexp I-search backward: ")
+        else
+            (if (forward) "I-search: " else "I-search backward: ");
+        const prefix_len: usize = if (self.is_regex_search)
+            (if (forward) 18 else 27)
+        else
+            (if (forward) 11 else 20);
+
         if (self.last_search) |search_str| {
             // 前回の検索パターンがあれば、それで検索を実行
             self.minibuffer.setContent(search_str) catch {};
-            self.getCurrentView().setSearchHighlight(search_str);
-            try self.performSearch(forward, true);
-            const prefix = if (forward) "I-search: " else "I-search backward: ";
-            self.prompt_prefix_len = if (forward) 11 else 20;
+            self.getCurrentView().setSearchHighlightEx(search_str, self.is_regex_search);
+            self.performSearch(forward, true) catch {};
+            self.prompt_prefix_len = prefix_len;
             self.setPrompt("{s}{s}", .{ prefix, search_str });
         } else {
             // 新規検索モードに入る
             self.clearInputBuffer();
-            if (forward) {
-                self.prompt_prefix_len = 11;
-                self.getCurrentView().setError("I-search: ");
-            } else {
-                self.prompt_prefix_len = 20;
-                self.getCurrentView().setError("I-search backward: ");
-            }
+            self.prompt_prefix_len = prefix_len;
+            self.getCurrentView().setError(prefix);
         }
     }
 
@@ -568,7 +621,7 @@ pub const Editor = struct {
 
         // 検索実行
         if (self.minibuffer.getContent().len > 0) {
-            self.getCurrentView().setSearchHighlight(self.minibuffer.getContent());
+            self.getCurrentView().setSearchHighlightEx(self.minibuffer.getContent(), self.is_regex_search);
             try self.performSearch(is_forward, false);
         }
     }
@@ -1897,13 +1950,13 @@ pub const Editor = struct {
                     },
                     's' => {
                         if (self.minibuffer.getContent().len > 0) {
-                            self.getCurrentView().setSearchHighlight(self.minibuffer.getContent());
+                            self.getCurrentView().setSearchHighlightEx(self.minibuffer.getContent(), self.is_regex_search);
                             try self.performSearch(true, true);
                         }
                     },
                     'r' => {
                         if (self.minibuffer.getContent().len > 0) {
-                            self.getCurrentView().setSearchHighlight(self.minibuffer.getContent());
+                            self.getCurrentView().setSearchHighlightEx(self.minibuffer.getContent(), self.is_regex_search);
                             try self.performSearch(false, true);
                         }
                     },
@@ -1940,7 +1993,7 @@ pub const Editor = struct {
                     const prefix = if (is_forward) "I-search: " else "I-search backward: ";
                     self.setPrompt("{s}{s}", .{ prefix, self.minibuffer.getContent() });
                     if (self.minibuffer.getContent().len > 0) {
-                        self.getCurrentView().setSearchHighlight(self.minibuffer.getContent());
+                        self.getCurrentView().setSearchHighlightEx(self.minibuffer.getContent(), self.is_regex_search);
                         if (self.search_start_pos) |start_pos| {
                             self.setCursorToPos(start_pos);
                         }
@@ -2142,7 +2195,7 @@ pub const Editor = struct {
         // インクリメンタルハイライト
         const content = self.minibuffer.getContent();
         if (content.len > 0) {
-            self.getCurrentView().setSearchHighlight(content);
+            self.getCurrentView().setSearchHighlightEx(content, self.is_regex_replace);
         } else {
             self.getCurrentView().setSearchHighlight(null);
         }
@@ -2335,19 +2388,7 @@ pub const Editor = struct {
                 }
                 // keymapにない特殊処理
                 switch (c) {
-                    '%' => {
-                        self.mode = .query_replace_input_search;
-                        self.clearInputBuffer();
-                        self.replace_match_count = 0;
-                        // 前回の値があればデフォルトとして表示
-                        if (self.replace_search) |prev| {
-                            self.setPrompt("Query replace (default {s}): ", .{prev});
-                            self.prompt_prefix_len = 26 + stringDisplayWidth(prev);
-                        } else {
-                            self.prompt_prefix_len = 16;
-                            self.getCurrentView().setError("Query replace: ");
-                        }
-                    },
+                    '%' => self.startQueryReplace(), // M-%: リテラル置換
                     '|' => {
                         self.mode = .shell_command;
                         self.clearInputBuffer();
@@ -2361,6 +2402,14 @@ pub const Editor = struct {
                         self.getCurrentView().setError(": ");
                     },
                     '?' => try self.showHelp(),
+                    else => {},
+                }
+            },
+            .ctrl_alt => |c| {
+                switch (c) {
+                    's' => try self.startRegexIsearch(true), // C-M-s: 正規表現前方検索
+                    'r' => try self.startRegexIsearch(false), // C-M-r: 正規表現後方検索
+                    '%' => try self.startRegexQueryReplace(), // C-M-%: 正規表現置換
                     else => {},
                 }
             },
@@ -2653,18 +2702,10 @@ pub const Editor = struct {
         if (search_str.len == 0) return;
 
         const start_pos = self.getCurrentView().getCursorBufferPos();
-        const is_regex = SearchService.isRegexPattern(search_str);
 
-        // まずコピーなしのBuffer直接検索を試みる（リテラルパターンのみ）
-        if (self.search_service.searchBuffer(buffer, search_str, start_pos, forward, skip_current)) |match| {
-            // Emacs風：マッチ終端にカーソルを置く
-            self.setCursorToPos(match.start + match.len);
-            return;
-        }
-
-        // 正規表現パターンの場合のみ、バッファをコピーして検索
-        // 大きなファイルでは検索範囲を制限して体感速度を維持
-        if (is_regex) {
+        if (self.is_regex_search) {
+            // 正規表現検索（C-M-s / C-M-r）
+            // 大きなファイルでは検索範囲を制限して体感速度を維持
             const max_search_size: usize = 1024 * 1024; // 1MB
             const search_start: usize = if (buffer.total_len > max_search_size and start_pos > max_search_size / 2)
                 start_pos - max_search_size / 2
@@ -2679,9 +2720,16 @@ pub const Editor = struct {
             // 検索開始位置を調整（抽出したテキスト内での相対位置）
             const adjusted_start = if (start_pos > search_start) start_pos - search_start else 0;
 
-            if (self.search_service.search(content, search_str, adjusted_start, forward, skip_current)) |match| {
+            if (self.search_service.searchRegex(content, search_str, adjusted_start, forward, skip_current)) |match| {
                 // 見つかった位置を元のバッファ位置に変換（Emacs風：マッチ終端）
                 self.setCursorToPos(match.start + match.len + search_start);
+                return;
+            }
+        } else {
+            // リテラル検索（C-s / C-r）- コピーなしのBuffer直接検索
+            if (self.search_service.searchBuffer(buffer, search_str, start_pos, forward, skip_current)) |match| {
+                // Emacs風：マッチ終端にカーソルを置く
+                self.setCursorToPos(match.start + match.len);
                 return;
             }
         }
@@ -2697,43 +2745,39 @@ pub const Editor = struct {
         const buf_len = buffer.len();
         if (start_pos >= buf_len) return false;
 
-        // バッファを検索
-        var iter = PieceIterator.init(buffer);
-        iter.seek(start_pos);
+        if (self.is_regex_replace) {
+            // 正規表現置換（C-M-%）
+            // 大きなファイルでは検索範囲を制限して体感速度を維持
+            const max_search_size: usize = 1024 * 1024; // 1MB
+            const search_start: usize = if (buf_len > max_search_size and start_pos > max_search_size / 2)
+                start_pos - max_search_size / 2
+            else
+                0;
+            const search_end: usize = @min(buf_len, search_start + max_search_size);
+            const search_len = search_end - search_start;
 
-        var match_start: ?usize = null;
-        var match_len: usize = 0;
+            const content = try self.extractText(search_start, search_len);
+            defer self.allocator.free(content);
 
-        while (iter.global_pos < buf_len) {
-            const start = iter.global_pos;
+            // 検索開始位置を調整（抽出したテキスト内での相対位置）
+            const adjusted_start = if (start_pos > search_start) start_pos - search_start else 0;
 
-            // 一致を確認
-            var temp_iter = PieceIterator.init(buffer);
-            temp_iter.seek(start);
-
-            var matched = true;
-            for (search) |ch| {
-                const next_byte = temp_iter.next();
-                if (next_byte == null or next_byte.? != ch) {
-                    matched = false;
-                    break;
-                }
+            if (self.search_service.searchRegex(content, search, adjusted_start, true, false)) |match| {
+                // 見つかった位置を元のバッファ位置に変換
+                const pos = match.start + search_start;
+                self.setCursorToPos(pos);
+                self.replace_current_pos = pos;
+                self.replace_match_len = match.len; // 実際のマッチ長を保存
+                return true;
             }
-
-            if (matched) {
-                match_start = start;
-                match_len = search.len;
-                break;
+        } else {
+            // リテラル置換（M-%）- コピーなしのBuffer直接検索
+            if (self.search_service.searchBuffer(buffer, search, start_pos, true, false)) |match| {
+                self.setCursorToPos(match.start);
+                self.replace_current_pos = match.start;
+                self.replace_match_len = match.len; // リテラルなのでsearch.lenと同じ
+                return true;
             }
-
-            _ = iter.next();
-        }
-
-        if (match_start) |pos| {
-            // 一致が見つかった：カーソルを移動
-            self.setCursorToPos(pos);
-            self.replace_current_pos = pos;
-            return true;
         }
 
         return false;
@@ -2743,19 +2787,20 @@ pub const Editor = struct {
     fn replaceCurrentMatch(self: *Editor) !void {
         const buffer = self.getCurrentBufferContent();
         const buffer_state = self.getCurrentBuffer();
-        const search = self.replace_search orelse return error.NoSearchString;
+        _ = self.replace_search orelse return error.NoSearchString;
         const replacement = self.replace_replacement orelse return error.NoReplacementString;
         const match_pos = self.replace_current_pos orelse return error.NoMatchPosition;
+        const match_len = self.replace_match_len orelse return error.NoMatchLength;
 
         // Undo記録のために現在のカーソル位置を保存
         const cursor_pos_before = match_pos;
 
-        // 一致部分のテキストを保存（Undo用）
-        const old_text = try self.extractText(match_pos, search.len);
+        // 一致部分のテキストを保存（Undo用）- 実際のマッチ長を使用
+        const old_text = try self.extractText(match_pos, match_len);
         defer self.allocator.free(old_text);
 
-        // 置換を実行（削除してから挿入）
-        try buffer.delete(match_pos, search.len);
+        // 置換を実行（削除してから挿入）- 実際のマッチ長を使用
+        try buffer.delete(match_pos, match_len);
         if (replacement.len > 0) {
             try buffer.insertSlice(match_pos, replacement);
         }
@@ -2770,9 +2815,9 @@ pub const Editor = struct {
         self.setCursorToPos(match_pos + replacement.len);
 
         // 置換した行から再描画
-        // 検索文字列・置換文字列に改行が含まれる場合は行数が変わるため全画面再描画
+        // マッチテキスト・置換文字列に改行が含まれる場合は行数が変わるため全画面再描画
         // 同一バッファを表示している全ウィンドウを更新
-        const has_newline = std.mem.indexOf(u8, search, "\n") != null or
+        const has_newline = std.mem.indexOf(u8, old_text, "\n") != null or
             std.mem.indexOf(u8, replacement, "\n") != null;
         if (has_newline) {
             self.markAllViewsFullRedrawForBuffer(buffer_state.id);
@@ -2819,7 +2864,7 @@ pub const Editor = struct {
 
             // 検索を実行
             if (text.len > 0) {
-                self.getCurrentView().setSearchHighlight(text);
+                self.getCurrentView().setSearchHighlightEx(text, self.is_regex_search);
                 if (self.search_start_pos) |start_pos| {
                     self.setCursorToPos(start_pos);
                 }

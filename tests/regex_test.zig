@@ -429,3 +429,22 @@ test "multiline anchor" {
     try testing.expect(result != null);
     try testing.expectEqual(@as(usize, 6), result.?.start);
 }
+
+test "comma at end of line" {
+    var regex = try Regex.compile(testing.allocator, ",$");
+    defer regex.deinit();
+
+    // 行末のカンマにマッチ
+    const result1 = regex.search("hello,\nworld", 0);
+    try testing.expect(result1 != null);
+    try testing.expectEqual(@as(usize, 5), result1.?.start);
+    try testing.expectEqual(@as(usize, 6), result1.?.end);
+    
+    // EOFの直前のカンマにマッチ
+    const result2 = regex.search("hello,", 0);
+    try testing.expect(result2 != null);
+    
+    // 行末でないカンマはマッチしない
+    const result3 = regex.search("hello, world", 0);
+    try testing.expect(result3 == null);
+}

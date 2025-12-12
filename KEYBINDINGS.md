@@ -64,11 +64,13 @@ Moving without Shift clears the selection.
 
 | Key | Action |
 |-----|--------|
-| `C-s` / `C-r` | Search forward/backward |
+| `C-s` / `C-r` | Literal search forward/backward |
+| `C-M-s` / `C-M-r` | Regex search forward/backward |
 | `C-p` / `C-n` | Previous/next search history (in search mode) |
-| `M-%` | Query replace (y/n/!/q) |
+| `M-%` | Literal query replace (y/n/!/q) |
+| `C-M-%` | Regex query replace (y/n/!/q) |
 
-Regex supported: `\d+` for digits, `^TODO` for TODO at line start. See [REGEX.md](REGEX.md) for full syntax.
+For regex search/replace, see [REGEX.md](REGEX.md) for supported syntax (`\d+`, `^TODO`, `,$`, etc.).
 
 ## Window & Buffer
 

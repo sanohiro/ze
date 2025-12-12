@@ -96,7 +96,7 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    // view <- buffer, terminal, config, syntax, encoding, unicode
+    // view <- buffer, terminal, config, syntax, encoding, unicode, regex
     const view_mod = b.addModule("view", .{
         .root_source_file = b.path("src/view.zig"),
         .target = target,
@@ -108,6 +108,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "syntax", .module = syntax_mod },
             .{ .name = "encoding", .module = encoding_mod },
             .{ .name = "unicode", .module = unicode_mod },
+            .{ .name = "regex", .module = regex_mod },
         },
     });
 
