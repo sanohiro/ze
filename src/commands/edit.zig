@@ -730,9 +730,16 @@ pub fn selectAll(e: *Editor) !void {
 // UI
 // ========================================
 
-/// C-g: エラーメッセージをクリア
-pub fn clearError(e: *Editor) !void {
-    e.getCurrentView().clearError();
+/// C-g: キャンセル（マークをクリアし、エラーメッセージも消す）
+pub fn keyboardQuit(e: *Editor) !void {
+    const window = e.getCurrentWindow();
+    // マークがあればクリア（Emacsと同じ挙動）
+    if (window.mark_pos != null) {
+        window.mark_pos = null;
+        e.getCurrentView().setError("Mark deactivated");
+    } else {
+        e.getCurrentView().clearError();
+    }
 }
 
 // ========================================

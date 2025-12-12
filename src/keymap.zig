@@ -145,7 +145,7 @@ pub const Keymap = struct {
         try self.bindCtrl('y', edit.yank);
 
         // その他
-        try self.bindCtrl('g', edit.clearError);
+        try self.bindCtrl('g', edit.keyboardQuit);
         try self.bindCtrl('u', edit.undo);
         try self.bindCtrl(CtrlCode.SLASH, edit.redo); // C-/
         try self.bindCtrl('/', edit.redo);

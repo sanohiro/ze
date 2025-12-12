@@ -147,6 +147,16 @@ fn hasAnsiGray(line: []const u8, content_start: usize) bool {
     return std.mem.indexOf(u8, content, "\x1b[90m") != null;
 }
 
+/// 行の本文部分（行番号の後）にANSI反転コード(\x1b[7m)が含まれているかチェック
+/// 選択範囲ハイライトの有無を判定するために使用
+fn hasAnsiInvert(line: []const u8, content_start: usize) bool {
+    // 行番号の後ろの部分のみチェック
+    if (content_start >= line.len) return false;
+    const content = line[content_start..];
+    // 反転のANSIコード \x1b[7m を探す
+    return std.mem.indexOf(u8, content, "\x1b[7m") != null;
+}
+
 pub const View = struct {
     buffer: *Buffer,
     top_line: usize,
@@ -743,8 +753,11 @@ pub const View = struct {
             // コメント色のANSIコードがある場合は行全体を再描画（差分描画ではカラーが正しく適用されない）
             const old_has_gray = hasAnsiGray(old_line, line_num_byte_end);
             const new_has_gray = hasAnsiGray(new_line, line_num_byte_end);
-            // グレーがある場合は行全体を再描画（差分描画だとカラーが途切れる問題を回避）
-            if (old_has_gray or new_has_gray) {
+            // 選択範囲の反転表示があるかチェック
+            const old_has_invert = hasAnsiInvert(old_line, line_num_byte_end);
+            const new_has_invert = hasAnsiInvert(new_line, line_num_byte_end);
+            // グレーまたは反転がある場合は行全体を再描画（差分描画だとカラーが途切れる問題を回避）
+            if (old_has_gray or new_has_gray or old_has_invert or new_has_invert) {
                 // 内容が異なる場合のみ再描画
                 if (!std.mem.eql(u8, old_line, new_line)) {
                     try term.moveCursor(abs_row, viewport_x);
