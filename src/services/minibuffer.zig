@@ -220,13 +220,13 @@ pub const Minibuffer = struct {
         var col: usize = self.prompt_len;
         var pos: usize = 0;
         while (pos < self.cursor and pos < self.buffer.items.len) {
-            const cp = unicode.decodeUtf8(self.buffer.items[pos..]) orelse {
+            const cluster = unicode.nextGraphemeCluster(self.buffer.items[pos..]) orelse {
                 col += 1;
                 pos += 1;
                 continue;
             };
-            col += unicode.codePointWidth(cp.codepoint);
-            pos += cp.len;
+            col += cluster.display_width;
+            pos += cluster.byte_len;
         }
         return col;
     }

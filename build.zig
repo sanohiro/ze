@@ -334,6 +334,7 @@ pub fn build(b: *std.Build) void {
         "tests/keymap_test.zig",
         "tests/regex_test.zig",
         "tests/syntax_test.zig",
+        "tests/encoding_test.zig",
         // services/
         "tests/services/buffer_manager_test.zig",
         "tests/services/minibuffer_test.zig",
@@ -361,6 +362,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "keymap", .module = keymap_mod },
                 .{ .name = "regex", .module = regex_mod },
                 .{ .name = "syntax", .module = syntax_mod },
+                .{ .name = "encoding", .module = encoding_mod },
                 // services
                 .{ .name = "buffer_manager", .module = buffer_manager_mod },
                 .{ .name = "minibuffer", .module = minibuffer_mod },

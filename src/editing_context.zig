@@ -747,6 +747,9 @@ pub const EditingContext = struct {
         // カーソル復元
         self.cursor = entry.cursor_after;
 
+        // Redoで変更を再適用したのでmodifiedをtrueに
+        self.modified = true;
+
         const line = self.buffer.findLineByPos(entry.position);
         self.notifyChange(.{
             .change_type = if (entry.op == .insert) .insert else .delete,
