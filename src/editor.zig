@@ -2768,6 +2768,9 @@ pub const Editor = struct {
             defer self.mode = .normal; // エラー時も必ずモード復帰
 
             try self.processShellResult(result.stdout, result.stderr, result.exit_status, result.input_source, result.output_dest);
+
+            // 完了後に再描画をマーク（ステータスバー更新のため）
+            self.getCurrentView().markFullRedraw();
         } else {
             // まだ実行中 - スピナーを更新
             const spinner_chars = [_]u8{ '|', '/', '-', '\\' };
