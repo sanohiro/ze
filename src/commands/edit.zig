@@ -374,7 +374,8 @@ pub fn joinLine(e: *Editor) !void {
         }
 
         buffer_state.editing_ctx.modified = true;
-        markDirtyAll(e, current_line - 1, null);
+        // joinLineは行数が減るため全画面再描画が必要
+        markFullRedrawAll(e);
 
         e.setCursorToPos(delete_start);
 
@@ -466,7 +467,8 @@ pub fn moveLineUp(e: *Editor) !void {
     try e.recordInsert(prev_line_start, line_content, view.getCursorBufferPos());
 
     buffer_state.editing_ctx.modified = true;
-    markDirtyAll(e, current_line - 1, null);
+    // moveLineUpは行の入れ替えのため全画面再描画が必要
+    markFullRedrawAll(e);
 
     view.moveCursorUp();
 }
@@ -500,7 +502,8 @@ pub fn moveLineDown(e: *Editor) !void {
     try e.recordInsert(new_insert_pos, line_content, view.getCursorBufferPos());
 
     buffer_state.editing_ctx.modified = true;
-    markDirtyAll(e, current_line, null);
+    // moveLineDownは行の入れ替えのため全画面再描画が必要
+    markFullRedrawAll(e);
 
     view.moveCursorDown();
 }
@@ -608,7 +611,8 @@ pub fn duplicateLine(e: *Editor) !void {
     try e.recordInsert(insert_pos, to_insert, view.getCursorBufferPos());
 
     buffer_state.editing_ctx.modified = true;
-    markDirtyAll(e, current_line, null);
+    // duplicateLineは行数が増えるため全画面再描画が必要
+    markFullRedrawAll(e);
 
     // カーソルを複製した行に移動
     view.moveCursorDown();

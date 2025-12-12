@@ -2405,12 +2405,13 @@ pub const Editor = struct {
             const max_screen_line = if (view.viewport_height >= 2) view.viewport_height - 2 else 0;
             if (view.cursor_y < max_screen_line) {
                 view.cursor_y += 1;
-                view.markDirty(current_line, null); // EOF まで再描画
             } else {
                 // 画面の最下部の場合はスクロール
                 view.top_line += 1;
-                view.markFullRedraw(); // スクロール時は全画面再描画
             }
+            // 改行は行シフトを起こすため、prev_screenキャッシュが無効になる
+            // markDirtyでは差分描画が壊れるので全画面再描画が必要
+            view.markFullRedraw();
             view.cursor_x = 0;
             view.top_col = 0; // 水平スクロールもリセット
         } else {
@@ -2593,9 +2594,16 @@ pub const Editor = struct {
         // カーソルを置換後の位置に移動
         self.setCursorToPos(match_pos + replacement.len);
 
-        // 置換した行から再描画（差分レンダリング）
-        const current_line = buffer.findLineByPos(match_pos);
-        self.getCurrentView().markDirty(current_line, null);
+        // 置換した行から再描画
+        // 検索文字列・置換文字列に改行が含まれる場合は行数が変わるため全画面再描画
+        const has_newline = std.mem.indexOf(u8, search, "\n") != null or
+            std.mem.indexOf(u8, replacement, "\n") != null;
+        if (has_newline) {
+            self.getCurrentView().markFullRedraw();
+        } else {
+            const current_line = buffer.findLineByPos(match_pos);
+            self.getCurrentView().markDirty(current_line, current_line);
+        }
     }
 
     // ========================================
@@ -2870,7 +2878,8 @@ pub const Editor = struct {
                                 self.getCurrentBuffer().editing_ctx.modified = true;
                                 self.setCursorToPos(start);
                                 self.window_manager.getCurrentWindow().mark_pos = null; // マークをクリア
-                                self.getCurrentView().markDirty(0, null);
+                                // シェル出力は行数が変わる可能性があるため全画面再描画
+                                self.getCurrentView().markFullRedraw();
                             }
                         } else {
                             // 選択なしの場合はカーソル位置に挿入（+> と同じ動作）
@@ -2880,7 +2889,8 @@ pub const Editor = struct {
                                 try buf.insertSlice(pos, stdout);
                                 try self.recordInsert(pos, stdout, pos);
                                 self.getCurrentBuffer().editing_ctx.modified = true;
-                                self.getCurrentView().markDirty(0, null);
+                                // シェル出力は行数が変わる可能性があるため全画面再描画
+                                self.getCurrentView().markFullRedraw();
                             }
                         }
                     },
@@ -2900,7 +2910,8 @@ pub const Editor = struct {
                         }
                         self.getCurrentBuffer().editing_ctx.modified = true;
                         self.setCursorToPos(0);
-                        self.getCurrentView().markDirty(0, null);
+                        // シェル出力は行数が変わる可能性があるため全画面再描画
+                        self.getCurrentView().markFullRedraw();
                     },
                     .current_line => {
                         // 現在行を置換
@@ -2921,7 +2932,8 @@ pub const Editor = struct {
                         }
                         self.getCurrentBuffer().editing_ctx.modified = true;
                         self.setCursorToPos(line_start);
-                        self.getCurrentView().markDirty(line_num, null);
+                        // シェル出力は行数が変わる可能性があるため全画面再描画
+                        self.getCurrentView().markFullRedraw();
                     },
                 }
             },
@@ -2933,7 +2945,8 @@ pub const Editor = struct {
                     try buf.insertSlice(pos, stdout);
                     try self.recordInsert(pos, stdout, pos);
                     self.getCurrentBuffer().editing_ctx.modified = true;
-                    self.getCurrentView().markDirty(0, null);
+                    // シェル出力は行数が変わる可能性があるため全画面再描画
+                    self.getCurrentView().markFullRedraw();
                 }
             },
             .new_buffer => {

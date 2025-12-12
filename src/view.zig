@@ -137,6 +137,16 @@ fn calculateScreenColumn(line: []const u8, start_byte: usize, end_byte: usize, i
     return screen_col;
 }
 
+/// 行の本文部分（行番号の後）にANSIグレーコード(\x1b[90m)が含まれているかチェック
+/// コメントハイライトの有無を判定するために使用
+fn hasAnsiGray(line: []const u8, content_start: usize) bool {
+    // 行番号の後ろの部分のみチェック
+    if (content_start >= line.len) return false;
+    const content = line[content_start..];
+    // グレーのANSIコード \x1b[90m を探す
+    return std.mem.indexOf(u8, content, "\x1b[90m") != null;
+}
+
 pub const View = struct {
     buffer: *Buffer,
     top_line: usize,
@@ -691,84 +701,97 @@ pub const View = struct {
                 }
             }
 
-            // 差分を検出
-            const min_len = @min(old_line.len, new_line.len);
-            var diff_start: ?usize = null;
-            var diff_end: usize = 0;
+            // 行番号の表示幅を取得
+            const line_num_display_width = self.getLineNumberWidth();
 
-            // 前方から差分を探す
-            for (0..min_len) |i| {
-                if (old_line[i] != new_line[i]) {
-                    if (diff_start == null) diff_start = i;
-                    diff_end = i + 1;
+            // 行番号がある場合、行番号部分のバイト範囲を推定
+            // 行番号フォーマット: "\x1b[90m  N\x1b[m  " (ANSIエスケープ付き)
+            const line_num_byte_end = if (line_num_display_width > 0) blk: {
+                // 行番号部分のバイト終端を探す（最初のリセットエスケープ \x1b[m の後のスペース2つ）
+                if (std.mem.indexOf(u8, new_line, "\x1b[m  ")) |pos| {
+                    break :blk pos + 5; // "\x1b[m  ".len
                 }
-            }
+                // フォールバック：行全体を再描画
+                break :blk 0;
+            } else 0;
 
-            // 長さが違う場合は後ろも差分
-            if (old_line.len != new_line.len) {
-                if (diff_start == null) diff_start = min_len;
-                diff_end = @max(old_line.len, new_line.len);
-            }
-
-            if (diff_start) |start_raw| {
-                // 行番号の表示幅を取得
-                const line_num_display_width = self.getLineNumberWidth();
-
-                // 行番号がある場合、行番号部分のバイト範囲を推定してスキップ
-                // 行番号フォーマット: "\x1b[90m  N\x1b[m  " (ANSIエスケープ付き)
-                // 行番号がない、または差分が行番号より後から始まる場合は部分更新が可能
-                const line_num_byte_end = if (line_num_display_width > 0) blk: {
-                    // 行番号部分のバイト終端を探す（最初のリセットエスケープ \x1b[m の後のスペース2つ）
-                    if (std.mem.indexOf(u8, new_line, "\x1b[m  ")) |pos| {
-                        break :blk pos + 5; // "\x1b[m  ".len
-                    }
-                    // フォールバック：行全体を再描画
-                    break :blk 0;
-                } else 0;
-
-                // 差分が行番号部分にかかっている場合は行全体を再描画
-                if (line_num_display_width > 0 and start_raw < line_num_byte_end) {
-                    // 行頭から全体を再描画
+            // シンタックスハイライト（ANSIエスケープ）の変化をチェック
+            // コメント色のANSIコードがある場合は行全体を再描画（差分描画ではカラーが正しく適用されない）
+            const old_has_gray = hasAnsiGray(old_line, line_num_byte_end);
+            const new_has_gray = hasAnsiGray(new_line, line_num_byte_end);
+            // グレーがある場合は行全体を再描画（差分描画だとカラーが途切れる問題を回避）
+            if (old_has_gray or new_has_gray) {
+                // 内容が異なる場合のみ再描画
+                if (!std.mem.eql(u8, old_line, new_line)) {
                     try term.moveCursor(abs_row, viewport_x);
                     try term.write(new_line);
-                    // 残りをスペースで埋める（CLEAR_LINEの代わり）
                     try self.padToWidth(term, new_line, viewport_width);
-                } else if (line_num_display_width > 0) {
-                    // 行番号があるが本文部分のみの差分
-                    // UTF-8文字境界に調整
-                    var start = start_raw;
-                    while (start > 0 and start < new_line.len and unicode.isUtf8Continuation(new_line[start])) {
-                        start -= 1;
+                }
+            } else {
+                // 差分を検出
+                const min_len = @min(old_line.len, new_line.len);
+                var diff_start: ?usize = null;
+                var diff_end: usize = 0;
+
+                // 前方から差分を探す
+                for (0..min_len) |i| {
+                    if (old_line[i] != new_line[i]) {
+                        if (diff_start == null) diff_start = i;
+                        diff_end = i + 1;
                     }
+                }
 
-                    // バイト位置から画面カラム位置を計算（行番号部分をスキップ）
-                    const screen_col = calculateScreenColumn(new_line, line_num_byte_end, start, line_num_display_width);
+                // 長さが違う場合は後ろも差分
+                if (old_line.len != new_line.len) {
+                    if (diff_start == null) diff_start = min_len;
+                    diff_end = @max(old_line.len, new_line.len);
+                }
 
-                    // 差分部分のみ描画
-                    try term.moveCursor(abs_row, viewport_x + screen_col);
-                    try term.write(new_line[start..]);
-
-                    // 古い行の方が長い場合は残りをスペースで埋める
-                    if (old_line.len > new_line.len) {
+                if (diff_start) |start_raw| {
+                    // 差分が行番号部分にかかっている場合は行全体を再描画
+                    if (line_num_display_width > 0 and start_raw < line_num_byte_end) {
+                        // 行頭から全体を再描画
+                        try term.moveCursor(abs_row, viewport_x);
+                        try term.write(new_line);
+                        // 残りをスペースで埋める（CLEAR_LINEの代わり）
                         try self.padToWidth(term, new_line, viewport_width);
-                    }
-                } else {
-                    // UTF-8文字境界に調整（継続バイトの途中から始まらないように）
-                    var start = start_raw;
-                    while (start > 0 and start < new_line.len and unicode.isUtf8Continuation(new_line[start])) {
-                        start -= 1;
-                    }
+                    } else if (line_num_display_width > 0) {
+                        // 行番号があるが本文部分のみの差分
+                        // UTF-8文字境界に調整
+                        var start = start_raw;
+                        while (start > 0 and start < new_line.len and unicode.isUtf8Continuation(new_line[start])) {
+                            start -= 1;
+                        }
 
-                    // バイト位置から画面カラム位置を計算（ANSIエスケープシーケンスをスキップ）
-                    const screen_col = calculateScreenColumn(new_line, 0, start, 0);
+                        // バイト位置から画面カラム位置を計算（行番号部分をスキップ）
+                        const screen_col = calculateScreenColumn(new_line, line_num_byte_end, start, line_num_display_width);
 
-                    // 差分部分のみ描画（viewport_xオフセットを加算）
-                    try term.moveCursor(abs_row, viewport_x + screen_col);
-                    try term.write(new_line[start..]);
+                        // 差分部分のみ描画
+                        try term.moveCursor(abs_row, viewport_x + screen_col);
+                        try term.write(new_line[start..]);
 
-                    // 古い行の方が長い場合は残りをスペースで埋める
-                    if (old_line.len > new_line.len) {
-                        try self.padToWidth(term, new_line, viewport_width);
+                        // 古い行の方が長い場合は残りをスペースで埋める
+                        if (old_line.len > new_line.len) {
+                            try self.padToWidth(term, new_line, viewport_width);
+                        }
+                    } else {
+                        // UTF-8文字境界に調整（継続バイトの途中から始まらないように）
+                        var start = start_raw;
+                        while (start > 0 and start < new_line.len and unicode.isUtf8Continuation(new_line[start])) {
+                            start -= 1;
+                        }
+
+                        // バイト位置から画面カラム位置を計算（ANSIエスケープシーケンスをスキップ）
+                        const screen_col = calculateScreenColumn(new_line, 0, start, 0);
+
+                        // 差分部分のみ描画（viewport_xオフセットを加算）
+                        try term.moveCursor(abs_row, viewport_x + screen_col);
+                        try term.write(new_line[start..]);
+
+                        // 古い行の方が長い場合は残りをスペースで埋める
+                        if (old_line.len > new_line.len) {
+                            try self.padToWidth(term, new_line, viewport_width);
+                        }
                     }
                 }
             }

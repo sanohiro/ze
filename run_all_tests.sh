@@ -42,6 +42,28 @@ run_test() {
     fi
 }
 
+# 内容検証付きテスト実行ヘルパー（--expect使用）
+run_test_verify() {
+    local test_name="$1"
+    shift
+    # test_data/ のパスを /tmp/ze_test_data/ に置換
+    local args=()
+    for arg in "$@"; do
+        local replaced_arg=$(echo "$arg" | sed 's|test_data/|/tmp/ze_test_data/|g')
+        args+=("$replaced_arg")
+    done
+    local output
+    output=$($HARNESS "${args[@]}" 2>&1)
+    if echo "$output" | grep -q "PASS: Content matches!"; then
+        test_result "$test_name" "PASS"
+    elif echo "$output" | grep -q "Child exited with status: 0"; then
+        # --expectなしの場合は終了コードで判断
+        test_result "$test_name" "PASS"
+    else
+        test_result "$test_name" "FAIL"
+    fi
+}
+
 echo "========================================="
 echo "ze エディタ 統合テストスイート"
 echo "========================================="
@@ -316,6 +338,20 @@ run_test "28.6 ウィンドウ切り替え (C-Tab)" --file=test_data/test_multiw
 # C-v / M-v ページスクロール (既にテストあるが明示的テスト)
 run_test "28.7 C-v ページダウン" --file=test_data/test_page_scroll.txt "C-v" "C-x" "C-c"
 run_test "28.8 M-v ページアップ" --file=test_data/test_page_scroll.txt "C-v" "M-v" "C-x" "C-c"
+
+echo
+echo "=== カテゴリ 29: 改行操作とC-j ==="
+run_test "29.1 行頭でEnter" --file=test_data/test_cursor_input.txt "Enter" "C-x" "C-c" "n"
+run_test "29.2 行途中でEnter" --file=test_data/test_cursor_input.txt "Right" "Right" "Enter" "C-x" "C-c" "n"
+run_test "29.3 行末でEnter" --file=test_data/test_cursor_input.txt "End" "Enter" "C-x" "C-c" "n"
+run_test "29.4 行末でC-j" --file=test_data/test_cursor_input.txt "End" "C-j" "C-x" "C-c" "n"
+run_test "29.5 行頭でC-j" --file=test_data/test_cursor_input.txt "C-j" "C-x" "C-c" "n"
+run_test "29.6 行途中でC-j" --file=test_data/test_cursor_input.txt "Right" "Right" "C-j" "C-x" "C-c" "n"
+run_test "29.7 C-j後に文字入力" --file=test_data/test_cursor_input.txt "End" "C-j" "new" "C-x" "C-c" "n"
+# 内容検証テスト
+run_test_verify "29.8 C-j内容検証" --file=test_data/test_newline.txt "End" "C-j" "inserted" "C-x" "C-s" "C-x" "C-c" '--expect=line1\ninserted'
+run_test_verify "29.9 行頭C-j内容検証" --file=test_data/test_newline.txt "C-j" "C-x" "C-s" "C-x" "C-c" '--expect=\nline1'
+run_test_verify "29.10 行複製内容検証 (C-c d)" --file=test_data/test_newline.txt "C-c" "d" "C-x" "C-s" "C-x" "C-c" '--expect=line1\nline1'
 
 echo
 echo "========================================="

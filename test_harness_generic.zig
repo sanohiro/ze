@@ -49,6 +49,8 @@ pub fn main() !void {
     var ze_path: []const u8 = "./zig-out/bin/ze"; // デフォルトパス
     var key_sequences = try std.ArrayList([]const u8).initCapacity(allocator, 0);
     defer key_sequences.deinit(allocator);
+    var expect_content: ?[]const u8 = null;
+    var expect_file_path: ?[]const u8 = null;
 
     // 環境変数 ZE_BIN をチェック
     if (getenv("ZE_BIN")) |env_path| {
@@ -69,6 +71,26 @@ pub fn main() !void {
             ze_path = arg[5..]; // コマンドライン引数が最優先
         } else if (std.mem.eql(u8, arg, "--show-output")) {
             show_output = true;
+        } else if (std.mem.startsWith(u8, arg, "--expect=")) {
+            // ファイルの期待内容（直接指定）
+            // \n を改行に変換
+            const raw = arg[9..];
+            var buf = try allocator.alloc(u8, raw.len);
+            var i: usize = 0;
+            var j: usize = 0;
+            while (i < raw.len) : (i += 1) {
+                if (i + 1 < raw.len and raw[i] == '\\' and raw[i + 1] == 'n') {
+                    buf[j] = '\n';
+                    i += 1; // skip 'n'
+                } else {
+                    buf[j] = raw[i];
+                }
+                j += 1;
+            }
+            expect_content = buf[0..j];
+        } else if (std.mem.startsWith(u8, arg, "--expect-file=")) {
+            // 検証対象のファイルパス（--fileと異なる場合）
+            expect_file_path = arg[14..];
         } else {
             try key_sequences.append(allocator, arg);
         }
@@ -100,7 +122,9 @@ pub fn main() !void {
         std.debug.print("  --wait=<ms>          Wait time before sending keys (default: 500ms)\n", .{});
         std.debug.print("  --delay=<ms>         Delay between keys (default: 100ms)\n", .{});
         std.debug.print("  --ze=<path>          Path to ze binary (default: ./zig-out/bin/ze)\n", .{});
-        std.debug.print("  --show-output        Show ze output\n\n", .{});
+        std.debug.print("  --show-output        Show ze output\n", .{});
+        std.debug.print("  --expect=<content>   Verify file content after test (exit 1 if mismatch)\n", .{});
+        std.debug.print("  --expect-file=<path> File to check (default: same as --file)\n\n", .{});
         std.debug.print("Environment variables:\n", .{});
         std.debug.print("  ZE_BIN               Path to ze binary (lower priority than --ze)\n\n", .{});
         std.debug.print("Special keys:\n", .{});
@@ -304,36 +328,84 @@ pub fn main() !void {
         // 子プロセスの終了を待つ（タイムアウト付き）
         std.debug.print("\nWaiting for child process to exit (timeout: 3s)...\n", .{});
 
+        var exit_status: u8 = 255;
+        var timed_out = false;
         var timeout_count: u32 = 0;
         const max_timeout = 30; // 30 * 100ms = 3秒
         while (timeout_count < max_timeout) : (timeout_count += 1) {
             const wait_result = posix.waitpid(pid, posix.W.NOHANG);
             if (wait_result.pid != 0) {
+                exit_status = @truncate(wait_result.status);
                 std.debug.print("Child exited with status: {}\n", .{wait_result.status});
-                std.debug.print("\n=== Test completed ===\n", .{});
-                return;
+                break;
             }
             std.Thread.sleep(100 * std.time.ns_per_ms);
         }
 
-        // タイムアウト：子プロセスを強制終了
-        std.debug.print("Timeout! Killing child process...\n", .{});
-        posix.kill(pid, posix.SIG.TERM) catch |err| {
-            std.debug.print("Failed to send SIGTERM: {}\n", .{err});
-        };
-        std.Thread.sleep(500 * std.time.ns_per_ms);
-
-        // それでも終了しない場合はKILL
-        const wait_result = posix.waitpid(pid, posix.W.NOHANG);
-        if (wait_result.pid == 0) {
-            std.debug.print("Child still alive, sending SIGKILL...\n", .{});
-            posix.kill(pid, posix.SIG.KILL) catch |err| {
-                std.debug.print("Failed to send SIGKILL: {}\n", .{err});
+        if (timeout_count >= max_timeout) {
+            timed_out = true;
+            // タイムアウト：子プロセスを強制終了
+            std.debug.print("Timeout! Killing child process...\n", .{});
+            posix.kill(pid, posix.SIG.TERM) catch |err| {
+                std.debug.print("Failed to send SIGTERM: {}\n", .{err});
             };
-            _ = posix.waitpid(pid, 0);
+            std.Thread.sleep(500 * std.time.ns_per_ms);
+
+            // それでも終了しない場合はKILL
+            const wait_result = posix.waitpid(pid, posix.W.NOHANG);
+            if (wait_result.pid == 0) {
+                std.debug.print("Child still alive, sending SIGKILL...\n", .{});
+                posix.kill(pid, posix.SIG.KILL) catch |err| {
+                    std.debug.print("Failed to send SIGKILL: {}\n", .{err});
+                };
+                _ = posix.waitpid(pid, 0);
+            }
         }
 
-        std.debug.print("\n=== Test completed (with timeout) ===\n", .{});
+        // ファイル内容の検証
+        if (expect_content) |expected| {
+            const file_to_check = expect_file_path orelse filename;
+            if (file_to_check) |path| {
+                std.debug.print("\n=== Verifying file content ===\n", .{});
+                std.debug.print("Checking: {s}\n", .{path});
+                std.debug.print("Expected: \"{s}\"\n", .{expected});
+
+                const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+                    std.debug.print("ERROR: Failed to open file: {}\n", .{err});
+                    std.process.exit(2);
+                };
+                defer file.close();
+
+                const actual = file.readToEndAlloc(allocator, 1024 * 1024) catch |err| {
+                    std.debug.print("ERROR: Failed to read file: {}\n", .{err});
+                    std.process.exit(2);
+                };
+                defer allocator.free(actual);
+
+                // 末尾の改行を正規化して比較
+                const actual_trimmed = std.mem.trimRight(u8, actual, "\n");
+                const expected_trimmed = std.mem.trimRight(u8, expected, "\n");
+
+                std.debug.print("Actual:   \"{s}\"\n", .{actual_trimmed});
+
+                if (std.mem.eql(u8, actual_trimmed, expected_trimmed)) {
+                    std.debug.print("PASS: Content matches!\n", .{});
+                } else {
+                    std.debug.print("FAIL: Content does not match!\n", .{});
+                    std.process.exit(1);
+                }
+            }
+        }
+
+        if (timed_out) {
+            std.debug.print("\n=== Test completed (with timeout) ===\n", .{});
+            std.process.exit(124); // timeout exit code
+        } else if (exit_status != 0) {
+            std.debug.print("\n=== Test FAILED (exit code: {}) ===\n", .{exit_status});
+            std.process.exit(exit_status);
+        } else {
+            std.debug.print("\n=== Test completed ===\n", .{});
+        }
     }
 }
 
