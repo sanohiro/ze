@@ -1477,6 +1477,10 @@ pub const View = struct {
     }
 
     pub fn moveToLineStart(self: *View) void {
+        // 水平スクロールがあった場合は再描画が必要
+        if (self.top_col != 0) {
+            self.markFullRedraw();
+        }
         self.cursor_x = 0;
         self.top_col = 0;
     }
