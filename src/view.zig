@@ -1365,15 +1365,14 @@ pub const View = struct {
             // cursor_x == 0、前の行に移動
             if (self.cursor_y > 0) {
                 self.cursor_y -= 1;
-                self.moveToLineEnd();
+                self.moveToLineEnd(); // 行末に移動（水平スクロールも設定される）
             } else if (self.top_line > 0) {
                 // 画面最上部で、さらに上にスクロール可能
                 self.top_line -= 1;
-                self.moveToLineEnd();
+                self.moveToLineEnd(); // 行末に移動（水平スクロールも設定される）
                 self.markFullRedraw(); // スクロールで全画面再描画
             }
-            // 行移動時は水平スクロールをリセット
-            self.top_col = 0;
+            // 注: moveToLineEnd()が水平スクロールを適切に設定するので、ここでtop_colをリセットしない
         }
     }
 
@@ -1404,8 +1403,11 @@ pub const View = struct {
                     self.cursor_x = 0;
                     self.markFullRedraw(); // スクロールで全画面再描画
                 }
-                // 行移動時は水平スクロールをリセット
-                self.top_col = 0;
+                // 行移動時は水平スクロールをリセット（再描画が必要）
+                if (self.top_col != 0) {
+                    self.top_col = 0;
+                    self.markFullRedraw();
+                }
             } else {
                 // タブ文字の場合は文脈依存の幅を計算
                 const char_width = if (gc.base == '\t') blk: {
