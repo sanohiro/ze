@@ -37,6 +37,10 @@ pub const ANSI = struct {
     pub const INVERT = "\x1b[7m";
     /// 反転表示解除
     pub const INVERT_OFF = "\x1b[27m";
+    /// 下線
+    pub const UNDERLINE = "\x1b[4m";
+    /// 下線解除
+    pub const UNDERLINE_OFF = "\x1b[24m";
     /// 薄い表示（dim）
     pub const DIM = "\x1b[2m";
     /// グレー（明るい黒）

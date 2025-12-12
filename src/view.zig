@@ -754,24 +754,31 @@ pub const View = struct {
     /// 【戻り値】
     /// - マッチなし: 入力lineをそのまま返す（アロケーションなし）
     /// - マッチあり: self.highlighted_line.itemsを返す（要再利用バッファ）
-    fn applySearchHighlight(self: *View, line: []const u8) ![]const u8 {
+    ///
+    /// 【is_cursor_line】
+    /// カーソル行の場合、マッチに下線を追加して現在位置を強調
+    fn applySearchHighlight(self: *View, line: []const u8, is_cursor_line: bool) ![]const u8 {
         const search_str = self.getSearchHighlight() orelse return line;
         if (search_str.len == 0 or line.len == 0) return line;
 
         // 最初のマッチを事前チェック（マッチがなければコピーせず元を返す）
         const first_match = findSkippingAnsi(line, 0, search_str) orelse return line;
 
+        // カーソル行は反転+下線、それ以外は反転のみ
+        const highlight_start = if (is_cursor_line) ANSI.INVERT ++ ANSI.UNDERLINE else ANSI.INVERT;
+        const highlight_end = if (is_cursor_line) ANSI.UNDERLINE_OFF ++ ANSI.INVERT_OFF else ANSI.INVERT_OFF;
+
         // マッチがあるのでバッファを使用
         self.highlighted_line.clearRetainingCapacity();
 
         // 最初のマッチ前の部分をコピー
         try self.highlighted_line.appendSlice(self.allocator, line[0..first_match]);
-        // 反転表示開始
-        try self.highlighted_line.appendSlice(self.allocator, ANSI.INVERT);
+        // ハイライト開始
+        try self.highlighted_line.appendSlice(self.allocator, highlight_start);
         // マッチ部分をコピー
         try self.highlighted_line.appendSlice(self.allocator, line[first_match .. first_match + search_str.len]);
-        // 反転表示終了
-        try self.highlighted_line.appendSlice(self.allocator, ANSI.INVERT_OFF);
+        // ハイライト終了
+        try self.highlighted_line.appendSlice(self.allocator, highlight_end);
         var pos: usize = first_match + search_str.len;
 
         // 残りのマッチを処理
@@ -779,12 +786,12 @@ pub const View = struct {
             if (findSkippingAnsi(line, pos, search_str)) |match_pos| {
                 // マッチ前の部分をコピー
                 try self.highlighted_line.appendSlice(self.allocator, line[pos..match_pos]);
-                // 反転表示開始
-                try self.highlighted_line.appendSlice(self.allocator, ANSI.INVERT);
+                // ハイライト開始
+                try self.highlighted_line.appendSlice(self.allocator, highlight_start);
                 // マッチ部分をコピー
                 try self.highlighted_line.appendSlice(self.allocator, line[match_pos .. match_pos + search_str.len]);
-                // 反転表示終了
-                try self.highlighted_line.appendSlice(self.allocator, ANSI.INVERT_OFF);
+                // ハイライト終了
+                try self.highlighted_line.appendSlice(self.allocator, highlight_end);
                 pos = match_pos + search_str.len;
             } else {
                 // これ以上マッチなし：残りをコピー
@@ -1154,8 +1161,9 @@ pub const View = struct {
             try self.expanded_line.appendSlice(self.allocator, ANSI.RESET);
         }
 
-        // 検索ハイライトを適用
-        const new_line = try self.applySearchHighlight(self.expanded_line.items);
+        // 検索ハイライトを適用（カーソル行は下線で強調）
+        const is_cursor_line = (screen_row == self.cursor_y);
+        const new_line = try self.applySearchHighlight(self.expanded_line.items, is_cursor_line);
 
         // 差分描画と前フレームバッファ更新
         try self.renderLineDiff(term, new_line, screen_row, abs_row, viewport_x, viewport_width);
