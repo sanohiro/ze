@@ -374,13 +374,21 @@ pub const Editor = struct {
         self.cancelInput();
     }
 
-    /// Query Replaceモードのキャンセル（replace_searchも解放）
+    /// Query Replaceモードのキャンセル（履歴は保持）
     fn cancelQueryReplaceInput(self: *Editor) void {
-        if (self.replace_search) |search| {
-            self.allocator.free(search);
-            self.replace_search = null;
-        }
         self.cancelInput();
+    }
+
+    /// 置換文字列入力モードのプロンプト設定
+    fn enterReplacementMode(self: *Editor) void {
+        const search = self.replace_search orelse return;
+        if (self.replace_replacement) |prev| {
+            self.setPrompt("Query replace {s} with (default {s}): ", .{ search, prev });
+            self.prompt_prefix_len = 14 + stringDisplayWidth(search) + 16 + stringDisplayWidth(prev) + 3;
+        } else {
+            self.setPrompt("Query replace {s} with: ", .{search});
+            self.prompt_prefix_len = 14 + stringDisplayWidth(search) + 8;
+        }
     }
 
     /// C-g または Escape キーかどうか判定
@@ -1999,6 +2007,12 @@ pub const Editor = struct {
                         self.prompt_prefix_len = 13;
                         self.getCurrentView().setError("Write file: ");
                     },
+                    'n' => {
+                        // 新規バッファを作成
+                        const new_buffer = try self.createNewBuffer();
+                        try self.switchToBuffer(new_buffer.id);
+                        self.getCurrentView().setError("New buffer");
+                    },
                     'c' => {
                         var modified_count: usize = 0;
                         var first_modified_name: ?[]const u8 = null;
@@ -2099,22 +2113,37 @@ pub const Editor = struct {
     fn handleQueryReplaceInputSearchKey(self: *Editor, key: input.Key) !bool {
         if (isCancelKey(key)) {
             self.cancelInput();
+            self.getCurrentView().setSearchHighlight(null);
             return true;
         }
         if (key == .enter) {
-            if (self.minibuffer.getContent().len > 0) {
+            const content = self.minibuffer.getContent();
+            // 空欄でEnter → 前回の検索文字を使用
+            if (content.len == 0 and self.replace_search != null) {
+                self.clearInputBuffer();
+                self.mode = .query_replace_input_replacement;
+                self.enterReplacementMode();
+                return true;
+            }
+            if (content.len > 0) {
                 if (self.replace_search) |old| {
                     self.allocator.free(old);
                 }
-                self.replace_search = try self.allocator.dupe(u8, self.minibuffer.getContent());
+                self.replace_search = try self.allocator.dupe(u8, content);
                 self.clearInputBuffer();
                 self.mode = .query_replace_input_replacement;
-                self.setPrompt("Query replace {s} with: ", .{self.replace_search.?});
-                self.prompt_prefix_len = 1 + 14 + stringDisplayWidth(self.replace_search.?) + 7;
+                self.enterReplacementMode();
             }
             return true;
         }
         try self.processMinibufferKeyWithPrompt(key, "Query replace: ");
+        // インクリメンタルハイライト
+        const content = self.minibuffer.getContent();
+        if (content.len > 0) {
+            self.getCurrentView().setSearchHighlight(content);
+        } else {
+            self.getCurrentView().setSearchHighlight(null);
+        }
         return true;
     }
 
@@ -2122,13 +2151,20 @@ pub const Editor = struct {
     fn handleQueryReplaceInputReplacementKey(self: *Editor, key: input.Key) !bool {
         if (isCancelKey(key)) {
             self.cancelQueryReplaceInput();
+            self.getCurrentView().setSearchHighlight(null);
             return true;
         }
         if (key == .enter) {
-            if (self.replace_replacement) |old| {
-                self.allocator.free(old);
+            const content = self.minibuffer.getContent();
+            // 空欄でEnter → 前回の置換文字を使用（なければ空文字=削除）
+            if (content.len == 0 and self.replace_replacement != null) {
+                // 前回の値を再利用（何もしない）
+            } else {
+                if (self.replace_replacement) |old| {
+                    self.allocator.free(old);
+                }
+                self.replace_replacement = try self.allocator.dupe(u8, content);
             }
-            self.replace_replacement = try self.allocator.dupe(u8, self.minibuffer.getContent());
             self.minibuffer.clear();
 
             if (self.replace_search) |search| {
@@ -2138,10 +2174,12 @@ pub const Editor = struct {
                     self.setPrompt("Replace? (y)es (n)ext (!)all (q)uit", .{});
                 } else {
                     self.mode = .normal;
+                    self.getCurrentView().setSearchHighlight(null);
                     self.getCurrentView().setError("No match found");
                 }
             } else {
                 self.mode = .normal;
+                self.getCurrentView().setSearchHighlight(null);
                 self.getCurrentView().setError("No search string");
             }
             return true;
@@ -2298,9 +2336,15 @@ pub const Editor = struct {
                     '%' => {
                         self.mode = .query_replace_input_search;
                         self.clearInputBuffer();
-                        self.prompt_prefix_len = 16;
                         self.replace_match_count = 0;
-                        self.getCurrentView().setError("Query replace: ");
+                        // 前回の値があればデフォルトとして表示
+                        if (self.replace_search) |prev| {
+                            self.setPrompt("Query replace (default {s}): ", .{prev});
+                            self.prompt_prefix_len = 26 + stringDisplayWidth(prev);
+                        } else {
+                            self.prompt_prefix_len = 16;
+                            self.getCurrentView().setError("Query replace: ");
+                        }
                     },
                     '|' => {
                         self.mode = .shell_command;

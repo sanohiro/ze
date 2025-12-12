@@ -54,6 +54,7 @@ Moving without Shift clears the selection.
 
 | Key | Action |
 |-----|--------|
+| `C-x C-n` | New buffer |
 | `C-x C-f` | Open file |
 | `C-x C-s` | Save |
 | `C-x C-w` | Save as |
