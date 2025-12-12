@@ -291,7 +291,10 @@ pub const View = struct {
     }
 
     /// カーソルをビューポート内に制約
+    /// スクロールが発生した場合は再描画をマークする
     pub fn constrainCursor(self: *View) void {
+        var needs_redraw = false;
+
         // ステータスバー分を除いた最大行
         const max_cursor_y = if (self.viewport_height >= 2) self.viewport_height - 2 else 0;
         if (self.cursor_y > max_cursor_y) {
@@ -299,6 +302,7 @@ pub const View = struct {
             const overshoot = self.cursor_y - max_cursor_y;
             self.top_line += overshoot;
             self.cursor_y = max_cursor_y;
+            needs_redraw = true;
         }
 
         // 水平方向も制約（行番号幅を除いた可視幅）
@@ -307,6 +311,11 @@ pub const View = struct {
         if (self.cursor_x >= self.top_col + visible_width) {
             // カーソルが右端を超えたらスクロール
             self.top_col = if (self.cursor_x >= visible_width) self.cursor_x - visible_width + 1 else 0;
+            needs_redraw = true;
+        }
+
+        if (needs_redraw) {
+            self.markFullRedraw();
         }
     }
 
