@@ -68,7 +68,7 @@ Moving without Shift clears the selection.
 | `C-p` / `C-n` | Previous/next search history (in search mode) |
 | `M-%` | Query replace (y/n/!/q) |
 
-Regex supported: `\d+` for digits, `^TODO` for TODO at line start.
+Regex supported: `\d+` for digits, `^TODO` for TODO at line start. See [REGEX.md](REGEX.md) for full syntax.
 
 ## Window & Buffer
 
