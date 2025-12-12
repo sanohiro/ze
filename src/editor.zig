@@ -1507,7 +1507,10 @@ pub const Editor = struct {
 
             // キー入力を処理
             if (try input.readKeyFromReader(&input_reader)) |key| {
-                self.getCurrentView().clearError();
+                // ミニバッファモード中はプロンプトを維持
+                if (!self.isMinibufferMode()) {
+                    self.getCurrentView().clearError();
+                }
                 self.processKey(key) catch |err| {
                     const err_name = @errorName(err);
                     self.getCurrentView().setError(err_name);
@@ -1544,7 +1547,10 @@ pub const Editor = struct {
             }
 
             if (try input.readKeyFromReader(input_reader)) |key| {
-                self.getCurrentView().clearError();
+                // ミニバッファモード中はプロンプトを維持
+                if (!self.isMinibufferMode()) {
+                    self.getCurrentView().clearError();
+                }
                 self.processKey(key) catch |err| {
                     const err_name = @errorName(err);
                     self.getCurrentView().setError(err_name);
@@ -2546,20 +2552,7 @@ pub const Editor = struct {
             }
         }
 
-        // 見つからなかった場合のエラーメッセージ
-        if (forward) {
-            if (is_regex) {
-                self.getCurrentView().setError("Failing I-search (regex)");
-            } else {
-                self.getCurrentView().setError("Failing I-search");
-            }
-        } else {
-            if (is_regex) {
-                self.getCurrentView().setError("Failing I-search backward (regex)");
-            } else {
-                self.getCurrentView().setError("Failing I-search backward");
-            }
-        }
+        // 見つからなかった場合：プロンプトはそのまま（カーソルが動かないだけ）
     }
 
     // 置換：次の一致を検索してカーソルを移動
