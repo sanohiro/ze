@@ -2254,6 +2254,16 @@ pub const Editor = struct {
     }
 
     /// 通常モードのキー処理
+    ///
+    /// 【処理の優先順位】
+    /// 1. Keymap検索: Ctrl/Alt/特殊キーはKeymapからハンドラを検索
+    /// 2. 特殊処理: C-x(プレフィックス), C-s(検索), M-%(置換)等
+    /// 3. 文字入力: .char/.codepointはinsertCodepoint()でバッファに挿入
+    ///
+    /// 【Keymapの利点】
+    /// ハードコードされたswitch文ではなく、Keymapテーブルを使うことで:
+    /// - O(1)ルックアップ（配列インデックス）
+    /// - 将来的にランタイムで再バインド可能
     fn handleNormalKey(self: *Editor, key: input.Key) !void {
         switch (key) {
             .ctrl => |c| {
@@ -2362,6 +2372,18 @@ pub const Editor = struct {
     }
 
     /// キー入力を処理するメインディスパッチャ
+    ///
+    /// 【モード別分岐】
+    /// EditorModeに応じて適切なハンドラに振り分ける:
+    /// - normal: handleNormalKey() → 通常編集・Keymapコマンド実行
+    /// - isearch_*: handleIsearchKey() → インクリメンタルサーチ
+    /// - query_replace_*: handleQueryReplaceKey() → 対話的置換
+    /// - shell_*: handleShellKey() → シェルコマンド入力/実行
+    /// - prefix_x: handlePrefixXKey() → C-xプレフィックスコマンド
+    /// - *_input: handleXxxInputKey() → ミニバッファ入力
+    ///
+    /// 【キャンセル】
+    /// 多くのモードで C-g または Escape でキャンセルし、normalモードに戻る。
     fn processKey(self: *Editor, key: input.Key) !void {
         // 古いプロンプトバッファを解放
         if (self.prompt_buffer) |old_prompt| {

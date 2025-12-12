@@ -765,9 +765,23 @@ pub const EditingContext = struct {
     // ========================================
     // Undo記録（外部から呼び出し可能）
     // ========================================
+    //
+    // 【グループ化の仕組み】
+    // 連続した入力/削除を1つのUndo操作にまとめる:
+    // - 挿入: "abc"と入力 → 1回のUndoで"abc"を削除
+    // - 削除: Backspace連打 → 1回のUndoで復元
+    //
+    // 【グループ化条件】
+    // - 同じ操作タイプ（insert or delete）
+    // - 位置が連続している（直前の操作の直後）
+    // - 改行を含まない（改行でグループを分割）
+    //
+    // 【cursor_before/cursor_after】
+    // Undo/Redo時のカーソル復元に使用:
+    // - cursor_before: 操作前の位置（Undoで復元）
+    // - cursor_after: 操作後の位置（Redoで復元）
 
-    /// 挿入操作をUndo履歴に記録（外部から呼び出し用）
-    /// 連続した挿入はグループ化される
+    /// 挿入操作をUndo履歴に記録
     pub fn recordInsertOp(self: *EditingContext, pos: usize, text: []const u8, cursor_pos_before: usize) !void {
         // 連続した挿入操作をグループ化
         // 条件: 直前の操作も挿入で、位置が連続している場合

@@ -70,13 +70,23 @@ fn truncateUtf8(str: []const u8, max_columns: usize) TruncateResult {
 /// UTF-8文字列の表示幅（カラム数）を計算
 const stringDisplayWidth = unicode.stringDisplayWidth;
 
-/// バイト位置から画面カラム位置を計算（ANSIエスケープシーケンスをスキップ）
-/// line: 対象の行データ
-/// start_byte: 開始バイト位置
-/// end_byte: 終了バイト位置
-/// initial_col: 初期カラム位置（行番号表示幅など）
-/// グラフェムクラスタを使用してZWJ絵文字等も正しく処理
-/// ASCII高速パス: ASCII文字のみの範囲は簡易計算
+/// バイト位置から画面カラム位置を計算
+///
+/// 【目的】
+/// 差分描画で「バイト位置X」を「画面カラム位置Y」に変換する。
+/// ANSIエスケープシーケンス（色コード等）は幅0として扱う。
+///
+/// 【2段階処理（ASCII高速パス）】
+/// 1. 第1パス: ASCII文字（< 0x80）のみ幅1として高速カウント
+///    - ANSIエスケープシーケンス(\x1b[...m)をスキップ
+///    - 非ASCII文字を見つけたら第2パスへ
+/// 2. 第2パス: グラフェムクラスタ単位で処理（ZWJ絵文字等対応）
+///
+/// 【パラメータ】
+/// - line: 対象の行データ
+/// - start_byte: 開始バイト位置
+/// - end_byte: 終了バイト位置
+/// - initial_col: 初期カラム位置（行番号表示幅など）
 fn calculateScreenColumn(line: []const u8, start_byte: usize, end_byte: usize, initial_col: usize) usize {
     var screen_col: usize = initial_col;
     var b: usize = start_byte;
@@ -416,10 +426,19 @@ pub const View = struct {
         return self.search_highlight_buf[0..self.search_highlight_len];
     }
 
-    /// 出力済み行をviewport_widthまでスペースでパディング
-    /// ANSIエスケープシーケンスを除いた表示幅で計算
-    /// グラフェムクラスタを使用してZWJ絵文字等も正しく処理
-    /// ASCII高速パス最適化：ASCII文字のみの行は簡易計算
+    /// 行末をスペースでパディング（CLEAR_LINEの代替）
+    ///
+    /// 【なぜCLEAR_LINE(\x1b[K)を使わないか】
+    /// 差分描画と相性が悪い:
+    /// - CLEAR_LINEは「カーソル位置から行末まで消去」
+    /// - 前フレームと内容が同じでも毎回実行される
+    /// - スペースパディングなら差分検出で完全にスキップできる
+    ///
+    /// 【バッチ最適化】
+    /// 8スペースずつまとめてwrite()することでシステムコール回数を削減。
+    ///
+    /// 【ASCII高速パス】
+    /// ASCII文字のみの行は幅1として簡易計算（グラフェム処理をスキップ）。
     fn padToWidth(self: *View, term: *Terminal, line: []const u8, viewport_width: usize) !void {
         _ = self;
         // 表示幅を計算（ANSIエスケープシーケンスを除外）
@@ -576,8 +595,20 @@ pub const View = struct {
         return self.needs_full_redraw or self.dirty_start != null;
     }
 
-    /// 指定行より前の行をスキャンして、ブロックコメント内で開始するかを判定
-    /// キャッシュを使用してO(n)からO(k)に最適化（kはキャッシュ位置からの差分行数）
+    /// ブロックコメント状態の計算（キャッシュ付き）
+    ///
+    /// 【目的】
+    /// 複数行コメント（/* */）の状態を追跡し、行の描画時に
+    /// コメント内かどうかを判定する。
+    ///
+    /// 【キャッシュ最適化】
+    /// 全行スキャンはO(n)だが、cached_block_state/cached_block_top_lineで
+    /// 前回の計算結果をキャッシュし、差分のみスキャン:
+    /// - スクロール時: O(k) where k = |current_line - cached_line|
+    /// - ジャンプ時: O(n) (キャッシュミス)
+    ///
+    /// 【無効化タイミング】
+    /// markDirty()でキャッシュより前の行が変更された場合に無効化。
     fn computeBlockCommentState(self: *View, target_line: usize) bool {
         // ブロックコメントがない言語なら常にfalse
         if (self.language.block_comment == null) return false;
@@ -635,9 +666,22 @@ pub const View = struct {
         return in_block;
     }
 
-    /// ANSIエスケープシーケンスをスキップして検索文字列を探す
-    /// 見つかった場合はバイト位置（エスケープ込み）を返す
-    /// 線形時間O(n)で走査（ANSIスキップ用の連続位置を追跡）
+    /// ANSIエスケープシーケンスをスキップして検索
+    ///
+    /// 【目的】
+    /// ハイライト済みの行（ANSIカラーコード付き）から
+    /// 実際のテキスト部分のみを対象に検索する。
+    ///
+    /// 【アルゴリズム】
+    /// 1. start位置から走査開始
+    /// 2. ESC([...m)シーケンスを見つけたらスキップ
+    /// 3. 通常文字でsearch_strとマッチを試みる
+    /// 4. マッチ中もANSIシーケンスをスキップ
+    ///
+    /// 【計算量】O(n) where n = line.len
+    ///
+    /// 【戻り値】
+    /// マッチ開始のバイト位置（ANSIエスケープ込みの位置）、またはnull
     fn findSkippingAnsi(line: []const u8, start: usize, search_str: []const u8) ?usize {
         if (search_str.len == 0) return null;
         if (line.len < start + search_str.len) return null;
@@ -695,9 +739,21 @@ pub const View = struct {
         return null;
     }
 
-    /// 検索ハイライトを適用
-    /// ANSIエスケープシーケンスを避けて検索し、ハイライト（反転表示）を適用
-    /// ハイライトがある場合は highlighted_line を返し、ない場合は入力をそのまま返す
+    /// 検索ハイライトを適用（反転表示）
+    ///
+    /// 【処理フロー】
+    /// 1. 検索パターンがなければ即リターン（コピーなし）
+    /// 2. 最初のマッチを事前チェック（マッチなしならコピーなし）
+    /// 3. マッチがあればhighlighted_lineバッファを使用してハイライト付き行を構築
+    ///
+    /// 【ANSIエスケープシーケンス対応】
+    /// findSkippingAnsi()を使用してANSI色コード内でマッチしないようにする。
+    /// 例: "\x1b[90mhello\x1b[m" で "hello" を検索すると、
+    /// ANSIコード部分ではなくテキスト部分のみマッチ。
+    ///
+    /// 【戻り値】
+    /// - マッチなし: 入力lineをそのまま返す（アロケーションなし）
+    /// - マッチあり: self.highlighted_line.itemsを返す（要再利用バッファ）
     fn applySearchHighlight(self: *View, line: []const u8) ![]const u8 {
         const search_str = self.getSearchHighlight() orelse return line;
         if (search_str.len == 0 or line.len == 0) return line;
@@ -899,8 +955,23 @@ pub const View = struct {
         return self.renderLineWithIterOffset(term, 0, screen_row, file_line, iter, line_buffer, false);
     }
 
-    // イテレータを再利用して行を描画（オフセット付き）
-    /// 行を描画し、次の行のブロックコメント状態を返す
+    /// 1行をレンダリング（メインのレンダリング関数）
+    ///
+    /// 【処理パイプライン】
+    /// 1. イテレータから行データを読み取り → line_buffer
+    /// 2. タブ展開 + 水平スクロール処理 → expanded_line
+    /// 3. コメントハイライト（グレー表示）を適用
+    /// 4. 選択範囲ハイライト（反転表示）を適用
+    /// 5. 検索ハイライトを適用 → highlighted_line
+    /// 6. renderLineDiff()で差分描画
+    ///
+    /// 【最適化ポイント】
+    /// - 再利用バッファ: line_buffer, expanded_line, highlighted_lineは毎行クリア&再利用
+    /// - ASCII高速パス: タブ展開時、ASCII文字は分岐なしで処理
+    /// - コメントスパン: has_spans=falseならスパン処理を完全スキップ
+    ///
+    /// 【戻り値】
+    /// 次の行がブロックコメント内で開始するかどうか（キャッシュ用）
     fn renderLineWithIterOffset(self: *View, term: *Terminal, viewport_x: usize, viewport_y: usize, viewport_width: usize, screen_row: usize, file_line: usize, iter: *PieceIterator, line_buffer: *std.ArrayList(u8), in_block: bool) !bool {
         const abs_row = viewport_y + screen_row;
         // 再利用バッファをクリア
@@ -1347,6 +1418,23 @@ pub const View = struct {
         try term.write(config.ANSI.RESET);
     }
 
+    /// 画面上のカーソル位置をバッファ内のバイトオフセットに変換
+    ///
+    /// 【変換処理】
+    /// 1. (top_line + cursor_y) から対象行を特定
+    /// 2. LineIndexでO(1)で行開始位置を取得
+    /// 3. cursor_x（表示幅）まで文字を走査してバイト位置を特定
+    ///
+    /// 【cursor_xの意味】
+    /// cursor_xは「表示幅」（カラム数）であり、バイト位置ではない:
+    /// - ASCII文字: 幅1
+    /// - 日本語/CJK: 幅2
+    /// - 絵文字: 幅2
+    /// - タブ: 文脈依存（次のタブストップまで）
+    ///
+    /// 【注意】
+    /// 絵文字やZWJシーケンスの途中でカーソルが止まらないよう、
+    /// グラフェムクラスタ単位で走査する。
     pub fn getCursorBufferPos(self: *View) usize {
         const target_line = self.top_line + self.cursor_y;
 

@@ -63,6 +63,21 @@ pub const SpecialKey = enum(u8) {
 
 const SPECIAL_KEY_COUNT = @typeInfo(SpecialKey).@"enum".fields.len;
 
+/// キーマップ: キーバインディングの管理
+///
+/// 【設計】
+/// 固定長配列ベースでO(1)ルックアップを実現。
+/// HashMapを使わないことでキー入力のホットパスを最速に保つ。
+///
+/// 【構成】
+/// - ctrl_table[256]: Ctrl+キー（C-a〜C-zなど）
+/// - alt_table[256]: Alt+キー（M-f、M-bなど）
+/// - special_table[N]: 矢印、Page Up/Down、Home/Endなど
+///
+/// 【使い方】
+/// 1. Editor.initでKeymap.initを呼ぶ
+/// 2. loadDefaults()でEmacsキーバインドを登録
+/// 3. handleNormalKeyでfindCtrl/findAlt/findSpecialを呼ぶ
 pub const Keymap = struct {
     // 固定長配列: O(1)ルックアップ
     ctrl_table: [256]?CommandFn,
