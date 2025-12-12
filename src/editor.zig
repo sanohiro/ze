@@ -1296,14 +1296,19 @@ pub const Editor = struct {
         // ファイルの最終更新時刻を記録（外部変更検知用）
         const file = std.fs.cwd().openFile(path, .{}) catch {
             buffer_state.file_mtime = null;
+            view.clearError();
             return;
         };
         defer file.close();
         const stat = file.stat() catch {
             buffer_state.file_mtime = null;
+            view.clearError();
             return;
         };
         buffer_state.file_mtime = stat.mtime;
+
+        // Loadingメッセージをクリア
+        view.clearError();
     }
 
     pub fn saveFile(self: *Editor) !void {
