@@ -177,6 +177,10 @@ pub const Keymap = struct {
         try self.bindAlt('b', movement.backwardWord);
         try self.bindAlt('d', edit.deleteWord);
 
+        // 選択しながら単語移動 (Alt+Shift+f/b = M-F/B)
+        try self.bindAlt('F', movement.selectForwardWord);
+        try self.bindAlt('B', movement.selectBackwardWord);
+
         // コピー
         try self.bindAlt('w', edit.copyRegion);
 

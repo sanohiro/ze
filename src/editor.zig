@@ -2207,6 +2207,10 @@ pub const Editor = struct {
                 }
             },
             .alt => |c| {
+                // 小文字のM-f, M-bは選択解除（大文字のM-F, M-Bは選択維持）
+                if (c == 'f' or c == 'b') {
+                    self.getCurrentWindow().mark_pos = null;
+                }
                 // keymapから検索
                 if (self.keymap.findAlt(c)) |handler| {
                     try handler(self);

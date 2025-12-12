@@ -381,6 +381,18 @@ pub fn selectPageDown(e: *Editor) !void {
     pageScroll(e, .down);
 }
 
+/// M-F (Alt+Shift+f): 選択しながら次の単語へ移動
+pub fn selectForwardWord(e: *Editor) !void {
+    ensureMark(e);
+    try forwardWord(e);
+}
+
+/// M-B (Alt+Shift+b): 選択しながら前の単語へ移動
+pub fn selectBackwardWord(e: *Editor) !void {
+    ensureMark(e);
+    try backwardWord(e);
+}
+
 // ========================================
 // ヘルパー関数
 // ========================================
