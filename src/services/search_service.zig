@@ -228,17 +228,24 @@ pub const SearchService = struct {
 
     /// 統合検索（パターンに応じてリテラル/正規表現を選択）
     pub fn search(self: *Self, content: []const u8, pattern: []const u8, start_pos: usize, forward: bool, skip_current: bool) ?SearchMatch {
-        const search_from = if (skip_current and start_pos < content.len) start_pos + 1 else start_pos;
-
-        if (isRegexPattern(pattern)) {
-            if (forward) {
+        if (forward) {
+            // 前方検索: カーソル位置+1から検索
+            const search_from = if (skip_current and start_pos < content.len) start_pos + 1 else start_pos;
+            if (isRegexPattern(pattern)) {
                 return self.searchRegexForward(content, pattern, search_from);
             } else {
-                return self.searchRegexBackward(content, pattern, search_from);
+                return self.searchForward(content, pattern, search_from);
             }
         } else {
-            if (forward) {
-                return self.searchForward(content, pattern, search_from);
+            // 後方検索: カーソルはマッチ末尾にあるので、マッチ開始位置より前から検索
+            const search_from = if (skip_current and start_pos >= pattern.len)
+                start_pos - pattern.len
+            else if (skip_current)
+                0
+            else
+                start_pos;
+            if (isRegexPattern(pattern)) {
+                return self.searchRegexBackward(content, pattern, search_from);
             } else {
                 return self.searchBackward(content, pattern, search_from);
             }
@@ -253,15 +260,21 @@ pub const SearchService = struct {
             return null; // 呼び出し側でextractText + search を使う
         }
 
-        const search_from = if (skip_current and start_pos < buffer.len()) start_pos + 1 else start_pos;
-
         if (forward) {
-            // 前方検索（ラップアラウンド）
+            // 前方検索: カーソル位置+1から検索（現在のマッチをスキップ）
+            const search_from = if (skip_current and start_pos < buffer.len()) start_pos + 1 else start_pos;
             if (buffer.searchForwardWrap(pattern, search_from)) |match| {
                 return .{ .start = match.start, .len = match.len };
             }
         } else {
-            // 後方検索（ラップアラウンド）
+            // 後方検索: カーソルはマッチ末尾にあるので、マッチ開始位置より前から検索
+            // マッチ開始位置 = start_pos - pattern.len
+            const search_from = if (skip_current and start_pos >= pattern.len)
+                start_pos - pattern.len
+            else if (skip_current)
+                0
+            else
+                start_pos;
             if (buffer.searchBackwardWrap(pattern, search_from)) |match| {
                 return .{ .start = match.start, .len = match.len };
             }
