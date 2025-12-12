@@ -429,7 +429,7 @@ pub const Editor = struct {
             'y', 'Y' => {
                 const buffer_id = self.getCurrentBuffer().id;
                 self.closeBuffer(buffer_id) catch |err| self.showError(err);
-                self.mode = .normal;
+                self.resetToNormal();
             },
             'n', 'N' => {
                 self.resetToNormal();
@@ -1722,7 +1722,7 @@ pub const Editor = struct {
                 buffer_state.filename = try self.allocator.dupe(u8, self.minibuffer.getContent());
                 self.clearInputBuffer();
                 try self.saveFile();
-                self.mode = .normal;
+                self.resetToNormal();
                 if (self.quit_after_save) {
                     self.quit_after_save = false;
                     self.running = false;
@@ -2157,6 +2157,7 @@ pub const Editor = struct {
                 if (self.mode != .shell_running) {
                     self.mode = .normal;
                     self.clearInputBuffer();
+                    self.getCurrentView().clearError();
                 }
                 return true;
             },
@@ -3097,6 +3098,7 @@ pub const Editor = struct {
 
         // 他のキーは通常処理に戻す
         self.mode = .normal;
+        self.getCurrentView().clearError();
         try self.handleNormalKey(key);
     }
 
