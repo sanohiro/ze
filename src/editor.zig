@@ -61,6 +61,7 @@ const EditingContext = @import("editing_context").EditingContext;
 const Keymap = @import("keymap").Keymap;
 const MacroService = @import("macro_service").MacroService;
 const edit = @import("commands_edit");
+const movement = @import("commands_movement");
 const rectangle = @import("commands_rectangle");
 const mx = @import("commands_mx");
 
