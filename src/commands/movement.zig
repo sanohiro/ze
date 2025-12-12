@@ -306,12 +306,17 @@ pub fn recenter(e: *Editor) !void {
     const visible_lines = if (view.viewport_height >= 2) view.viewport_height - 2 else 1;
     const center = visible_lines / 2;
     const current_line = view.top_line + view.cursor_y;
+    const old_top_line = view.top_line;
     if (current_line >= center) {
         view.top_line = current_line - center;
     } else {
         view.top_line = 0;
     }
     view.cursor_y = if (current_line >= view.top_line) current_line - view.top_line else 0;
+    // top_lineが変わったら再描画
+    if (view.top_line != old_top_line) {
+        view.markFullRedraw();
+    }
 }
 
 // ========================================

@@ -1378,6 +1378,17 @@ pub const Editor = struct {
             const buffer_state = self.findBufferById(window.buffer_id) orelse continue;
             const buffer = buffer_state.editing_ctx.buffer;
 
+            // 選択範囲をViewに設定（アクティブウィンドウのみ）
+            if (is_active and window.mark_pos != null) {
+                const cursor_pos = window.view.getCursorBufferPos();
+                const mark = window.mark_pos.?;
+                const sel_start = @min(mark, cursor_pos);
+                const sel_end = @max(mark, cursor_pos);
+                window.view.setSelection(sel_start, sel_end);
+            } else {
+                window.view.clearSelection();
+            }
+
             try window.view.renderInBounds(
                 &self.terminal,
                 window.x,

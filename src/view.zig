@@ -186,6 +186,9 @@ pub const View = struct {
     // スクロール最適化: 前回のtop_lineを記録して差分スクロールを検出
     prev_top_line: usize,
     scroll_delta: i32, // 正: 上スクロール、負: 下スクロール、0: スクロールなし
+    // 選択範囲ハイライト用（バッファ位置）
+    selection_start: ?usize, // 選択開始位置（mark_pos）
+    selection_end: ?usize, // 選択終了位置（カーソル位置）
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, buffer: *Buffer) !View {
@@ -230,8 +233,29 @@ pub const View = struct {
             .highlighted_line = highlighted_line,
             .prev_top_line = 0, // スクロール追跡用
             .scroll_delta = 0, // スクロール差分
+            .selection_start = null, // 選択範囲なし
+            .selection_end = null,
             .allocator = allocator,
         };
+    }
+
+    /// 選択範囲を設定（Emacsのmark/pointに対応）
+    pub fn setSelection(self: *View, start: ?usize, end: ?usize) void {
+        const changed = self.selection_start != start or self.selection_end != end;
+        self.selection_start = start;
+        self.selection_end = end;
+        if (changed) {
+            self.markFullRedraw(); // 選択範囲が変わったら再描画
+        }
+    }
+
+    /// 選択範囲をクリア
+    pub fn clearSelection(self: *View) void {
+        if (self.selection_start != null or self.selection_end != null) {
+            self.selection_start = null;
+            self.selection_end = null;
+            self.markFullRedraw();
+        }
     }
 
     /// ファイル名とコンテンツから言語を検出して設定
@@ -828,11 +852,17 @@ pub const View = struct {
         // 再利用バッファをクリア
         line_buffer.clearRetainingCapacity();
 
+        // 行のバッファ開始位置を記録（選択範囲ハイライト用）
+        const line_start_pos = iter.global_pos;
+
         // 行末まで読み取る
         while (iter.next()) |ch| {
             if (ch == '\n') break;
             try line_buffer.append(self.allocator, ch);
         }
+
+        // 行のバッファ終了位置（改行の直前）
+        const line_end_pos = line_start_pos + line_buffer.items.len;
 
         // コメント範囲を解析（ブロックコメント対応）
         // コメントがない言語では解析をスキップ（最適化）
@@ -868,7 +898,38 @@ pub const View = struct {
         var current_span_idx: usize = 0; // 現在のコメントスパンインデックス
         var current_span: ?syntax.LanguageDef.CommentSpan = if (has_spans) analysis.spans[0] else null;
 
+        // 選択範囲ハイライト用（バッファ位置で比較）
+        const has_selection = self.selection_start != null and self.selection_end != null;
+        var in_selection = false; // 現在選択範囲内かどうか
+        // この行での選択開始・終了バイト位置を計算
+        const sel_start_in_line: ?usize = if (has_selection) blk: {
+            const sel_start = self.selection_start.?;
+            if (sel_start >= line_end_pos) break :blk null; // 選択がこの行より後
+            if (sel_start <= line_start_pos) break :blk 0; // 選択がこの行より前から開始
+            break :blk sel_start - line_start_pos;
+        } else null;
+        const sel_end_in_line: ?usize = if (has_selection) blk: {
+            const sel_end = self.selection_end.?;
+            if (sel_end <= line_start_pos) break :blk null; // 選択がこの行より前で終了
+            if (sel_end >= line_end_pos) break :blk line_buffer.items.len; // 選択がこの行より後まで続く
+            break :blk sel_end - line_start_pos;
+        } else null;
+
         while (byte_idx < line_buffer.items.len and col < visible_end) {
+            // 選択範囲の開始・終了をチェック
+            if (has_selection and sel_start_in_line != null and sel_end_in_line != null) {
+                if (!in_selection and byte_idx >= sel_start_in_line.? and byte_idx < sel_end_in_line.?) {
+                    // 選択開始（反転表示）
+                    try self.expanded_line.appendSlice(self.allocator, ANSI.INVERT);
+                    in_selection = true;
+                }
+                if (in_selection and byte_idx >= sel_end_in_line.?) {
+                    // 選択終了（リセット）
+                    try self.expanded_line.appendSlice(self.allocator, ANSI.RESET);
+                    in_selection = false;
+                }
+            }
+
             // コメントスパンの開始・終了をチェック（スパンがある場合のみ）
             if (has_spans) {
                 if (current_span) |span| {
@@ -956,6 +1017,11 @@ pub const View = struct {
                     byte_idx += 1;
                 }
             }
+        }
+
+        // 選択範囲内だった場合はリセット
+        if (in_selection) {
+            try self.expanded_line.appendSlice(self.allocator, ANSI.RESET);
         }
 
         // コメント内だった場合はリセット（スパンがある場合のみチェック）
