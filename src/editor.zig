@@ -1660,12 +1660,21 @@ pub const Editor = struct {
         const line_start = buffer.getLineStart(line) orelse 0;
 
         // 画面内の行位置を計算（ビューポート高さを使用）
+        // 現在のtop_lineをなるべく維持し、カーソルが画面外に出た場合のみスクロール
         const max_screen_lines = if (view.viewport_height >= 1) view.viewport_height - 1 else 0;
-        if (max_screen_lines == 0 or line < max_screen_lines) {
+        if (max_screen_lines == 0) {
             view.top_line = 0;
             view.cursor_y = line;
+        } else if (line < view.top_line) {
+            // カーソルが画面より上 → スクロールして見えるようにする
+            view.top_line = line;
+            view.cursor_y = 0;
+        } else if (line >= view.top_line + max_screen_lines) {
+            // カーソルが画面より下 → スクロールして見えるようにする
+            view.top_line = line - max_screen_lines + 1;
+            view.cursor_y = max_screen_lines - 1;
         } else {
-            view.top_line = line - max_screen_lines / 2; // 中央に表示
+            // カーソルは画面内 → top_lineはそのまま
             view.cursor_y = line - view.top_line;
         }
 
