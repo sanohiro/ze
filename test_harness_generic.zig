@@ -399,7 +399,7 @@ pub fn main() !void {
 
         // ターミナル状態をリセット（マウスモード無効化など）
         // zeが強制終了されると cleanup が走らないため
-        const stdout = std.io.getStdOut().writer();
+        const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
         stdout.writeAll("\x1b[?1000l\x1b[?1003l\x1b[?1006l") catch {}; // マウス無効化
         stdout.writeAll("\x1b[?25h") catch {}; // カーソル表示
 

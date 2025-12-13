@@ -1546,7 +1546,8 @@ pub const Editor = struct {
             defer self.allocator.free(new_path);
 
             try self.minibuffer.setContent(new_path);
-            self.getCurrentView().clearError();
+            // プロンプトを更新（clearError()ではなく）
+            self.updateMinibufferPrompt(prompt);
         } else {
             // 複数マッチ: 共通プレフィックスを補完して候補を表示
             const common = findCommonPrefix(matches.items);
