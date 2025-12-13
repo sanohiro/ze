@@ -1688,7 +1688,8 @@ pub const Editor = struct {
         }
 
         // アクティブウィンドウのカーソルを表示
-        if (has_active) {
+        // ミニバッファモード中は別途カーソル位置を調整するのでここでは表示しない
+        if (has_active and !self.isMinibufferMode()) {
             try self.terminal.moveCursor(active_cursor_row, active_cursor_col);
             try self.terminal.showCursor();
         }
@@ -2676,57 +2677,63 @@ pub const Editor = struct {
 
     /// M-xコマンド入力モード
     fn handleMxCommandKey(self: *Editor, key: input.Key) !bool {
-        switch (key) {
-            .ctrl => |c| {
-                if (c == 'g') {
-                    self.cancelInput();
-                    return true;
-                }
-            },
-            .escape => {
-                self.cancelInput();
+        // キャンセル
+        if (isCancelKey(key)) {
+            self.completion_shown = false;
+            self.cancelInput();
+            return true;
+        }
+        // Tab: コマンド名補完
+        if (key == .tab) {
+            const current = self.minibuffer.getContent();
+            // スペースがあれば補完しない（引数部分）
+            if (std.mem.indexOfScalar(u8, current, ' ') != null) {
                 return true;
-            },
-            .enter => {
-                try mx.execute(self);
-                return true;
-            },
-            .tab => {
-                // コマンド名補完
-                const current = self.minibuffer.getContent();
-                // スペースがあれば補完しない（引数部分）
-                if (std.mem.indexOfScalar(u8, current, ' ') != null) {
-                    return true;
-                }
-                const result = mx.completeCommand(current);
-                if (result.matches.len == 0) {
-                    self.getCurrentView().setError("No match");
-                } else if (result.matches.len == 1) {
-                    // ユニーク一致: 完全補完 + スペース
-                    var buf: [64]u8 = undefined;
-                    const completed = std.fmt.bufPrint(&buf, "{s} ", .{result.matches[0]}) catch result.matches[0];
-                    try self.minibuffer.setContent(completed);
-                    self.getCurrentView().setError(": ");
-                } else {
-                    // 複数一致: 共通プレフィックス補完 + 候補表示
-                    try self.minibuffer.setContent(result.common_prefix);
-                    var display_buf: [256]u8 = undefined;
-                    var len: usize = 0;
-                    for (result.matches) |m| {
-                        if (len + m.len + 1 < display_buf.len) {
-                            if (len > 0) {
-                                display_buf[len] = ' ';
-                                len += 1;
-                            }
-                            @memcpy(display_buf[len .. len + m.len], m);
-                            len += m.len;
+            }
+            const result = mx.completeCommand(current);
+            if (result.matches.len == 0) {
+                self.getCurrentView().setError("No match");
+                self.completion_shown = false;
+            } else if (result.matches.len == 1) {
+                // ユニーク一致: 完全補完 + スペース
+                var buf: [64]u8 = undefined;
+                const completed = std.fmt.bufPrint(&buf, "{s} ", .{result.matches[0]}) catch result.matches[0];
+                try self.minibuffer.setContent(completed);
+                self.updateMinibufferPrompt(": ");
+                self.completion_shown = false;
+            } else {
+                // 複数一致: 共通プレフィックス補完 + 候補表示
+                try self.minibuffer.setContent(result.common_prefix);
+                var display_buf: [256]u8 = undefined;
+                var len: usize = 0;
+                for (result.matches) |m| {
+                    if (len + m.len + 1 < display_buf.len) {
+                        if (len > 0) {
+                            display_buf[len] = ' ';
+                            len += 1;
                         }
+                        @memcpy(display_buf[len .. len + m.len], m);
+                        len += m.len;
                     }
-                    self.getCurrentView().setError(display_buf[0..len]);
                 }
+                self.getCurrentView().setError(display_buf[0..len]);
+                self.completion_shown = true;
+            }
+            return true;
+        }
+        // 補完候補表示中は、Tab以外のキーで候補をクリア
+        if (self.completion_shown) {
+            self.completion_shown = false;
+            self.updateMinibufferPrompt(": ");
+            // Enterは候補クリアのみで処理しない（誤操作防止）
+            if (key == .enter) {
                 return true;
-            },
-            else => {},
+            }
+        }
+        // Enter: コマンド実行
+        if (key == .enter) {
+            try mx.execute(self);
+            return true;
         }
         _ = try self.handleMinibufferKey(key);
         self.updateMinibufferPrompt(": ");
