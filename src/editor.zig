@@ -90,6 +90,7 @@ const EditorMode = enum {
     mx_key_describe, // M-x key: 次のキー入力を待っている
     macro_repeat, // マクロ再生後の連打待機（eで再実行）
     exit_confirm, // M-x exit: 終了確認中（y/nを待つ）
+    overwrite_confirm, // ファイル上書き確認中（y/nを待つ）
 };
 
 /// シェルコマンドの非同期実行状態
@@ -555,6 +556,27 @@ pub const Editor = struct {
             'y', 'Y' => self.running = false,
             'n', 'N' => self.resetToNormal(),
             else => self.getCurrentView().setError("Exit? (y)es (n)o"),
+        }
+    }
+
+    /// ファイル上書き確認モードの文字処理
+    fn handleOverwriteConfirmChar(self: *Editor, cp: u21) void {
+        const c = unicode.toAsciiChar(cp);
+        switch (c) {
+            'y', 'Y' => {
+                self.saveFile() catch |err| {
+                    self.showError(err);
+                    self.mode = .normal;
+                    return;
+                };
+                self.resetToNormal();
+                if (self.quit_after_save) {
+                    self.quit_after_save = false;
+                    self.running = false;
+                }
+            },
+            'n', 'N' => self.resetToNormal(),
+            else => self.getCurrentView().setError("File exists. Overwrite? (y)es (n)o"),
         }
     }
 
@@ -1843,17 +1865,40 @@ pub const Editor = struct {
         }
         if (key == .enter) {
             if (self.minibuffer.getContent().len > 0) {
+                const new_filename = self.minibuffer.getContent();
                 const buffer_state = self.getCurrentBuffer();
-                if (buffer_state.filename) |old| {
-                    self.allocator.free(old);
-                }
-                buffer_state.filename = try self.allocator.dupe(u8, self.minibuffer.getContent());
-                self.clearInputBuffer();
-                try self.saveFile();
-                self.resetToNormal();
-                if (self.quit_after_save) {
-                    self.quit_after_save = false;
-                    self.running = false;
+
+                // 同じファイル名なら確認不要
+                const is_same_file = if (buffer_state.filename) |old|
+                    std.mem.eql(u8, old, new_filename)
+                else
+                    false;
+
+                // ファイルが存在し、かつ別のファイルなら確認が必要
+                const file_exists = std.fs.cwd().access(new_filename, .{}) != error.FileNotFound;
+
+                if (file_exists and !is_same_file) {
+                    // ファイル名を先に設定しておく（確認後に使う）
+                    if (buffer_state.filename) |old| {
+                        self.allocator.free(old);
+                    }
+                    buffer_state.filename = try self.allocator.dupe(u8, new_filename);
+                    self.clearInputBuffer();
+                    self.mode = .overwrite_confirm;
+                    self.getCurrentView().setError("File exists. Overwrite? (y)es (n)o");
+                } else {
+                    // ファイルが存在しないか、同じファイルなら直接保存
+                    if (buffer_state.filename) |old| {
+                        self.allocator.free(old);
+                    }
+                    buffer_state.filename = try self.allocator.dupe(u8, new_filename);
+                    self.clearInputBuffer();
+                    try self.saveFile();
+                    self.resetToNormal();
+                    if (self.quit_after_save) {
+                        self.quit_after_save = false;
+                        self.running = false;
+                    }
                 }
             }
             return true;
@@ -2675,6 +2720,18 @@ pub const Editor = struct {
                 switch (key) {
                     .char => |c| self.handleExitConfirmChar(c),
                     .codepoint => |cp| self.handleExitConfirmChar(unicode.normalizeFullwidth(cp)),
+                    .ctrl => |c| {
+                        if (c == 'g') self.resetToNormal();
+                    },
+                    .escape => self.resetToNormal(),
+                    else => {},
+                }
+                return;
+            },
+            .overwrite_confirm => {
+                switch (key) {
+                    .char => |c| self.handleOverwriteConfirmChar(c),
+                    .codepoint => |cp| self.handleOverwriteConfirmChar(unicode.normalizeFullwidth(cp)),
                     .ctrl => |c| {
                         if (c == 'g') self.resetToNormal();
                     },
