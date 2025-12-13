@@ -388,12 +388,15 @@ pub const Editor = struct {
     /// 置換文字列入力モードのプロンプト設定
     fn enterReplacementMode(self: *Editor) void {
         const search = self.replace_search orelse return;
+        const prefix = if (self.is_regex_replace) "Query replace regexp " else "Query replace ";
+        const prefix_len = stringDisplayWidth(prefix);
         if (self.replace_replacement) |prev| {
-            self.setPrompt("Query replace {s} with (default {s}): ", .{ search, prev });
-            self.prompt_prefix_len = 14 + stringDisplayWidth(search) + 16 + stringDisplayWidth(prev) + 3;
+            self.setPrompt("{s}{s} with (default {s}): ", .{ prefix, search, prev });
+            // prefix + search + " with (default ): " + prev
+            self.prompt_prefix_len = prefix_len + stringDisplayWidth(search) + 17 + stringDisplayWidth(prev) + 3;
         } else {
-            self.setPrompt("Query replace {s} with: ", .{search});
-            self.prompt_prefix_len = 14 + stringDisplayWidth(search) + 8;
+            self.setPrompt("{s}{s} with: ", .{ prefix, search });
+            self.prompt_prefix_len = prefix_len + stringDisplayWidth(search) + 7; // " with: " = 7
         }
     }
 
@@ -620,6 +623,7 @@ pub const Editor = struct {
             (if (is_forward) "Regexp I-search: " else "Regexp I-search backward: ")
         else
             (if (is_forward) "I-search: " else "I-search backward: ");
+        self.prompt_prefix_len = stringDisplayWidth(prefix);
         self.setPrompt("{s}{s}", .{ prefix, self.minibuffer.getContent() });
 
         // 検索実行
@@ -1985,9 +1989,58 @@ pub const Editor = struct {
                                 (if (is_forward) "Regexp I-search: " else "Regexp I-search backward: ")
                             else
                                 (if (is_forward) "I-search: " else "I-search backward: ");
+                            self.prompt_prefix_len = stringDisplayWidth(prefix);
                             self.setPrompt("{s}{s}", .{ prefix, self.minibuffer.getContent() });
                         }
                     },
+                }
+            },
+            .alt => |c| {
+                switch (c) {
+                    'r' => {
+                        // M-r: 正規表現/リテラルモードをトグル
+                        self.is_regex_search = !self.is_regex_search;
+                        const prefix = if (self.is_regex_search)
+                            (if (is_forward) "Regexp I-search: " else "Regexp I-search backward: ")
+                        else
+                            (if (is_forward) "I-search: " else "I-search backward: ");
+                        self.prompt_prefix_len = stringDisplayWidth(prefix);
+                        self.setPrompt("{s}{s}", .{ prefix, self.minibuffer.getContent() });
+                        // ハイライトを更新
+                        if (self.minibuffer.getContent().len > 0) {
+                            self.getCurrentView().setSearchHighlightEx(self.minibuffer.getContent(), self.is_regex_search);
+                        }
+                    },
+                    else => {
+                        // その他のAltキーはミニバッファ共通処理へ
+                        if (try self.handleMinibufferKey(key)) {
+                            const prefix = if (self.is_regex_search)
+                                (if (is_forward) "Regexp I-search: " else "Regexp I-search backward: ")
+                            else
+                                (if (is_forward) "I-search: " else "I-search backward: ");
+                            self.prompt_prefix_len = stringDisplayWidth(prefix);
+                            self.setPrompt("{s}{s}", .{ prefix, self.minibuffer.getContent() });
+                        }
+                    },
+                }
+            },
+            .ctrl_alt => |c| {
+                switch (c) {
+                    's' => {
+                        // C-M-s: 次のマッチへ（C-sと同じ動作）
+                        if (self.minibuffer.getContent().len > 0) {
+                            self.getCurrentView().setSearchHighlightEx(self.minibuffer.getContent(), self.is_regex_search);
+                            try self.performSearch(true, true);
+                        }
+                    },
+                    'r' => {
+                        // C-M-r: 前のマッチへ（C-rと同じ動作）
+                        if (self.minibuffer.getContent().len > 0) {
+                            self.getCurrentView().setSearchHighlightEx(self.minibuffer.getContent(), self.is_regex_search);
+                            try self.performSearch(false, true);
+                        }
+                    },
+                    else => {},
                 }
             },
             .arrow_up => try self.navigateSearchHistory(true, is_forward),
@@ -2000,6 +2053,7 @@ pub const Editor = struct {
                         (if (is_forward) "Regexp I-search: " else "Regexp I-search backward: ")
                     else
                         (if (is_forward) "I-search: " else "I-search backward: ");
+                    self.prompt_prefix_len = stringDisplayWidth(prefix);
                     self.setPrompt("{s}{s}", .{ prefix, self.minibuffer.getContent() });
                     if (self.minibuffer.getContent().len > 0) {
                         self.getCurrentView().setSearchHighlightEx(self.minibuffer.getContent(), self.is_regex_search);
@@ -2033,6 +2087,7 @@ pub const Editor = struct {
                         (if (is_forward) "Regexp I-search: " else "Regexp I-search backward: ")
                     else
                         (if (is_forward) "I-search: " else "I-search backward: ");
+                    self.prompt_prefix_len = stringDisplayWidth(prefix);
                     self.setPrompt("{s}{s}", .{ prefix, self.minibuffer.getContent() });
                 }
             },
@@ -2051,8 +2106,9 @@ pub const Editor = struct {
                     'f' => {
                         self.mode = .find_file_input;
                         self.clearInputBuffer();
-                        self.prompt_prefix_len = 12;
-                        self.getCurrentView().setError("Find file: ");
+                        const prompt = "Find file: ";
+                        self.prompt_prefix_len = stringDisplayWidth(prompt);
+                        self.getCurrentView().setError(prompt);
                     },
                     's' => {
                         const buffer_state = self.getCurrentBuffer();
@@ -2061,8 +2117,9 @@ pub const Editor = struct {
                             self.quit_after_save = false;
                             self.minibuffer.clear();
                             self.minibuffer.cursor = 0;
-                            self.prompt_prefix_len = 13;
-                            self.getCurrentView().setError("Write file: ");
+                            const prompt = "Write file: ";
+                            self.prompt_prefix_len = stringDisplayWidth(prompt);
+                            self.getCurrentView().setError(prompt);
                         } else {
                             try self.saveFile();
                         }
@@ -2071,8 +2128,9 @@ pub const Editor = struct {
                         self.mode = .filename_input;
                         self.quit_after_save = false;
                         self.clearInputBuffer();
-                        self.prompt_prefix_len = 13;
-                        self.getCurrentView().setError("Write file: ");
+                        const prompt = "Write file: ";
+                        self.prompt_prefix_len = stringDisplayWidth(prompt);
+                        self.getCurrentView().setError(prompt);
                     },
                     'n' => {
                         // 新規バッファを作成
@@ -2116,8 +2174,9 @@ pub const Editor = struct {
                     'b' => {
                         self.mode = .buffer_switch_input;
                         self.clearInputBuffer();
-                        self.prompt_prefix_len = 19;
-                        self.getCurrentView().setError("Switch to buffer: ");
+                        const prompt = "Switch to buffer: ";
+                        self.prompt_prefix_len = stringDisplayWidth(prompt);
+                        self.getCurrentView().setError(prompt);
                     },
                     'k' => {
                         const buffer_state = self.getCurrentBuffer();
@@ -2203,7 +2262,22 @@ pub const Editor = struct {
             }
             return true;
         }
-        try self.processMinibufferKeyWithPrompt(key, "Query replace: ");
+        // M-r: 正規表現/リテラルモードをトグル
+        if (key == .alt and key.alt == 'r') {
+            self.is_regex_replace = !self.is_regex_replace;
+            const prompt = if (self.is_regex_replace) "Query replace regexp: " else "Query replace: ";
+            self.prompt_prefix_len = stringDisplayWidth(prompt);
+            self.setPrompt("{s}{s}", .{ prompt, self.minibuffer.getContent() });
+            // ハイライトを更新
+            const content = self.minibuffer.getContent();
+            if (content.len > 0) {
+                self.getCurrentView().setSearchHighlightEx(content, self.is_regex_replace);
+            }
+            return true;
+        }
+        const prompt = if (self.is_regex_replace) "Query replace regexp: " else "Query replace: ";
+        self.prompt_prefix_len = stringDisplayWidth(prompt);
+        try self.processMinibufferKeyWithPrompt(key, prompt);
         // インクリメンタルハイライト
         const content = self.minibuffer.getContent();
         if (content.len > 0) {
@@ -2251,10 +2325,25 @@ pub const Editor = struct {
             }
             return true;
         }
+        // M-r: 正規表現/リテラルモードをトグル
+        if (key == .alt and key.alt == 'r') {
+            self.is_regex_replace = !self.is_regex_replace;
+            if (self.replace_search) |search| {
+                const prefix = if (self.is_regex_replace) "Query replace regexp " else "Query replace ";
+                self.prompt_prefix_len = stringDisplayWidth(prefix) + stringDisplayWidth(search) + 7; // " with: " = 7
+                self.setPrompt("{s}{s} with: {s}", .{ prefix, search, self.minibuffer.getContent() });
+                // ハイライトを更新
+                self.getCurrentView().setSearchHighlightEx(search, self.is_regex_replace);
+            }
+            return true;
+        }
         _ = try self.handleMinibufferKey(key);
         if (self.replace_search) |search| {
-            self.setPrompt("Query replace {s} with: {s}", .{ search, self.minibuffer.getContent() });
+            const prefix = if (self.is_regex_replace) "Query replace regexp " else "Query replace ";
+            self.prompt_prefix_len = stringDisplayWidth(prefix) + stringDisplayWidth(search) + 7; // " with: " = 7
+            self.setPrompt("{s}{s} with: {s}", .{ prefix, search, self.minibuffer.getContent() });
         } else {
+            self.prompt_prefix_len = 20; // "Query replace with: " = 20
             self.setPrompt("Query replace with: {s}", .{self.minibuffer.getContent()});
         }
         return true;
@@ -2404,14 +2493,16 @@ pub const Editor = struct {
                     '|' => {
                         self.mode = .shell_command;
                         self.clearInputBuffer();
-                        self.prompt_prefix_len = 3;
-                        self.getCurrentView().setError("| ");
+                        const prompt = "| ";
+                        self.prompt_prefix_len = stringDisplayWidth(prompt);
+                        self.getCurrentView().setError(prompt);
                     },
                     'x' => {
                         self.mode = .mx_command;
                         self.clearInputBuffer();
-                        self.prompt_prefix_len = 3;
-                        self.getCurrentView().setError(": ");
+                        const prompt = ": ";
+                        self.prompt_prefix_len = stringDisplayWidth(prompt);
+                        self.getCurrentView().setError(prompt);
                     },
                     '?' => try self.showHelp(),
                     else => {},
@@ -2875,6 +2966,7 @@ pub const Editor = struct {
                 (if (is_forward) "Regexp I-search: " else "Regexp I-search backward: ")
             else
                 (if (is_forward) "I-search: " else "I-search backward: ");
+            self.prompt_prefix_len = stringDisplayWidth(prefix);
             self.setPrompt("{s}{s}", .{ prefix, text });
 
             // 検索を実行

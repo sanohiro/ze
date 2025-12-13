@@ -443,8 +443,17 @@ fn parseKeySequence(allocator: std.mem.Allocator, seq: []const u8) ![]const u8 {
         return result;
     }
 
+    // C-M-% (Ctrl+Alt+%) - 特別ケースを先に処理
+    // input.zigでは .ctrl_alt => '%' として処理される
+    if (std.mem.eql(u8, seq, "C-M-%")) {
+        const result = try allocator.alloc(u8, 2);
+        result[0] = 0x1B;
+        result[1] = '%'; // ESC + %
+        return result;
+    }
+
     // C-M-x (Ctrl+Alt+文字) - ESC + Ctrl文字
-    // 例: C-M-s = ESC + 0x13, C-M-r = ESC + 0x12, C-M-% = ESC + Ctrl不可なのでM-%と同様
+    // 例: C-M-s = ESC + 0x13, C-M-r = ESC + 0x12
     if (std.mem.startsWith(u8, seq, "C-M-") and seq.len == 5) {
         const char = seq[4];
         const ctrl_char: u8 = if (char >= 'a' and char <= 'z')
@@ -457,18 +466,6 @@ fn parseKeySequence(allocator: std.mem.Allocator, seq: []const u8) ![]const u8 {
         const result = try allocator.alloc(u8, 2);
         result[0] = 0x1B; // ESC
         result[1] = ctrl_char;
-        return result;
-    }
-
-    // C-M-% (Ctrl+Alt+%) - ESC + %（ターミナルではCtrl+%が送れないため）
-    if (std.mem.eql(u8, seq, "C-M-%")) {
-        // 実際にはESC + 0x05 (Ctrl+E相当) だが、
-        // input.zigのctrl_alt '%'として処理されるためESC + Shift+5 = ESC + %
-        // ただしCtrl+%は標準的に送れないので、代替としてESC + 0x05を試す
-        // 注: 実際のターミナルでは動作が異なる可能性あり
-        const result = try allocator.alloc(u8, 2);
-        result[0] = 0x1B;
-        result[1] = 0x05; // Ctrl+E相当だが、%のCtrl化はできない
         return result;
     }
 
