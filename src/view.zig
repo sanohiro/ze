@@ -782,37 +782,40 @@ pub const View = struct {
     /// - マッチあり: self.highlighted_line.itemsを返す（要再利用バッファ）
     ///
     /// 【is_cursor_line】
-    /// カーソル行の場合、マッチに下線を追加して現在位置を強調
+    /// カーソル位置のマッチのみマゼンタ、それ以外は反転で強調
+    ///
+    /// 【cursor_in_content】
+    /// カーソルの行内バイト位置（バッファ内、ANSIなし）。nullなら全て反転。
     ///
     /// 【content_start】
     /// 検索対象の開始バイト位置（行番号等のプレフィックスをスキップ）
-    fn applySearchHighlight(self: *View, line: []const u8, is_cursor_line: bool, content_start: usize) ![]const u8 {
+    fn applySearchHighlight(self: *View, line: []const u8, cursor_in_content: ?usize, content_start: usize) ![]const u8 {
         const search_str = self.getSearchHighlight() orelse return line;
         if (search_str.len == 0 or line.len == 0) return line;
 
         // 正規表現モードか確認
         if (self.is_regex_highlight) {
-            return self.applyRegexHighlight(line, is_cursor_line, content_start);
+            return self.applyRegexHighlight(line, cursor_in_content, content_start);
         }
 
         // リテラルモード: content_start以降で最初のマッチを探す
         const first_match = findSkippingAnsi(line, content_start, search_str) orelse return line;
 
-        // カーソル行は反転+下線、それ以外は反転のみ
-        const highlight_start = if (is_cursor_line) ANSI.INVERT ++ ANSI.UNDERLINE else ANSI.INVERT;
-        const highlight_end = if (is_cursor_line) ANSI.UNDERLINE_OFF ++ ANSI.INVERT_OFF else ANSI.INVERT_OFF;
-
         // マッチがあるのでバッファを使用
         self.highlighted_line.clearRetainingCapacity();
 
+        // content_startからfirst_matchまでのANSIバイト数を計算して可視位置を求める
+        const first_visible_pos = countVisibleBytes(line, content_start, first_match);
+
         // 最初のマッチ前の部分をコピー（行番号部分を含む）
         try self.highlighted_line.appendSlice(self.allocator, line[0..first_match]);
-        // ハイライト開始
-        try self.highlighted_line.appendSlice(self.allocator, highlight_start);
-        // マッチ部分をコピー
+        // カーソル位置を含むマッチかどうかで色を変える（可視位置で比較）
+        const is_current = if (cursor_in_content) |cursor| cursor >= first_visible_pos and cursor <= first_visible_pos + search_str.len else false;
+        const hl_start = if (is_current) "\x1b[45m" else ANSI.INVERT;
+        const hl_end = if (is_current) "\x1b[49m" else ANSI.INVERT_OFF;
+        try self.highlighted_line.appendSlice(self.allocator, hl_start);
         try self.highlighted_line.appendSlice(self.allocator, line[first_match .. first_match + search_str.len]);
-        // ハイライト終了
-        try self.highlighted_line.appendSlice(self.allocator, highlight_end);
+        try self.highlighted_line.appendSlice(self.allocator, hl_end);
         var pos: usize = first_match + search_str.len;
 
         // 残りのマッチを処理
@@ -820,12 +823,15 @@ pub const View = struct {
             if (findSkippingAnsi(line, pos, search_str)) |match_pos| {
                 // マッチ前の部分をコピー
                 try self.highlighted_line.appendSlice(self.allocator, line[pos..match_pos]);
-                // ハイライト開始
-                try self.highlighted_line.appendSlice(self.allocator, highlight_start);
-                // マッチ部分をコピー
+                // マッチの可視位置を計算
+                const visible_pos = countVisibleBytes(line, content_start, match_pos);
+                // カーソル位置を含むマッチかどうかで色を変える（可視位置で比較）
+                const is_cur = if (cursor_in_content) |cursor| cursor >= visible_pos and cursor <= visible_pos + search_str.len else false;
+                const start_seq = if (is_cur) "\x1b[45m" else ANSI.INVERT;
+                const end_seq = if (is_cur) "\x1b[49m" else ANSI.INVERT_OFF;
+                try self.highlighted_line.appendSlice(self.allocator, start_seq);
                 try self.highlighted_line.appendSlice(self.allocator, line[match_pos .. match_pos + search_str.len]);
-                // ハイライト終了
-                try self.highlighted_line.appendSlice(self.allocator, highlight_end);
+                try self.highlighted_line.appendSlice(self.allocator, end_seq);
                 pos = match_pos + search_str.len;
             } else {
                 // これ以上マッチなし：残りをコピー
@@ -836,6 +842,24 @@ pub const View = struct {
         return self.highlighted_line.items;
     }
 
+    /// content_startからend_posまでの可視バイト数を計算（ANSIエスケープを除く）
+    fn countVisibleBytes(line: []const u8, content_start: usize, end_pos: usize) usize {
+        var visible: usize = 0;
+        var i: usize = content_start;
+        while (i < end_pos) {
+            // ANSIエスケープシーケンスをスキップ
+            if (line[i] == 0x1b and i + 1 < line.len and line[i + 1] == '[') {
+                i += 2;
+                while (i < line.len and line[i] != 'm') : (i += 1) {}
+                if (i < line.len) i += 1; // 'm'をスキップ
+            } else {
+                visible += 1;
+                i += 1;
+            }
+        }
+        return visible;
+    }
+
     /// 正規表現検索ハイライトを適用
     ///
     /// 【処理フロー】
@@ -844,9 +868,12 @@ pub const View = struct {
     /// 3. 可視テキストに対して正規表現マッチ
     /// 4. マッチ位置を元の行位置にマッピングしてハイライト
     ///
+    /// 【cursor_in_content】
+    /// カーソルの行内バイト位置（バッファ内、ANSIなし）。nullなら全て反転。
+    ///
     /// 【content_start】
     /// 検索対象の開始バイト位置（行番号等のプレフィックスをスキップ）
-    fn applyRegexHighlight(self: *View, line: []const u8, is_cursor_line: bool, content_start: usize) ![]const u8 {
+    fn applyRegexHighlight(self: *View, line: []const u8, cursor_in_content: ?usize, content_start: usize) ![]const u8 {
         // コンパイル済み正規表現がなければ元を返す
         var re = self.compiled_highlight_regex orelse return line;
 
@@ -884,10 +911,6 @@ pub const View = struct {
         // 空マッチの場合はスキップ
         if (first_match_result.end == first_match_result.start) return line;
 
-        // カーソル行は反転+下線、それ以外は反転のみ
-        const highlight_start = if (is_cursor_line) ANSI.INVERT ++ ANSI.UNDERLINE else ANSI.INVERT;
-        const highlight_end = if (is_cursor_line) ANSI.UNDERLINE_OFF ++ ANSI.INVERT_OFF else ANSI.INVERT_OFF;
-
         // マッチがあるのでバッファを使用
         self.highlighted_line.clearRetainingCapacity();
 
@@ -903,12 +926,13 @@ pub const View = struct {
 
         // マッチ前の部分をコピー
         try self.highlighted_line.appendSlice(self.allocator, line[0..match_start_raw]);
-        // ハイライト開始
-        try self.highlighted_line.appendSlice(self.allocator, highlight_start);
-        // マッチ部分をコピー
+        // カーソル位置を含むマッチかどうかで色を変える（可視位置で比較）
+        const is_current = if (cursor_in_content) |cursor| cursor >= match_start_vis and cursor <= match_end_vis else false;
+        const hl_start = if (is_current) "\x1b[45m" else ANSI.INVERT;
+        const hl_end = if (is_current) "\x1b[49m" else ANSI.INVERT_OFF;
+        try self.highlighted_line.appendSlice(self.allocator, hl_start);
         try self.highlighted_line.appendSlice(self.allocator, line[match_start_raw..match_end_raw]);
-        // ハイライト終了
-        try self.highlighted_line.appendSlice(self.allocator, highlight_end);
+        try self.highlighted_line.appendSlice(self.allocator, hl_end);
 
         visible_pos = match_end_vis;
         last_raw_pos = match_end_raw;
@@ -928,12 +952,13 @@ pub const View = struct {
 
                 // マッチ前の部分をコピー
                 try self.highlighted_line.appendSlice(self.allocator, line[last_raw_pos..match_start_raw]);
-                // ハイライト開始
-                try self.highlighted_line.appendSlice(self.allocator, highlight_start);
-                // マッチ部分をコピー
+                // カーソル位置を含むマッチかどうかで色を変える（可視位置で比較）
+                const is_cur = if (cursor_in_content) |cursor| cursor >= match_start_vis and cursor <= match_end_vis else false;
+                const start_seq = if (is_cur) "\x1b[45m" else ANSI.INVERT;
+                const end_seq = if (is_cur) "\x1b[49m" else ANSI.INVERT_OFF;
+                try self.highlighted_line.appendSlice(self.allocator, start_seq);
                 try self.highlighted_line.appendSlice(self.allocator, line[match_start_raw..match_end_raw]);
-                // ハイライト終了
-                try self.highlighted_line.appendSlice(self.allocator, highlight_end);
+                try self.highlighted_line.appendSlice(self.allocator, end_seq);
 
                 visible_pos = match_end_vis;
                 last_raw_pos = match_end_raw;
@@ -1311,10 +1336,19 @@ pub const View = struct {
             try self.expanded_line.appendSlice(self.allocator, ANSI.RESET);
         }
 
-        // 検索ハイライトを適用（カーソル行は下線で強調）
+        // 検索ハイライトを適用（カーソル位置のマッチはマゼンタで強調）
         // content_start_byte以降のみを検索対象とする（行番号をスキップ）
         const is_cursor_line = (screen_row == self.cursor_y);
-        const new_line = try self.applySearchHighlight(self.expanded_line.items, is_cursor_line, content_start_byte);
+        // カーソル行の場合、カーソルの行内バイト位置を計算（バッファ内の純粋な位置、ANSIなし）
+        const cursor_in_content: ?usize = if (is_cursor_line) blk: {
+            // カーソルのバッファ位置を取得
+            const cursor_pos = self.getCursorBufferPos();
+            // 行開始位置を取得
+            const line_start = self.buffer.getLineStart(self.top_line + self.cursor_y) orelse 0;
+            // 行内バイト位置 = カーソル位置 - 行開始位置
+            break :blk if (cursor_pos >= line_start) cursor_pos - line_start else 0;
+        } else null;
+        const new_line = try self.applySearchHighlight(self.expanded_line.items, cursor_in_content, content_start_byte);
 
         // 差分描画と前フレームバッファ更新
         try self.renderLineDiff(term, new_line, screen_row, abs_row, viewport_x, viewport_width);
