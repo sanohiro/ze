@@ -176,6 +176,7 @@ pub const Editor = struct {
     spinner_frame: u8, // シェル実行中のスピナーフレーム
     overwrite_mode: bool, // 上書きモード（Insertキーでトグル）
     completion_shown: bool, // 補完候補表示中フラグ
+    pending_filename: ?[]const u8, // overwrite確認待ちのファイル名
 
     // キーマップ
     keymap: Keymap, // キーバインド設定（ランタイム変更可能）
@@ -227,6 +228,7 @@ pub const Editor = struct {
             .spinner_frame = 0,
             .overwrite_mode = false,
             .completion_shown = false,
+            .pending_filename = null,
             .keymap = try Keymap.init(allocator),
         };
 
@@ -567,6 +569,20 @@ pub const Editor = struct {
         const c = unicode.toAsciiChar(cp);
         switch (c) {
             'y', 'Y' => {
+                // pending_filenameをbuffer_state.filenameに設定
+                if (self.pending_filename) |pending| {
+                    const buffer_state = self.getCurrentBuffer();
+                    if (buffer_state.filename) |old| {
+                        self.allocator.free(old);
+                    }
+                    buffer_state.filename = self.allocator.dupe(u8, pending) catch {
+                        self.getCurrentView().setError("Memory allocation failed");
+                        self.clearPendingFilename();
+                        self.mode = .normal;
+                        return;
+                    };
+                    self.clearPendingFilename();
+                }
                 self.saveFile() catch |err| {
                     self.showError(err);
                     self.mode = .normal;
@@ -578,8 +594,20 @@ pub const Editor = struct {
                     self.running = false;
                 }
             },
-            'n', 'N' => self.resetToNormal(),
+            'n', 'N' => {
+                // キャンセル時はpending_filenameをクリア
+                self.clearPendingFilename();
+                self.resetToNormal();
+            },
             else => self.getCurrentView().setError("File exists. Overwrite? (y)es (n)o"),
+        }
+    }
+
+    /// pending_filenameをクリアする
+    fn clearPendingFilename(self: *Editor) void {
+        if (self.pending_filename) |pending| {
+            self.allocator.free(pending);
+            self.pending_filename = null;
         }
     }
 
@@ -1079,6 +1107,12 @@ pub const Editor = struct {
         try writer.writeAll("  -- ------           ----  ----\n");
 
         for (self.buffer_manager.iterator()) |buf| {
+            // 特殊バッファは除外
+            if (buf.filename) |fname| {
+                if (std.mem.eql(u8, fname, "*Buffer List*")) continue;
+                if (std.mem.eql(u8, fname, "*Help*")) continue;
+            }
+
             // 変更フラグ
             const mod_char: u8 = if (buf.editing_ctx.modified) '*' else '.';
             // 読み取り専用フラグ
@@ -1143,31 +1177,40 @@ pub const Editor = struct {
             \\  C-f/C-b     Forward/backward char     M-f/M-b     Forward/backward word
             \\  C-n/C-p     Next/previous line        C-v/M-v     Page down/up
             \\  C-a/C-e     Beginning/end of line     M-</M->     Beginning/end of buffer
-            \\  C-l         Center cursor on screen
+            \\  C-l         Center cursor on screen   M-{/M-}     Backward/forward paragraph
+            \\
+            \\SELECTION
+            \\  C-Space     Set/unset mark            C-x h       Select all
+            \\  Shift+Arrow Select while moving       M-F/M-B     Select word (Shift+Alt)
             \\
             \\EDITING
             \\  C-d         Delete char               M-d         Delete word
             \\  C-k         Kill to end of line       C-u/C-/     Undo/redo
-            \\  C-Space     Set/unset mark            C-w/M-w     Cut/copy
-            \\  C-y         Paste                     M-^         Join lines
-            \\  Tab/S-Tab   Indent/unindent           M-;         Toggle comment
-            \\  M-Up/Down   Move line up/down
+            \\  C-w/M-w     Cut/copy region           C-y         Paste
+            \\  M-^         Join lines                M-;         Toggle comment
+            \\  Tab/S-Tab   Indent/unindent           M-Up/Down   Move line up/down
             \\
             \\SEARCH & REPLACE
             \\  C-s/C-r     Search forward/backward   M-%         Query replace
+            \\  C-M-s/C-M-r Regex search fwd/bwd      C-M-%       Regex query replace
             \\
             \\FILE
             \\  C-x C-f     Open file                 C-x C-s     Save
             \\  C-x C-w     Save as                   C-x C-c     Quit
+            \\  C-x C-n     New buffer
             \\
             \\WINDOW & BUFFER
-            \\  C-x 2/3     Split horizontal/vertical C-x o       Next window
+            \\  C-x 2/3     Split horizontal/vertical C-x o/M-o   Next window
             \\  C-x 0/1     Close window/others       C-x b       Switch buffer
             \\  C-x C-b     Buffer list               C-x k       Kill buffer
             \\
             \\MACRO
             \\  C-x (       Start recording           C-x )       Stop recording
             \\  C-x e       Execute macro             e           Repeat (after C-x e)
+            \\
+            \\RECTANGLE (mark + cursor = opposite corners, no visual rect)
+            \\  C-x r k     Kill (cut)                C-x r w     Copy
+            \\  C-x r y     Yank at cursor
             \\
             \\SHELL (M-|)
             \\  [source] | cmd [dest]     Source: (selection), %, .  Dest: (show), >, +>, n>
@@ -1177,6 +1220,8 @@ pub const Editor = struct {
             \\  C-g/Esc     Cancel
             \\
             \\M-x COMMANDS: line N, tab, indent, mode, key, revert, ro, ?
+            \\
+            \\Note: Tab completes file paths and M-x commands.
         ;
 
         // "*Help*"という名前のバッファを探す
@@ -2032,14 +2077,20 @@ pub const Editor = struct {
                     false;
 
                 // ファイルが存在し、かつ別のファイルなら確認が必要
-                const file_exists = std.fs.cwd().access(new_filename, .{}) != error.FileNotFound;
+                const file_exists = blk: {
+                    std.fs.cwd().access(new_filename, .{}) catch |err| {
+                        // FileNotFound以外のエラーは「存在するかも」として確認を出す
+                        break :blk (err != error.FileNotFound);
+                    };
+                    break :blk true; // accessが成功 = ファイルが存在する
+                };
 
                 if (file_exists and !is_same_file) {
-                    // ファイル名を先に設定しておく（確認後に使う）
-                    if (buffer_state.filename) |old| {
+                    // 確認待ちのファイル名を保存（buffer_state.filenameは確認後に設定）
+                    if (self.pending_filename) |old| {
                         self.allocator.free(old);
                     }
-                    buffer_state.filename = try self.allocator.dupe(u8, new_filename);
+                    self.pending_filename = try self.allocator.dupe(u8, new_filename);
                     self.clearInputBuffer();
                     self.mode = .overwrite_confirm;
                     self.getCurrentView().setError("File exists. Overwrite? (y)es (n)o");
@@ -2467,6 +2518,9 @@ pub const Editor = struct {
             .char => |c| {
                 switch (c) {
                     'k' => rectangle.killRectangle(self) catch |err| {
+                        self.getCurrentView().setError(@errorName(err));
+                    },
+                    'w' => rectangle.copyRectangle(self) catch |err| {
                         self.getCurrentView().setError(@errorName(err));
                     },
                     'y' => rectangle.yankRectangle(self) catch |err| {
@@ -3605,16 +3659,14 @@ pub const Editor = struct {
                 }
             },
             .new_buffer => {
-                // 新規バッファに出力
+                // 新規バッファに出力（スクラッチバッファと同じ扱い）
                 if (stdout.len > 0) {
                     const new_buffer = try self.createNewBuffer();
                     try new_buffer.editing_ctx.buffer.insertSlice(0, stdout);
-                    new_buffer.filename = try self.allocator.dupe(u8, "*shell output*");
                     try self.switchToBuffer(new_buffer.id);
                 } else if (stderr.len > 0) {
                     const new_buffer = try self.createNewBuffer();
                     try new_buffer.editing_ctx.buffer.insertSlice(0, stderr);
-                    new_buffer.filename = try self.allocator.dupe(u8, "*shell error*");
                     try self.switchToBuffer(new_buffer.id);
                 }
             },
@@ -3753,16 +3805,27 @@ pub const Editor = struct {
                 ';' => "M-;: comment-toggle",
                 '<' => "M-<: beginning-of-buffer",
                 '>' => "M->: end-of-buffer",
+                '?' => "M-?: help",
                 '^' => "M-^: join-line",
                 'b' => "M-b: backward-word",
+                'B' => "M-B: select-backward-word",
                 'd' => "M-d: kill-word",
                 'f' => "M-f: forward-word",
+                'F' => "M-F: select-forward-word",
+                'o' => "M-o: next-window",
                 'v' => "M-v: scroll-up",
+                'V' => "M-V: select-scroll-up",
                 'w' => "M-w: copy-region",
                 'x' => "M-x: command",
                 '{' => "M-{: backward-paragraph",
                 '}' => "M-}: forward-paragraph",
                 '|' => "M-|: shell-command",
+                else => "Unknown key",
+            },
+            .ctrl_alt => |c| switch (c) {
+                's' => "C-M-s: regex-isearch-forward",
+                'r' => "C-M-r: regex-isearch-backward",
+                '%' => "C-M-%: regex-query-replace",
                 else => "Unknown key",
             },
             .enter => "Enter: newline",

@@ -15,6 +15,7 @@
 | `C-v` / `M-v` | Page down/up |
 | Scroll gesture | Scroll view 3 lines, cursor stays (trackpad) |
 | `M-<` / `M->` | Beginning/end of buffer |
+| `M-{` / `M-}` | Backward/forward paragraph |
 | `C-l` | Center cursor line on screen |
 
 ## Shift-Select (Selection Movement)
@@ -42,6 +43,7 @@ Moving without Shift clears the selection.
 | `M-d` | Delete word |
 | `C-k` | Kill to end of line |
 | `C-Space` | Set/unset mark (start/end selection) |
+| `C-x h` | Select all |
 | `C-w` / `M-w` | Cut/copy |
 | `C-y` | Paste (yank) |
 | `C-u` / `C-/` | Undo/redo |
@@ -134,6 +136,24 @@ Note: `C-Tab` also works in some terminals (may require configuration).
 
 Record a sequence of keystrokes, then replay it. Press `e` repeatedly after `C-x e` to execute multiple times.
 
+## Rectangle Operations
+
+Operate on the rectangle defined by mark and cursor as opposite corners.
+
+```
+AAAA[mark]BBBBcccc        After C-x r k:     AAAAcccc
+ddddEEEEffff              →                  ddddffff
+ggggHHHH[cursor]iiii                         ggggiiii
+```
+
+| Key | Action |
+|-----|--------|
+| `C-x r k` | Kill (cut) rectangle |
+| `C-x r w` | Copy rectangle (no delete) |
+| `C-x r y` | Yank at cursor position |
+
+Note: Rectangle uses separate storage from normal kill ring. C-y won't paste rectangles.
+
 ## M-x Commands
 
 | Command | Action |
@@ -147,6 +167,8 @@ Record a sequence of keystrokes, then replay it. Press `e` repeatedly after `C-x
 | `ro` | Toggle read-only |
 | `exit` / `quit` | Quit with confirmation |
 | `?` | List all commands |
+
+**Note:** Tab key completes file paths and M-x commands.
 
 ## Other
 

@@ -3,6 +3,120 @@ const Editor = @import("editor").Editor;
 const PieceIterator = @import("buffer").PieceIterator;
 const EditingContext = @import("editing_context").EditingContext;
 
+/// 矩形領域の範囲情報を取得する共通関数
+fn getRectangleInfo(e: *Editor) ?struct {
+    start_line: usize,
+    end_line: usize,
+    left_col: usize,
+    right_col: usize,
+} {
+    const window = e.getCurrentWindow();
+    const mark = window.mark_pos orelse {
+        e.getCurrentView().setError("No mark set");
+        return null;
+    };
+
+    const cursor = e.getCurrentView().getCursorBufferPos();
+    const buffer = e.getCurrentBufferContent();
+
+    const start_pos = @min(mark, cursor);
+    const end_pos = @max(mark, cursor);
+
+    const start_line = buffer.findLineByPos(start_pos);
+    const end_line = buffer.findLineByPos(end_pos);
+
+    const start_col = buffer.findColumnByPos(start_pos);
+    const end_col = buffer.findColumnByPos(end_pos);
+
+    return .{
+        .start_line = start_line,
+        .end_line = end_line,
+        .left_col = @min(start_col, end_col),
+        .right_col = @max(start_col, end_col),
+    };
+}
+
+/// 矩形領域をコピー（C-x r w）- 削除せずにコピーのみ
+pub fn copyRectangle(e: *Editor) !void {
+    const info = getRectangleInfo(e) orelse return;
+    const buffer = e.getCurrentBufferContent();
+
+    // 古い rectangle_ring をクリーンアップ
+    if (e.rectangle_ring) |*old_ring| {
+        for (old_ring.items) |line| {
+            e.allocator.free(line);
+        }
+        old_ring.deinit(e.allocator);
+    }
+
+    // 新しい rectangle_ring を作成
+    var rect_ring: std.ArrayList([]const u8) = .{};
+    errdefer {
+        for (rect_ring.items) |line| {
+            e.allocator.free(line);
+        }
+        rect_ring.deinit(e.allocator);
+    }
+
+    // 各行から矩形領域を抽出
+    var line_num = info.start_line;
+    while (line_num <= info.end_line) : (line_num += 1) {
+        const line_start = buffer.getLineStart(line_num) orelse continue;
+
+        const next_line_start = buffer.getLineStart(line_num + 1);
+        const line_end = if (next_line_start) |nls|
+            if (nls > 0 and nls > line_start) nls - 1 else nls
+        else
+            buffer.len();
+
+        var iter = PieceIterator.init(buffer);
+        iter.seek(line_start);
+
+        var current_col: usize = 0;
+        var rect_start_pos: ?usize = null;
+        var rect_end_pos: ?usize = null;
+
+        while (iter.global_pos < line_end and current_col < info.left_col) {
+            const gc = iter.nextGraphemeCluster() catch break;
+            if (gc) |cluster| {
+                current_col += cluster.width;
+            } else break;
+        }
+        rect_start_pos = iter.global_pos;
+
+        while (iter.global_pos < line_end and current_col < info.right_col) {
+            const gc = iter.nextGraphemeCluster() catch break;
+            if (gc) |cluster| {
+                current_col += cluster.width;
+            } else break;
+        }
+        rect_end_pos = iter.global_pos;
+
+        if (rect_start_pos) |rsp| {
+            if (rect_end_pos) |rep| {
+                if (rep > rsp) {
+                    var line_buf: std.ArrayList(u8) = .{};
+                    errdefer line_buf.deinit(e.allocator);
+
+                    var extract_iter = PieceIterator.init(buffer);
+                    extract_iter.seek(rsp);
+                    while (extract_iter.global_pos < rep) {
+                        const byte = extract_iter.next() orelse break;
+                        try line_buf.append(e.allocator, byte);
+                    }
+
+                    const line_text = try line_buf.toOwnedSlice(e.allocator);
+                    try rect_ring.append(e.allocator, line_text);
+                }
+            }
+        }
+    }
+
+    e.rectangle_ring = rect_ring;
+    e.getCurrentWindow().mark_pos = null;
+    e.getCurrentView().setError("Rectangle copied");
+}
+
 /// 矩形領域の削除（C-x r k）
 pub fn killRectangle(e: *Editor) !void {
     if (e.isReadOnly()) return;
