@@ -811,8 +811,8 @@ pub const View = struct {
         try self.highlighted_line.appendSlice(self.allocator, line[0..first_match]);
         // カーソル位置を含むマッチかどうかで色を変える（可視位置で比較）
         const is_current = if (cursor_in_content) |cursor| cursor >= first_visible_pos and cursor <= first_visible_pos + search_str.len else false;
-        const hl_start = if (is_current) "\x1b[45m" else ANSI.INVERT;
-        const hl_end = if (is_current) "\x1b[49m" else ANSI.INVERT_OFF;
+        const hl_start = if (is_current) "\x1b[48;5;220m\x1b[30m" else ANSI.INVERT;
+        const hl_end = if (is_current) "\x1b[49m\x1b[39m" else ANSI.INVERT_OFF;
         try self.highlighted_line.appendSlice(self.allocator, hl_start);
         try self.highlighted_line.appendSlice(self.allocator, line[first_match .. first_match + search_str.len]);
         try self.highlighted_line.appendSlice(self.allocator, hl_end);
@@ -827,8 +827,8 @@ pub const View = struct {
                 const visible_pos = countVisibleBytes(line, content_start, match_pos);
                 // カーソル位置を含むマッチかどうかで色を変える（可視位置で比較）
                 const is_cur = if (cursor_in_content) |cursor| cursor >= visible_pos and cursor <= visible_pos + search_str.len else false;
-                const start_seq = if (is_cur) "\x1b[45m" else ANSI.INVERT;
-                const end_seq = if (is_cur) "\x1b[49m" else ANSI.INVERT_OFF;
+                const start_seq = if (is_cur) "\x1b[48;5;220m\x1b[30m" else ANSI.INVERT;
+                const end_seq = if (is_cur) "\x1b[49m\x1b[39m" else ANSI.INVERT_OFF;
                 try self.highlighted_line.appendSlice(self.allocator, start_seq);
                 try self.highlighted_line.appendSlice(self.allocator, line[match_pos .. match_pos + search_str.len]);
                 try self.highlighted_line.appendSlice(self.allocator, end_seq);
@@ -928,8 +928,8 @@ pub const View = struct {
         try self.highlighted_line.appendSlice(self.allocator, line[0..match_start_raw]);
         // カーソル位置を含むマッチかどうかで色を変える（可視位置で比較）
         const is_current = if (cursor_in_content) |cursor| cursor >= match_start_vis and cursor <= match_end_vis else false;
-        const hl_start = if (is_current) "\x1b[45m" else ANSI.INVERT;
-        const hl_end = if (is_current) "\x1b[49m" else ANSI.INVERT_OFF;
+        const hl_start = if (is_current) "\x1b[48;5;220m\x1b[30m" else ANSI.INVERT;
+        const hl_end = if (is_current) "\x1b[49m\x1b[39m" else ANSI.INVERT_OFF;
         try self.highlighted_line.appendSlice(self.allocator, hl_start);
         try self.highlighted_line.appendSlice(self.allocator, line[match_start_raw..match_end_raw]);
         try self.highlighted_line.appendSlice(self.allocator, hl_end);
@@ -954,8 +954,8 @@ pub const View = struct {
                 try self.highlighted_line.appendSlice(self.allocator, line[last_raw_pos..match_start_raw]);
                 // カーソル位置を含むマッチかどうかで色を変える（可視位置で比較）
                 const is_cur = if (cursor_in_content) |cursor| cursor >= match_start_vis and cursor <= match_end_vis else false;
-                const start_seq = if (is_cur) "\x1b[45m" else ANSI.INVERT;
-                const end_seq = if (is_cur) "\x1b[49m" else ANSI.INVERT_OFF;
+                const start_seq = if (is_cur) "\x1b[48;5;220m\x1b[30m" else ANSI.INVERT;
+                const end_seq = if (is_cur) "\x1b[49m\x1b[39m" else ANSI.INVERT_OFF;
                 try self.highlighted_line.appendSlice(self.allocator, start_seq);
                 try self.highlighted_line.appendSlice(self.allocator, line[match_start_raw..match_end_raw]);
                 try self.highlighted_line.appendSlice(self.allocator, end_seq);
