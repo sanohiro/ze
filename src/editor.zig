@@ -89,6 +89,7 @@ const EditorMode = enum {
     mx_command, // M-xコマンド入力中
     mx_key_describe, // M-x key: 次のキー入力を待っている
     macro_repeat, // マクロ再生後の連打待機（eで再実行）
+    exit_confirm, // M-x exit: 終了確認中（y/nを待つ）
 };
 
 /// シェルコマンドの非同期実行状態
@@ -544,6 +545,16 @@ pub const Editor = struct {
                 self.resetToNormal();
             },
             else => self.getCurrentView().setError("Please answer: (y)es, (n)o, (c)ancel"),
+        }
+    }
+
+    /// M-x exit確認モードの文字処理
+    fn handleExitConfirmChar(self: *Editor, cp: u21) void {
+        const c = unicode.toAsciiChar(cp);
+        switch (c) {
+            'y', 'Y' => self.running = false,
+            'n', 'N' => self.resetToNormal(),
+            else => self.getCurrentView().setError("Exit? (y)es (n)o"),
         }
     }
 
@@ -2652,6 +2663,18 @@ pub const Editor = struct {
                 switch (key) {
                     .char => |c| self.handleKillBufferConfirmChar(c),
                     .codepoint => |cp| self.handleKillBufferConfirmChar(unicode.normalizeFullwidth(cp)),
+                    .ctrl => |c| {
+                        if (c == 'g') self.resetToNormal();
+                    },
+                    .escape => self.resetToNormal(),
+                    else => {},
+                }
+                return;
+            },
+            .exit_confirm => {
+                switch (key) {
+                    .char => |c| self.handleExitConfirmChar(c),
+                    .codepoint => |cp| self.handleExitConfirmChar(unicode.normalizeFullwidth(cp)),
                     .ctrl => |c| {
                         if (c == 'g') self.resetToNormal();
                     },

@@ -27,6 +27,7 @@ const commands = [_]Command{
     .{ .name = "revert", .handler = .{ .no_arg = cmdRevert } },
     .{ .name = "key", .handler = .{ .special = cmdKeyDescribe } },
     .{ .name = "ro", .handler = .{ .special = cmdReadonly } },
+    .{ .name = "exit", .alias = "quit", .handler = .{ .special = cmdExit } },
 };
 
 /// M-xコマンドを実行
@@ -65,7 +66,7 @@ pub fn execute(e: *Editor) !void {
 
 /// help コマンド: コマンド一覧を表示
 fn cmdHelp(e: *Editor) void {
-    e.getCurrentView().setError("Commands: line tab indent mode revert key ro ?");
+    e.getCurrentView().setError("Commands: line tab indent mode revert key ro exit ?");
 }
 
 /// key コマンド: キー説明モードに入る
@@ -242,4 +243,10 @@ fn cmdReadonly(e: *Editor) void {
     } else {
         e.getCurrentView().setError("Read-only disabled");
     }
+}
+
+/// exit コマンド: 確認付きで終了
+fn cmdExit(e: *Editor) void {
+    e.mode = .exit_confirm;
+    e.getCurrentView().setError("Exit? (y)es (n)o");
 }
