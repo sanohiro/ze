@@ -175,6 +175,7 @@ pub const Editor = struct {
     // UI状態
     spinner_frame: u8, // シェル実行中のスピナーフレーム
     overwrite_mode: bool, // 上書きモード（Insertキーでトグル）
+    completion_shown: bool, // 補完候補表示中フラグ
 
     // キーマップ
     keymap: Keymap, // キーバインド設定（ランタイム変更可能）
@@ -225,6 +226,7 @@ pub const Editor = struct {
             .macro_service = MacroService.init(allocator),
             .spinner_frame = 0,
             .overwrite_mode = false,
+            .completion_shown = false,
             .keymap = try Keymap.init(allocator),
         };
 
@@ -1549,6 +1551,7 @@ pub const Editor = struct {
             try self.minibuffer.setContent(new_path);
             // プロンプトを更新（clearError()ではなく）
             self.updateMinibufferPrompt(prompt);
+            self.completion_shown = false;
         } else {
             // 複数マッチ: 共通プレフィックスを補完して候補を表示
             const common = findCommonPrefix(matches.items);
@@ -1586,6 +1589,8 @@ pub const Editor = struct {
                 msg_len += written.len;
             }
             self.getCurrentView().setError(msg_buf[0..msg_len]);
+            // 候補表示中フラグを立てる（Enterを無効化）
+            self.completion_shown = true;
         }
 
         // プロンプトを再描画
@@ -1742,7 +1747,8 @@ pub const Editor = struct {
             try self.renderAllWindows();
 
             // ミニバッファ入力中はカーソル位置を調整
-            if (self.isMinibufferMode()) {
+            // ただし補完候補表示中はカーソルを隠す
+            if (self.isMinibufferMode() and !self.completion_shown) {
                 const window = self.getCurrentWindow();
                 // +1 はステータスバー描画時の先頭スペース分
                 const cursor_col = 1 + self.prompt_prefix_len + self.getMinibufferCursorColumn();
@@ -1798,7 +1804,8 @@ pub const Editor = struct {
             self.clampCursorPosition();
             try self.renderAllWindows();
 
-            if (self.isMinibufferMode()) {
+            // 補完候補表示中はカーソルを隠す
+            if (self.isMinibufferMode() and !self.completion_shown) {
                 const window = self.getCurrentWindow();
                 // +1 はステータスバー描画時の先頭スペース分
                 const cursor_col = 1 + self.prompt_prefix_len + self.getMinibufferCursorColumn();
@@ -1993,12 +2000,23 @@ pub const Editor = struct {
     /// ファイル名入力モード（C-x C-s で新規ファイル保存時）
     fn handleFilenameInputKey(self: *Editor, key: input.Key) !bool {
         if (isCancelKey(key)) {
+            self.completion_shown = false;
             self.cancelSaveInput();
             return true;
         }
         if (key == .tab) {
             _ = try self.completeFilename("Write file: ");
             return true;
+        }
+        // 補完候補表示中は、Tab以外のキーで候補をクリア
+        if (self.completion_shown) {
+            self.completion_shown = false;
+            // プロンプトを再描画（候補表示をクリアして入力状態に戻す）
+            self.updateMinibufferPrompt("Write file: ");
+            // Enterは候補クリアのみで処理しない（誤操作防止）
+            if (key == .enter) {
+                return true;
+            }
         }
         if (key == .enter) {
             if (self.minibuffer.getContent().len > 0) {
@@ -2047,12 +2065,23 @@ pub const Editor = struct {
     /// ファイルを開くモード（C-x C-f）
     fn handleFindFileInputKey(self: *Editor, key: input.Key) !bool {
         if (isCancelKey(key)) {
+            self.completion_shown = false;
             self.cancelInput();
             return true;
         }
         if (key == .tab) {
             _ = try self.completeFilename("Find file: ");
             return true;
+        }
+        // 補完候補表示中は、Tab以外のキーで候補をクリア
+        if (self.completion_shown) {
+            self.completion_shown = false;
+            // プロンプトを再描画（候補表示をクリアして入力状態に戻す）
+            self.updateMinibufferPrompt("Find file: ");
+            // Enterは候補クリアのみで処理しない（誤操作防止）
+            if (key == .enter) {
+                return true;
+            }
         }
         if (key == .enter) {
             if (self.minibuffer.getContent().len > 0) {
