@@ -145,6 +145,7 @@ Record a sequence of keystrokes, then replay it. Press `e` repeatedly after `C-x
 | `key` | Describe key binding |
 | `revert` | Reload file |
 | `ro` | Toggle read-only |
+| `exit` / `quit` | Quit with confirmation |
 | `?` | List all commands |
 
 ## Other

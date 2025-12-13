@@ -143,6 +143,7 @@ ze highlights comments only. This is intentional:
 | `key` | Describe key binding |
 | `revert` | Reload file |
 | `ro` | Toggle read-only |
+| `exit` / `quit` | Quit with confirmation |
 | `?` | List commands |
 
 ---
