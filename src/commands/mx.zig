@@ -250,3 +250,49 @@ fn cmdExit(e: *Editor) void {
     e.mode = .exit_confirm;
     e.getCurrentView().setError("Exit? (y)es (n)o");
 }
+
+/// コマンド名補完
+/// 入力プレフィックスにマッチするコマンド名を返す
+pub fn completeCommand(prefix: []const u8) struct {
+    matches: []const []const u8,
+    common_prefix: []const u8,
+} {
+    // 補完結果を格納する静的配列（コマンド数 × 2 for aliases）
+    const max_matches = commands.len * 2;
+    const S = struct {
+        var match_buf: [max_matches][]const u8 = undefined;
+    };
+
+    var count: usize = 0;
+
+    // コマンド名とエイリアスをチェック
+    inline for (commands) |cmd| {
+        if (std.mem.startsWith(u8, cmd.name, prefix)) {
+            S.match_buf[count] = cmd.name;
+            count += 1;
+        }
+        if (cmd.alias) |alias| {
+            if (std.mem.startsWith(u8, alias, prefix)) {
+                S.match_buf[count] = alias;
+                count += 1;
+            }
+        }
+    }
+
+    if (count == 0) {
+        return .{ .matches = &[_][]const u8{}, .common_prefix = prefix };
+    }
+
+    // 共通プレフィックスを計算
+    var common_len = S.match_buf[0].len;
+    for (S.match_buf[1..count]) |m| {
+        var i: usize = 0;
+        while (i < common_len and i < m.len and S.match_buf[0][i] == m[i]) : (i += 1) {}
+        common_len = i;
+    }
+
+    return .{
+        .matches = S.match_buf[0..count],
+        .common_prefix = S.match_buf[0][0..common_len],
+    };
+}

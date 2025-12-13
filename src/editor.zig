@@ -2652,6 +2652,41 @@ pub const Editor = struct {
                 try mx.execute(self);
                 return true;
             },
+            .tab => {
+                // コマンド名補完
+                const current = self.minibuffer.getContent();
+                // スペースがあれば補完しない（引数部分）
+                if (std.mem.indexOfScalar(u8, current, ' ') != null) {
+                    return true;
+                }
+                const result = mx.completeCommand(current);
+                if (result.matches.len == 0) {
+                    self.getCurrentView().setError("No match");
+                } else if (result.matches.len == 1) {
+                    // ユニーク一致: 完全補完 + スペース
+                    var buf: [64]u8 = undefined;
+                    const completed = std.fmt.bufPrint(&buf, "{s} ", .{result.matches[0]}) catch result.matches[0];
+                    try self.minibuffer.setContent(completed);
+                    self.getCurrentView().setError(": ");
+                } else {
+                    // 複数一致: 共通プレフィックス補完 + 候補表示
+                    try self.minibuffer.setContent(result.common_prefix);
+                    var display_buf: [256]u8 = undefined;
+                    var len: usize = 0;
+                    for (result.matches) |m| {
+                        if (len + m.len + 1 < display_buf.len) {
+                            if (len > 0) {
+                                display_buf[len] = ' ';
+                                len += 1;
+                            }
+                            @memcpy(display_buf[len .. len + m.len], m);
+                            len += m.len;
+                        }
+                    }
+                    self.getCurrentView().setError(display_buf[0..len]);
+                }
+                return true;
+            },
             else => {},
         }
         _ = try self.handleMinibufferKey(key);
