@@ -181,7 +181,8 @@ pub const Editor = struct {
 
     pub fn init(allocator: std.mem.Allocator) !Editor {
         // ターミナルを先に初期化（サイズ取得のため）
-        const terminal = try Terminal.init(allocator);
+        var terminal = try Terminal.init(allocator);
+        errdefer terminal.deinit(); // 以降の初期化失敗時にターミナルをクリーンアップ
 
         // BufferManagerを初期化し、最初のバッファを作成
         var buffer_manager = BufferManager.init(allocator);

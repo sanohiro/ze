@@ -11,10 +11,12 @@ cd "$PROJECT_ROOT"
 echo "ビルド中..."
 zig build -Doptimize=ReleaseSafe 2>&1 | grep -v "warning" || true
 
-# テストファイルのクリーンアップ
+# テストファイルのクリーンアップとターミナルリセット
 cleanup() {
     rm -f /tmp/ze_multi_test*.txt /tmp/test_output.txt
+    printf '\e[?1000l\e[?1003l\e[?1006l\e[?25h'
 }
+trap cleanup EXIT
 cleanup
 
 echo ""

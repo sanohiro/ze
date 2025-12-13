@@ -5,6 +5,12 @@
 
 set -e
 
+# 終了時にターミナル状態をリセット（マウスモード無効化、カーソル表示）
+cleanup() {
+    printf '\e[?1000l\e[?1003l\e[?1006l\e[?25h'
+}
+trap cleanup EXIT
+
 HARNESS="zig run test_harness_generic.zig -lc --"
 PASS_COUNT=0
 FAIL_COUNT=0
