@@ -1477,6 +1477,137 @@ pub const Editor = struct {
         }
     }
 
+    /// ファイル名補完を実行
+    /// 戻り値: 補完が行われた場合はtrue
+    fn completeFilename(self: *Editor, prompt: []const u8) !bool {
+        const current = self.minibuffer.getContent();
+        if (current.len == 0) return false;
+
+        // ディレクトリ部分とプレフィックス部分を分離
+        var dir_path: []const u8 = undefined;
+        var prefix: []const u8 = undefined;
+
+        if (std.mem.lastIndexOfScalar(u8, current, '/')) |last_slash| {
+            dir_path = if (last_slash == 0) "/" else current[0..last_slash];
+            prefix = current[last_slash + 1 ..];
+        } else {
+            dir_path = ".";
+            prefix = current;
+        }
+
+        // ディレクトリを開く
+        var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch {
+            return false;
+        };
+        defer dir.close();
+
+        // マッチするエントリを収集
+        var matches = try std.ArrayList([]const u8).initCapacity(self.allocator, 32);
+        defer {
+            for (matches.items) |item| {
+                self.allocator.free(item);
+            }
+            matches.deinit(self.allocator);
+        }
+
+        var iter = dir.iterate();
+        while (try iter.next()) |entry| {
+            if (prefix.len == 0 or std.mem.startsWith(u8, entry.name, prefix)) {
+                // ディレクトリなら末尾に/を追加
+                const name = if (entry.kind == .directory)
+                    try std.fmt.allocPrint(self.allocator, "{s}/", .{entry.name})
+                else
+                    try self.allocator.dupe(u8, entry.name);
+                try matches.append(self.allocator, name);
+            }
+        }
+
+        if (matches.items.len == 0) {
+            self.getCurrentView().setError("No match");
+            return false;
+        }
+
+        // ソート（アルファベット順）
+        std.mem.sort([]const u8, matches.items, {}, struct {
+            fn cmp(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.order(u8, a, b) == .lt;
+            }
+        }.cmp);
+
+        if (matches.items.len == 1) {
+            // 一意のマッチ: 完全補完
+            const match = matches.items[0];
+            const new_path = if (std.mem.eql(u8, dir_path, "."))
+                try self.allocator.dupe(u8, match)
+            else if (std.mem.eql(u8, dir_path, "/"))
+                try std.fmt.allocPrint(self.allocator, "/{s}", .{match})
+            else
+                try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ dir_path, match });
+            defer self.allocator.free(new_path);
+
+            try self.minibuffer.setContent(new_path);
+            self.getCurrentView().clearError();
+        } else {
+            // 複数マッチ: 共通プレフィックスを補完して候補を表示
+            const common = findCommonPrefix(matches.items);
+
+            if (common.len > prefix.len) {
+                // 共通部分で補完
+                const new_path = if (std.mem.eql(u8, dir_path, "."))
+                    try self.allocator.dupe(u8, common)
+                else if (std.mem.eql(u8, dir_path, "/"))
+                    try std.fmt.allocPrint(self.allocator, "/{s}", .{common})
+                else
+                    try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ dir_path, common });
+                defer self.allocator.free(new_path);
+
+                try self.minibuffer.setContent(new_path);
+            }
+
+            // 候補を表示（最大5件）
+            var msg_buf: [256]u8 = undefined;
+            var msg_len: usize = 0;
+            const max_show: usize = 5;
+            for (matches.items, 0..) |match, i| {
+                if (i >= max_show) {
+                    const more = std.fmt.bufPrint(msg_buf[msg_len..], " +{d} more", .{matches.items.len - max_show}) catch break;
+                    msg_len += more.len;
+                    break;
+                }
+                if (i > 0) {
+                    if (msg_len < msg_buf.len) {
+                        msg_buf[msg_len] = ' ';
+                        msg_len += 1;
+                    }
+                }
+                const written = std.fmt.bufPrint(msg_buf[msg_len..], "{s}", .{match}) catch break;
+                msg_len += written.len;
+            }
+            self.getCurrentView().setError(msg_buf[0..msg_len]);
+        }
+
+        // プロンプトを再描画
+        self.minibuffer.setPrompt(prompt);
+        return true;
+    }
+
+    /// 文字列配列の共通プレフィックスを見つける
+    fn findCommonPrefix(strings: []const []const u8) []const u8 {
+        if (strings.len == 0) return "";
+        if (strings.len == 1) return strings[0];
+
+        const first = strings[0];
+        var common_len: usize = first.len;
+
+        for (strings[1..]) |s| {
+            var i: usize = 0;
+            while (i < common_len and i < s.len and first[i] == s[i]) : (i += 1) {}
+            common_len = i;
+        }
+
+        return first[0..common_len];
+    }
+
     /// 全ウィンドウをレンダリング
     fn renderAllWindows(self: *Editor) !void {
         // 選択範囲を先に更新（needsRedraw判定の前に必要）
@@ -1863,6 +1994,10 @@ pub const Editor = struct {
             self.cancelSaveInput();
             return true;
         }
+        if (key == .tab) {
+            _ = try self.completeFilename("Write file: ");
+            return true;
+        }
         if (key == .enter) {
             if (self.minibuffer.getContent().len > 0) {
                 const new_filename = self.minibuffer.getContent();
@@ -1911,6 +2046,10 @@ pub const Editor = struct {
     fn handleFindFileInputKey(self: *Editor, key: input.Key) !bool {
         if (isCancelKey(key)) {
             self.cancelInput();
+            return true;
+        }
+        if (key == .tab) {
+            _ = try self.completeFilename("Find file: ");
             return true;
         }
         if (key == .enter) {
