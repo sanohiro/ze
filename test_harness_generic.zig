@@ -1,6 +1,14 @@
 const std = @import("std");
 const posix = std.posix;
 
+/// ターミナル状態をリセットして終了
+fn resetAndExit(code: u8) noreturn {
+    const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
+    stdout.writeAll("\x1b[?1000l\x1b[?1003l\x1b[?1006l") catch {}; // マウス無効化
+    stdout.writeAll("\x1b[?25h") catch {}; // カーソル表示
+    std.process.exit(code);
+}
+
 /// 汎用PTYテストハーネス
 /// コマンドライン引数からキーシーケンスを受け取り、zeに送信してテストする
 ///
@@ -372,13 +380,13 @@ pub fn main() !void {
 
                 const file = std.fs.cwd().openFile(path, .{}) catch |err| {
                     std.debug.print("ERROR: Failed to open file: {}\n", .{err});
-                    std.process.exit(2);
+                    resetAndExit(2);
                 };
                 defer file.close();
 
                 const actual = file.readToEndAlloc(allocator, 1024 * 1024) catch |err| {
                     std.debug.print("ERROR: Failed to read file: {}\n", .{err});
-                    std.process.exit(2);
+                    resetAndExit(2);
                 };
                 defer allocator.free(actual);
 
@@ -392,25 +400,23 @@ pub fn main() !void {
                     std.debug.print("PASS: Content matches!\n", .{});
                 } else {
                     std.debug.print("FAIL: Content does not match!\n", .{});
-                    std.process.exit(1);
+                    resetAndExit(1);
                 }
             }
         }
 
-        // ターミナル状態をリセット（マウスモード無効化など）
-        // zeが強制終了されると cleanup が走らないため
-        const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
-        stdout.writeAll("\x1b[?1000l\x1b[?1003l\x1b[?1006l") catch {}; // マウス無効化
-        stdout.writeAll("\x1b[?25h") catch {}; // カーソル表示
-
         if (timed_out) {
             std.debug.print("\n=== Test completed (with timeout) ===\n", .{});
-            std.process.exit(124); // timeout exit code
+            resetAndExit(124); // timeout exit code
         } else if (exit_status != 0) {
             std.debug.print("\n=== Test FAILED (exit code: {}) ===\n", .{exit_status});
-            std.process.exit(exit_status);
+            resetAndExit(exit_status);
         } else {
             std.debug.print("\n=== Test completed ===\n", .{});
+            // 正常終了でもターミナルをリセット
+            const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
+            stdout.writeAll("\x1b[?1000l\x1b[?1003l\x1b[?1006l") catch {};
+            stdout.writeAll("\x1b[?25h") catch {};
         }
     }
 }
