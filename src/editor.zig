@@ -1527,6 +1527,7 @@ pub const Editor = struct {
 
         if (matches.items.len == 0) {
             self.getCurrentView().setError("No match");
+            self.completion_shown = true; // No matchもカーソル非表示
             return false;
         }
 
@@ -2693,7 +2694,7 @@ pub const Editor = struct {
             const result = mx.completeCommand(current);
             if (result.matches.len == 0) {
                 self.getCurrentView().setError("No match");
-                self.completion_shown = false;
+                self.completion_shown = true; // No matchもカーソル非表示
             } else if (result.matches.len == 1) {
                 // ユニーク一致: 完全補完 + スペース
                 var buf: [64]u8 = undefined;
