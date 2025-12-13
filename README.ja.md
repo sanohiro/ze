@@ -14,6 +14,8 @@ SSH先でサクッと使える、設定不要の軽量で高速なモダンエ�
 - **シェル統合** — sort, jq, awkに直接パイプ
 - **UTF-8完全対応** — 日本語、絵文字、grapheme cluster
 
+![ze demo](demo/ze_demo.gif)
+
 ## 動作環境
 
 - Linux (x86_64, aarch64)

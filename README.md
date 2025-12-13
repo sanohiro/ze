@@ -14,6 +14,8 @@ A lightweight, fast, modern editor that requires no configuration. Perfect for q
 - **Shell integration** — Pipe to sort, jq, awk directly from the editor
 - **Full UTF-8 support** — Japanese, emoji, grapheme clusters
 
+![ze demo](demo/ze_demo.gif)
+
 ## Requirements
 
 - Linux (x86_64, aarch64)
