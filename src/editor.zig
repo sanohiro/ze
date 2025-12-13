@@ -392,11 +392,11 @@ pub const Editor = struct {
         const prefix_len = stringDisplayWidth(prefix);
         if (self.replace_replacement) |prev| {
             self.setPrompt("{s}{s} with (default {s}): ", .{ prefix, search, prev });
-            // prefix + search + " with (default ): " + prev
-            self.prompt_prefix_len = prefix_len + stringDisplayWidth(search) + 17 + stringDisplayWidth(prev) + 3;
+            // prefix + search + " with (default " + prev + "): "
+            self.prompt_prefix_len = prefix_len + stringDisplayWidth(search) + 15 + stringDisplayWidth(prev) + 3;
         } else {
             self.setPrompt("{s}{s} with: ", .{ prefix, search });
-            self.prompt_prefix_len = prefix_len + stringDisplayWidth(search) + 7; // " with: " = 7
+            self.prompt_prefix_len = prefix_len + stringDisplayWidth(search) + 7;
         }
     }
 
@@ -486,10 +486,7 @@ pub const Editor = struct {
             (if (forward) "Regexp I-search: " else "Regexp I-search backward: ")
         else
             (if (forward) "I-search: " else "I-search backward: ");
-        const prefix_len: usize = if (self.is_regex_search)
-            (if (forward) 18 else 27)
-        else
-            (if (forward) 11 else 20);
+        const prefix_len = stringDisplayWidth(prefix);
 
         if (self.last_search) |search_str| {
             // 前回の検索パターンがあれば、それで検索を実行
@@ -1581,7 +1578,8 @@ pub const Editor = struct {
             // ミニバッファ入力中はカーソル位置を調整
             if (self.isMinibufferMode()) {
                 const window = self.getCurrentWindow();
-                const cursor_col = self.prompt_prefix_len + self.getMinibufferCursorColumn();
+                // +1 はステータスバー描画時の先頭スペース分
+                const cursor_col = 1 + self.prompt_prefix_len + self.getMinibufferCursorColumn();
                 // 現在のウィンドウのステータスバー行（ウィンドウの最下行）
                 const status_row = window.y + window.height - 1;
                 try self.terminal.moveCursor(status_row, cursor_col);
@@ -1636,7 +1634,8 @@ pub const Editor = struct {
 
             if (self.isMinibufferMode()) {
                 const window = self.getCurrentWindow();
-                const cursor_col = self.prompt_prefix_len + self.getMinibufferCursorColumn();
+                // +1 はステータスバー描画時の先頭スペース分
+                const cursor_col = 1 + self.prompt_prefix_len + self.getMinibufferCursorColumn();
                 // 現在のウィンドウのステータスバー行（ウィンドウの最下行）
                 const status_row = window.y + window.height - 1;
                 try self.terminal.moveCursor(status_row, cursor_col);

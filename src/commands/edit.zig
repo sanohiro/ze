@@ -144,8 +144,8 @@ pub fn backspace(e: *Editor) !void {
     if (pos == 0) return;
 
     // 削除するgrapheme clusterのバイト数と幅を取得
-    // 前の文字の開始位置を見つけてそこから cluster を読む
-    const char_start = buffer.findUtf8CharStart(pos - 1);
+    // findUtf8CharStart(pos)は内部でpos-1から探索する
+    const char_start = buffer.findUtf8CharStart(pos);
     var iter = PieceIterator.init(buffer);
     iter.seek(char_start);
 
