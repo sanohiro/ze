@@ -232,6 +232,13 @@ pub fn main() !void {
         // 親プロセス
         _ = posix.system.close(slave_fd);
 
+        // エラーで早期returnしてもターミナルをリセット
+        defer {
+            const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
+            stdout.writeAll("\x1b[?1000l\x1b[?1003l\x1b[?1006l") catch {};
+            stdout.writeAll("\x1b[?25h") catch {};
+        }
+
         std.debug.print("Child process started: pid={}\n\n", .{pid});
 
         // 起動待ち
