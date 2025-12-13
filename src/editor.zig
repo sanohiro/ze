@@ -2073,12 +2073,20 @@ pub const Editor = struct {
                         } else if (err == error.BinaryFile) {
                             _ = try self.closeBuffer(new_buffer.id);
                             self.getCurrentView().setError("Cannot open binary file");
-                            self.cancelInput();
+                            self.mode = .normal;
+                            self.clearInputBuffer();
+                            return true;
+                        } else if (err == error.IsDir) {
+                            _ = try self.closeBuffer(new_buffer.id);
+                            self.getCurrentView().setError("Cannot open directory");
+                            self.mode = .normal;
+                            self.clearInputBuffer();
                             return true;
                         } else {
                             _ = try self.closeBuffer(new_buffer.id);
                             self.showError(err);
-                            self.cancelInput();
+                            self.mode = .normal;
+                            self.clearInputBuffer();
                             return true;
                         }
                     };

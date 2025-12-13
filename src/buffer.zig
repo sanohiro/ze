@@ -502,6 +502,11 @@ pub const Buffer = struct {
         const stat = try file.stat();
         const file_size = stat.size;
 
+        // ディレクトリは開けない
+        if (stat.kind == .directory) {
+            return error.IsDir;
+        }
+
         // 空ファイルの場合は特別処理（mmapできない）
         if (file_size == 0) {
             return loadFromFileEmpty(allocator);
