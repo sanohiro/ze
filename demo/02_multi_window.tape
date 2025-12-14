@@ -5,6 +5,7 @@ Set FontSize 18
 Set Width 900
 Set Height 500
 Set Theme "Catppuccin Mocha"
+Set Padding 8
 Set TypingSpeed 50ms
 Set Shell "bash"
 Env PS1 "$ "
