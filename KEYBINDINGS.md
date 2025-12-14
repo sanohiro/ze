@@ -68,7 +68,8 @@ Moving without Shift clears the selection.
 |-----|--------|
 | `C-s` / `C-r` | Literal search forward/backward |
 | `C-M-s` / `C-M-r` | Regex search forward/backward |
-| `C-p` / `C-n` | Previous/next search history (in search mode) |
+| `M-r` | Toggle regex/literal mode (in search mode) |
+| `C-p` / `C-n` / `Up` / `Down` | Search history (in search mode) |
 | `M-%` | Literal query replace (y/n/!/q) |
 | `C-M-%` | Regex query replace (y/n/!/q) |
 

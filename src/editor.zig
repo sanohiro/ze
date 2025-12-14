@@ -1196,6 +1196,7 @@ pub const Editor = struct {
             \\SEARCH & REPLACE
             \\  C-s/C-r     Search forward/backward   M-%         Query replace
             \\  C-M-s/C-M-r Regex search fwd/bwd      C-M-%       Regex query replace
+            \\  M-r         Toggle regex/literal      Up/Down     Search history
             \\
             \\FILE
             \\  C-x C-f     Open file                 C-x C-s     Save
@@ -3849,6 +3850,20 @@ pub const Editor = struct {
             .alt_delete => "M-Delete: kill-word",
             .alt_arrow_up => "M-Up: move-line-up",
             .alt_arrow_down => "M-Down: move-line-down",
+            .alt_arrow_left => "M-Left: backward-word",
+            .alt_arrow_right => "M-Right: forward-word",
+            .shift_arrow_up => "S-Up: select-up",
+            .shift_arrow_down => "S-Down: select-down",
+            .shift_arrow_left => "S-Left: select-left",
+            .shift_arrow_right => "S-Right: select-right",
+            .shift_alt_arrow_up => "S-M-Up: select-up",
+            .shift_alt_arrow_down => "S-M-Down: select-down",
+            .shift_alt_arrow_left => "S-M-Left: select-backward-word",
+            .shift_alt_arrow_right => "S-M-Right: select-forward-word",
+            .shift_page_up => "S-PageUp: select-page-up",
+            .shift_page_down => "S-PageDown: select-page-down",
+            .scroll_up => "ScrollUp: scroll-view-up",
+            .scroll_down => "ScrollDown: scroll-view-down",
             .ctrl_tab => "C-Tab: next-window",
             .ctrl_shift_tab => "C-S-Tab: previous-window",
             else => "Unknown key",

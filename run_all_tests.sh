@@ -236,12 +236,12 @@ run_test "18.6 混在文字のペースト" --file=test_data/test_japanese.txt "
 
 echo
 echo "=== カテゴリ 19: ファイル操作詳細 ==="
-run_test "19.1 新規ファイル名入力" "新規" "C-x" "C-s" "/tmp/test_new_file.txt" "Enter" "C-x" "C-c"
+run_test "19.1 新規ファイル名入力" "新規" "C-x" "C-s" "/tmp/test_new_file.txt" "Enter" "y" "C-x" "C-c"
 run_test "19.2 ファイル名入力でBackspace" "test" "C-x" "C-s" "abc" "Backspace" "Backspace" "Backspace" "C-g" "C-x" "C-c" "n"
 run_test "19.3 保存確認でキャンセル (c)" --file=test_data/test_nums.txt "test" "C-x" "C-c" "c" "C-x" "C-c" "n"
 run_test "19.4 変更なしでC-x C-s" --file=test_data/test_nums.txt "C-x" "C-s" "C-x" "C-c"
 run_test "19.5 複数回保存" --file=test_data/test_nums.txt "a" "C-x" "C-s" "b" "C-x" "C-s" "C-x" "C-c"
-run_test "19.6 名前を付けて保存 (C-x C-w)" --file=test_data/test_nums.txt "test" "C-x" "C-w" "/tmp/ze_test_saveas.txt" "Enter" "C-x" "C-c"
+run_test "19.6 名前を付けて保存 (C-x C-w)" --file=test_data/test_nums.txt "test" "C-x" "C-w" "/tmp/ze_test_saveas.txt" "Enter" "y" "C-x" "C-c"
 run_test "19.7 C-x k (バッファを閉じる)" --file=test_data/test_buffer1.txt "C-x" "C-f" "/tmp/ze_test_data/test_buffer2.txt" "Enter" "C-x" "k" "C-x" "C-c"
 run_test "19.8 C-x h (全選択)" --file=test_data/test_cursor_input.txt "C-x" "h" "C-w" "C-x" "C-c" "n"
 
@@ -261,7 +261,7 @@ run_test "21.2 置換をスキップ (n)" --file=test_data/test_replace.txt "M-%
 run_test "21.3 全て置換 (!)" --file=test_data/test_replace.txt "M-%" "foo" "Enter" "bar" "Enter" "!" "C-x" "C-c" "n"
 run_test "21.4 置換を中断 (q)" --file=test_data/test_replace.txt "M-%" "foo" "Enter" "bar" "Enter" "q" "C-x" "C-c"
 run_test "21.5 置換をキャンセル (C-g)" --file=test_data/test_replace.txt "M-%" "foo" "Enter" "C-g" "C-x" "C-c"
-run_test "21.6 マッチなし" --file=test_data/test_replace.txt "M-%" "notfound" "Enter" "bar" "Enter" "C-x" "C-c"
+run_test "21.6 マッチなし" --file=test_data/test_replace.txt "M-%" "n" "o" "t" "f" "o" "u" "n" "d" "Enter" "bar" "Enter" "C-x" "C-c"
 run_test "21.7 空の置換文字列" --file=test_data/test_replace.txt "M-%" "foo" "Enter" "Enter" "y" "q" "C-x" "C-c" "n"
 run_test "21.8 複数回の置換 (y,y,y)" --file=test_data/test_replace.txt "M-%" "foo" "Enter" "bar" "Enter" "y" "y" "y" "q" "C-x" "C-c" "n"
 run_test "21.9 置換のUndo" --file=test_data/test_replace.txt "M-%" "foo" "Enter" "bar" "Enter" "!" "C-u" "C-x" "C-c" "n"
