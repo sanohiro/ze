@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] - 2025-12-14
+
+### Fixed
+- Unicode: combining character width calculation (Extended Pictographic checked first)
+- Shell integration: close pipes when output exceeds 10MB to prevent deadlock
+- Macro recording: filter control keys (C-x (, ), e) from being recorded
+- Buffer manager: set filename_normalized after saving new files
+- Rectangle: add space padding when yanking to shorter lines
+- Buffer: findColumnByPos now considers tab width
+- Editing context: savepoint tracking for correct modified state after undo
+- View: search highlight position accounts for tab expansion
+- Regex search: chunked search with wrap-around for files larger than 1MB
+
 ## [1.0.1] - 2025-12-14
 
 ### Fixed
