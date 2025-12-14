@@ -162,7 +162,7 @@ ggggHHHH[cursor]iiii                         ggggiiii
 | `line N` | N行目へジャンプ |
 | `tab` / `tab N` | タブ幅表示/設定 |
 | `indent` | インデントスタイル表示/設定 |
-| `mode` / `mode X` | 言語モード表示/設定 |
+| `mode` / `mode X` | 言語モード表示/設定 ([MODES.ja.md](MODES.ja.md) 参照) |
 | `key` | キーバインド説明 |
 | `revert` | ファイル再読み込み |
 | `ro` | 読み取り専用切り替え |

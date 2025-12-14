@@ -162,7 +162,7 @@ Note: Rectangle uses separate storage from normal kill ring. C-y won't paste rec
 | `line N` | Jump to line N |
 | `tab` / `tab N` | Show/set tab width |
 | `indent` | Show/set indent style |
-| `mode` / `mode X` | Show/set language mode |
+| `mode` / `mode X` | Show/set language mode (see [MODES.md](MODES.md)) |
 | `key` | Describe key binding |
 | `revert` | Reload file |
 | `ro` | Toggle read-only |
