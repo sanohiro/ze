@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2025-12-14
+
+### Fixed
+- 13 bugs identified by Codex code review
+- Shell integration: removed stderr from n> output (stdout only)
+
+### Documentation
+- Added language mode reference (MODES.md, MODES.ja.md)
+- Updated keybindings documentation
+- Reduced padding in demo GIFs
+
+### Testing
+- Added category selection to integration test script
+- Expanded test suite to 192 tests (32 categories)
+- New test categories: M-x commands, search mode toggle (M-r), selection keys
+
 ## [1.0.0] - 2025-12-14
 
 Initial release of ze - a fast, minimal text editor inspired by mg and Unix philosophy.
