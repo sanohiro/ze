@@ -3667,22 +3667,10 @@ pub const Editor = struct {
                 }
             },
             .new_buffer => {
-                // 新規バッファに出力（stdout + stderr を連結）
-                if (stdout.len > 0 or stderr.len > 0) {
+                // 新規バッファに出力（stdoutのみ、stderrはdisplayモードで確認）
+                if (stdout.len > 0) {
                     const new_buffer = try self.createNewBuffer();
-                    if (stdout.len > 0) {
-                        try new_buffer.editing_ctx.buffer.insertSlice(0, stdout);
-                    }
-                    if (stderr.len > 0) {
-                        // stderr があれば stdout の後に追加（区切りを入れる）
-                        const insert_pos = new_buffer.editing_ctx.buffer.total_len;
-                        if (stdout.len > 0) {
-                            try new_buffer.editing_ctx.buffer.insertSlice(insert_pos, "\n--- stderr ---\n");
-                            try new_buffer.editing_ctx.buffer.insertSlice(new_buffer.editing_ctx.buffer.total_len, stderr);
-                        } else {
-                            try new_buffer.editing_ctx.buffer.insertSlice(insert_pos, stderr);
-                        }
-                    }
+                    try new_buffer.editing_ctx.buffer.insertSlice(0, stdout);
                     try self.switchToBuffer(new_buffer.id);
                 }
             },
