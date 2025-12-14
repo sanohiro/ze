@@ -218,7 +218,11 @@ pub fn killLine(e: *Editor) !void {
     const end_pos = buffer.findNextLineFromPos(pos);
 
     if (try deleteRangeCommon(e, pos, end_pos - pos, pos)) |deleted| {
-        e.allocator.free(deleted);
+        // kill ringに保存（freeせずに所有権移転）
+        if (e.kill_ring) |old_text| {
+            e.allocator.free(old_text);
+        }
+        e.kill_ring = deleted;
     }
 }
 
@@ -390,7 +394,15 @@ pub fn toggleComment(e: *Editor) !void {
     const buffer = e.getCurrentBufferContent();
     const view = e.getCurrentView();
 
-    const line_comment = view.language.line_comment orelse "#";
+    // line_commentがない言語（HTML/XMLなど）ではブロックコメントのみ対応
+    // block_commentがある場合は警告を出す（行コメントトグルは未対応）
+    const line_comment = view.language.line_comment orelse blk: {
+        if (view.language.block_comment != null) {
+            view.setError("Line comment not supported for this language");
+            return;
+        }
+        break :blk "#"; // 両方ともnullの場合のみフォールバック
+    };
     var comment_buf: [64]u8 = undefined;
     const comment_str = std.fmt.bufPrint(&comment_buf, "{s} ", .{line_comment}) catch "# ";
 
@@ -520,31 +532,39 @@ pub fn moveLineDown(e: *Editor) !void {
 // ========================================
 
 /// M-d: カーソル位置から次の単語までを削除
+/// Emacsスタイル：空白を飛ばして次の単語全体を削除
 pub fn deleteWord(e: *Editor) !void {
     const buffer = e.getCurrentBufferContent();
     const start_pos = e.getCurrentView().getCursorBufferPos();
     if (start_pos >= buffer.len()) return;
 
-    // 単語境界を探索
     var iter = PieceIterator.init(buffer);
     iter.seek(start_pos);
 
-    var prev_type: ?unicode.CharType = null;
     var end_pos = start_pos;
+    var in_word = false;
+    var word_type: ?unicode.CharType = null;
 
     while (iter.nextCodepoint() catch null) |cp| {
         const current_type = unicode.getCharType(cp);
 
-        if (prev_type) |pt| {
-            if (current_type != .space and pt != .space and current_type != pt) {
+        if (current_type == .space) {
+            if (in_word) {
+                // 単語中から空白に出たら終了
                 break;
             }
-            if (pt == .space and current_type != .space) {
+            // 空白スキップ（単語開始前）
+        } else {
+            if (!in_word) {
+                // 単語開始
+                in_word = true;
+                word_type = current_type;
+            } else if (word_type != null and current_type != word_type.?) {
+                // 文字種が変わったら終了
                 break;
             }
         }
 
-        prev_type = current_type;
         end_pos = iter.global_pos;
     }
 
@@ -741,6 +761,7 @@ pub fn keyboardQuit(e: *Editor) !void {
     // マークがあればクリア（Emacsと同じ挙動）
     if (window.mark_pos != null) {
         window.mark_pos = null;
+        e.getCurrentView().markFullRedraw(); // 選択ハイライトを消すため
         e.getCurrentView().setError("Mark deactivated");
     } else {
         e.getCurrentView().clearError();

@@ -58,14 +58,19 @@ fn mainImpl() !u8 {
 
     // オプションとファイル名を処理
     var checked_filename: ?[]const u8 = null;
+    var options_ended = false; // "--"でオプション終了
     while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+        if (!options_ended and std.mem.eql(u8, arg, "--")) {
+            // "--"以降は全てファイル名として扱う
+            options_ended = true;
+            continue;
+        } else if (!options_ended and std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             printHelp();
             return EXIT_SUCCESS;
-        } else if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v")) {
+        } else if (!options_ended and std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v")) {
             printVersion();
             return EXIT_SUCCESS;
-        } else if (arg.len > 0 and arg[0] == '-') {
+        } else if (!options_ended and arg.len > 0 and arg[0] == '-') {
             // 未知のオプション
             const stderr_file: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
             var buf: [256]u8 = undefined;

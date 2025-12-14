@@ -117,19 +117,22 @@ pub const SearchService = struct {
     /// リテラル検索（前方）
     pub fn searchForward(self: *Self, content: []const u8, pattern: []const u8, start_pos: usize) ?SearchMatch {
         _ = self;
-        if (pattern.len == 0 or start_pos >= content.len) return null;
+        if (pattern.len == 0 or content.len == 0) return null;
 
-        // まず start_pos から検索
-        if (std.mem.indexOf(u8, content[start_pos..], pattern)) |offset| {
-            return .{
-                .start = start_pos + offset,
-                .len = pattern.len,
-            };
+        // まず start_pos から検索（start_posが範囲内の場合）
+        if (start_pos < content.len) {
+            if (std.mem.indexOf(u8, content[start_pos..], pattern)) |offset| {
+                return .{
+                    .start = start_pos + offset,
+                    .len = pattern.len,
+                };
+            }
         }
 
-        // ラップアラウンド（先頭から start_pos まで）
-        if (start_pos > 0) {
-            if (std.mem.indexOf(u8, content[0..start_pos], pattern)) |offset| {
+        // ラップアラウンド（先頭から start_pos まで、またはEOFなら全体）
+        const wrap_end = if (start_pos >= content.len) content.len else start_pos;
+        if (wrap_end > 0) {
+            if (std.mem.indexOf(u8, content[0..wrap_end], pattern)) |offset| {
                 return .{
                     .start = offset,
                     .len = pattern.len,

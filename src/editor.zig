@@ -1080,8 +1080,11 @@ pub const Editor = struct {
                 // 次のバッファに切り替え（削除するバッファ以外）
                 // bufferCount >= 2 が保証されているので、i==0 なら items[1] が、i>0 なら items[i-1] が存在
                 const next_buffer = if (i > 0) buffers[i - 1] else buffers[1];
+                // 新しいViewを先に作成（失敗時に古いViewを無効にしない）
+                const new_view = try View.init(self.allocator, next_buffer.editing_ctx.buffer);
+                // 成功したら古いViewを解放
                 window.view.deinit(self.allocator);
-                window.view = try View.init(self.allocator, next_buffer.editing_ctx.buffer);
+                window.view = new_view;
                 window.buffer_id = next_buffer.id;
                 window.mark_pos = null; // 前のバッファのマークをクリア
                 // 言語検出（コメント強調・タブ幅など）
@@ -1124,8 +1127,8 @@ pub const Editor = struct {
             // サイズ
             const size = buf.editing_ctx.buffer.total_len;
 
-            // フォーマットして追加
-            try std.fmt.format(writer, "  {c}{c} {s:<16} {d:>6}  {s}\n", .{
+            // フォーマットして追加（バッファ名は切り詰めない）
+            try std.fmt.format(writer, "  {c}{c} {s} {d:>6}  {s}\n", .{
                 mod_char,
                 ro_char,
                 buf_name,
@@ -3287,7 +3290,12 @@ pub const Editor = struct {
         self.replace_match_count += 1;
 
         // カーソルを置換後の位置に移動
-        self.setCursorToPos(match_pos + replacement.len);
+        // 空マッチの場合は無限ループを防ぐため少なくとも1バイト進める
+        var new_pos = match_pos + replacement.len;
+        if (match_len == 0 and new_pos < buffer.total_len) {
+            new_pos += 1;
+        }
+        self.setCursorToPos(new_pos);
 
         // 置換した行から再描画
         // マッチテキスト・置換文字列に改行が含まれる場合は行数が変わるため全画面再描画
@@ -3659,14 +3667,22 @@ pub const Editor = struct {
                 }
             },
             .new_buffer => {
-                // 新規バッファに出力（スクラッチバッファと同じ扱い）
-                if (stdout.len > 0) {
+                // 新規バッファに出力（stdout + stderr を連結）
+                if (stdout.len > 0 or stderr.len > 0) {
                     const new_buffer = try self.createNewBuffer();
-                    try new_buffer.editing_ctx.buffer.insertSlice(0, stdout);
-                    try self.switchToBuffer(new_buffer.id);
-                } else if (stderr.len > 0) {
-                    const new_buffer = try self.createNewBuffer();
-                    try new_buffer.editing_ctx.buffer.insertSlice(0, stderr);
+                    if (stdout.len > 0) {
+                        try new_buffer.editing_ctx.buffer.insertSlice(0, stdout);
+                    }
+                    if (stderr.len > 0) {
+                        // stderr があれば stdout の後に追加（区切りを入れる）
+                        const insert_pos = new_buffer.editing_ctx.buffer.total_len;
+                        if (stdout.len > 0) {
+                            try new_buffer.editing_ctx.buffer.insertSlice(insert_pos, "\n--- stderr ---\n");
+                            try new_buffer.editing_ctx.buffer.insertSlice(new_buffer.editing_ctx.buffer.total_len, stderr);
+                        } else {
+                            try new_buffer.editing_ctx.buffer.insertSlice(insert_pos, stderr);
+                        }
+                    }
                     try self.switchToBuffer(new_buffer.id);
                 }
             },

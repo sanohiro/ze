@@ -187,6 +187,12 @@ pub const History = struct {
                 try self.entries.append(self.allocator, duped);
             }
         }
+
+        // MAX_HISTORY_SIZEを超えた古いエントリを削除
+        while (self.entries.items.len > MAX_HISTORY_SIZE) {
+            const old = self.entries.orderedRemove(0);
+            self.allocator.free(old);
+        }
     }
 
     /// 履歴をファイルに保存（アトミック: temp+rename方式）

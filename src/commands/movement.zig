@@ -66,6 +66,7 @@ pub fn forwardWord(e: *Editor) !void {
     iter.seek(start_pos);
 
     var prev_type: ?unicode.CharType = null;
+    var pos_before_cp: usize = start_pos;
 
     while (iter.nextCodepoint() catch null) |cp| {
         const current_type = unicode.getCharType(cp);
@@ -73,19 +74,18 @@ pub fn forwardWord(e: *Editor) !void {
         if (prev_type) |pt| {
             // 文字種が変わったら停止（ただし空白は飛ばす）
             if (current_type != .space and pt != .space and current_type != pt) {
-                const cp_len = std.unicode.utf8CodepointSequenceLength(cp) catch 1;
-                e.setCursorToPos(iter.global_pos - cp_len);
+                e.setCursorToPos(pos_before_cp);
                 return;
             }
             // 空白から非空白に変わる場合、その位置で停止
             if (pt == .space and current_type != .space) {
-                const cp_len = std.unicode.utf8CodepointSequenceLength(cp) catch 1;
-                e.setCursorToPos(iter.global_pos - cp_len);
+                e.setCursorToPos(pos_before_cp);
                 return;
             }
         }
 
         prev_type = current_type;
+        pos_before_cp = iter.global_pos;
     }
 
     // EOFに到達

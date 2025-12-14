@@ -1559,11 +1559,11 @@ pub const View = struct {
         }
 
         // 左側: ファイル名（変更/読み取り専用フラグ付き）
-        var left_buf: [256]u8 = undefined;
+        var left_buf: [1024]u8 = undefined;
         const modified_char: u8 = if (modified) '*' else ' ';
         const readonly_str = if (readonly) "[RO] " else "";
         const fname = if (filename) |f| f else "[No Name]";
-        const left_part = try std.fmt.bufPrint(&left_buf, " {c}{s}{s}", .{ modified_char, readonly_str, fname });
+        const left_part = std.fmt.bufPrint(&left_buf, " {c}{s}{s}", .{ modified_char, readonly_str, fname }) catch " [path too long]";
 
         // 右側: 位置 | エンコード(改行) | OVR
         var right_buf: [64]u8 = undefined;
