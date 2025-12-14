@@ -1,8 +1,8 @@
 # Basic Editing with Multilingual and Emoji
 Output demo/01_basic_editing.gif
 Set FontSize 18
-Set Width 800
-Set Height 400
+Set Width 900
+Set Height 500
 Set Theme "Catppuccin Mocha"
 Set TypingSpeed 50ms
 Set Shell "bash"
