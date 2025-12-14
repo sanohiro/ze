@@ -1,20 +1,38 @@
-# ze
+# ze — Zero-latency Editor
 
-**Zero-latency Editor**
+Instant startup over SSH. No config files. Just works.
 
 [日本語](README.ja.md)
 
-A lightweight, fast, modern editor that requires no configuration. Perfect for quick edits over SSH.
-
-## Why ze?
-
-- **Lightweight** — Under 300KB, no dependencies
-- **Zero-config** — No dotfiles, just copy and use
-- **Emacs-style editing** — Not just keybindings: multi-buffer, window splitting, the whole editing model
-- **Shell integration** — Pipe to sort, jq, awk directly from the editor
-- **Full UTF-8 support** — Japanese, emoji, grapheme clusters
-
 ![ze demo](demo/ze_demo.gif)
+
+Emacs keybindings, mg-like lightness.
+For those who don't want to learn vim, but find nano lacking.
+
+---
+
+## ze is for you if
+
+- You want comfortable editing over SSH without configuration
+- Emacs keybindings are in your muscle memory
+- You prefer composing with Unix tools (sort, jq, sed)
+- You're tired of managing dotfiles
+
+## ze is NOT for you if
+
+- You need IDE features like completion or LSP
+- You want to customize everything
+- You prefer vim's modal editing
+
+---
+
+## Features
+
+- **Under 300KB** — No dependencies, single binary
+- **Zero-config** — No dotfiles, just copy and use
+- **Emacs-style editing** — Multi-buffer, window splitting, kill ring
+- **Shell integration** — Pipe to sort, jq, awk directly
+- **Full UTF-8 support** — Japanese, emoji, grapheme clusters
 
 ## Requirements
 
