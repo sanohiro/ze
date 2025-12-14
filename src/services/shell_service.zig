@@ -271,6 +271,11 @@ pub const ShellService = struct {
                     try state.stdout_buffer.appendSlice(self.allocator, read_buf[0..to_append]);
                 }
             }
+            // 上限に達したらパイプを閉じる（子プロセスのブロックを防ぐ）
+            if (state.stdout_buffer.items.len >= MAX_OUTPUT_SIZE) {
+                stdout_file.close();
+                state.child.stdout = null;
+            }
         }
 
         // stderr から読み取り（上限チェック付き）
@@ -286,6 +291,11 @@ pub const ShellService = struct {
                 if (to_append > 0) {
                     try state.stderr_buffer.appendSlice(self.allocator, read_buf[0..to_append]);
                 }
+            }
+            // 上限に達したらパイプを閉じる（子プロセスのブロックを防ぐ）
+            if (state.stderr_buffer.items.len >= MAX_OUTPUT_SIZE) {
+                stderr_file.close();
+                state.child.stderr = null;
             }
         }
 

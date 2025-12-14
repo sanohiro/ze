@@ -355,14 +355,16 @@ pub const View = struct {
         }
     }
 
-    /// タブ幅を取得（設定値がなければ言語デフォルト）
+    /// タブ幅を取得（設定値がなければ言語デフォルト、最小1）
     pub fn getTabWidth(self: *const View) u8 {
-        return self.tab_width orelse self.language.indent_width;
+        const width = self.tab_width orelse self.language.indent_width;
+        // ゼロ除算を防ぐため、最小値は1
+        return if (width == 0) 4 else width;
     }
 
-    /// タブ幅を設定
+    /// タブ幅を設定（0は無効、最小1）
     pub fn setTabWidth(self: *View, width: u8) void {
-        self.tab_width = width;
+        self.tab_width = if (width == 0) 1 else width;
         self.markFullRedraw();
     }
 
@@ -1339,14 +1341,27 @@ pub const View = struct {
         // 検索ハイライトを適用（カーソル位置のマッチはマゼンタで強調）
         // content_start_byte以降のみを検索対象とする（行番号をスキップ）
         const is_cursor_line = (screen_row == self.cursor_y);
-        // カーソル行の場合、カーソルの行内バイト位置を計算（バッファ内の純粋な位置、ANSIなし）
+        // カーソル行の場合、タブ展開後の行内位置を計算
+        // （expanded_lineはタブを8スペースに展開しているため、RAW位置ではなく展開後位置が必要）
         const cursor_in_content: ?usize = if (is_cursor_line) blk: {
-            // カーソルのバッファ位置を取得
             const cursor_pos = self.getCursorBufferPos();
-            // 行開始位置を取得
             const line_start = self.buffer.getLineStart(self.top_line + self.cursor_y) orelse 0;
-            // 行内バイト位置 = カーソル位置 - 行開始位置
-            break :blk if (cursor_pos >= line_start) cursor_pos - line_start else 0;
+            if (cursor_pos < line_start) break :blk 0;
+
+            // 行頭からカーソルまでタブ展開を考慮した位置を計算
+            var expanded_pos: usize = 0;
+            var raw_pos: usize = line_start;
+            while (raw_pos < cursor_pos) {
+                const byte = self.buffer.getByteAt(raw_pos) orelse break;
+                if (byte == '\t') {
+                    // タブは次の8の倍数まで展開
+                    expanded_pos = (expanded_pos / 8 + 1) * 8;
+                } else {
+                    expanded_pos += 1;
+                }
+                raw_pos += 1;
+            }
+            break :blk expanded_pos;
         } else null;
         const new_line = try self.applySearchHighlight(self.expanded_line.items, cursor_in_content, content_start_byte);
 

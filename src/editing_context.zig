@@ -97,6 +97,9 @@ pub const EditingContext = struct {
     // 変更フラグ
     modified: bool,
 
+    // セーブポイント（保存時のundo_stackの長さ）
+    savepoint: ?usize,
+
     // 変更リスナー
     listeners: std.ArrayList(ListenerEntry),
 
@@ -125,6 +128,7 @@ pub const EditingContext = struct {
             .undo_stack = .{},
             .redo_stack = .{},
             .modified = false,
+            .savepoint = 0, // 初期状態はセーブポイント0
             .listeners = .{},
         };
         return ctx;
@@ -704,9 +708,12 @@ pub const EditingContext = struct {
         // カーソル復元
         self.cursor = entry.cursor_before;
 
-        // 全てのundoが完了したら（undoスタックが空になったら）modifiedをfalseに
-        if (self.undo_stack.items.len == 0) {
-            self.modified = false;
+        // セーブポイントに戻ったらmodifiedをfalseに
+        if (self.savepoint) |sp| {
+            self.modified = (self.undo_stack.items.len != sp);
+        } else {
+            // セーブポイントがない場合は、スタックが空なら未変更
+            self.modified = (self.undo_stack.items.len != 0);
         }
 
         const line = self.buffer.findLineByPos(entry.position);
@@ -747,8 +754,12 @@ pub const EditingContext = struct {
         // カーソル復元
         self.cursor = entry.cursor_after;
 
-        // Redoで変更を再適用したのでmodifiedをtrueに
-        self.modified = true;
+        // セーブポイントと比較してmodifiedを更新
+        if (self.savepoint) |sp| {
+            self.modified = (self.undo_stack.items.len != sp);
+        } else {
+            self.modified = (self.undo_stack.items.len != 0);
+        }
 
         const line = self.buffer.findLineByPos(entry.position);
         self.notifyChange(.{

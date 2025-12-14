@@ -291,19 +291,17 @@ pub fn displayWidth(cp: u21) usize {
         return 1;
     }
 
-    // Zero-width characters (結合時のみ幅0になる文字)
-    // 注: スキントーン修飾子(0x1F3FB-0x1F3FF)は単独では幅2
-    //     グラフェムクラスタとして結合される場合はnextGraphemeClusterで処理
-    if (cp == 0x200D or // ZWJ
-        (cp >= 0xFE00 and cp <= 0xFE0F) or // Variation Selectors
-        (cp >= 0x0300 and cp <= 0x036F)) // Combining marks
-    {
-        return 0;
-    }
-
     // Wide characters (East Asian Width = W or F)
     // Emoji and symbols (width 2)
+    // Note: Check Extended Pictographic BEFORE Extend, because skin tone modifiers
+    // (0x1F3FB-0x1F3FF) are both Extend AND Extended Pictographic
     if (isExtendedPictographic(cp)) return 2;
+
+    // Zero-width characters (結合文字は幅0)
+    // ZWJおよびExtend文字（結合アクセント等）は幅0
+    if (cp == 0x200D or isExtend(cp)) {
+        return 0;
+    }
 
     // CJK and other wide characters
     if ((cp >= 0x1100 and cp <= 0x115F) or // Hangul Jamo

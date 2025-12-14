@@ -64,10 +64,10 @@ fn mainImpl() !u8 {
             // "--"以降は全てファイル名として扱う
             options_ended = true;
             continue;
-        } else if (!options_ended and std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+        } else if (!options_ended and (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h"))) {
             printHelp();
             return EXIT_SUCCESS;
-        } else if (!options_ended and std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v")) {
+        } else if (!options_ended and (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v"))) {
             printVersion();
             return EXIT_SUCCESS;
         } else if (!options_ended and arg.len > 0 and arg[0] == '-') {

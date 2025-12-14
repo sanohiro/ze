@@ -578,9 +578,10 @@ pub const Regex = struct {
         min_count: usize,
         max_count: ?usize,
     ) ?usize {
-        var positions: [1024]usize = undefined;
-        var positions_len: usize = 1;
-        positions[0] = start_pos;
+        // 動的配列で全ての位置を記録（1024制限を撤廃）
+        var positions = std.ArrayList(usize).initCapacity(self.allocator, 64) catch return null;
+        defer positions.deinit(self.allocator);
+        positions.append(self.allocator, start_pos) catch return null;
 
         var pos = start_pos;
         var count: usize = 0;
@@ -590,19 +591,16 @@ pub const Regex = struct {
             if (text[pos] != target) break;
             pos += 1;
             count += 1;
-            if (positions_len < positions.len) {
-                positions[positions_len] = pos;
-                positions_len += 1;
-            }
+            positions.append(self.allocator, pos) catch return null;
         }
 
         if (count < min_count) return null;
 
-        var i: usize = positions_len;
+        var i: usize = positions.items.len;
         while (i > 0) {
             i -= 1;
             if (i < min_count and min_count > 0) break;
-            const try_pos = positions[i];
+            const try_pos = positions.items[i];
             if (self.matchInstructions(text, try_pos, current_idx + 1)) |end| {
                 return end;
             }
@@ -648,9 +646,10 @@ pub const Regex = struct {
         min_count: usize,
         max_count: ?usize,
     ) ?usize {
-        var positions: [1024]usize = undefined;
-        var positions_len: usize = 1;
-        positions[0] = start_pos;
+        // 動的配列で全ての位置を記録（1024制限を撤廃）
+        var positions = std.ArrayList(usize).initCapacity(self.allocator, 64) catch return null;
+        defer positions.deinit(self.allocator);
+        positions.append(self.allocator, start_pos) catch return null;
 
         var pos = start_pos;
         var count: usize = 0;
@@ -660,20 +659,17 @@ pub const Regex = struct {
             if (!matcher(text[pos])) break;
             pos += 1;
             count += 1;
-            if (positions_len < positions.len) {
-                positions[positions_len] = pos;
-                positions_len += 1;
-            }
+            positions.append(self.allocator, pos) catch return null;
         }
 
         if (count < min_count) return null;
 
         // 貪欲マッチ: 最長から試す
-        var i: usize = positions_len;
+        var i: usize = positions.items.len;
         while (i > 0) {
             i -= 1;
             if (i < min_count and min_count > 0) break;
-            const try_pos = positions[i];
+            const try_pos = positions.items[i];
             if (self.matchInstructions(text, try_pos, current_idx + 1)) |end| {
                 return end;
             }
@@ -691,9 +687,10 @@ pub const Regex = struct {
         min_count: usize,
         max_count: ?usize,
     ) ?usize {
-        var positions: [1024]usize = undefined;
-        var positions_len: usize = 1;
-        positions[0] = start_pos;
+        // 動的配列で全ての位置を記録（1024制限を撤廃）
+        var positions = std.ArrayList(usize).initCapacity(self.allocator, 64) catch return null;
+        defer positions.deinit(self.allocator);
+        positions.append(self.allocator, start_pos) catch return null;
 
         var pos = start_pos;
         var count: usize = 0;
@@ -703,19 +700,16 @@ pub const Regex = struct {
             if (!cc.matches(text[pos])) break;
             pos += 1;
             count += 1;
-            if (positions_len < positions.len) {
-                positions[positions_len] = pos;
-                positions_len += 1;
-            }
+            positions.append(self.allocator, pos) catch return null;
         }
 
         if (count < min_count) return null;
 
-        var i: usize = positions_len;
+        var i: usize = positions.items.len;
         while (i > 0) {
             i -= 1;
             if (i < min_count and min_count > 0) break;
-            const try_pos = positions[i];
+            const try_pos = positions.items[i];
             if (self.matchInstructions(text, try_pos, current_idx + 1)) |end| {
                 return end;
             }

@@ -52,7 +52,8 @@ pub const BufferState = struct {
     /// 現在の状態を保存済みとしてマーク
     pub fn markSaved(self: *BufferState) void {
         self.editing_ctx.modified = false;
-        // Undo履歴はクリアしない（将来的には保存位置をマーク）
+        // セーブポイントを記録（現在のundo_stackの長さ）
+        self.editing_ctx.savepoint = self.editing_ctx.undo_stack.items.len;
     }
 
     pub fn init(allocator: std.mem.Allocator, id: usize) !*BufferState {

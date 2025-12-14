@@ -335,7 +335,20 @@ pub fn yankRectangle(e: *Editor) !void {
         }
 
         const insert_pos = iter.global_pos;
-        try insert_infos.append(e.allocator, .{ .pos = insert_pos, .text = line_text });
+
+        // 行が短くてcursor_colに届かない場合はスペースでパディング
+        if (current_col < cursor_col) {
+            const padding_needed = cursor_col - current_col;
+            // パディング + 矩形テキストを結合
+            var padded_text = std.ArrayList(u8).initCapacity(e.allocator, padding_needed + line_text.len) catch continue;
+            for (0..padding_needed) |_| {
+                padded_text.append(e.allocator, ' ') catch continue;
+            }
+            padded_text.appendSlice(e.allocator, line_text) catch continue;
+            try insert_infos.append(e.allocator, .{ .pos = insert_pos, .text = padded_text.items });
+        } else {
+            try insert_infos.append(e.allocator, .{ .pos = insert_pos, .text = line_text });
+        }
     }
 
     // 下から上に挿入（位置がずれないように）

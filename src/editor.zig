@@ -1526,6 +1526,11 @@ pub const Editor = struct {
             defer file.close();
             const stat = try file.stat();
             buffer_state.file_mtime = stat.mtime;
+
+            // 保存後にfilename_normalizedを更新（新規ファイル対応）
+            if (buffer_state.filename_normalized == null) {
+                buffer_state.filename_normalized = std.fs.cwd().realpathAlloc(self.allocator, path) catch null;
+            }
         }
     }
 
@@ -3102,6 +3107,10 @@ pub const Editor = struct {
             if (current_byte != null and current_byte.? != '\n') {
                 // 現在位置のUTF-8文字の長さを取得して削除
                 const char_len = std.unicode.utf8ByteSequenceLength(current_byte.?) catch 1;
+                // Undo用に削除される文字を記録
+                const deleted_text = try buffer.getRange(self.allocator, pos, char_len);
+                defer self.allocator.free(deleted_text);
+                try self.recordDelete(pos, deleted_text, pos);
                 try buffer.delete(pos, char_len);
             }
         }
@@ -3184,25 +3193,67 @@ pub const Editor = struct {
 
         if (self.is_regex_search) {
             // 正規表現検索（C-M-s / C-M-r）
-            // 大きなファイルでは検索範囲を制限して体感速度を維持
-            const max_search_size: usize = 1024 * 1024; // 1MB
-            const search_start: usize = if (buffer.total_len > max_search_size and start_pos > max_search_size / 2)
-                start_pos - max_search_size / 2
-            else
-                0;
-            const search_end: usize = @min(buffer.total_len, search_start + max_search_size);
-            const search_len = search_end - search_start;
+            // チャンク化検索 + ラップアラウンドで全ファイルを検索
+            const max_chunk_size: usize = 1024 * 1024; // 1MB
+            const overlap: usize = 4096; // チャンク境界マッチ用オーバーラップ
+            const buf_len = buffer.total_len;
 
-            const content = try self.extractText(search_start, search_len);
-            defer self.allocator.free(content);
+            if (buf_len == 0) return;
 
-            // 検索開始位置を調整（抽出したテキスト内での相対位置）
-            const adjusted_start = if (start_pos > search_start) start_pos - search_start else 0;
+            var search_pos = start_pos;
+            var wrapped = false;
+            var first_chunk = true;
 
-            if (self.search_service.searchRegex(content, search_str, adjusted_start, forward, skip_current)) |match| {
-                // 見つかった位置を元のバッファ位置に変換（Emacs風：マッチ終端）
-                self.setCursorToPos(match.start + match.len + search_start);
-                return;
+            while (true) {
+                // チャンク範囲を計算
+                const chunk_start: usize = if (forward)
+                    (if (first_chunk) search_pos else if (search_pos > overlap) search_pos - overlap else 0)
+                else
+                    (if (search_pos > max_chunk_size) search_pos - max_chunk_size else 0);
+
+                const chunk_end: usize = @min(buf_len, chunk_start + max_chunk_size);
+                const chunk_len = chunk_end - chunk_start;
+                if (chunk_len == 0) break;
+
+                const content = try self.extractText(chunk_start, chunk_len);
+                defer self.allocator.free(content);
+
+                // チャンク内での検索開始位置
+                const adjusted_start: usize = if (first_chunk)
+                    (if (search_pos > chunk_start) search_pos - chunk_start else 0)
+                else if (forward)
+                    (if (overlap < chunk_len) overlap else 0)
+                else
+                    chunk_len;
+
+                if (self.search_service.searchRegex(content, search_str, adjusted_start, forward, first_chunk and skip_current)) |match| {
+                    self.setCursorToPos(match.start + match.len + chunk_start);
+                    return;
+                }
+
+                first_chunk = false;
+
+                // 次のチャンクへ移動
+                if (forward) {
+                    if (chunk_end >= buf_len) {
+                        if (wrapped) break;
+                        wrapped = true;
+                        search_pos = 0;
+                    } else {
+                        search_pos = chunk_end;
+                    }
+                    // ラップ後に開始位置を超えたら終了
+                    if (wrapped and search_pos >= start_pos) break;
+                } else {
+                    if (chunk_start == 0) {
+                        if (wrapped) break;
+                        wrapped = true;
+                        search_pos = buf_len;
+                    } else {
+                        search_pos = chunk_start;
+                    }
+                    if (wrapped and search_pos <= start_pos) break;
+                }
             }
         } else {
             // リテラル検索（C-s / C-r）- コピーなしのBuffer直接検索
@@ -3226,28 +3277,57 @@ pub const Editor = struct {
 
         if (self.is_regex_replace) {
             // 正規表現置換（C-M-%）
-            // 大きなファイルでは検索範囲を制限して体感速度を維持
-            const max_search_size: usize = 1024 * 1024; // 1MB
-            const search_start: usize = if (buf_len > max_search_size and start_pos > max_search_size / 2)
-                start_pos - max_search_size / 2
-            else
-                0;
-            const search_end: usize = @min(buf_len, search_start + max_search_size);
-            const search_len = search_end - search_start;
+            // チャンク化検索 + ラップアラウンドで全ファイルを検索
+            const max_chunk_size: usize = 1024 * 1024; // 1MB
+            const overlap: usize = 4096; // チャンク境界マッチ用オーバーラップ
 
-            const content = try self.extractText(search_start, search_len);
-            defer self.allocator.free(content);
+            var search_pos = start_pos;
+            var wrapped = false;
+            var first_chunk = true;
 
-            // 検索開始位置を調整（抽出したテキスト内での相対位置）
-            const adjusted_start = if (start_pos > search_start) start_pos - search_start else 0;
+            while (true) {
+                // チャンク範囲を計算（前方検索のみ）
+                const chunk_start: usize = if (first_chunk)
+                    search_pos
+                else if (search_pos > overlap)
+                    search_pos - overlap
+                else
+                    0;
 
-            if (self.search_service.searchRegex(content, search, adjusted_start, true, false)) |match| {
-                // 見つかった位置を元のバッファ位置に変換
-                const pos = match.start + search_start;
-                self.setCursorToPos(pos);
-                self.replace_current_pos = pos;
-                self.replace_match_len = match.len; // 実際のマッチ長を保存
-                return true;
+                const chunk_end: usize = @min(buf_len, chunk_start + max_chunk_size);
+                const chunk_len = chunk_end - chunk_start;
+                if (chunk_len == 0) break;
+
+                const content = try self.extractText(chunk_start, chunk_len);
+                defer self.allocator.free(content);
+
+                const adjusted_start: usize = if (first_chunk)
+                    0
+                else if (overlap < chunk_len)
+                    overlap
+                else
+                    0;
+
+                if (self.search_service.searchRegex(content, search, adjusted_start, true, false)) |match| {
+                    const pos = match.start + chunk_start;
+                    self.setCursorToPos(pos);
+                    self.replace_current_pos = pos;
+                    self.replace_match_len = match.len;
+                    return true;
+                }
+
+                first_chunk = false;
+
+                // 次のチャンクへ移動
+                if (chunk_end >= buf_len) {
+                    if (wrapped) break;
+                    wrapped = true;
+                    search_pos = 0;
+                } else {
+                    search_pos = chunk_end;
+                }
+                // ラップ後に開始位置を超えたら終了
+                if (wrapped and search_pos >= start_pos) break;
             }
         } else {
             // リテラル置換（M-%）- コピーなしのBuffer直接検索
@@ -3683,10 +3763,17 @@ pub const Editor = struct {
     // ========================================
 
     /// マクロ制御キーかどうか判定（C-x (, C-x ), C-x e）
-    fn isMacroControlKey(_: *Editor, key: input.Key) bool {
+    fn isMacroControlKey(self: *Editor, key: input.Key) bool {
         // C-xキーはマクロに記録しない（プレフィックスとして処理される）
         if (key == .ctrl) {
             if (key.ctrl == 'x') return true;
+        }
+        // C-xプレフィックスモード中の (, ), e もマクロに記録しない
+        if (self.mode == .prefix_x) {
+            if (key == .char) {
+                const ch = key.char;
+                if (ch == '(' or ch == ')' or ch == 'e') return true;
+            }
         }
         return false;
     }
