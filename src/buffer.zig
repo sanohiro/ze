@@ -453,10 +453,16 @@ pub const Buffer = struct {
     detected_encoding: encoding.Encoding, // 検出したエンコーディング（保存時に復元）
 
     pub fn init(allocator: std.mem.Allocator) !Buffer {
+        var add_buffer = try std.ArrayList(u8).initCapacity(allocator, config.Buffer.INITIAL_ADD_CAPACITY);
+        errdefer add_buffer.deinit(allocator);
+
+        var pieces = try std.ArrayList(Piece).initCapacity(allocator, config.Buffer.INITIAL_PIECES_CAPACITY);
+        errdefer pieces.deinit(allocator);
+
         return Buffer{
             .original = &[_]u8{},
-            .add_buffer = try std.ArrayList(u8).initCapacity(allocator, config.Buffer.INITIAL_ADD_CAPACITY),
-            .pieces = try std.ArrayList(Piece).initCapacity(allocator, config.Buffer.INITIAL_PIECES_CAPACITY),
+            .add_buffer = add_buffer,
+            .pieces = pieces,
             .allocator = allocator,
             .owns_original = false,
             .is_mmap = false,
@@ -540,24 +546,28 @@ pub const Buffer = struct {
                 var mmap_kept = false;
                 errdefer if (!mmap_kept) std.posix.munmap(mapped_ptr[0..file_size]);
 
+                var add_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
+                errdefer add_buffer.deinit(allocator);
+
+                var pieces = try std.ArrayList(Piece).initCapacity(allocator, 0);
+                errdefer pieces.deinit(allocator);
+
+                var line_index = LineIndex.init(allocator);
+                errdefer line_index.deinit();
+
                 var self = Buffer{
                     .original = mapped,
-                    .add_buffer = try std.ArrayList(u8).initCapacity(allocator, 0),
-                    .pieces = try std.ArrayList(Piece).initCapacity(allocator, 0),
+                    .add_buffer = add_buffer,
+                    .pieces = pieces,
                     .allocator = allocator,
                     .owns_original = false,
                     .is_mmap = true,
                     .mmap_len = file_size,
                     .total_len = file_size,
-                    .line_index = LineIndex.init(allocator),
+                    .line_index = line_index,
                     .detected_line_ending = .LF,
                     .detected_encoding = .UTF8,
                 };
-                errdefer {
-                    self.add_buffer.deinit(allocator);
-                    self.pieces.deinit(allocator);
-                    self.line_index.deinit();
-                }
 
                 // 初期状態：originalファイル全体を指す1つのpiece
                 try self.pieces.append(allocator, .{
@@ -592,10 +602,16 @@ pub const Buffer = struct {
 
     /// 空ファイル用の初期化
     fn loadFromFileEmpty(allocator: std.mem.Allocator) !Buffer {
+        var add_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
+        errdefer add_buffer.deinit(allocator);
+
+        var pieces = try std.ArrayList(Piece).initCapacity(allocator, 0);
+        errdefer pieces.deinit(allocator);
+
         return Buffer{
             .original = &[_]u8{},
-            .add_buffer = try std.ArrayList(u8).initCapacity(allocator, 0),
-            .pieces = try std.ArrayList(Piece).initCapacity(allocator, 0),
+            .add_buffer = add_buffer,
+            .pieces = pieces,
             .allocator = allocator,
             .owns_original = false,
             .is_mmap = false,
@@ -621,17 +637,27 @@ pub const Buffer = struct {
 
         // 改行コードを正規化（LFに統一）
         const normalized = try encoding.normalizeLineEndings(allocator, utf8_content, actual_line_ending);
+        errdefer allocator.free(normalized);
+
+        var add_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
+        errdefer add_buffer.deinit(allocator);
+
+        var pieces = try std.ArrayList(Piece).initCapacity(allocator, 0);
+        errdefer pieces.deinit(allocator);
+
+        var line_index = LineIndex.init(allocator);
+        errdefer line_index.deinit();
 
         var self = Buffer{
             .original = normalized,
-            .add_buffer = try std.ArrayList(u8).initCapacity(allocator, 0),
-            .pieces = try std.ArrayList(Piece).initCapacity(allocator, 0),
+            .add_buffer = add_buffer,
+            .pieces = pieces,
             .allocator = allocator,
             .owns_original = true,
             .is_mmap = false,
             .mmap_len = 0,
             .total_len = normalized.len,
-            .line_index = LineIndex.init(allocator),
+            .line_index = line_index,
             .detected_line_ending = actual_line_ending,
             .detected_encoding = detected.encoding,
         };
@@ -689,17 +715,27 @@ pub const Buffer = struct {
             detected.line_ending;
 
         const normalized = try encoding.normalizeLineEndings(allocator, utf8_content, actual_line_ending);
+        errdefer allocator.free(normalized);
+
+        var add_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
+        errdefer add_buffer.deinit(allocator);
+
+        var pieces = try std.ArrayList(Piece).initCapacity(allocator, 0);
+        errdefer pieces.deinit(allocator);
+
+        var line_index = LineIndex.init(allocator);
+        errdefer line_index.deinit();
 
         var self = Buffer{
             .original = normalized,
-            .add_buffer = try std.ArrayList(u8).initCapacity(allocator, 0),
-            .pieces = try std.ArrayList(Piece).initCapacity(allocator, 0),
+            .add_buffer = add_buffer,
+            .pieces = pieces,
             .allocator = allocator,
             .owns_original = true,
             .is_mmap = false,
             .mmap_len = 0,
             .total_len = normalized.len,
-            .line_index = LineIndex.init(allocator),
+            .line_index = line_index,
             .detected_line_ending = actual_line_ending,
             .detected_encoding = detected.encoding,
         };
@@ -1109,8 +1145,9 @@ pub const Buffer = struct {
         const start_loc = self.findPieceAt(pos) orelse return;
         const end_loc = self.findPieceAt(end_pos) orelse return;
 
-        // total_lenを更新（piece操作の前に更新しても安全）
+        // total_lenを更新（エラー時はロールバック）
         self.total_len -= actual_count;
+        errdefer self.total_len += actual_count;
 
         // 同じpiece内での削除
         if (start_loc.piece_idx == end_loc.piece_idx) {
@@ -1394,6 +1431,16 @@ pub const Buffer = struct {
     }
 
     pub fn restorePieces(self: *Buffer, pieces: []const Piece) !void {
+        // 現在の状態を保存（エラー時のロールバック用）
+        const old_len = self.pieces.items.len;
+        errdefer {
+            // appendSliceが失敗した場合、元のピースは既にクリアされている
+            // total_lenも更新されているため、0に設定して整合性を保つ
+            if (self.pieces.items.len == 0 and old_len > 0) {
+                self.total_len = 0;
+            }
+        }
+
         self.pieces.clearRetainingCapacity();
         try self.pieces.appendSlice(self.allocator, pieces);
 
