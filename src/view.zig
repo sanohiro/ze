@@ -89,12 +89,16 @@ const stringDisplayWidth = unicode.stringDisplayWidth;
 /// - end_byte: 終了バイト位置
 /// - initial_col: 初期カラム位置（行番号表示幅など）
 fn calculateScreenColumn(line: []const u8, start_byte: usize, end_byte: usize, initial_col: usize) usize {
+    // 境界チェック: end_byteがline.lenを超えないようにする
+    const safe_end = @min(end_byte, line.len);
+    const safe_start = @min(start_byte, safe_end);
+
     var screen_col: usize = initial_col;
-    var b: usize = start_byte;
+    var b: usize = safe_start;
     var needs_grapheme_scan = false;
 
     // 第1パス: ASCII高速パス（エスケープシーケンスをスキップしながら）
-    while (b < end_byte) {
+    while (b < safe_end) {
         const c = line[b];
         // ANSIエスケープシーケンスをスキップ
         if (c == 0x1b and b + 1 < line.len and line[b + 1] == '[') {
@@ -117,7 +121,7 @@ fn calculateScreenColumn(line: []const u8, start_byte: usize, end_byte: usize, i
 
     // 非ASCII文字が見つかった場合は残りをグラフェムクラスタ単位で処理
     if (needs_grapheme_scan) {
-        while (b < end_byte) {
+        while (b < safe_end) {
             const c = line[b];
             // ANSIエスケープシーケンスをスキップ
             if (c == 0x1b and b + 1 < line.len and line[b + 1] == '[') {
@@ -133,7 +137,7 @@ fn calculateScreenColumn(line: []const u8, start_byte: usize, end_byte: usize, i
                 b += 1;
             } else {
                 // グラフェムクラスタ単位で処理（ZWJ絵文字等を正しく扱う）
-                const remaining = line[b..@min(end_byte, line.len)];
+                const remaining = line[b..safe_end];
                 if (unicode.nextGraphemeCluster(remaining)) |cluster| {
                     screen_col += cluster.display_width;
                     b += cluster.byte_len;
@@ -846,9 +850,13 @@ pub const View = struct {
 
     /// content_startからend_posまでの可視バイト数を計算（ANSIエスケープを除く）
     fn countVisibleBytes(line: []const u8, content_start: usize, end_pos: usize) usize {
+        // 境界チェック: end_posがline.lenを超えないようにする
+        const safe_end = @min(end_pos, line.len);
+        const safe_start = @min(content_start, safe_end);
+
         var visible: usize = 0;
-        var i: usize = content_start;
-        while (i < end_pos) {
+        var i: usize = safe_start;
+        while (i < safe_end) {
             // ANSIエスケープシーケンスをスキップ
             if (line[i] == 0x1b and i + 1 < line.len and line[i + 1] == '[') {
                 i += 2;
@@ -1134,7 +1142,7 @@ pub const View = struct {
 
     // イテレータを再利用して行を描画（セルレベル差分描画版）
     fn renderLineWithIter(self: *View, term: *Terminal, screen_row: usize, file_line: usize, iter: *PieceIterator, line_buffer: *std.ArrayList(u8)) !bool {
-        return self.renderLineWithIterOffset(term, 0, screen_row, file_line, iter, line_buffer, false);
+        return self.renderLineWithIterOffset(term, 0, 0, self.viewport_width, screen_row, file_line, iter, line_buffer, false);
     }
 
     /// 1行をレンダリング（メインのレンダリング関数）
@@ -1914,7 +1922,9 @@ pub const View = struct {
             self.markScroll(@intCast(delta));
         } else if (lines < 0) {
             // 上スクロール
-            const delta: usize = @intCast(-lines);
+            // @abs()を使用してi32.minのオーバーフローを防止
+            const abs_lines: u32 = @abs(lines);
+            const delta: usize = @intCast(abs_lines);
             if (self.top_line >= delta) {
                 self.top_line -= delta;
             } else {

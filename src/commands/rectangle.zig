@@ -296,9 +296,18 @@ pub fn yankRectangle(e: *Editor) !void {
     const InsertInfo = struct {
         pos: usize,
         text: []const u8,
+        owned: bool, // パディングで作成したテキストか（解放が必要）
     };
     var insert_infos: std.ArrayList(InsertInfo) = .{};
-    defer insert_infos.deinit(e.allocator);
+    defer {
+        // ownedフラグが立っているテキストを解放
+        for (insert_infos.items) |info| {
+            if (info.owned) {
+                e.allocator.free(info.text);
+            }
+        }
+        insert_infos.deinit(e.allocator);
+    }
 
     // 各行の挿入位置を計算
     for (rect.items, 0..) |line_text, i| {
@@ -341,13 +350,16 @@ pub fn yankRectangle(e: *Editor) !void {
             const padding_needed = cursor_col - current_col;
             // パディング + 矩形テキストを結合
             var padded_text = std.ArrayList(u8).initCapacity(e.allocator, padding_needed + line_text.len) catch continue;
+            errdefer padded_text.deinit(e.allocator);
             for (0..padding_needed) |_| {
                 padded_text.append(e.allocator, ' ') catch continue;
             }
             padded_text.appendSlice(e.allocator, line_text) catch continue;
-            try insert_infos.append(e.allocator, .{ .pos = insert_pos, .text = padded_text.items });
+            // toOwnedSliceで所有権を取得（メモリリーク防止）
+            const owned_text = padded_text.toOwnedSlice(e.allocator) catch continue;
+            try insert_infos.append(e.allocator, .{ .pos = insert_pos, .text = owned_text, .owned = true });
         } else {
-            try insert_infos.append(e.allocator, .{ .pos = insert_pos, .text = line_text });
+            try insert_infos.append(e.allocator, .{ .pos = insert_pos, .text = line_text, .owned = false });
         }
     }
 

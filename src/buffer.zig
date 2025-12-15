@@ -1598,18 +1598,22 @@ pub const Buffer = struct {
             // piece境界をまたぐパターンのチェック
             // 前のpieceの末尾 + 現在のpieceの先頭でマッチする可能性
             if (current_piece_idx + 1 < pieces.len) {
-                const boundary_start = current_piece_start + pieces[current_piece_idx].length - pattern.len + 1;
-                if (boundary_start < current_piece_start + pieces[current_piece_idx].length) {
-                    const check_start = @max(boundary_start, current_piece_start);
-                    var check_pos = current_piece_start + pieces[current_piece_idx].length - 1;
-                    while (check_pos >= check_start and check_pos >= pattern.len - 1) : (check_pos -= 1) {
-                        if (self.verifyMatch(check_pos - pattern.len + 1, pattern)) {
-                            const match_pos = check_pos - pattern.len + 1;
-                            if (match_pos + pattern.len <= search_end) {
-                                return .{ .start = match_pos, .len = pattern.len };
+                const piece_len = pieces[current_piece_idx].length;
+                // パターンがpiece長+1より長い場合、境界マッチは不可能（アンダーフロー防止）
+                if (piece_len + 1 >= pattern.len) {
+                    const boundary_start = current_piece_start + piece_len - pattern.len + 1;
+                    if (boundary_start < current_piece_start + piece_len) {
+                        const check_start = @max(boundary_start, current_piece_start);
+                        var check_pos = current_piece_start + piece_len - 1;
+                        while (check_pos >= check_start and check_pos >= pattern.len - 1) : (check_pos -= 1) {
+                            if (self.verifyMatch(check_pos - pattern.len + 1, pattern)) {
+                                const match_pos = check_pos - pattern.len + 1;
+                                if (match_pos + pattern.len <= search_end) {
+                                    return .{ .start = match_pos, .len = pattern.len };
+                                }
                             }
+                            if (check_pos == 0) break;
                         }
-                        if (check_pos == 0) break;
                     }
                 }
             }

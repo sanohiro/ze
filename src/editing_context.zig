@@ -594,7 +594,8 @@ pub const EditingContext = struct {
         const old_cursor = self.cursor;
         self.cursor = line_end;
 
-        if (line_end >= self.buffer.len()) {
+        const at_eof = line_end >= self.buffer.len();
+        if (at_eof) {
             // ファイル末尾なら改行を追加してから
             try self.insertChar('\n');
             try self.insert(content);
@@ -603,7 +604,8 @@ pub const EditingContext = struct {
         }
 
         // カーソルを次の行の同じ位置に
-        self.cursor = old_cursor + line_len;
+        // EOF時は追加した改行分の+1が必要
+        self.cursor = old_cursor + line_len + @as(usize, if (at_eof) 1 else 0);
     }
 
     // ========================================

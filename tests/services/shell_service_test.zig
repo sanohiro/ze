@@ -69,3 +69,26 @@ test "parseCommand - suffix outside quotes" {
     try testing.expectEqual(OutputDest.new_buffer, result.output_dest);
     try testing.expectEqualStrings("echo 'hello'", result.command);
 }
+
+test "parseCommand - backslash in single quotes" {
+    // シングルクォート内のバックスラッシュはリテラル
+    // 'test\\' は test\ というリテラル（クォートは閉じる）
+    const result = ShellService.parseCommand("echo 'test\\\\' n>");
+    try testing.expectEqual(OutputDest.new_buffer, result.output_dest);
+    try testing.expectEqualStrings("echo 'test\\\\'", result.command);
+}
+
+test "parseCommand - backslash escape in double quotes" {
+    // ダブルクォート内の \" はエスケープ
+    const result = ShellService.parseCommand("echo \"test\\\"quote\" n>");
+    try testing.expectEqual(OutputDest.new_buffer, result.output_dest);
+    try testing.expectEqualStrings("echo \"test\\\"quote\"", result.command);
+}
+
+test "parseCommand - backslash outside quotes" {
+    // 引用符外のバックスラッシュはエスケープ
+    // \> はエスケープされるのでサフィックスとして認識されない
+    const result = ShellService.parseCommand("echo test\\>");
+    try testing.expectEqual(OutputDest.command_buffer, result.output_dest);
+    try testing.expectEqualStrings("echo test\\>", result.command);
+}

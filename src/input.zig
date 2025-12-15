@@ -245,8 +245,10 @@ pub fn readKeyFromReader(reader: *InputReader) !?Key {
                 },
                 '<' => {
                     // SGR拡張マウスイベント: ESC [ < ... m/M
-                    // 'm'または'M'が来るまで読み捨てる
-                    while (try reader.readByte()) |b| {
+                    // 'm'または'M'が来るまで読み捨てる（上限32バイト）
+                    var sgr_count: usize = 0;
+                    while (sgr_count < 32) : (sgr_count += 1) {
+                        const b = try reader.readByte() orelse break;
                         if (b == 'm' or b == 'M') break;
                     }
                     return null; // 無視して次のキーを待つ

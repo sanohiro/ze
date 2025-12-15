@@ -358,3 +358,101 @@ test "Minibuffer - word movement with multiple spaces" {
     // 「world」の先頭 = "hello    "の後
     try testing.expectEqual(@as(usize, 9), mb.cursor);
 }
+
+// ============================================================
+// Cursor out-of-bounds tests (防御的プログラミング)
+// ============================================================
+
+test "Minibuffer - cursor out of bounds - insertAtCursor" {
+    var mb = Minibuffer.init(testing.allocator);
+    defer mb.deinit();
+
+    try mb.insertAtCursor("hello");
+    // 意図的にcursorを範囲外に設定（実際にはsetContentなどで起きうる）
+    mb.cursor = 100;
+
+    // クラッシュせずに末尾に挿入される
+    try mb.insertAtCursor("!");
+    try testing.expectEqualStrings("hello!", mb.getContent());
+    try testing.expectEqual(@as(usize, 6), mb.cursor);
+}
+
+test "Minibuffer - cursor out of bounds - backspace" {
+    var mb = Minibuffer.init(testing.allocator);
+    defer mb.deinit();
+
+    try mb.insertAtCursor("hello");
+    mb.cursor = 100;
+
+    // クラッシュせずに末尾から削除
+    mb.backspace();
+    try testing.expectEqualStrings("hell", mb.getContent());
+}
+
+test "Minibuffer - cursor out of bounds - moveLeft" {
+    var mb = Minibuffer.init(testing.allocator);
+    defer mb.deinit();
+
+    try mb.insertAtCursor("hello");
+    mb.cursor = 100;
+
+    // クラッシュせずに末尾に調整
+    mb.moveLeft();
+    try testing.expectEqual(@as(usize, 5), mb.cursor);
+}
+
+test "Minibuffer - cursor out of bounds - moveWordBackward" {
+    var mb = Minibuffer.init(testing.allocator);
+    defer mb.deinit();
+
+    try mb.insertAtCursor("hello world");
+    mb.cursor = 100;
+
+    // クラッシュせずに動作
+    mb.moveWordBackward();
+    try testing.expectEqual(@as(usize, 6), mb.cursor);
+}
+
+test "Minibuffer - cursor out of bounds - deleteWordBackward" {
+    var mb = Minibuffer.init(testing.allocator);
+    defer mb.deinit();
+
+    try mb.insertAtCursor("hello world");
+    mb.cursor = 100;
+
+    // クラッシュせずに末尾から単語削除
+    mb.deleteWordBackward();
+    try testing.expectEqualStrings("hello ", mb.getContent());
+}
+
+test "Minibuffer - cursor out of bounds on empty buffer" {
+    var mb = Minibuffer.init(testing.allocator);
+    defer mb.deinit();
+
+    mb.cursor = 100;
+
+    // 空バッファでもクラッシュしない
+    mb.backspace();
+    mb.moveLeft();
+    mb.moveWordBackward();
+    mb.deleteWordBackward();
+
+    try testing.expectEqual(@as(usize, 0), mb.cursor);
+}
+
+test "Minibuffer - Japanese prompt display width" {
+    var mb = Minibuffer.init(testing.allocator);
+    defer mb.deinit();
+
+    // 「検索: 」= 9バイト、表示幅6（漢字2+漢字2+コロン1+スペース1）
+    mb.setPrompt("検索: ");
+    try mb.insertAtCursor("abc");
+    mb.moveToStart();
+
+    // プロンプト表示幅6 + カーソル位置0 = 6
+    try testing.expectEqual(@as(usize, 6), mb.getDisplayCursorColumn());
+
+    mb.moveRight();
+    // プロンプト表示幅6 + カーソル位置1 = 7
+    try testing.expectEqual(@as(usize, 7), mb.getDisplayCursorColumn());
+}

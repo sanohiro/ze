@@ -73,6 +73,10 @@ pub const Minibuffer = struct {
     /// カーソル位置に文字を挿入
     pub fn insertAtCursor(self: *Self, text: []const u8) !void {
         if (text.len == 0) return;
+        // cursor が範囲外の場合は末尾に調整
+        if (self.cursor > self.buffer.items.len) {
+            self.cursor = self.buffer.items.len;
+        }
         try self.buffer.insertSlice(self.allocator, self.cursor, text);
         self.cursor += text.len;
     }
@@ -87,6 +91,11 @@ pub const Minibuffer = struct {
     /// カーソル前の1文字（グラフェム）を削除（バックスペース）
     pub fn backspace(self: *Self) void {
         if (self.cursor == 0) return;
+        // cursor が範囲外の場合は末尾に調整
+        if (self.cursor > self.buffer.items.len) {
+            self.cursor = self.buffer.items.len;
+        }
+        if (self.cursor == 0) return; // 調整後の再チェック
 
         const prev_pos = findPrevGraphemeStart(self.buffer.items, self.cursor);
         const delete_len = self.cursor - prev_pos;
@@ -112,6 +121,11 @@ pub const Minibuffer = struct {
     /// カーソルを1文字左に移動
     pub fn moveLeft(self: *Self) void {
         if (self.cursor == 0) return;
+        // cursor が範囲外の場合は末尾に調整
+        if (self.cursor > self.buffer.items.len) {
+            self.cursor = self.buffer.items.len;
+            return;
+        }
         self.cursor = findPrevGraphemeStart(self.buffer.items, self.cursor);
     }
 
@@ -134,6 +148,11 @@ pub const Minibuffer = struct {
     /// カーソルを1単語前に移動
     pub fn moveWordBackward(self: *Self) void {
         if (self.cursor == 0) return;
+        // cursor が範囲外の場合は末尾に調整
+        if (self.cursor > self.buffer.items.len) {
+            self.cursor = self.buffer.items.len;
+        }
+        if (self.cursor == 0) return; // 調整後の再チェック
         const items = self.buffer.items;
         var pos = self.cursor;
 
@@ -174,6 +193,11 @@ pub const Minibuffer = struct {
     /// 前の単語を削除（M-Backspace）
     pub fn deleteWordBackward(self: *Self) void {
         if (self.cursor == 0) return;
+        // cursor が範囲外の場合は末尾に調整
+        if (self.cursor > self.buffer.items.len) {
+            self.cursor = self.buffer.items.len;
+        }
+        if (self.cursor == 0) return; // 調整後の再チェック
         const start_pos = self.cursor;
         self.moveWordBackward();
         const delete_len = start_pos - self.cursor;
@@ -217,7 +241,8 @@ pub const Minibuffer = struct {
 
     /// 表示用のカーソル位置を取得（プロンプト含む）
     pub fn getDisplayCursorColumn(self: *const Self) usize {
-        var col: usize = self.prompt_len;
+        // プロンプトの表示幅を計算（バイト長ではなく表示幅）
+        var col: usize = unicode.stringDisplayWidth(self.prompt[0..self.prompt_len]);
         var pos: usize = 0;
         while (pos < self.cursor and pos < self.buffer.items.len) {
             const cluster = unicode.nextGraphemeCluster(self.buffer.items[pos..]) orelse {
@@ -237,7 +262,9 @@ pub const Minibuffer = struct {
 
     fn findPrevGraphemeStart(text: []const u8, pos: usize) usize {
         if (pos == 0) return 0;
-        var p = pos - 1;
+        // pos が text.len を超えている場合は text.len から開始
+        var p = @min(pos, text.len);
+        if (p > 0) p -= 1;
         while (p > 0 and unicode.isUtf8Continuation(text[p])) {
             p -= 1;
         }

@@ -280,6 +280,11 @@ pub const Editor = struct {
             self.allocator.free(prompt);
         }
 
+        // pending_filenameのクリーンアップ
+        if (self.pending_filename) |pending| {
+            self.allocator.free(pending);
+        }
+
         // ミニバッファのクリーンアップ
         self.minibuffer.deinit();
 
@@ -614,6 +619,7 @@ pub const Editor = struct {
     /// 置換完了メッセージを表示してノーマルモードに戻る
     fn finishReplace(self: *Editor) void {
         self.mode = .normal;
+        self.getCurrentView().setSearchHighlight(null); // 検索ハイライトをクリア
         var msg_buf: [128]u8 = undefined;
         const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace done";
         self.getCurrentView().setError(msg);
@@ -2672,8 +2678,7 @@ pub const Editor = struct {
             .codepoint => |cp| try self.handleReplaceConfirmChar(unicode.normalizeFullwidth(cp)),
             .ctrl => |c| {
                 if (c == 'g') {
-                    self.mode = .normal;
-                    self.setPrompt("Replaced {d} occurrence(s)", .{self.replace_match_count});
+                    self.finishReplace(); // 統一的にfinishReplaceを使用
                 }
             },
             else => {},
@@ -2984,6 +2989,7 @@ pub const Editor = struct {
                     .ctrl => |c| {
                         if (c == 'g') self.resetToNormal();
                     },
+                    .escape => self.resetToNormal(),
                     else => {},
                 }
                 return;
@@ -3825,7 +3831,7 @@ pub const Editor = struct {
     fn executeMacroInternal(self: *Editor) anyerror!void {
         const macro = self.macro_service.getLastMacro() orelse {
             self.getCurrentView().setError("No kbd macro defined");
-            return;
+            return error.NoMacroDefined;
         };
 
         self.macro_service.beginPlayback();

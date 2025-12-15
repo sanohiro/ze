@@ -153,6 +153,7 @@ pub const BufferManager = struct {
         self.allocator.destroy(old_buffer);
 
         const new_buffer = try self.allocator.create(Buffer);
+        errdefer self.allocator.destroy(new_buffer); // loadFromFile失敗時のリーク防止
         new_buffer.* = try Buffer.loadFromFile(self.allocator, path);
         buffer_state.editing_ctx.buffer = new_buffer;
 

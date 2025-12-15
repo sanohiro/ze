@@ -95,16 +95,25 @@ pub const ShellService = struct {
 
     /// 指定位置が引用符の内部にあるかどうかをチェック
     /// シングルクォート、ダブルクォート、バックスラッシュエスケープを考慮
+    /// シェルの仕様に従い:
+    /// - シングルクォート内: バックスラッシュはリテラル（エスケープしない）
+    /// - ダブルクォート内: \" と \\ のみエスケープ
+    /// - 引用符外: バックスラッシュは次の文字をエスケープ
     fn isPositionInsideQuotes(s: []const u8, pos: usize) bool {
         var in_single = false;
         var in_double = false;
         var i: usize = 0;
         while (i < pos and i < s.len) : (i += 1) {
             const c = s[i];
-            if (c == '\\' and i + 1 < s.len) {
-                // バックスラッシュエスケープ: 次の文字をスキップ
-                i += 1;
-                continue;
+            // バックスラッシュエスケープ（シングルクォート内では無効）
+            if (c == '\\' and i + 1 < s.len and !in_single) {
+                const next_c = s[i + 1];
+                // ダブルクォート内では \" と \\ のみエスケープ
+                // 引用符外では全てエスケープ
+                if (!in_double or next_c == '"' or next_c == '\\') {
+                    i += 1;
+                    continue;
+                }
             }
             if (c == '\'' and !in_double) {
                 in_single = !in_single;
@@ -322,8 +331,20 @@ pub const ShellService = struct {
             }
         }
 
+        // 既に回収済みの場合は結果を返す（再呼び出し対応）
+        if (state.child_reaped) {
+            const cmd_result = CommandResult{
+                .stdout = state.stdout_buffer.items,
+                .stderr = state.stderr_buffer.items,
+                .exit_status = state.exit_status,
+                .input_source = state.input_source,
+                .output_dest = state.output_dest,
+            };
+            return cmd_result;
+        }
+
         // waitpidでプロセス終了をチェック
-        const result = std.posix.waitpid(state.child.id, std.c.W.NOHANG);
+        const result = std.posix.waitpid(state.child.id, std.posix.W.NOHANG);
 
         if (result.pid == 0) {
             return null; // まだ実行中
@@ -439,7 +460,8 @@ pub const ShellService = struct {
     fn cleanupState(self: *Self, state: *CommandState) void {
         // 子プロセスをkill（まだ回収されていない場合のみ）
         if (!state.child_reaped) {
-            _ = state.child.kill() catch {};
+            // SIGKILLで強制終了（SIGTERMはプロセスが無視する可能性がありブロックの原因）
+            _ = std.posix.kill(state.child.id, std.posix.SIG.KILL) catch {};
             _ = state.child.wait() catch {};
         }
 
