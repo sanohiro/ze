@@ -54,17 +54,20 @@ pub const KqueuePoller = struct {
             .udata = 0,
         }};
 
+        // 空のeventlist（undefinedポインタを避ける）
+        var empty_eventlist: [0]posix.Kevent = .{};
+
         const result = posix.system.kevent(
             kq,
             &changelist,
             changelist.len,
-            @as([*]posix.Kevent, undefined)[0..0], // eventlist (空)
+            &empty_eventlist,
             0,
             null, // timeout (即座に戻る)
         );
 
         if (result < 0) {
-            posix.close(kq);
+            // errdefer が close を行うので、ここでは close しない
             return error.KqueueError;
         }
 
@@ -79,39 +82,38 @@ pub const KqueuePoller = struct {
     /// timeout_ms: nullなら無限待機、0なら即座にチェック
     pub fn wait(self: *KqueuePoller, timeout_ms: ?u32) PollResult {
         var eventlist: [1]posix.Kevent = undefined;
+        var empty_changelist: [0]posix.Kevent = .{};
 
         const timeout: ?posix.timespec = if (timeout_ms) |ms| .{
             .sec = @intCast(ms / 1000),
             .nsec = @intCast((ms % 1000) * 1_000_000),
         } else null;
 
-        while (true) {
-            const result = posix.system.kevent(
-                self.kq,
-                @as([*]posix.Kevent, undefined)[0..0], // changelist (空)
-                0,
-                &eventlist,
-                1,
-                if (timeout) |*t| t else null,
-            );
+        const result = posix.system.kevent(
+            self.kq,
+            &empty_changelist,
+            0,
+            &eventlist,
+            1,
+            if (timeout) |*t| t else null,
+        );
 
-            if (result < 0) {
-                const err = posix.errno(result);
-                if (err == .INTR) {
-                    // シグナル割り込み: リトライすべき（SIGWINCHなど）
-                    return .signal;
-                }
-                // その他のエラーはタイムアウト扱い
-                return .timeout;
+        if (result < 0) {
+            const err = posix.errno(result);
+            if (err == .INTR) {
+                // シグナル割り込み: リトライすべき（SIGWINCHなど）
+                return .signal;
             }
-
-            if (result == 0) {
-                return .timeout;
-            }
-
-            // イベントあり
-            return .ready;
+            // その他のエラーはタイムアウト扱い
+            return .timeout;
         }
+
+        if (result == 0) {
+            return .timeout;
+        }
+
+        // イベントあり
+        return .ready;
     }
 };
 
@@ -142,25 +144,29 @@ pub const EpollPoller = struct {
     pub fn wait(self: *EpollPoller, timeout_ms: ?u32) PollResult {
         var events: [1]linux.epoll_event = undefined;
 
-        const timeout: i32 = if (timeout_ms) |ms| @intCast(ms) else -1;
+        // u32 -> i32 変換: i32.max を超える場合は飽和させる（約24.8日）
+        const timeout: i32 = if (timeout_ms) |ms|
+            if (ms > std.math.maxInt(i32)) std.math.maxInt(i32) else @intCast(ms)
+        else
+            -1;
 
-        while (true) {
-            const result = linux.epoll_wait(self.epfd, &events, 1, timeout);
+        const result = linux.epoll_wait(self.epfd, &events, 1, timeout);
 
-            if (result < 0) {
-                const err = posix.errno(result);
-                if (err == .INTR) {
-                    return .signal;
-                }
-                return .timeout;
+        // linux.epoll_wait は usize を返す。エラー時は -errno がビット的にラップされる
+        const signed_result: isize = @bitCast(result);
+        if (signed_result < 0) {
+            const err = posix.errno(signed_result);
+            if (err == .INTR) {
+                return .signal;
             }
-
-            if (result == 0) {
-                return .timeout;
-            }
-
-            return .ready;
+            return .timeout;
         }
+
+        if (signed_result == 0) {
+            return .timeout;
+        }
+
+        return .ready;
     }
 };
 
@@ -182,28 +188,26 @@ pub const PollPoller = struct {
             .revents = 0,
         }};
 
-        const timeout: i32 = if (timeout_ms) |ms| @intCast(ms) else -1;
+        // u32 -> i32 変換: i32.max を超える場合は飽和させる（約24.8日）
+        const timeout: i32 = if (timeout_ms) |ms|
+            if (ms > std.math.maxInt(i32)) std.math.maxInt(i32) else @intCast(ms)
+        else
+            -1;
 
-        while (true) {
-            const result = posix.poll(&fds, timeout);
+        // posix.poll は PollError!usize を返す
+        const result = posix.poll(&fds, timeout) catch |err| {
+            // Interrupted (EINTR) はシグナル扱い
+            return if (err == error.Interrupted) .signal else .timeout;
+        };
 
-            if (result < 0) {
-                const err = posix.errno(result);
-                if (err == .INTR) {
-                    return .signal;
-                }
-                return .timeout;
-            }
-
-            if (result == 0) {
-                return .timeout;
-            }
-
-            if (fds[0].revents & posix.POLL.IN != 0) {
-                return .ready;
-            }
-
+        if (result == 0) {
             return .timeout;
         }
+
+        if (fds[0].revents & posix.POLL.IN != 0) {
+            return .ready;
+        }
+
+        return .timeout;
     }
 };

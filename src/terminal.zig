@@ -59,9 +59,9 @@ pub const Terminal = struct {
 
         try self.enableRawMode();
         // enableRawMode成功後、以降の処理で失敗した場合はrawモードを解除する
-        errdefer self.disableRawMode();
+        errdefer self.disableRawMode() catch {};
 
-        try self.getWindowSize();
+        self.getWindowSize();
 
         // シグナルハンドラを設定
         self.setupSigwinch();
@@ -155,7 +155,7 @@ pub const Terminal = struct {
         try posix.tcsetattr(posix.STDIN_FILENO, .FLUSH, self.original_termios);
     }
 
-    fn getWindowSize(self: *Terminal) !void {
+    fn getWindowSize(self: *Terminal) void {
         var ws: posix.winsize = undefined;
         const stdout: std.fs.File = .{ .handle = posix.STDOUT_FILENO };
 
@@ -167,10 +167,10 @@ pub const Terminal = struct {
     }
 
     /// 端末サイズが変更されたかチェックし、変更されていればサイズを更新してtrueを返す
-    pub fn checkResize(self: *Terminal) !bool {
+    pub fn checkResize(self: *Terminal) bool {
         // SIGWINCHフラグをチェック（シグナル駆動の高速検出）
         if (g_resize_pending.swap(false, .acquire)) {
-            try self.getWindowSize();
+            self.getWindowSize();
             return true;
         }
 

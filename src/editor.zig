@@ -1795,7 +1795,7 @@ pub const Editor = struct {
             if (self.terminal.checkTerminate()) break;
 
             // リサイズチェック
-            if (try self.terminal.checkResize()) {
+            if (self.terminal.checkResize()) {
                 try self.recalculateWindowSizes();
             }
 
@@ -1854,7 +1854,7 @@ pub const Editor = struct {
         while (self.running) {
             if (self.terminal.checkTerminate()) break;
 
-            if (try self.terminal.checkResize()) {
+            if (self.terminal.checkResize()) {
                 try self.recalculateWindowSizes();
             }
 
