@@ -311,11 +311,14 @@ pub fn copyRegion(e: *Editor) !void {
         return;
     };
 
+    // 新しいテキストを先に取得（失敗時はkill_ringを壊さない）
+    const new_text = try e.extractText(region.start, region.len);
+
+    // 新規取得成功後に古いテキストを解放
     if (e.kill_ring) |old_text| {
         e.allocator.free(old_text);
     }
-
-    e.kill_ring = try e.extractText(region.start, region.len);
+    e.kill_ring = new_text;
 
     window.mark_pos = null;
 
@@ -501,7 +504,7 @@ pub fn moveLineDown(e: *Editor) !void {
     const current_line = e.getCurrentLine();
     const total_lines = buffer.lineCount();
 
-    if (current_line >= total_lines - 1) return;
+    if (current_line + 1 >= total_lines) return;
 
     const line_start = buffer.getLineStart(current_line) orelse return;
     const line_end = buffer.findNextLineFromPos(line_start);
@@ -627,12 +630,19 @@ pub fn duplicateLine(e: *Editor) !void {
         // 改行がある場合はそのまま挿入
         to_insert = line_content;
     } else {
-        // ファイル末尾の場合は改行を追加
-        const with_newline = try e.allocator.alloc(u8, line_len + 1);
-        with_newline[0] = '\n';
-        @memcpy(with_newline[1..], line_content);
-        to_insert = with_newline;
-        allocated = true;
+        // ファイル末尾の場合
+        // 行内容が既に改行で終わっているかチェック
+        if (line_len > 0 and line_content[line_len - 1] == '\n') {
+            // 改行で終わっている場合はそのまま挿入
+            to_insert = line_content;
+        } else {
+            // 改行で終わっていない場合は先頭に改行を追加
+            const with_newline = try e.allocator.alloc(u8, line_len + 1);
+            with_newline[0] = '\n';
+            @memcpy(with_newline[1..], line_content);
+            to_insert = with_newline;
+            allocated = true;
+        }
     }
     defer if (allocated) e.allocator.free(to_insert);
 

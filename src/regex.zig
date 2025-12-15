@@ -97,7 +97,16 @@ pub const Regex = struct {
 
     pub fn compile(allocator: std.mem.Allocator, pattern: []const u8) !Regex {
         var instructions = try std.ArrayList(Instruction).initCapacity(allocator, pattern.len);
-        errdefer instructions.deinit(allocator);
+        errdefer {
+            // CharClass内のrangesスライスも解放する必要がある
+            for (instructions.items) |instr| {
+                switch (instr) {
+                    .char_class, .star_class, .plus_class, .question_class => |cc| allocator.free(cc.ranges),
+                    else => {},
+                }
+            }
+            instructions.deinit(allocator);
+        }
 
         var i: usize = 0;
         while (i < pattern.len) {
