@@ -148,14 +148,20 @@ pub const BufferManager = struct {
         errdefer buffer_state.deinit();
 
         // ファイルをロード（EditingContext内のBufferを差し替え）
+        // 注意: errdeferを使わず手動でエラー処理する
+        // 理由: errdeferは関数全体にスコープするため、後続のエラーでダブルフリーが発生する
+        const new_buffer = try self.allocator.create(Buffer);
+        new_buffer.* = Buffer.loadFromFile(self.allocator, path) catch |err| {
+            // loadFromFile失敗時は新しいバッファのみ解放
+            self.allocator.destroy(new_buffer);
+            return err;
+        };
+        // ロード成功後に古いバッファを解放し、新しいバッファに差し替え
+        // この順序により、失敗時もediting_ctx.bufferは常に有効なバッファを指す
         const old_buffer = buffer_state.editing_ctx.buffer;
+        buffer_state.editing_ctx.buffer = new_buffer;
         old_buffer.deinit();
         self.allocator.destroy(old_buffer);
-
-        const new_buffer = try self.allocator.create(Buffer);
-        errdefer self.allocator.destroy(new_buffer); // loadFromFile失敗時のリーク防止
-        new_buffer.* = try Buffer.loadFromFile(self.allocator, path);
-        buffer_state.editing_ctx.buffer = new_buffer;
 
         // ファイル名を設定
         buffer_state.filename = try self.allocator.dupe(u8, path);

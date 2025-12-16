@@ -362,6 +362,8 @@ pub fn joinLine(e: *Editor) !void {
         errdefer e.allocator.free(deleted);
 
         try buffer.delete(delete_start, delete_len);
+        // 削除後のロールバック用errdefer（recordDeleteが失敗した場合）
+        errdefer buffer.insertSlice(delete_start, deleted) catch {};
         try e.recordDelete(delete_start, deleted, view.getCursorBufferPos());
 
         var needs_space = true;
@@ -377,6 +379,8 @@ pub fn joinLine(e: *Editor) !void {
 
         if (needs_space and first_non_space > line_start) {
             try buffer.insertSlice(delete_start, " ");
+            // 挿入後のロールバック用errdefer（recordInsertが失敗した場合）
+            errdefer buffer.delete(delete_start, 1) catch {};
             try e.recordInsert(delete_start, " ", view.getCursorBufferPos());
         }
 
@@ -450,9 +454,13 @@ pub fn toggleComment(e: *Editor) !void {
         defer e.allocator.free(deleted);
 
         try buffer.delete(comment_pos, delete_len);
+        // 削除後のロールバック用errdefer（recordDeleteが失敗した場合）
+        errdefer buffer.insertSlice(comment_pos, deleted) catch {};
         try e.recordDelete(comment_pos, deleted, view.getCursorBufferPos());
     } else {
         try buffer.insertSlice(line_start, comment_str);
+        // 挿入後のロールバック用errdefer（recordInsertが失敗した場合）
+        errdefer buffer.delete(line_start, comment_str.len) catch {};
         try e.recordInsert(line_start, comment_str, view.getCursorBufferPos());
     }
 
@@ -482,8 +490,12 @@ pub fn moveLineUp(e: *Editor) !void {
     defer e.allocator.free(line_content);
 
     try buffer.delete(line_start, line_len);
+    // 削除後のinsertSlice失敗時にrollback
+    errdefer buffer.insertSlice(line_start, line_content) catch {};
 
     try buffer.insertSlice(prev_line_start, line_content);
+    // insert後のrecordDelete失敗時にrollback
+    errdefer buffer.delete(prev_line_start, line_len) catch {};
 
     try e.recordDelete(line_start, line_content, view.getCursorBufferPos());
     try e.recordInsert(prev_line_start, line_content, view.getCursorBufferPos());
@@ -516,9 +528,13 @@ pub fn moveLineDown(e: *Editor) !void {
     defer e.allocator.free(line_content);
 
     try buffer.delete(line_start, line_len);
+    // 削除後のinsertSlice失敗時にrollback
+    errdefer buffer.insertSlice(line_start, line_content) catch {};
 
     const new_insert_pos = next_line_end - line_len;
     try buffer.insertSlice(new_insert_pos, line_content);
+    // insert後のrecordDelete失敗時にrollback
+    errdefer buffer.delete(new_insert_pos, line_len) catch {};
 
     try e.recordDelete(line_start, line_content, view.getCursorBufferPos());
     try e.recordInsert(new_insert_pos, line_content, view.getCursorBufferPos());
@@ -647,6 +663,8 @@ pub fn duplicateLine(e: *Editor) !void {
     defer if (allocated) e.allocator.free(to_insert);
 
     try buffer.insertSlice(insert_pos, to_insert);
+    // 挿入後のロールバック用errdefer（recordInsertが失敗した場合）
+    errdefer buffer.delete(insert_pos, to_insert.len) catch {};
     try e.recordInsert(insert_pos, to_insert, view.getCursorBufferPos());
 
     buffer_state.editing_ctx.modified = true;
@@ -679,6 +697,8 @@ pub fn indentRegion(e: *Editor) !void {
         line -= 1;
         const line_start = buffer.getLineStart(line) orelse continue;
         try buffer.insertSlice(line_start, indent_str);
+        // 挿入後のロールバック用errdefer（recordInsertが失敗した場合）
+        errdefer buffer.delete(line_start, indent_str.len) catch {};
         try e.recordInsert(line_start, indent_str, view.getCursorBufferPos());
     }
 
@@ -739,6 +759,8 @@ pub fn unindentRegion(e: *Editor) !void {
             defer e.allocator.free(deleted);
 
             try buffer.delete(line_start, spaces_to_remove);
+            // 削除後のロールバック用errdefer（recordDeleteが失敗した場合）
+            errdefer buffer.insertSlice(line_start, deleted) catch {};
             try e.recordDelete(line_start, deleted, view.getCursorBufferPos());
             any_modified = true;
         }

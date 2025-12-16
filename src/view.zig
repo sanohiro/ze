@@ -585,8 +585,8 @@ pub const View = struct {
         // ブロックコメントキャッシュの無効化
         // ブロックコメントがない言語ではキャッシュ不要、無効化もスキップ
         if (self.language.block_comment != null) {
-            // 変更がキャッシュ対象行より前なら無効化
-            if (self.cached_block_state != null and start_line < self.cached_block_top_line) {
+            // 変更がキャッシュ対象行と同じか前なら無効化（同じ行の変更もキャッシュに影響）
+            if (self.cached_block_state != null and start_line <= self.cached_block_top_line) {
                 self.cached_block_state = null;
             }
         }
@@ -816,7 +816,8 @@ pub const View = struct {
         // 最初のマッチ前の部分をコピー（行番号部分を含む）
         try self.highlighted_line.appendSlice(self.allocator, line[0..first_match]);
         // カーソル位置を含むマッチかどうかで色を変える（可視位置で比較）
-        const is_current = if (cursor_in_content) |cursor| cursor >= first_visible_pos and cursor <= first_visible_pos + search_str.len else false;
+        // カーソル位置がマッチ範囲内かどうか（<= ではなく < を使用。マッチ直後は範囲外）
+        const is_current = if (cursor_in_content) |cursor| cursor >= first_visible_pos and cursor < first_visible_pos + search_str.len else false;
         const hl_start = if (is_current) "\x1b[48;5;220m\x1b[30m" else ANSI.INVERT;
         const hl_end = if (is_current) "\x1b[49m\x1b[39m" else ANSI.INVERT_OFF;
         try self.highlighted_line.appendSlice(self.allocator, hl_start);
@@ -832,7 +833,8 @@ pub const View = struct {
                 // マッチの可視位置を計算
                 const visible_pos = countVisibleBytes(line, content_start, match_pos);
                 // カーソル位置を含むマッチかどうかで色を変える（可視位置で比較）
-                const is_cur = if (cursor_in_content) |cursor| cursor >= visible_pos and cursor <= visible_pos + search_str.len else false;
+                // カーソル位置がマッチ範囲内かどうか（<= ではなく < を使用。マッチ直後は範囲外）
+                const is_cur = if (cursor_in_content) |cursor| cursor >= visible_pos and cursor < visible_pos + search_str.len else false;
                 const start_seq = if (is_cur) "\x1b[48;5;220m\x1b[30m" else ANSI.INVERT;
                 const end_seq = if (is_cur) "\x1b[49m\x1b[39m" else ANSI.INVERT_OFF;
                 try self.highlighted_line.appendSlice(self.allocator, start_seq);
@@ -931,13 +933,18 @@ pub const View = struct {
         // 最初のマッチを処理
         var match_start_vis = first_match_result.start;
         var match_end_vis = first_match_result.end;
+        // 境界チェック: visible_to_rawの範囲外アクセスを防止
+        if (match_start_vis >= visible_to_raw.items.len or match_end_vis >= visible_to_raw.items.len) {
+            return line;
+        }
         var match_start_raw = visible_to_raw.items[match_start_vis];
         var match_end_raw = visible_to_raw.items[match_end_vis];
 
         // マッチ前の部分をコピー
         try self.highlighted_line.appendSlice(self.allocator, line[0..match_start_raw]);
         // カーソル位置を含むマッチかどうかで色を変える（可視位置で比較）
-        const is_current = if (cursor_in_content) |cursor| cursor >= match_start_vis and cursor <= match_end_vis else false;
+        // リテラル検索と一貫性を保つため < を使用（マッチ終端位置はマッチ外）
+        const is_current = if (cursor_in_content) |cursor| cursor >= match_start_vis and cursor < match_end_vis else false;
         const hl_start = if (is_current) "\x1b[48;5;220m\x1b[30m" else ANSI.INVERT;
         const hl_end = if (is_current) "\x1b[49m\x1b[39m" else ANSI.INVERT_OFF;
         try self.highlighted_line.appendSlice(self.allocator, hl_start);
@@ -957,13 +964,18 @@ pub const View = struct {
 
                 match_start_vis = match_result.start;
                 match_end_vis = match_result.end;
+                // 境界チェック: visible_to_rawの範囲外アクセスを防止
+                if (match_start_vis >= visible_to_raw.items.len or match_end_vis >= visible_to_raw.items.len) {
+                    break;
+                }
                 match_start_raw = visible_to_raw.items[match_start_vis];
                 match_end_raw = visible_to_raw.items[match_end_vis];
 
                 // マッチ前の部分をコピー
                 try self.highlighted_line.appendSlice(self.allocator, line[last_raw_pos..match_start_raw]);
                 // カーソル位置を含むマッチかどうかで色を変える（可視位置で比較）
-                const is_cur = if (cursor_in_content) |cursor| cursor >= match_start_vis and cursor <= match_end_vis else false;
+                // リテラル検索と一貫性を保つため < を使用（マッチ終端位置はマッチ外）
+                const is_cur = if (cursor_in_content) |cursor| cursor >= match_start_vis and cursor < match_end_vis else false;
                 const start_seq = if (is_cur) "\x1b[48;5;220m\x1b[30m" else ANSI.INVERT;
                 const end_seq = if (is_cur) "\x1b[49m\x1b[39m" else ANSI.INVERT_OFF;
                 try self.highlighted_line.appendSlice(self.allocator, start_seq);
@@ -1357,13 +1369,14 @@ pub const View = struct {
             if (cursor_pos < line_start) break :blk 0;
 
             // 行頭からカーソルまでタブ展開を考慮した位置を計算
+            // 外側のスコープで定義された tab_width を使用
             var expanded_pos: usize = 0;
             var raw_pos: usize = line_start;
             while (raw_pos < cursor_pos) {
                 const byte = self.buffer.getByteAt(raw_pos) orelse break;
                 if (byte == '\t') {
-                    // タブは次の8の倍数まで展開
-                    expanded_pos = (expanded_pos / 8 + 1) * 8;
+                    // タブは次のタブストップまで展開（設定されたタブ幅を使用）
+                    expanded_pos = (expanded_pos / tab_width + 1) * tab_width;
                 } else {
                     expanded_pos += 1;
                 }

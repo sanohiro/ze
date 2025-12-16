@@ -33,7 +33,8 @@ pub const History = struct {
     pub fn init(allocator: std.mem.Allocator) History {
         return .{
             .allocator = allocator,
-            .entries = std.ArrayList([]const u8).empty,
+            // 空のArrayListを正しく初期化
+            .entries = .{},
             .current_index = null,
             .temp_input = null,
         };
@@ -76,10 +77,12 @@ pub const History = struct {
 
     /// ナビゲーション開始（現在の入力を保存）
     pub fn startNavigation(self: *History, current_input: []const u8) !void {
+        // 先にdupeしてからfreeする（dupe失敗時のダングリングポインタ防止）
+        const new_temp = try self.allocator.dupe(u8, current_input);
         if (self.temp_input) |old| {
             self.allocator.free(old);
         }
-        self.temp_input = try self.allocator.dupe(u8, current_input);
+        self.temp_input = new_temp;
         self.current_index = null;
     }
 

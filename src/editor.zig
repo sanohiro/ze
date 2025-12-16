@@ -577,15 +577,17 @@ pub const Editor = struct {
                 // pending_filenameをbuffer_state.filenameに設定
                 if (self.pending_filename) |pending| {
                     const buffer_state = self.getCurrentBuffer();
-                    if (buffer_state.filename) |old| {
-                        self.allocator.free(old);
-                    }
-                    buffer_state.filename = self.allocator.dupe(u8, pending) catch {
+                    // 先にdupeしてからfreeする（dupe失敗時のダングリングポインタ防止）
+                    const new_name = self.allocator.dupe(u8, pending) catch {
                         self.getCurrentView().setError("Memory allocation failed");
                         self.clearPendingFilename();
                         self.mode = .normal;
                         return;
                     };
+                    if (buffer_state.filename) |old| {
+                        self.allocator.free(old);
+                    }
+                    buffer_state.filename = new_name;
                     self.clearPendingFilename();
                 }
                 self.saveFile() catch |err| {
@@ -1581,6 +1583,7 @@ pub const Editor = struct {
                     try std.fmt.allocPrint(self.allocator, "{s}/", .{entry.name})
                 else
                     try self.allocator.dupe(u8, entry.name);
+                errdefer self.allocator.free(name); // append失敗時のリーク防止
                 try matches.append(self.allocator, name);
             }
         }
@@ -2023,7 +2026,8 @@ pub const Editor = struct {
         var display_col: usize = 0;
         while (iter.global_pos < clamped_pos) {
             const cluster = iter.nextGraphemeCluster() catch {
-                _ = iter.next();
+                // エラー時は1バイト進める、nullならイテレータ終了
+                if (iter.next() == null) break;
                 display_col += 1;
                 continue;
             };
@@ -2102,19 +2106,23 @@ pub const Editor = struct {
 
                 if (file_exists and !is_same_file) {
                     // 確認待ちのファイル名を保存（buffer_state.filenameは確認後に設定）
+                    // 先にdupeしてからfreeする（dupe失敗時のダングリングポインタ防止）
+                    const new_pending = try self.allocator.dupe(u8, new_filename);
                     if (self.pending_filename) |old| {
                         self.allocator.free(old);
                     }
-                    self.pending_filename = try self.allocator.dupe(u8, new_filename);
+                    self.pending_filename = new_pending;
                     self.clearInputBuffer();
                     self.mode = .overwrite_confirm;
                     self.getCurrentView().setError("File exists. Overwrite? (y)es (n)o");
                 } else {
                     // ファイルが存在しないか、同じファイルなら直接保存
+                    // 先にdupeしてからfreeする（dupe失敗時のダングリングポインタ防止）
+                    const new_name = try self.allocator.dupe(u8, new_filename);
                     if (buffer_state.filename) |old| {
                         self.allocator.free(old);
                     }
-                    buffer_state.filename = try self.allocator.dupe(u8, new_filename);
+                    buffer_state.filename = new_name;
                     self.clearInputBuffer();
                     try self.saveFile();
                     self.resetToNormal();
@@ -2159,29 +2167,39 @@ pub const Editor = struct {
                     try self.switchToBuffer(buf.id);
                 } else {
                     const new_buffer = try self.createNewBuffer();
-                    const filename_copy = try self.allocator.dupe(u8, filename);
+
+                    // filename_copyのdupe失敗時にnew_bufferをクリーンアップ
+                    const filename_copy = self.allocator.dupe(u8, filename) catch |err| {
+                        _ = self.closeBuffer(new_buffer.id) catch {};
+                        return err;
+                    };
 
                     const loaded_buffer = Buffer.loadFromFile(self.allocator, filename_copy) catch |err| {
                         self.allocator.free(filename_copy);
                         if (err == error.FileNotFound) {
-                            new_buffer.filename = try self.allocator.dupe(u8, filename);
+                            // dupe失敗時にnew_bufferをクリーンアップ
+                            new_buffer.filename = self.allocator.dupe(u8, filename) catch |e| {
+                                _ = self.closeBuffer(new_buffer.id) catch {};
+                                return e;
+                            };
                             try self.switchToBuffer(new_buffer.id);
                             self.cancelInput();
                             return true;
                         } else if (err == error.BinaryFile) {
-                            _ = try self.closeBuffer(new_buffer.id);
+                            // エラーパスではcatch {}を使用（tryだと失敗時にリーク）
+                            _ = self.closeBuffer(new_buffer.id) catch {};
                             self.getCurrentView().setError("Cannot open binary file");
                             self.mode = .normal;
                             self.clearInputBuffer();
                             return true;
                         } else if (err == error.IsDir) {
-                            _ = try self.closeBuffer(new_buffer.id);
+                            _ = self.closeBuffer(new_buffer.id) catch {};
                             self.getCurrentView().setError("Cannot open directory");
                             self.mode = .normal;
                             self.clearInputBuffer();
                             return true;
                         } else {
-                            _ = try self.closeBuffer(new_buffer.id);
+                            _ = self.closeBuffer(new_buffer.id) catch {};
                             self.showError(err);
                             self.mode = .normal;
                             self.clearInputBuffer();
@@ -3377,10 +3395,20 @@ pub const Editor = struct {
         self.replace_match_count += 1;
 
         // カーソルを置換後の位置に移動
-        // 空マッチの場合は無限ループを防ぐため少なくとも1バイト進める
+        // 空マッチの場合は無限ループを防ぐため少なくとも1文字進める
+        // UTF-8文字の途中で分断しないようUTF-8シーケンス長を考慮
         var new_pos = match_pos + replacement.len;
         if (match_len == 0 and new_pos < buffer.total_len) {
-            new_pos += 1;
+            // 現在位置のバイトを読み取ってUTF-8シーケンス長を取得
+            var iter = buffer_mod.PieceIterator.init(buffer);
+            iter.seek(new_pos);
+            if (iter.next()) |lead_byte| {
+                // UTF-8リードバイトからシーケンス長を計算
+                const byte_len = std.unicode.utf8ByteSequenceLength(lead_byte) catch 1;
+                new_pos += byte_len;
+            } else {
+                new_pos += 1;
+            }
         }
         self.setCursorToPos(new_pos);
 

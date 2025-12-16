@@ -47,6 +47,7 @@ pub fn copyRectangle(e: *Editor) !void {
             e.allocator.free(line);
         }
         old_ring.deinit(e.allocator);
+        e.rectangle_ring = null; // use-after-free防止
     }
 
     // 新しい rectangle_ring を作成
@@ -154,6 +155,7 @@ pub fn killRectangle(e: *Editor) !void {
             e.allocator.free(line);
         }
         old_ring.deinit(e.allocator);
+        e.rectangle_ring = null; // use-after-free防止
     }
 
     // 新しい rectangle_ring を作成
@@ -254,10 +256,12 @@ pub fn killRectangle(e: *Editor) !void {
     while (i > 0) {
         i -= 1;
         const info = delete_infos.items[i];
+        // バッファから削除（先に実行、失敗時はUndo記録を残さない）
+        try buffer.delete(info.pos, info.len);
+        // 削除後のロールバック用errdefer（recordDeleteOpが失敗した場合）
+        errdefer buffer.insertSlice(info.pos, info.text) catch {};
         // Undo履歴に記録
         try editing_ctx.recordDeleteOp(info.pos, info.text, cursor_before);
-        // バッファから削除
-        try buffer.delete(info.pos, info.len);
     }
 
     e.rectangle_ring = rect_ring;
@@ -350,13 +354,36 @@ pub fn yankRectangle(e: *Editor) !void {
             const padding_needed = cursor_col - current_col;
             // パディング + 矩形テキストを結合
             var padded_text = std.ArrayList(u8).initCapacity(e.allocator, padding_needed + line_text.len) catch continue;
-            errdefer padded_text.deinit(e.allocator);
+            // initCapacity成功後、以降の操作で失敗した場合に確実にdeinitする
+            var padded_text_valid = true;
+            defer if (padded_text_valid) {} else padded_text.deinit(e.allocator);
+
+            var padding_ok = true;
             for (0..padding_needed) |_| {
-                padded_text.append(e.allocator, ' ') catch continue;
+                padded_text.append(e.allocator, ' ') catch {
+                    padding_ok = false;
+                    break;
+                };
             }
-            padded_text.appendSlice(e.allocator, line_text) catch continue;
-            // toOwnedSliceで所有権を取得（メモリリーク防止）
-            const owned_text = padded_text.toOwnedSlice(e.allocator) catch continue;
+            if (!padding_ok) {
+                padded_text.deinit(e.allocator);
+                padded_text_valid = false;
+                continue;
+            }
+
+            padded_text.appendSlice(e.allocator, line_text) catch {
+                padded_text.deinit(e.allocator);
+                padded_text_valid = false;
+                continue;
+            };
+
+            // toOwnedSliceで所有権を取得（成功後はArrayListは空になる）
+            const owned_text = padded_text.toOwnedSlice(e.allocator) catch {
+                padded_text.deinit(e.allocator);
+                padded_text_valid = false;
+                continue;
+            };
+            padded_text_valid = false; // toOwnedSlice成功でArrayListは無効化済み
             try insert_infos.append(e.allocator, .{ .pos = insert_pos, .text = owned_text, .owned = true });
         } else {
             try insert_infos.append(e.allocator, .{ .pos = insert_pos, .text = line_text, .owned = false });
@@ -368,10 +395,12 @@ pub fn yankRectangle(e: *Editor) !void {
     while (i > 0) {
         i -= 1;
         const info = insert_infos.items[i];
+        // バッファに挿入（先に実行、失敗時はUndo記録を残さない）
+        try buffer.insertSlice(info.pos, info.text);
+        // 挿入後のロールバック用errdefer（recordInsertOpが失敗した場合）
+        errdefer buffer.delete(info.pos, info.text.len) catch {};
         // Undo履歴に記録
         try editing_ctx.recordInsertOp(info.pos, info.text, cursor_before);
-        // バッファに挿入
-        try buffer.insertSlice(info.pos, info.text);
     }
 
     // modified と dirty を設定

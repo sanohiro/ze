@@ -44,9 +44,16 @@ pub const InputReader = struct {
     buf: [config.Input.RING_BUF_SIZE]u8 = undefined, // 4KBの固定バッファ
     start: usize = 0, // 読み取り開始位置（消費済み）
     end: usize = 0, // データ終端位置（書き込み済み）
+    pushed_back_byte: ?u8 = null, // 戻されたバイト（UTF-8エラー時に次のキー入力を保存）
 
     pub fn init(stdin: std.fs.File) InputReader {
         return .{ .stdin = stdin };
+    }
+
+    /// 1バイトをバッファに戻す（次のreadByte()で返される）
+    /// UTF-8デコードエラー時に、次のキー入力の先頭バイトを失わないために使用
+    pub fn unreadByte(self: *InputReader, byte: u8) void {
+        self.pushed_back_byte = byte;
     }
 
     /// バッファ内のデータ量
@@ -90,6 +97,11 @@ pub const InputReader = struct {
 
     /// 1バイト読み取り（バッファから、なければstdinから）
     pub fn readByte(self: *InputReader) !?u8 {
+        // まずpushed_back_byteをチェック（UTF-8エラー時に戻されたバイト）
+        if (self.pushed_back_byte) |byte| {
+            self.pushed_back_byte = null;
+            return byte;
+        }
         if (self.available() == 0) {
             const n = try self.fill();
             if (n == 0) return null;
@@ -102,6 +114,16 @@ pub const InputReader = struct {
     /// 複数バイト読み取り（戻り値は読み取ったバイト数）
     pub fn readBytes(self: *InputReader, out: []u8) !usize {
         var total: usize = 0;
+
+        // まず pushed_back_byte を処理（unreadByteで戻されたバイト）
+        if (self.pushed_back_byte) |byte| {
+            if (out.len > 0) {
+                out[0] = byte;
+                self.pushed_back_byte = null;
+                total = 1;
+            }
+        }
+
         while (total < out.len) {
             if (self.available() == 0) {
                 const n = try self.fill();
@@ -208,10 +230,19 @@ pub fn readKeyFromReader(reader: *InputReader) !?Key {
         buf[1] = first_byte;
 
         // Ctrl+Alt+文字（ESC + Ctrl文字）: C-M-s = ESC + 0x13
+        // C-M-@ (ESC + 0x00)
+        if (first_byte == 0) {
+            return Key{ .ctrl_alt = '@' };
+        }
+        // C-M-a から C-M-z (ESC + 0x01-0x1A)
         if (first_byte >= 1 and first_byte <= 26) {
             // Ctrl+文字を元の文字に復元してctrl_altとして返す
             // 例: 0x13 (C-s) -> 's' (0x73)
             return Key{ .ctrl_alt = first_byte + 'a' - 1 };
+        }
+        // C-M-/ (ESC + 0x1F = 31) - Ctrl+/ は 31 になる
+        if (first_byte == 31) {
+            return Key{ .ctrl_alt = '/' };
         }
 
         // Alt+印刷可能ASCII文字（ESC + 文字）
@@ -358,9 +389,9 @@ pub fn readKeyFromReader(reader: *InputReader) !?Key {
                 // continuation byteかチェック
                 if (!unicode.isUtf8Continuation(byte)) {
                     // continuation byteでない → 無効なシーケンス
-                    // このバイトは次のキー入力の開始かもしれないが、
-                    // InputReaderには戻す機能がないため、
-                    // 置換文字を返して終了（バイトは消費済み）
+                    // このバイトは次のキー入力の開始かもしれないので、
+                    // バッファに戻して次回の読み取りで処理する
+                    reader.unreadByte(byte);
                     return Key{ .codepoint = 0xFFFD };
                 }
 

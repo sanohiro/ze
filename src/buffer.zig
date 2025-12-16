@@ -1235,12 +1235,13 @@ pub const Buffer = struct {
         const first_to_remove = if (remove_start) start_loc.piece_idx else start_loc.piece_idx + 1;
         const last_to_remove = if (remove_end) end_loc.piece_idx else end_loc.piece_idx - 1;
 
-        // 削除実行（降順で削除）
+        // 削除実行（降順で削除、オーバーフロー防止）
         if (last_to_remove >= first_to_remove) {
-            var i = last_to_remove + 1;
-            while (i > first_to_remove) {
-                i -= 1;
+            var i = last_to_remove;
+            while (true) {
                 _ = self.pieces.orderedRemove(i);
+                if (i == first_to_remove) break;
+                i -= 1;
             }
         }
         self.line_index.invalidateFrom(pos);
@@ -1652,14 +1653,18 @@ pub const Buffer = struct {
                     if (boundary_start < current_piece_start + piece_len) {
                         const check_start = @max(boundary_start, current_piece_start);
                         var check_pos = current_piece_start + piece_len - 1;
-                        while (check_pos >= check_start and check_pos >= pattern.len - 1) : (check_pos -= 1) {
-                            if (self.verifyMatch(check_pos - pattern.len + 1, pattern)) {
-                                const match_pos = check_pos - pattern.len + 1;
-                                if (match_pos + pattern.len <= search_end) {
-                                    return .{ .start = match_pos, .len = pattern.len };
+                        while (check_pos >= check_start) {
+                            // パターン長以上の位置でのみマッチ可能（アンダーフロー防止）
+                            if (check_pos + 1 >= pattern.len) {
+                                if (self.verifyMatch(check_pos - pattern.len + 1, pattern)) {
+                                    const match_pos = check_pos - pattern.len + 1;
+                                    if (match_pos + pattern.len <= search_end) {
+                                        return .{ .start = match_pos, .len = pattern.len };
+                                    }
                                 }
                             }
-                            if (check_pos == 0) break;
+                            if (check_pos == 0 or check_pos == check_start) break;
+                            check_pos -= 1;
                         }
                     }
                 }
