@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.4] - 2025-12-17
+
+### Changed
+- Refactor: isWordCharByte() - consolidated duplicate code from regex.zig and editing_context.zig into unicode.zig
+- Refactor: isUtf8Continuation() - unified continuation byte checks in encoding.zig
+- Refactor: utf8SeqLen() - replaced inline expansion with function call in unicode.zig
+
+### Documentation
+- Added release procedure to CLAUDE.md
+
 ## [1.0.3] - 2025-12-17
 
 ### Fixed
