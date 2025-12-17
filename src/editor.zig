@@ -736,6 +736,10 @@ pub const Editor = struct {
         // 検索実行
         if (self.minibuffer.getContent().len > 0) {
             self.getCurrentView().setSearchHighlightEx(self.minibuffer.getContent(), self.is_regex_search);
+            // 検索開始位置からやり直す（パターンが変わったので最初から検索）
+            if (self.search_start_pos) |start_pos| {
+                self.setCursorToPos(start_pos);
+            }
             try self.performSearch(is_forward, false);
         }
     }
