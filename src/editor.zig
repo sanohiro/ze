@@ -2052,7 +2052,13 @@ pub const Editor = struct {
             };
             if (cluster) |gc| {
                 if (gc.base == '\n') break;
-                display_col += gc.width; // 絵文字は2、通常文字は1
+                if (gc.base == '\t') {
+                    // タブは次のタブストップまで進める
+                    const tab_width = view.getTabWidth();
+                    display_col = (display_col / tab_width + 1) * tab_width;
+                } else {
+                    display_col += gc.width; // 絵文字は2、通常文字は1
+                }
             } else {
                 break;
             }

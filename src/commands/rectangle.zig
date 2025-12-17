@@ -3,6 +3,15 @@ const Editor = @import("editor").Editor;
 const PieceIterator = @import("buffer").PieceIterator;
 const EditingContext = @import("editing_context").EditingContext;
 
+/// 文字の表示幅を計算（タブは現在列に基づいて展開）
+fn getCharWidth(base: u21, width: usize, current_col: usize, tab_width: usize) usize {
+    if (base == '\t') {
+        // タブは次のタブストップまで進める
+        return (current_col / tab_width + 1) * tab_width - current_col;
+    }
+    return width;
+}
+
 /// 矩形領域の範囲情報を取得する共通関数
 fn getRectangleInfo(e: *Editor) ?struct {
     start_line: usize,
@@ -40,6 +49,7 @@ fn getRectangleInfo(e: *Editor) ?struct {
 pub fn copyRectangle(e: *Editor) !void {
     const info = getRectangleInfo(e) orelse return;
     const buffer = e.getCurrentBufferContent();
+    const tab_width: usize = e.getCurrentView().getTabWidth();
 
     // 古い rectangle_ring をクリーンアップ
     if (e.rectangle_ring) |*old_ring| {
@@ -80,7 +90,7 @@ pub fn copyRectangle(e: *Editor) !void {
         while (iter.global_pos < line_end and current_col < info.left_col) {
             const gc = iter.nextGraphemeCluster() catch break;
             if (gc) |cluster| {
-                current_col += cluster.width;
+                current_col += getCharWidth(cluster.base, cluster.width, current_col, tab_width);
             } else break;
         }
         rect_start_pos = iter.global_pos;
@@ -88,7 +98,7 @@ pub fn copyRectangle(e: *Editor) !void {
         while (iter.global_pos < line_end and current_col < info.right_col) {
             const gc = iter.nextGraphemeCluster() catch break;
             if (gc) |cluster| {
-                current_col += cluster.width;
+                current_col += getCharWidth(cluster.base, cluster.width, current_col, tab_width);
             } else break;
         }
         rect_end_pos = iter.global_pos;
@@ -132,6 +142,7 @@ pub fn killRectangle(e: *Editor) !void {
     const buffer = e.getCurrentBufferContent();
     const buffer_state = e.getCurrentBuffer();
     const editing_ctx = buffer_state.editing_ctx;
+    const tab_width: usize = e.getCurrentView().getTabWidth();
 
     // マークとカーソルの位置から矩形の範囲を決定
     const start_pos = @min(mark, cursor);
@@ -205,7 +216,7 @@ pub fn killRectangle(e: *Editor) !void {
         while (iter.global_pos < line_end and current_col < left_col) {
             const gc = iter.nextGraphemeCluster() catch break;
             if (gc) |cluster| {
-                current_col += cluster.width;
+                current_col += getCharWidth(cluster.base, cluster.width, current_col, tab_width);
             } else break;
         }
         rect_start_pos = iter.global_pos;
@@ -214,7 +225,7 @@ pub fn killRectangle(e: *Editor) !void {
         while (iter.global_pos < line_end and current_col < right_col) {
             const gc = iter.nextGraphemeCluster() catch break;
             if (gc) |cluster| {
-                current_col += cluster.width;
+                current_col += getCharWidth(cluster.base, cluster.width, current_col, tab_width);
             } else break;
         }
         rect_end_pos = iter.global_pos;
@@ -295,6 +306,7 @@ pub fn yankRectangle(e: *Editor) !void {
     const cursor_line = buffer.findLineByPos(cursor_pos);
     const cursor_col = buffer.findColumnByPos(cursor_pos);
     const cursor_before = editing_ctx.cursor;
+    const tab_width: usize = e.getCurrentView().getTabWidth();
 
     // 挿入情報を収集（上から下に挿入するため、位置調整が必要）
     const InsertInfo = struct {
@@ -343,7 +355,7 @@ pub fn yankRectangle(e: *Editor) !void {
         while (iter.global_pos < line_end and current_col < cursor_col) {
             const gc = iter.nextGraphemeCluster() catch break;
             if (gc) |cluster| {
-                current_col += cluster.width;
+                current_col += getCharWidth(cluster.base, cluster.width, current_col, tab_width);
             } else break;
         }
 
