@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.5] - 2025-12-17
+
+### Added
+- Undo grouping for atomic operations (replace, paste)
+- Bracket paste mode: pasted text can be undone as a single unit
+
+### Fixed
+- Replace operation undo: now correctly restores original text with C-u
+- Replace all (`!`): no longer replaces previously skipped items when wrapping around
+- Search highlight: fixed display width calculation for full-width characters (Japanese, etc.)
+- Full-width space: correct display width (2 columns) and selection behavior
+- Tab character width calculation in various contexts
+- Minibuffer backspace with tab width handling
+- Search at buffer end position
+
+### Documentation
+- Added terminal tips: Option+drag for native text selection
+
+### CI/CD
+- Removed Ubuntu 22.04 build
+
 ## [1.0.4] - 2025-12-17
 
 ### Changed
