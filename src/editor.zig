@@ -3394,7 +3394,10 @@ pub const Editor = struct {
 
         const buffer = self.getCurrentBufferContent();
         const buf_len = buffer.len();
-        if (start_pos >= buf_len) return false;
+        if (buf_len == 0) return false;
+
+        // カーソルが終端にある場合は先頭からラップアラウンド検索
+        const actual_start = if (start_pos >= buf_len) 0 else start_pos;
 
         if (self.is_regex_replace) {
             // 正規表現置換（C-M-%）
@@ -3402,7 +3405,7 @@ pub const Editor = struct {
             const max_chunk_size: usize = 1024 * 1024; // 1MB
             const overlap: usize = 4096; // チャンク境界マッチ用オーバーラップ
 
-            var search_pos = start_pos;
+            var search_pos = actual_start;
             var wrapped = false;
             var first_chunk = true;
 
@@ -3452,7 +3455,7 @@ pub const Editor = struct {
             }
         } else {
             // リテラル置換（M-%）- コピーなしのBuffer直接検索
-            if (self.search_service.searchBuffer(buffer, search, start_pos, true, false)) |match| {
+            if (self.search_service.searchBuffer(buffer, search, actual_start, true, false)) |match| {
                 self.setCursorToPos(match.start);
                 self.replace_current_pos = match.start;
                 self.replace_match_len = match.len; // リテラルなのでsearch.lenと同じ
