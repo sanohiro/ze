@@ -136,34 +136,61 @@ src/services/minibuffer.zig → tests/services/minibuffer_test.zig
 
 ### リリース手順
 
-新しいバージョンをリリースする際は、以下のファイルを**必ず**更新すること：
+**重要**: 以下のチェックリストを**必ず順番通りに**実行すること。1つでも忘れるとリリースが壊れる。
 
-1. **build.zig.zon** - バージョン番号を更新
-   ```zig
-   .version = "1.0.4",  // 新しいバージョン
-   ```
+#### チェックリスト（必須）
 
-2. **CHANGELOG.md** - 変更内容を記録
-   ```markdown
-   ## [1.0.4] - YYYY-MM-DD
+```
+□ 1. build.zig.zon のバージョンを更新
+□ 2. CHANGELOG.md に変更内容を記録
+□ 3. 両方をコミット
+□ 4. タグを作成してプッシュ
+```
 
-   ### Added
-   - 新機能の説明
+#### 手順詳細
 
-   ### Fixed
-   - バグ修正の説明
+**1. build.zig.zon** - バージョン番号を更新（**絶対に忘れるな**）
+```zig
+.version = "1.0.5",  // ← 必ず更新
+```
 
-   ### Changed
-   - 変更内容の説明
-   ```
+**2. CHANGELOG.md** - 変更内容を記録
+```markdown
+## [1.0.5] - YYYY-MM-DD
 
-3. **タグを作成してプッシュ**
-   ```bash
-   git tag v1.0.4
-   git push origin v1.0.4
-   ```
+### Added
+- 新機能の説明
 
-GitHub Actionsが自動的に：
+### Fixed
+- バグ修正の説明
+```
+
+**3. コミット** - 両方を1つのコミットに
+```bash
+git add build.zig.zon CHANGELOG.md
+git commit -m "chore: bump version to 1.0.5"
+```
+
+**4. タグを作成してプッシュ**
+```bash
+git tag -a v1.0.5 -m "v1.0.5: 簡潔な説明"
+git push origin main --tags
+```
+
+#### タグを間違えた場合の修正
+
+```bash
+# ローカルとリモートのタグを削除
+git tag -d v1.0.5
+git push origin :refs/tags/v1.0.5
+
+# 新しいタグを作成してプッシュ
+git tag -a v1.0.5 -m "v1.0.5: 説明"
+git push origin main --tags
+```
+
+#### GitHub Actionsが自動実行
+
 - 各プラットフォーム向けバイナリをビルド
 - checksums.txtを生成
 - Homebrew formula (ze.rb) を生成
