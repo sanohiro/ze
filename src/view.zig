@@ -820,8 +820,8 @@ pub const View = struct {
         // 最初のマッチ前の部分をコピー（行番号部分を含む）
         try self.highlighted_line.appendSlice(self.allocator, line[0..first_match]);
         // カーソル位置を含むマッチかどうかで色を変える（表示幅で比較）
-        // カーソル位置がマッチ範囲内かどうか（<= ではなく < を使用。マッチ直後は範囲外）
-        const is_current = if (cursor_in_content) |cursor| cursor >= first_visible_pos and cursor < first_visible_pos + search_display_width else false;
+        // カーソルはマッチ終端に置かれる: (start, end] の範囲で判定（開始を除外、終端を含む）
+        const is_current = if (cursor_in_content) |cursor| cursor > first_visible_pos and cursor <= first_visible_pos + search_display_width else false;
         const hl_start = if (is_current) "\x1b[48;5;220m\x1b[30m" else ANSI.INVERT;
         const hl_end = if (is_current) "\x1b[49m\x1b[39m" else ANSI.INVERT_OFF;
         try self.highlighted_line.appendSlice(self.allocator, hl_start);
@@ -837,8 +837,8 @@ pub const View = struct {
                 // マッチの表示幅位置を計算
                 const visible_pos = countDisplayWidth(line, content_start, match_pos);
                 // カーソル位置を含むマッチかどうかで色を変える（表示幅で比較）
-                // カーソル位置がマッチ範囲内かどうか（<= ではなく < を使用。マッチ直後は範囲外）
-                const is_cur = if (cursor_in_content) |cursor| cursor >= visible_pos and cursor < visible_pos + search_display_width else false;
+                // カーソルはマッチ終端に置かれる: (start, end] の範囲で判定（開始を除外、終端を含む）
+                const is_cur = if (cursor_in_content) |cursor| cursor > visible_pos and cursor <= visible_pos + search_display_width else false;
                 const start_seq = if (is_cur) "\x1b[48;5;220m\x1b[30m" else ANSI.INVERT;
                 const end_seq = if (is_cur) "\x1b[49m\x1b[39m" else ANSI.INVERT_OFF;
                 try self.highlighted_line.appendSlice(self.allocator, start_seq);
