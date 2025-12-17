@@ -36,8 +36,9 @@ const ANSI = config.ANSI;
 
 /// 全角空白（U+3000）のUTF-8バイト列
 const FULLWIDTH_SPACE: []const u8 = "\u{3000}"; // 0xE3 0x80 0x80
-/// 全角空白の視覚表示用（薄いグレーの「□」+ スペースで幅2を確保 + リセット）
-const FULLWIDTH_SPACE_VISUAL: []const u8 = ANSI.DIM ++ "□ " ++ ANSI.RESET;
+/// 全角空白の視覚表示用（薄い背景色 + 全角空白自体で幅2を維持）
+/// 注: RESETを含めないことで選択範囲の反転表示を壊さない
+const FULLWIDTH_SPACE_VISUAL: []const u8 = "\x1b[48;5;236m" ++ "\u{3000}" ++ "\x1b[49m";
 
 /// truncateUtf8の戻り値
 const TruncateResult = struct {
