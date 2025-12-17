@@ -28,7 +28,7 @@ For those who don't want to learn vim, but find nano lacking.
 
 ## Features
 
-- **Under 300KB** — No dependencies, single binary
+- **Under 500KB** — No dependencies, single binary
 - **Zero-config** — No dotfiles, just copy and use
 - **Emacs-style editing** — Multi-buffer, window splitting, kill ring
 - **Shell integration** — Pipe to sort, jq, awk directly
