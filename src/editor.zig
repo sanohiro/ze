@@ -178,6 +178,10 @@ pub const Editor = struct {
     completion_shown: bool, // 補完候補表示中フラグ
     pending_filename: ?[]const u8, // overwrite確認待ちのファイル名
 
+    // ブラケットペーストモード
+    paste_mode: bool, // ペースト中フラグ（ESC[200~とESC[201~の間）
+    paste_buffer: std.ArrayList(u8), // ペースト内容を蓄積するバッファ
+
     // キーマップ
     keymap: Keymap, // キーバインド設定（ランタイム変更可能）
 
@@ -229,6 +233,8 @@ pub const Editor = struct {
             .overwrite_mode = false,
             .completion_shown = false,
             .pending_filename = null,
+            .paste_mode = false,
+            .paste_buffer = std.ArrayList(u8){},
             .keymap = try Keymap.init(allocator),
         };
 
@@ -284,6 +290,9 @@ pub const Editor = struct {
         if (self.pending_filename) |pending| {
             self.allocator.free(pending);
         }
+
+        // ペーストバッファのクリーンアップ
+        self.paste_buffer.deinit(self.allocator);
 
         // ミニバッファのクリーンアップ
         self.minibuffer.deinit();
@@ -2984,6 +2993,44 @@ pub const Editor = struct {
             self.prompt_buffer = null;
         }
 
+        // ブラケットペーストモードの処理
+        // ペースト開始: ESC[200~ → paste_mode = true
+        // ペースト終了: ESC[201~ → 蓄積した内容を一括挿入
+        switch (key) {
+            .paste_start => {
+                self.paste_mode = true;
+                self.paste_buffer.clearRetainingCapacity();
+                return;
+            },
+            .paste_end => {
+                if (self.paste_mode) {
+                    self.paste_mode = false;
+                    // 蓄積したペースト内容を一括挿入（オートインデントなし）
+                    if (self.paste_buffer.items.len > 0) {
+                        try self.insertPasteContent(self.paste_buffer.items);
+                    }
+                }
+                return;
+            },
+            else => {},
+        }
+
+        // ペーストモード中は文字をバッファに蓄積
+        if (self.paste_mode) {
+            switch (key) {
+                .char => |c| try self.paste_buffer.append(self.allocator, c),
+                .codepoint => |cp| {
+                    var buf: [4]u8 = undefined;
+                    const len = std.unicode.utf8Encode(cp, &buf) catch return;
+                    try self.paste_buffer.appendSlice(self.allocator, buf[0..len]);
+                },
+                .enter => try self.paste_buffer.append(self.allocator, '\n'),
+                .tab => try self.paste_buffer.append(self.allocator, '\t'),
+                else => {}, // その他のキーは無視
+            }
+            return;
+        }
+
         // モード別に処理を分岐
         switch (self.mode) {
             .filename_input => {
@@ -3194,6 +3241,35 @@ pub const Editor = struct {
                 view.markFullRedraw();
             }
         }
+    }
+
+    /// ペースト内容を一括挿入（ブラケットペーストモード用）
+    ///
+    /// 通常の文字挿入と異なり、以下の特徴がある：
+    /// - オートインデントなし（ペーストした内容をそのまま挿入）
+    /// - 1回のUndo操作で全体を取り消し可能
+    /// - 画面更新は1回のみ（パフォーマンス向上）
+    fn insertPasteContent(self: *Editor, content: []const u8) !void {
+        if (self.isReadOnly()) return;
+        if (content.len == 0) return;
+
+        const buffer_state = self.getCurrentBuffer();
+        const buffer = self.getCurrentBufferContent();
+        const pos = self.getCurrentView().getCursorBufferPos();
+
+        // バッファに挿入
+        try buffer.insertSlice(pos, content);
+        errdefer buffer.delete(pos, content.len) catch unreachable;
+
+        // Undo用に記録（1回の操作として記録）
+        try self.recordInsert(pos, content, pos);
+        buffer_state.editing_ctx.modified = true;
+
+        // カーソル位置を挿入後の位置に移動（yank と同様）
+        self.setCursorToPos(pos + content.len);
+
+        // 全画面再描画（複数行にわたる可能性があるため）
+        self.markAllViewsFullRedrawForBuffer(buffer_state.id);
     }
 
     // マーク位置とカーソル位置から範囲を取得（開始位置と長さを返す）

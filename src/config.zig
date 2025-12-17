@@ -42,6 +42,12 @@ pub const ANSI = struct {
     /// マウスボタンイベントを無効化
     pub const DISABLE_MOUSE = "\x1b[?1000l";
 
+    // === ブラケットペーストモード ===
+    /// ブラケットペーストモードを有効化
+    pub const ENABLE_BRACKETED_PASTE = "\x1b[?2004h";
+    /// ブラケットペーストモードを無効化
+    pub const DISABLE_BRACKETED_PASTE = "\x1b[?2004l";
+
     // === 表示属性 ===
     /// 表示属性リセット
     pub const RESET = "\x1b[m";

@@ -192,6 +192,8 @@ pub const Key = union(enum) {
     shift_tab,
     ctrl_tab,
     ctrl_shift_tab,
+    paste_start, // ブラケットペーストモード開始 (ESC[200~)
+    paste_end, // ブラケットペーストモード終了 (ESC[201~)
 };
 
 /// InputReaderを使ってキーを読み取る
@@ -357,6 +359,16 @@ pub fn readKeyFromReader(reader: *InputReader) !?Key {
                                     return Key.ctrl_shift_tab;
                                 }
                             }
+                        } else if (buf[2] == '2' and buf[3] == '0') {
+                            // ブラケットペーストモード: ESC [ 2 0 0 ~ (開始) / ESC [ 2 0 1 ~ (終了)
+                            const n4 = try reader.readBytes(buf[4..6]);
+                            if (n4 >= 2 and buf[5] == '~') {
+                                if (buf[4] == '0') {
+                                    return Key.paste_start;
+                                } else if (buf[4] == '1') {
+                                    return Key.paste_end;
+                                }
+                            }
                         }
                     }
                 },
@@ -454,6 +466,8 @@ pub fn keyToString(key: Key, buf: []u8) ![]const u8 {
         .shift_tab => "S-Tab",
         .ctrl_tab => "C-Tab",
         .ctrl_shift_tab => "C-S-Tab",
+        .paste_start => "PasteStart",
+        .paste_end => "PasteEnd",
         .codepoint => "UTF8",
     };
 }

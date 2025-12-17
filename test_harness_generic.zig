@@ -766,6 +766,47 @@ fn parseKeySequence(allocator: std.mem.Allocator, seq: []const u8) ![]const u8 {
         result[7] = '9';
         result[8] = '~';
         return result;
+    } else if (std.mem.eql(u8, seq, "PasteStart")) {
+        // ブラケットペースト開始 (ESC [200~)
+        const result = try allocator.alloc(u8, 6);
+        result[0] = 0x1B;
+        result[1] = '[';
+        result[2] = '2';
+        result[3] = '0';
+        result[4] = '0';
+        result[5] = '~';
+        return result;
+    } else if (std.mem.eql(u8, seq, "PasteEnd")) {
+        // ブラケットペースト終了 (ESC [201~)
+        const result = try allocator.alloc(u8, 6);
+        result[0] = 0x1B;
+        result[1] = '[';
+        result[2] = '2';
+        result[3] = '0';
+        result[4] = '1';
+        result[5] = '~';
+        return result;
+    } else if (std.mem.startsWith(u8, seq, "Paste{") and std.mem.endsWith(u8, seq, "}")) {
+        // ペースト内容を直接指定: Paste{text} → ESC[200~ + text + ESC[201~
+        const content = seq[6 .. seq.len - 1];
+        const result = try allocator.alloc(u8, 6 + content.len + 6);
+        // ESC[200~
+        result[0] = 0x1B;
+        result[1] = '[';
+        result[2] = '2';
+        result[3] = '0';
+        result[4] = '0';
+        result[5] = '~';
+        // content
+        @memcpy(result[6 .. 6 + content.len], content);
+        // ESC[201~
+        result[6 + content.len] = 0x1B;
+        result[6 + content.len + 1] = '[';
+        result[6 + content.len + 2] = '2';
+        result[6 + content.len + 3] = '0';
+        result[6 + content.len + 4] = '1';
+        result[6 + content.len + 5] = '~';
+        return result;
     } else {
         // 通常の文字列
         return try allocator.dupe(u8, seq);
