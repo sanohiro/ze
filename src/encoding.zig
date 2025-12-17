@@ -20,6 +20,7 @@
 
 const std = @import("std");
 const config = @import("config");
+const unicode = @import("unicode");
 
 /// サポートするエンコーディング
 pub const Encoding = enum {
@@ -983,7 +984,7 @@ fn convertUtf8ToUtf16le(allocator: std.mem.Allocator, content: []const u8) ![]u8
                 if (i + 1 >= content.len) return error.InvalidUtf8;
                 const second = content[i + 1];
                 // continuation byteチェック（0x80-0xBF）
-                if (second < 0x80 or second > 0xBF) return error.InvalidUtf8;
+                if (!unicode.isUtf8Continuation(second)) return error.InvalidUtf8;
                 const cp = (@as(u21, byte & 0x1F) << 6) |
                     @as(u21, second & 0x3F);
                 i += 2;
@@ -996,8 +997,8 @@ fn convertUtf8ToUtf16le(allocator: std.mem.Allocator, content: []const u8) ![]u8
                 const second = content[i + 1];
                 const third = content[i + 2];
                 // continuation byteチェック
-                if (second < 0x80 or second > 0xBF) return error.InvalidUtf8;
-                if (third < 0x80 or third > 0xBF) return error.InvalidUtf8;
+                if (!unicode.isUtf8Continuation(second)) return error.InvalidUtf8;
+                if (!unicode.isUtf8Continuation(third)) return error.InvalidUtf8;
                 const cp = (@as(u21, byte & 0x0F) << 12) |
                     (@as(u21, second & 0x3F) << 6) |
                     @as(u21, third & 0x3F);
@@ -1012,9 +1013,9 @@ fn convertUtf8ToUtf16le(allocator: std.mem.Allocator, content: []const u8) ![]u8
                 const third = content[i + 2];
                 const fourth = content[i + 3];
                 // continuation byteチェック
-                if (second < 0x80 or second > 0xBF) return error.InvalidUtf8;
-                if (third < 0x80 or third > 0xBF) return error.InvalidUtf8;
-                if (fourth < 0x80 or fourth > 0xBF) return error.InvalidUtf8;
+                if (!unicode.isUtf8Continuation(second)) return error.InvalidUtf8;
+                if (!unicode.isUtf8Continuation(third)) return error.InvalidUtf8;
+                if (!unicode.isUtf8Continuation(fourth)) return error.InvalidUtf8;
                 const cp = (@as(u21, byte & 0x07) << 18) |
                     (@as(u21, second & 0x3F) << 12) |
                     (@as(u21, third & 0x3F) << 6) |
@@ -1079,7 +1080,7 @@ fn convertUtf8ToUtf16be(allocator: std.mem.Allocator, content: []const u8) ![]u8
                 if (i + 1 >= content.len) return error.InvalidUtf8;
                 const second = content[i + 1];
                 // continuation byteチェック（0x80-0xBF）
-                if (second < 0x80 or second > 0xBF) return error.InvalidUtf8;
+                if (!unicode.isUtf8Continuation(second)) return error.InvalidUtf8;
                 const cp = (@as(u21, byte & 0x1F) << 6) |
                     @as(u21, second & 0x3F);
                 i += 2;
@@ -1092,8 +1093,8 @@ fn convertUtf8ToUtf16be(allocator: std.mem.Allocator, content: []const u8) ![]u8
                 const second = content[i + 1];
                 const third = content[i + 2];
                 // continuation byteチェック
-                if (second < 0x80 or second > 0xBF) return error.InvalidUtf8;
-                if (third < 0x80 or third > 0xBF) return error.InvalidUtf8;
+                if (!unicode.isUtf8Continuation(second)) return error.InvalidUtf8;
+                if (!unicode.isUtf8Continuation(third)) return error.InvalidUtf8;
                 const cp = (@as(u21, byte & 0x0F) << 12) |
                     (@as(u21, second & 0x3F) << 6) |
                     @as(u21, third & 0x3F);
@@ -1108,9 +1109,9 @@ fn convertUtf8ToUtf16be(allocator: std.mem.Allocator, content: []const u8) ![]u8
                 const third = content[i + 2];
                 const fourth = content[i + 3];
                 // continuation byteチェック
-                if (second < 0x80 or second > 0xBF) return error.InvalidUtf8;
-                if (third < 0x80 or third > 0xBF) return error.InvalidUtf8;
-                if (fourth < 0x80 or fourth > 0xBF) return error.InvalidUtf8;
+                if (!unicode.isUtf8Continuation(second)) return error.InvalidUtf8;
+                if (!unicode.isUtf8Continuation(third)) return error.InvalidUtf8;
+                if (!unicode.isUtf8Continuation(fourth)) return error.InvalidUtf8;
                 const cp = (@as(u21, byte & 0x07) << 18) |
                     (@as(u21, second & 0x3F) << 12) |
                     (@as(u21, third & 0x3F) << 6) |
@@ -1171,7 +1172,7 @@ fn convertUtf8ToShiftJis(allocator: std.mem.Allocator, content: []const u8) ![]u
                 if (i + 1 >= content.len) return error.InvalidUtf8;
                 const second = content[i + 1];
                 // continuation byteチェック（0x80-0xBF）
-                if (second < 0x80 or second > 0xBF) return error.InvalidUtf8;
+                if (!unicode.isUtf8Continuation(second)) return error.InvalidUtf8;
                 const cp = (@as(u21, byte & 0x1F) << 6) |
                     @as(u21, second & 0x3F);
                 i += 2;
@@ -1184,8 +1185,8 @@ fn convertUtf8ToShiftJis(allocator: std.mem.Allocator, content: []const u8) ![]u
                 const second = content[i + 1];
                 const third = content[i + 2];
                 // continuation byteチェック
-                if (second < 0x80 or second > 0xBF) return error.InvalidUtf8;
-                if (third < 0x80 or third > 0xBF) return error.InvalidUtf8;
+                if (!unicode.isUtf8Continuation(second)) return error.InvalidUtf8;
+                if (!unicode.isUtf8Continuation(third)) return error.InvalidUtf8;
                 const cp = (@as(u21, byte & 0x0F) << 12) |
                     (@as(u21, second & 0x3F) << 6) |
                     @as(u21, third & 0x3F);
@@ -1200,9 +1201,9 @@ fn convertUtf8ToShiftJis(allocator: std.mem.Allocator, content: []const u8) ![]u
                 const third = content[i + 2];
                 const fourth = content[i + 3];
                 // continuation byteチェック
-                if (second < 0x80 or second > 0xBF) return error.InvalidUtf8;
-                if (third < 0x80 or third > 0xBF) return error.InvalidUtf8;
-                if (fourth < 0x80 or fourth > 0xBF) return error.InvalidUtf8;
+                if (!unicode.isUtf8Continuation(second)) return error.InvalidUtf8;
+                if (!unicode.isUtf8Continuation(third)) return error.InvalidUtf8;
+                if (!unicode.isUtf8Continuation(fourth)) return error.InvalidUtf8;
                 const cp = (@as(u21, byte & 0x07) << 18) |
                     (@as(u21, second & 0x3F) << 12) |
                     (@as(u21, third & 0x3F) << 6) |
@@ -1262,7 +1263,7 @@ fn convertUtf8ToEucJp(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
                 if (i + 1 >= content.len) return error.InvalidUtf8;
                 const second = content[i + 1];
                 // continuation byteチェック（0x80-0xBF）
-                if (second < 0x80 or second > 0xBF) return error.InvalidUtf8;
+                if (!unicode.isUtf8Continuation(second)) return error.InvalidUtf8;
                 const cp = (@as(u21, byte & 0x1F) << 6) |
                     @as(u21, second & 0x3F);
                 i += 2;
@@ -1275,8 +1276,8 @@ fn convertUtf8ToEucJp(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
                 const second = content[i + 1];
                 const third = content[i + 2];
                 // continuation byteチェック
-                if (second < 0x80 or second > 0xBF) return error.InvalidUtf8;
-                if (third < 0x80 or third > 0xBF) return error.InvalidUtf8;
+                if (!unicode.isUtf8Continuation(second)) return error.InvalidUtf8;
+                if (!unicode.isUtf8Continuation(third)) return error.InvalidUtf8;
                 const cp = (@as(u21, byte & 0x0F) << 12) |
                     (@as(u21, second & 0x3F) << 6) |
                     @as(u21, third & 0x3F);
@@ -1291,9 +1292,9 @@ fn convertUtf8ToEucJp(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
                 const third = content[i + 2];
                 const fourth = content[i + 3];
                 // continuation byteチェック
-                if (second < 0x80 or second > 0xBF) return error.InvalidUtf8;
-                if (third < 0x80 or third > 0xBF) return error.InvalidUtf8;
-                if (fourth < 0x80 or fourth > 0xBF) return error.InvalidUtf8;
+                if (!unicode.isUtf8Continuation(second)) return error.InvalidUtf8;
+                if (!unicode.isUtf8Continuation(third)) return error.InvalidUtf8;
+                if (!unicode.isUtf8Continuation(fourth)) return error.InvalidUtf8;
                 const cp = (@as(u21, byte & 0x07) << 18) |
                     (@as(u21, second & 0x3F) << 12) |
                     (@as(u21, third & 0x3F) << 6) |

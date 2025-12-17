@@ -380,7 +380,7 @@ pub const EditingContext = struct {
             var iter = PieceIterator.init(self.buffer);
             iter.seek(pos);
             const byte = iter.next() orelse break;
-            if (!isWordChar(byte)) break;
+            if (!unicode.isWordCharByte(byte)) break;
             pos += 1;
         }
 
@@ -389,7 +389,7 @@ pub const EditingContext = struct {
             var iter = PieceIterator.init(self.buffer);
             iter.seek(pos);
             const byte = iter.next() orelse break;
-            if (isWordChar(byte)) break;
+            if (unicode.isWordCharByte(byte)) break;
             pos += 1;
         }
 
@@ -407,7 +407,7 @@ pub const EditingContext = struct {
             var iter = PieceIterator.init(self.buffer);
             iter.seek(pos);
             const byte = iter.next() orelse continue;
-            if (isWordChar(byte)) {
+            if (unicode.isWordCharByte(byte)) {
                 pos += 1;
                 break;
             }
@@ -419,7 +419,7 @@ pub const EditingContext = struct {
             var iter = PieceIterator.init(self.buffer);
             iter.seek(pos);
             const byte = iter.next() orelse continue;
-            if (!isWordChar(byte)) {
+            if (!unicode.isWordCharByte(byte)) {
                 pos += 1;
                 break;
             }
@@ -428,12 +428,7 @@ pub const EditingContext = struct {
         self.setCursor(pos);
     }
 
-    fn isWordChar(c: u8) bool {
-        return (c >= 'a' and c <= 'z') or
-            (c >= 'A' and c <= 'Z') or
-            (c >= '0' and c <= '9') or
-            c == '_';
-    }
+    // isWordChar は unicode.isWordCharByte に共通化済み
 
     // ========================================
     // 挿入操作

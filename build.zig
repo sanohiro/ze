@@ -35,10 +35,14 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // regex <- unicode
     const regex_mod = b.addModule("regex", .{
         .root_source_file = b.path("src/regex.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "unicode", .module = unicode_mod },
+        },
     });
 
     const syntax_mod = b.addModule("syntax", .{
@@ -53,13 +57,14 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // encoding <- config
+    // encoding <- config, unicode
     const encoding_mod = b.addModule("encoding", .{
         .root_source_file = b.path("src/encoding.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "config", .module = config_mod },
+            .{ .name = "unicode", .module = unicode_mod },
         },
     });
 

@@ -3,6 +3,7 @@
 // 非サポート: キャプチャグループ、後方参照、先読み等の高度な機能
 
 const std = @import("std");
+const unicode = @import("unicode");
 
 /// 簡易正規表現エンジン
 ///
@@ -471,12 +472,12 @@ pub const Regex = struct {
                 },
                 .word => {
                     if (pos >= text.len) return null;
-                    if (!isWordChar(text[pos])) return null;
+                    if (!unicode.isWordCharByte(text[pos])) return null;
                     pos += 1;
                 },
                 .not_word => {
                     if (pos >= text.len) return null;
-                    if (isWordChar(text[pos])) return null;
+                    if (unicode.isWordCharByte(text[pos])) return null;
                     pos += 1;
                 },
                 .space => {
@@ -631,11 +632,11 @@ pub const Regex = struct {
     }
 
     fn matchWord(c: u8) bool {
-        return isWordChar(c);
+        return unicode.isWordCharByte(c);
     }
 
     fn matchNotWord(c: u8) bool {
-        return !isWordChar(c);
+        return !unicode.isWordCharByte(c);
     }
 
     fn matchSpace(c: u8) bool {
@@ -731,12 +732,7 @@ pub const Regex = struct {
         return c >= '0' and c <= '9';
     }
 
-    fn isWordChar(c: u8) bool {
-        return (c >= 'a' and c <= 'z') or
-            (c >= 'A' and c <= 'Z') or
-            (c >= '0' and c <= '9') or
-            c == '_';
-    }
+    // isWordChar は unicode.isWordCharByte に共通化済み
 
     fn isSpaceChar(c: u8) bool {
         return c == ' ' or c == '\t' or c == '\n' or c == '\r' or c == 0x0c or c == 0x0b;

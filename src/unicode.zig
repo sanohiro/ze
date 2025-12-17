@@ -376,12 +376,21 @@ pub fn isWhitespace(cp: u21) bool {
     return cp == ' ' or cp == '\t' or cp == '\n' or cp == '\r';
 }
 
-/// 英数字判定
+/// 英数字判定（コードポイント用）
 pub inline fn isAlnum(cp: u21) bool {
     return (cp >= 'a' and cp <= 'z') or
         (cp >= 'A' and cp <= 'Z') or
         (cp >= '0' and cp <= '9') or
         cp == '_';
+}
+
+/// 単語文字判定（バイト用 - ASCII英数字とアンダースコア）
+/// regex.zig と editing_context.zig で共通使用
+pub inline fn isWordCharByte(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or
+        (c >= 'A' and c <= 'Z') or
+        (c >= '0' and c <= '9') or
+        c == '_';
 }
 
 /// ASCII範囲判定（コードポイント用）
@@ -469,8 +478,8 @@ pub fn nextGraphemeCluster(str: []const u8) ?GraphemeCluster {
     while (byte_pos < str.len) {
         const c = str[byte_pos];
 
-        // インラインUTF-8シーケンス長計算（関数呼び出しを避ける）
-        const seq_len: usize = if (c < 0x80) 1 else if (c < 0xE0) 2 else if (c < 0xF0) 3 else 4;
+        // UTF-8シーケンス長計算（inline関数なので性能影響なし）
+        const seq_len: usize = utf8SeqLen(c);
 
         // 不完全なUTF-8シーケンス: 残りバイトが足りない
         if (byte_pos + seq_len > str.len) {
@@ -485,7 +494,7 @@ pub fn nextGraphemeCluster(str: []const u8) ?GraphemeCluster {
             1 => @as(u21, c),
             2 => blk: {
                 const b1 = str[byte_pos + 1];
-                if ((b1 & 0xC0) != 0x80) {
+                if (!isUtf8Continuation(b1)) {
                     if (first_codepoint) return GraphemeCluster{ .byte_len = 1, .display_width = 1 };
                     break;
                 }
@@ -494,7 +503,7 @@ pub fn nextGraphemeCluster(str: []const u8) ?GraphemeCluster {
             3 => blk: {
                 const b1 = str[byte_pos + 1];
                 const b2 = str[byte_pos + 2];
-                if ((b1 & 0xC0) != 0x80 or (b2 & 0xC0) != 0x80) {
+                if (!isUtf8Continuation(b1) or !isUtf8Continuation(b2)) {
                     if (first_codepoint) return GraphemeCluster{ .byte_len = 1, .display_width = 1 };
                     break;
                 }
@@ -504,7 +513,7 @@ pub fn nextGraphemeCluster(str: []const u8) ?GraphemeCluster {
                 const b1 = str[byte_pos + 1];
                 const b2 = str[byte_pos + 2];
                 const b3 = str[byte_pos + 3];
-                if ((b1 & 0xC0) != 0x80 or (b2 & 0xC0) != 0x80 or (b3 & 0xC0) != 0x80) {
+                if (!isUtf8Continuation(b1) or !isUtf8Continuation(b2) or !isUtf8Continuation(b3)) {
                     if (first_codepoint) return GraphemeCluster{ .byte_len = 1, .display_width = 1 };
                     break;
                 }
