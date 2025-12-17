@@ -678,16 +678,31 @@ pub const Editor = struct {
             },
             '!' => {
                 // 残りすべてを置換（Undoグループ化）
+                // 注意：「残り」は現在位置以降のみ。ラップアラウンドして
+                // 先頭に戻った場合は終了（スキップした箇所を置換しない）
                 const editing_ctx = self.getCurrentBuffer().editing_ctx;
                 _ = editing_ctx.beginUndoGroup();
                 defer editing_ctx.endUndoGroup();
 
+                // 開始位置を記録（ラップアラウンド検出用）
+                const start_pos = self.getCurrentView().getCursorBufferPos();
+
                 try self.replaceCurrentMatch();
                 var pos = self.getCurrentView().getCursorBufferPos();
+                var prev_pos = start_pos;
+
                 while (true) {
                     const found = try self.findNextMatch(search, pos);
                     if (!found) break;
+
+                    const new_pos = self.getCurrentView().getCursorBufferPos();
+                    // ラップアラウンドで開始位置より前に戻った場合は終了
+                    if (new_pos < prev_pos and new_pos < start_pos) {
+                        break;
+                    }
+
                     try self.replaceCurrentMatch();
+                    prev_pos = new_pos;
                     pos = self.getCurrentView().getCursorBufferPos();
                 }
                 self.finishReplace();

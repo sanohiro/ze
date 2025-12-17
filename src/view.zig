@@ -811,14 +811,17 @@ pub const View = struct {
         // マッチがあるのでバッファを使用
         self.highlighted_line.clearRetainingCapacity();
 
-        // content_startからfirst_matchまでのANSIバイト数を計算して可視位置を求める
-        const first_visible_pos = countVisibleBytes(line, content_start, first_match);
+        // 検索パターンの表示幅を計算（カーソル位置比較用）
+        const search_display_width = unicode.stringDisplayWidth(search_str);
+
+        // content_startからfirst_matchまでの表示幅を計算
+        const first_visible_pos = countDisplayWidth(line, content_start, first_match);
 
         // 最初のマッチ前の部分をコピー（行番号部分を含む）
         try self.highlighted_line.appendSlice(self.allocator, line[0..first_match]);
-        // カーソル位置を含むマッチかどうかで色を変える（可視位置で比較）
+        // カーソル位置を含むマッチかどうかで色を変える（表示幅で比較）
         // カーソル位置がマッチ範囲内かどうか（<= ではなく < を使用。マッチ直後は範囲外）
-        const is_current = if (cursor_in_content) |cursor| cursor >= first_visible_pos and cursor < first_visible_pos + search_str.len else false;
+        const is_current = if (cursor_in_content) |cursor| cursor >= first_visible_pos and cursor < first_visible_pos + search_display_width else false;
         const hl_start = if (is_current) "\x1b[48;5;220m\x1b[30m" else ANSI.INVERT;
         const hl_end = if (is_current) "\x1b[49m\x1b[39m" else ANSI.INVERT_OFF;
         try self.highlighted_line.appendSlice(self.allocator, hl_start);
@@ -831,11 +834,11 @@ pub const View = struct {
             if (findSkippingAnsi(line, pos, search_str)) |match_pos| {
                 // マッチ前の部分をコピー
                 try self.highlighted_line.appendSlice(self.allocator, line[pos..match_pos]);
-                // マッチの可視位置を計算
-                const visible_pos = countVisibleBytes(line, content_start, match_pos);
-                // カーソル位置を含むマッチかどうかで色を変える（可視位置で比較）
+                // マッチの表示幅位置を計算
+                const visible_pos = countDisplayWidth(line, content_start, match_pos);
+                // カーソル位置を含むマッチかどうかで色を変える（表示幅で比較）
                 // カーソル位置がマッチ範囲内かどうか（<= ではなく < を使用。マッチ直後は範囲外）
-                const is_cur = if (cursor_in_content) |cursor| cursor >= visible_pos and cursor < visible_pos + search_str.len else false;
+                const is_cur = if (cursor_in_content) |cursor| cursor >= visible_pos and cursor < visible_pos + search_display_width else false;
                 const start_seq = if (is_cur) "\x1b[48;5;220m\x1b[30m" else ANSI.INVERT;
                 const end_seq = if (is_cur) "\x1b[49m\x1b[39m" else ANSI.INVERT_OFF;
                 try self.highlighted_line.appendSlice(self.allocator, start_seq);
@@ -851,13 +854,13 @@ pub const View = struct {
         return self.highlighted_line.items;
     }
 
-    /// content_startからend_posまでの可視バイト数を計算（ANSIエスケープを除く）
-    fn countVisibleBytes(line: []const u8, content_start: usize, end_pos: usize) usize {
+    /// content_startからend_posまでの表示幅を計算（ANSIエスケープを除く、UTF-8の表示幅を考慮）
+    fn countDisplayWidth(line: []const u8, content_start: usize, end_pos: usize) usize {
         // 境界チェック: end_posがline.lenを超えないようにする
         const safe_end = @min(end_pos, line.len);
         const safe_start = @min(content_start, safe_end);
 
-        var visible: usize = 0;
+        var display_width: usize = 0;
         var i: usize = safe_start;
         while (i < safe_end) {
             // ANSIエスケープシーケンスをスキップ
@@ -866,11 +869,19 @@ pub const View = struct {
                 while (i < line.len and line[i] != 'm') : (i += 1) {}
                 if (i < line.len) i += 1; // 'm'をスキップ
             } else {
-                visible += 1;
-                i += 1;
+                // UTF-8文字の表示幅を計算
+                const remaining = line[i..safe_end];
+                if (unicode.nextGraphemeCluster(remaining)) |cluster| {
+                    display_width += cluster.display_width;
+                    i += cluster.byte_len;
+                } else {
+                    // フォールバック：ASCII幅1
+                    display_width += 1;
+                    i += 1;
+                }
             }
         }
-        return visible;
+        return display_width;
     }
 
     /// 正規表現検索ハイライトを適用
