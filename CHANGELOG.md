@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] - 2025-12-17
+
+### Fixed
+- Read-only buffer protection: undo/redo now respects read-only flag
+- Read-only buffer protection: shell command output (replace/insert) blocked on read-only buffers
+- Read-only buffer protection: query replace (M-%, C-M-%) blocked on read-only buffers
+
+### CI/CD
+- Homebrew tap auto-update on release
+- Generate checksums.txt and ze.rb (Homebrew formula) automatically
+
 ## [1.0.2] - 2025-12-14
 
 ### Fixed
