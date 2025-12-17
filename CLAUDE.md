@@ -134,6 +134,42 @@ src/services/minibuffer.zig → tests/services/minibuffer_test.zig
 - テストの依存関係が明確になる
 - テストファイルの変更がプロダクションコードの再コンパイルを引き起こさない
 
+### リリース手順
+
+新しいバージョンをリリースする際は、以下のファイルを**必ず**更新すること：
+
+1. **build.zig.zon** - バージョン番号を更新
+   ```zig
+   .version = "1.0.4",  // 新しいバージョン
+   ```
+
+2. **CHANGELOG.md** - 変更内容を記録
+   ```markdown
+   ## [1.0.4] - YYYY-MM-DD
+
+   ### Added
+   - 新機能の説明
+
+   ### Fixed
+   - バグ修正の説明
+
+   ### Changed
+   - 変更内容の説明
+   ```
+
+3. **タグを作成してプッシュ**
+   ```bash
+   git tag v1.0.4
+   git push origin v1.0.4
+   ```
+
+GitHub Actionsが自動的に：
+- 各プラットフォーム向けバイナリをビルド
+- checksums.txtを生成
+- Homebrew formula (ze.rb) を生成
+- GitHubリリースを作成
+- homebrew-zeリポジトリを更新
+
 ### 統合テストスイート
 
 すべての機能を網羅する自動テストスイート (106テスト、22カテゴリ):
