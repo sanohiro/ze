@@ -149,11 +149,11 @@ pub fn backspace(e: *Editor) !void {
     var iter = PieceIterator.init(buffer);
     iter.seek(char_start);
 
-    var char_width: usize = 1;
+    var char_base: u21 = 0;
     var char_len: usize = pos - char_start; // デフォルト
 
     if (iter.nextGraphemeCluster() catch null) |gc| {
-        char_width = gc.width;
+        char_base = gc.base;
         char_len = gc.byte_len;
     }
 
@@ -161,6 +161,7 @@ pub fn backspace(e: *Editor) !void {
     errdefer e.allocator.free(deleted);
 
     const is_newline = std.mem.indexOf(u8, deleted, "\n") != null;
+    const is_tab = char_base == '\t';
 
     try buffer.delete(char_start, char_len);
     errdefer buffer.insertSlice(char_start, deleted) catch unreachable;
@@ -170,43 +171,19 @@ pub fn backspace(e: *Editor) !void {
     markDirtyForText(e, current_line, deleted);
     e.allocator.free(deleted);
 
-    // カーソル移動
-    const view = e.getCurrentView();
-    if (view.cursor_x >= char_width) {
-        view.cursor_x -= char_width;
-        if (view.cursor_x < view.top_col) {
-            view.top_col = view.cursor_x;
-            view.markFullRedraw();
-        }
-    } else if (view.cursor_y > 0) {
-        view.cursor_y -= 1;
-        if (is_newline) {
-            const new_line = e.getCurrentLine();
-            if (buffer.getLineStart(view.top_line + new_line)) |line_start| {
-                var x: usize = 0;
-                var width_iter = PieceIterator.init(buffer);
-                width_iter.seek(line_start);
-                while (width_iter.global_pos < char_start) {
-                    const cl = width_iter.nextGraphemeCluster() catch break;
-                    if (cl) |gc| {
-                        if (gc.base == '\n') break;
-                        x += gc.width;
-                    } else {
-                        break;
-                    }
-                }
-                view.cursor_x = x;
-                const line_num_width = view.getLineNumberWidth();
-                const visible_width = if (view.viewport_width > line_num_width) view.viewport_width - line_num_width else 1;
-                if (view.cursor_x >= view.top_col + visible_width) {
-                    view.top_col = view.cursor_x - visible_width + 1;
-                } else if (view.cursor_x < view.top_col) {
-                    view.top_col = view.cursor_x;
-                }
+    // カーソル移動（タブや改行は位置再計算が必要）
+    if (is_tab or is_newline) {
+        // タブや改行削除後はカーソル位置を再計算
+        e.setCursorToPos(char_start);
+    } else {
+        const view = e.getCurrentView();
+        const char_width = unicode.displayWidth(char_base);
+        if (view.cursor_x >= char_width) {
+            view.cursor_x -= char_width;
+            if (view.cursor_x < view.top_col) {
+                view.top_col = view.cursor_x;
                 view.markFullRedraw();
             }
-        } else {
-            view.moveToLineEnd();
         }
     }
 }

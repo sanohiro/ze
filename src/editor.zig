@@ -954,6 +954,7 @@ pub const Editor = struct {
     /// ミニバッファのカーソル位置を表示幅（列数）で計算
     fn getMinibufferCursorColumn(self: *Editor) usize {
         const items = self.minibuffer.getContent();
+        const tab_width: usize = self.getCurrentView().getTabWidth();
         var col: usize = 0;
         var pos: usize = 0;
 
@@ -962,7 +963,7 @@ pub const Editor = struct {
             if (unicode.isAsciiByte(first_byte)) {
                 // ASCII
                 if (first_byte == '\t') {
-                    col += 8 - (col % 8); // タブ展開
+                    col = (col / tab_width + 1) * tab_width; // タブ展開
                 } else {
                     col += 1;
                 }
