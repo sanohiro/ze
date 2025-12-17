@@ -18,14 +18,10 @@ jobs:
     strategy:
       matrix:
         include:
-          # Linux x86_64 (Ubuntu最新)
+          # Linux x86_64 (静的リンクなのでglibc非依存)
           - os: ubuntu-24.04
             target: x86_64-linux
             artifact: ze-linux-x86_64
-          # Linux x86_64 (Ubuntu古め - glibc互換性のため)
-          - os: ubuntu-22.04
-            target: x86_64-linux
-            artifact: ze-linux-x86_64-ubuntu22
           # Linux aarch64
           - os: ubuntu-24.04
             target: aarch64-linux
