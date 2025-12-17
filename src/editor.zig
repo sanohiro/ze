@@ -3683,6 +3683,11 @@ pub const Editor = struct {
                 }
             },
             .replace => {
+                // 読み取り専用バッファでは置換を禁止
+                if (self.isReadOnly()) {
+                    self.getCurrentView().setError("Buffer is read-only");
+                    return;
+                }
                 // 入力元を置換
                 switch (input_source) {
                     .selection => {
@@ -3769,6 +3774,11 @@ pub const Editor = struct {
                 }
             },
             .insert => {
+                // 読み取り専用バッファでは挿入を禁止
+                if (self.isReadOnly()) {
+                    self.getCurrentView().setError("Buffer is read-only");
+                    return;
+                }
                 // カーソル位置に挿入
                 if (stdout.len > 0) {
                     const pos = self.getCurrentView().getCursorBufferPos();

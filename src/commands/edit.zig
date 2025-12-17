@@ -232,6 +232,9 @@ pub fn killLine(e: *Editor) !void {
 
 /// C-u: 元に戻す
 pub fn undo(e: *Editor) !void {
+    // 読み取り専用バッファではUndoも禁止（バッファを変更するため）
+    if (e.isReadOnly()) return;
+
     const buffer_state = e.getCurrentBuffer();
 
     const result = try buffer_state.editing_ctx.undoWithCursor();
@@ -243,6 +246,9 @@ pub fn undo(e: *Editor) !void {
 
 /// C-/ or C-_: やり直し
 pub fn redo(e: *Editor) !void {
+    // 読み取り専用バッファではRedoも禁止（バッファを変更するため）
+    if (e.isReadOnly()) return;
+
     const buffer_state = e.getCurrentBuffer();
 
     const result = try buffer_state.editing_ctx.redoWithCursor();
