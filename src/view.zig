@@ -1368,19 +1368,34 @@ pub const View = struct {
             const line_start = self.buffer.getLineStart(self.top_line + self.cursor_y) orelse 0;
             if (cursor_pos < line_start) break :blk 0;
 
-            // 行頭からカーソルまでタブ展開を考慮した位置を計算
+            // 行頭からカーソルまでタブ展開と全角文字幅を考慮した位置を計算
             // 外側のスコープで定義された tab_width を使用
+            // line_buffer.items には現在行の内容が入っている
             var expanded_pos: usize = 0;
-            var raw_pos: usize = line_start;
-            while (raw_pos < cursor_pos) {
-                const byte = self.buffer.getByteAt(raw_pos) orelse break;
+            var byte_offset: usize = 0;
+            const cursor_offset = cursor_pos - line_start;
+            while (byte_offset < cursor_offset and byte_offset < line_buffer.items.len) {
+                const byte = line_buffer.items[byte_offset];
                 if (byte == '\t') {
                     // タブは次のタブストップまで展開（設定されたタブ幅を使用）
                     expanded_pos = (expanded_pos / tab_width + 1) * tab_width;
-                } else {
+                    byte_offset += 1;
+                } else if (byte < 0x80) {
+                    // ASCII文字: 幅1
                     expanded_pos += 1;
+                    byte_offset += 1;
+                } else {
+                    // UTF-8文字: グラフェムクラスタの表示幅を使用
+                    const remaining = line_buffer.items[byte_offset..];
+                    if (unicode.nextGraphemeCluster(remaining)) |cluster| {
+                        expanded_pos += cluster.display_width;
+                        byte_offset += cluster.byte_len;
+                    } else {
+                        // フォールバック
+                        expanded_pos += 1;
+                        byte_offset += 1;
+                    }
                 }
-                raw_pos += 1;
             }
             break :blk expanded_pos;
         } else null;
