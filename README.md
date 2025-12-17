@@ -150,6 +150,11 @@ ze highlights comments only. This is intentional:
 - **Plugins** — Simplicity over extensibility
 - **Mouse / GUI** — Keyboard and terminal only
 
+### Terminal Tips
+
+- **Text selection**: Hold `Option` (Mac) or `Alt` (Linux) while dragging to use your terminal's native text selection. This copies to the system clipboard.
+- **Scrolling**: Use `C-v` / `M-v` or `PageDown` / `PageUp` for scrolling.
+
 ---
 
 ## Features
