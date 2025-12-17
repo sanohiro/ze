@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.7] - 2025-12-18
+
+### Fixed
+- Japanese incremental search: C-s no longer skips characters (was adding +1 byte incorrectly)
+- Incremental search: pattern changes now search from start position, not current cursor
+- Search highlight: wrap-around correctly shows cursor color on first match
+- Minibuffer cursor position calculation with grapheme clusters
+
 ## [1.0.6] - 2025-12-17
 
 Same as 1.0.5 (version bump fix).
