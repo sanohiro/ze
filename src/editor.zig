@@ -458,12 +458,22 @@ pub const Editor = struct {
 
     /// Query Replace開始（M-%）
     fn startQueryReplace(self: *Editor) void {
+        // 読み取り専用バッファでは置換を禁止
+        if (self.isReadOnly()) {
+            self.getCurrentView().setError("Buffer is read-only");
+            return;
+        }
         self.is_regex_replace = false;
         self.startQueryReplaceCommon();
     }
 
     /// 正規表現Query Replace開始（C-M-%）
     fn startRegexQueryReplace(self: *Editor) !void {
+        // 読み取り専用バッファでは置換を禁止
+        if (self.isReadOnly()) {
+            self.getCurrentView().setError("Buffer is read-only");
+            return;
+        }
         self.is_regex_replace = true;
         self.startQueryReplaceCommon();
     }
