@@ -245,11 +245,8 @@ pub const Minibuffer = struct {
         var col: usize = unicode.stringDisplayWidth(self.prompt[0..self.prompt_len]);
         var pos: usize = 0;
         while (pos < self.cursor and pos < self.buffer.items.len) {
-            const cluster = unicode.nextGraphemeCluster(self.buffer.items[pos..]) orelse {
-                col += 1;
-                pos += 1;
-                continue;
-            };
+            // グラフェムクラスタが取得できない場合はループ終了
+            const cluster = unicode.nextGraphemeCluster(self.buffer.items[pos..]) orelse break;
             col += cluster.display_width;
             pos += cluster.byte_len;
         }

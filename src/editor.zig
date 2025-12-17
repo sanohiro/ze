@@ -498,10 +498,10 @@ pub const Editor = struct {
         // 前回の値があればデフォルトとして表示
         if (self.replace_search) |prev| {
             self.setPrompt("{s} (default {s}): ", .{ prompt_base, prev });
-            const base_len: usize = if (self.is_regex_replace) 34 else 27; // "Query replace regexp (default ): " or "Query replace (default ): "
+            const base_len: usize = if (self.is_regex_replace) 33 else 26; // "Query replace regexp (default ): " or "Query replace (default ): "
             self.prompt_prefix_len = base_len + stringDisplayWidth(prev);
         } else {
-            const base_len: usize = if (self.is_regex_replace) 23 else 16; // "Query replace regexp: " or "Query replace: "
+            const base_len: usize = if (self.is_regex_replace) 22 else 15; // "Query replace regexp: " or "Query replace: "
             self.prompt_prefix_len = base_len;
             self.setPrompt("{s}: ", .{prompt_base});
         }

@@ -230,10 +230,11 @@ pub const SearchService = struct {
     }
 
     /// 統合検索（パターンに応じてリテラル/正規表現を選択）- 後方互換性のため残す
+    /// 注意: 前方検索ではカーソルは既にマッチ終端にあるのでskip_currentでもバイト加算は不要
     pub fn search(self: *Self, content: []const u8, pattern: []const u8, start_pos: usize, forward: bool, skip_current: bool) ?SearchMatch {
         if (forward) {
-            // 前方検索: カーソル位置+1から検索
-            const search_from = if (skip_current and start_pos < content.len) start_pos + 1 else start_pos;
+            // 前方検索: カーソル位置から検索（カーソルは既にマッチ終端なのでスキップ不要）
+            const search_from = start_pos;
             if (isRegexPattern(pattern)) {
                 return self.searchRegexForward(content, pattern, search_from);
             } else {
@@ -241,6 +242,7 @@ pub const SearchService = struct {
             }
         } else {
             // 後方検索: カーソルはマッチ末尾にあるので、マッチ開始位置より前から検索
+            // skip_currentの場合、パターン長分戻す（リテラル検索のみ正確）
             const search_from = if (skip_current and start_pos >= pattern.len)
                 start_pos - pattern.len
             else if (skip_current)
@@ -256,23 +258,26 @@ pub const SearchService = struct {
     }
 
     /// 正規表現検索（常に正規表現として処理）
+    /// 注意: 前方検索ではカーソルは既にマッチ終端にあるのでskip_currentでもバイト加算は不要
     pub fn searchRegex(self: *Self, content: []const u8, pattern: []const u8, start_pos: usize, forward: bool, skip_current: bool) ?SearchMatch {
+        _ = skip_current; // カーソルは既にマッチ終端にあるのでスキップ不要
         if (forward) {
-            const search_from = if (skip_current and start_pos < content.len) start_pos + 1 else start_pos;
-            return self.searchRegexForward(content, pattern, search_from);
+            // 前方検索: カーソル位置から検索（カーソルは既にマッチ終端なのでスキップ不要）
+            return self.searchRegexForward(content, pattern, start_pos);
         } else {
-            // 正規表現の後方検索では、パターン長が可変なのでstart_posから検索
-            const search_from = if (skip_current and start_pos > 0) start_pos - 1 else start_pos;
-            return self.searchRegexBackward(content, pattern, search_from);
+            // 正規表現の後方検索: start_posから検索（マッチ終端より前を探す）
+            return self.searchRegexBackward(content, pattern, start_pos);
         }
     }
 
     /// リテラル検索（常にリテラルとして処理）
+    /// 注意: 前方検索ではカーソルは既にマッチ終端にあるのでskip_currentでもバイト加算は不要
     pub fn searchLiteral(self: *Self, content: []const u8, pattern: []const u8, start_pos: usize, forward: bool, skip_current: bool) ?SearchMatch {
         if (forward) {
-            const search_from = if (skip_current and start_pos < content.len) start_pos + 1 else start_pos;
-            return self.searchForward(content, pattern, search_from);
+            // 前方検索: カーソル位置から検索（カーソルは既にマッチ終端なのでスキップ不要）
+            return self.searchForward(content, pattern, start_pos);
         } else {
+            // 後方検索: パターン長分戻して検索
             const search_from = if (skip_current and start_pos >= pattern.len)
                 start_pos - pattern.len
             else if (skip_current)
@@ -285,10 +290,11 @@ pub const SearchService = struct {
 
     /// Buffer直接検索（コピーなし、リテラル検索専用）
     /// 呼び出し側が既にリテラル検索であることを確認している前提
+    /// 注意: 前方検索ではカーソルはマッチの終端に配置されるため、skip_currentでもバイト加算は不要
     pub fn searchBuffer(_: *Self, buffer: *const Buffer, pattern: []const u8, start_pos: usize, forward: bool, skip_current: bool) ?SearchMatch {
         if (forward) {
-            // 前方検索: カーソル位置+1から検索（現在のマッチをスキップ）
-            const search_from = if (skip_current and start_pos < buffer.len()) start_pos + 1 else start_pos;
+            // 前方検索: カーソル位置から検索（カーソルは既にマッチ終端なのでスキップ不要）
+            const search_from = start_pos;
             if (buffer.searchForwardWrap(pattern, search_from)) |match| {
                 return .{ .start = match.start, .len = match.len };
             }
