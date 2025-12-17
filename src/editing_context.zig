@@ -947,19 +947,19 @@ pub const EditingContext = struct {
 
         // 削除 -> 挿入 の順に2つのエントリとして記録
         // undo時は逆順で実行される
+        // 単一置換でも2つのエントリは必ず一緒にundoされる必要があるため、
+        // グループIDを付与する（current_group_idがあればそれを使い、なければ新規作成）
+        const replace_group_id = self.current_group_id orelse blk: {
+            const id = self.next_group_id;
+            self.next_group_id +%= 1;
+            break :blk id;
+        };
 
-        // 挿入分（undo時に削除される）
-        const new_copy = try self.allocator.dupe(u8, new_text);
-        try self.undo_stack.append(self.allocator, .{
-            .op = .insert,
-            .position = pos,
-            .data = new_copy,
-            .cursor_before = cursor_pos_before,
-            .cursor_after = pos + new_text.len,
-            .group_id = self.current_group_id,
-        });
+        // 順序が重要！undo時はLIFO（後入れ先出し）なので：
+        // 1. Delete entry（old_text）を先に追加 → undo時は後に実行（old_textを挿入）
+        // 2. Insert entry（new_text）を後に追加 → undo時は先に実行（new_textを削除）
 
-        // 削除分（undo時に挿入される）
+        // 削除分（undo時に挿入される）- 先に追加
         const old_copy = try self.allocator.dupe(u8, old_text);
         try self.undo_stack.append(self.allocator, .{
             .op = .delete,
@@ -967,7 +967,18 @@ pub const EditingContext = struct {
             .data = old_copy,
             .cursor_before = cursor_pos_before,
             .cursor_after = pos,
-            .group_id = self.current_group_id,
+            .group_id = replace_group_id,
+        });
+
+        // 挿入分（undo時に削除される）- 後に追加
+        const new_copy = try self.allocator.dupe(u8, new_text);
+        try self.undo_stack.append(self.allocator, .{
+            .op = .insert,
+            .position = pos,
+            .data = new_copy,
+            .cursor_before = cursor_pos_before,
+            .cursor_after = pos + new_text.len,
+            .group_id = replace_group_id,
         });
 
         self.modified = true;
