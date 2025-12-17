@@ -42,13 +42,22 @@ For those who don't want to learn vim, but find nano lacking.
 
 ## Install
 
-Download pre-built binaries from [Releases](https://github.com/sanohiro/ze/releases), or build from source:
+### Homebrew (macOS/Linux)
 
 ```bash
-# Build (requires Zig 0.15+)
-zig build -Doptimize=ReleaseFast
+brew tap sanohiro/ze
+brew install ze
+```
 
-# Add to PATH (optional)
+### Pre-built binaries
+
+Download from [Releases](https://github.com/sanohiro/ze/releases) and place in your PATH.
+
+### Build from source
+
+```bash
+# Requires Zig 0.15+
+zig build -Doptimize=ReleaseFast
 cp ./zig-out/bin/ze ~/.local/bin/
 ```
 

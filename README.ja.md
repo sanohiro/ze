@@ -42,13 +42,22 @@ vimを覚える気はないが、nanoでは物足りない人のために。
 
 ## Install
 
-[Releases](https://github.com/sanohiro/ze/releases) からビルド済みバイナリをダウンロード、またはソースからビルド：
+### Homebrew (macOS/Linux)
 
 ```bash
-# ビルド (Zig 0.15以上が必要)
-zig build -Doptimize=ReleaseFast
+brew tap sanohiro/ze
+brew install ze
+```
 
-# パスを通す（任意）
+### ビルド済みバイナリ
+
+[Releases](https://github.com/sanohiro/ze/releases) からダウンロードしてパスを通す。
+
+### ソースからビルド
+
+```bash
+# Zig 0.15以上が必要
+zig build -Doptimize=ReleaseFast
 cp ./zig-out/bin/ze ~/.local/bin/
 ```
 
