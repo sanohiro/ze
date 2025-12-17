@@ -77,6 +77,28 @@ jobs:
           find artifacts -name "*.tar.gz" -exec cp {} release/ \;
           ls -la release/
 
+      - name: Generate checksums
+        run: |
+          cd release
+          sha256sum *.tar.gz > checksums.txt
+          cat checksums.txt
+
+      - name: Generate Homebrew formula
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          cd release
+          SHA_MACOS_ARM=$(sha256sum ze-macos-aarch64.tar.gz | cut -d' ' -f1)
+          SHA_MACOS_INTEL=$(sha256sum ze-macos-x86_64.tar.gz | cut -d' ' -f1)
+          SHA_LINUX_ARM=$(sha256sum ze-linux-aarch64.tar.gz | cut -d' ' -f1)
+          SHA_LINUX_INTEL=$(sha256sum ze-linux-x86_64.tar.gz | cut -d' ' -f1)
+          sed -e "s/{{VERSION}}/${VERSION}/g" \
+              -e "s/{{SHA_MACOS_ARM}}/${SHA_MACOS_ARM}/g" \
+              -e "s/{{SHA_MACOS_INTEL}}/${SHA_MACOS_INTEL}/g" \
+              -e "s/{{SHA_LINUX_ARM}}/${SHA_LINUX_ARM}/g" \
+              -e "s/{{SHA_LINUX_INTEL}}/${SHA_LINUX_INTEL}/g" \
+              ../.github/ze.rb.template > ze.rb
+          cat ze.rb
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -85,3 +107,19 @@ jobs:
           draft: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Homebrew tap
+        if: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          git clone https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/sanohiro/homebrew-ze.git
+          mkdir -p homebrew-ze/Formula
+          cp release/ze.rb homebrew-ze/Formula/
+          cd homebrew-ze
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/ze.rb
+          git diff --cached --quiet || git commit -m "Update ze to ${VERSION}"
+          git push
