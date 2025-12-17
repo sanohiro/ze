@@ -677,7 +677,11 @@ pub const Editor = struct {
                 try self.findNextOrFinish(search, current_pos + 1);
             },
             '!' => {
-                // 残りすべてを置換
+                // 残りすべてを置換（Undoグループ化）
+                const editing_ctx = self.getCurrentBuffer().editing_ctx;
+                _ = editing_ctx.beginUndoGroup();
+                defer editing_ctx.endUndoGroup();
+
                 try self.replaceCurrentMatch();
                 var pos = self.getCurrentView().getCursorBufferPos();
                 while (true) {

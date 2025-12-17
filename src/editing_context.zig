@@ -56,6 +56,8 @@ const UndoEntry = struct {
     cursor_after: usize,
     /// グループ化可能フラグ（連続入力をまとめるため）
     groupable: bool = true,
+    /// Undoグループ識別子（nullは非グループ、同じIDは一括undo）
+    group_id: ?u32 = null,
 };
 
 /// 選択範囲
@@ -102,6 +104,10 @@ pub const EditingContext = struct {
 
     // 変更リスナー
     listeners: std.ArrayList(ListenerEntry),
+
+    // Undoグループ管理
+    current_group_id: ?u32 = null, // 現在アクティブなグループID
+    next_group_id: u32 = 1, // 次に使うグループID
 
     const ListenerEntry = struct {
         callback: ChangeListener,
@@ -661,6 +667,21 @@ pub const EditingContext = struct {
     // Undo/Redo
     // ========================================
 
+    /// Undoグループを開始
+    /// グループ内の操作は1回のundoで一括して元に戻る
+    /// 戻り値: グループID（endUndoGroupで使用）
+    pub fn beginUndoGroup(self: *EditingContext) u32 {
+        const group_id = self.next_group_id;
+        self.next_group_id +%= 1; // オーバーフロー時はラップ
+        self.current_group_id = group_id;
+        return group_id;
+    }
+
+    /// Undoグループを終了
+    pub fn endUndoGroup(self: *EditingContext) void {
+        self.current_group_id = null;
+    }
+
     /// Undo/Redo履歴をクリア
     pub fn clearUndoHistory(self: *EditingContext) void {
         for (self.undo_stack.items) |entry| {
@@ -685,44 +706,63 @@ pub const EditingContext = struct {
     }
 
     /// Undo操作を行い、復元すべきカーソル位置を返す
+    /// グループ化された操作は一括してundoされる
     pub fn undoWithCursor(self: *EditingContext) !?UndoResult {
-        const entry = self.undo_stack.pop() orelse return null;
+        if (self.undo_stack.items.len == 0) return null;
 
-        switch (entry.op) {
-            .insert => {
-                // 挿入を取り消す = 削除
-                try self.buffer.delete(entry.position, entry.data.len);
-            },
-            .delete => {
-                // 削除を取り消す = 挿入
-                try self.buffer.insertSlice(entry.position, entry.data);
-            },
+        // 最後のエントリのgroup_idを確認
+        const group_id = self.undo_stack.items[self.undo_stack.items.len - 1].group_id;
+        var first_cursor: usize = 0;
+        var last_position: usize = 0;
+        var last_op: EditOp = .insert;
+        var last_len: usize = 0;
+        var processed: bool = false;
+
+        // 同じgroup_idを持つ全エントリを処理
+        while (self.undo_stack.items.len > 0) {
+            const current = self.undo_stack.items[self.undo_stack.items.len - 1];
+
+            // group_idが異なればループを抜ける（最初のエントリは必ず処理）
+            if (processed) {
+                if (group_id == null) break; // 非グループは1つだけ
+                if (current.group_id != group_id) break;
+            }
+
+            const entry = self.undo_stack.pop().?;
+            first_cursor = entry.cursor_before;
+            last_position = entry.position;
+            last_op = entry.op;
+            last_len = entry.data.len;
+
+            switch (entry.op) {
+                .insert => try self.buffer.delete(entry.position, entry.data.len),
+                .delete => try self.buffer.insertSlice(entry.position, entry.data),
+            }
+
+            try self.redo_stack.append(self.allocator, entry);
+            processed = true;
         }
 
-        // Redoスタックに追加
-        try self.redo_stack.append(self.allocator, entry);
-
         // カーソル復元
-        self.cursor = entry.cursor_before;
+        self.cursor = first_cursor;
 
         // セーブポイントに戻ったらmodifiedをfalseに
         if (self.savepoint) |sp| {
             self.modified = (self.undo_stack.items.len != sp);
         } else {
-            // セーブポイントがない場合は、スタックが空なら未変更
             self.modified = (self.undo_stack.items.len != 0);
         }
 
-        const line = self.buffer.findLineByPos(entry.position);
+        const line = self.buffer.findLineByPos(last_position);
         self.notifyChange(.{
-            .change_type = if (entry.op == .insert) .delete else .insert,
-            .position = entry.position,
-            .length = entry.data.len,
+            .change_type = if (last_op == .insert) .delete else .insert,
+            .position = last_position,
+            .length = last_len,
             .line = line,
             .line_end = null,
         });
 
-        return .{ .cursor_pos = entry.cursor_before };
+        return .{ .cursor_pos = first_cursor };
     }
 
     pub fn redo(self: *EditingContext) !bool {
@@ -731,25 +771,45 @@ pub const EditingContext = struct {
     }
 
     /// Redo操作を行い、復元すべきカーソル位置を返す
+    /// グループ化された操作は一括してredoされる
     pub fn redoWithCursor(self: *EditingContext) !?UndoResult {
-        const entry = self.redo_stack.pop() orelse return null;
+        if (self.redo_stack.items.len == 0) return null;
 
-        switch (entry.op) {
-            .insert => {
-                // 挿入を再実行
-                try self.buffer.insertSlice(entry.position, entry.data);
-            },
-            .delete => {
-                // 削除を再実行
-                try self.buffer.delete(entry.position, entry.data.len);
-            },
+        // 最後のエントリのgroup_idを確認
+        const group_id = self.redo_stack.items[self.redo_stack.items.len - 1].group_id;
+        var last_cursor: usize = 0;
+        var last_position: usize = 0;
+        var last_op: EditOp = .insert;
+        var last_len: usize = 0;
+        var processed: bool = false;
+
+        // 同じgroup_idを持つ全エントリを処理
+        while (self.redo_stack.items.len > 0) {
+            const current = self.redo_stack.items[self.redo_stack.items.len - 1];
+
+            // group_idが異なればループを抜ける（最初のエントリは必ず処理）
+            if (processed) {
+                if (group_id == null) break; // 非グループは1つだけ
+                if (current.group_id != group_id) break;
+            }
+
+            const entry = self.redo_stack.pop().?;
+            last_cursor = entry.cursor_after;
+            last_position = entry.position;
+            last_op = entry.op;
+            last_len = entry.data.len;
+
+            switch (entry.op) {
+                .insert => try self.buffer.insertSlice(entry.position, entry.data),
+                .delete => try self.buffer.delete(entry.position, entry.data.len),
+            }
+
+            try self.undo_stack.append(self.allocator, entry);
+            processed = true;
         }
 
-        // Undoスタックに追加
-        try self.undo_stack.append(self.allocator, entry);
-
         // カーソル復元
-        self.cursor = entry.cursor_after;
+        self.cursor = last_cursor;
 
         // セーブポイントと比較してmodifiedを更新
         if (self.savepoint) |sp| {
@@ -758,16 +818,16 @@ pub const EditingContext = struct {
             self.modified = (self.undo_stack.items.len != 0);
         }
 
-        const line = self.buffer.findLineByPos(entry.position);
+        const line = self.buffer.findLineByPos(last_position);
         self.notifyChange(.{
-            .change_type = if (entry.op == .insert) .insert else .delete,
-            .position = entry.position,
-            .length = entry.data.len,
+            .change_type = if (last_op == .insert) .insert else .delete,
+            .position = last_position,
+            .length = last_len,
             .line = line,
             .line_end = null,
         });
 
-        return .{ .cursor_pos = entry.cursor_after };
+        return .{ .cursor_pos = last_cursor };
     }
 
     // ========================================
@@ -820,6 +880,7 @@ pub const EditingContext = struct {
             .data = data_copy,
             .cursor_before = cursor_pos_before,
             .cursor_after = pos + text.len,
+            .group_id = self.current_group_id,
         });
         self.modified = true;
     }
@@ -872,6 +933,7 @@ pub const EditingContext = struct {
             .data = data_copy,
             .cursor_before = cursor_pos_before,
             .cursor_after = pos,
+            .group_id = self.current_group_id,
         });
         self.modified = true;
     }
@@ -894,6 +956,7 @@ pub const EditingContext = struct {
             .data = new_copy,
             .cursor_before = cursor_pos_before,
             .cursor_after = pos + new_text.len,
+            .group_id = self.current_group_id,
         });
 
         // 削除分（undo時に挿入される）
@@ -904,6 +967,7 @@ pub const EditingContext = struct {
             .data = old_copy,
             .cursor_before = cursor_pos_before,
             .cursor_after = pos,
+            .group_id = self.current_group_id,
         });
 
         self.modified = true;
