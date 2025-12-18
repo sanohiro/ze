@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.8] - 2025-12-18
+
+### Added
+- Read-only mode: `-R` command-line option to open files in read-only mode
+- Line number toggle: `M-x ln` command to show/hide line numbers
+- Control character visualization: displays 0x00-0x1F as ^@-^_ and 0x7F as ^?
+
+### Changed
+- Disabled mouse capture mode: terminal's native text selection now works directly (no Option/Alt+drag needed)
+- Removed unused scroll-related code
+
+### Fixed
+- Regex search: `skip_current` parameter now correctly advances position to prevent infinite loops on empty matches
+- Backward regex chunked search: added overlap handling at chunk boundaries to prevent match misses
+- Rectangle operations: short lines now preserve row count with empty strings (fixes yank alignment issues)
+
+### Refactored
+- Consolidated ASCII/UTF8 magic numbers and ANSI escape sequences into config.zig
+- Code deduplication and helper function cleanup
+
 ## [1.0.7] - 2025-12-18
 
 ### Fixed
