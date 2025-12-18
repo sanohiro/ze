@@ -41,6 +41,12 @@ const FULLWIDTH_SPACE: []const u8 = "\u{3000}"; // 0xE3 0x80 0x80
 /// 注: RESETを含めないことで選択範囲の反転表示を壊さない
 const FULLWIDTH_SPACE_VISUAL: []const u8 = ANSI.BG_DARK_GRAY ++ "\u{3000}" ++ ANSI.BG_RESET;
 
+/// 制御文字の表示用テーブル（0x00-0x1F → ^@ 〜 ^_）
+/// 表示幅は2（^ + 文字）
+fn renderControlChar(ch: u8) [2]u8 {
+    return .{ '^', ch + '@' }; // 0x00→^@, 0x01→^A, ..., 0x1F→^_
+}
+
 /// truncateUtf8の戻り値
 const TruncateResult = struct {
     slice: []const u8,
@@ -236,6 +242,7 @@ pub const View = struct {
     language: *const syntax.LanguageDef,
     tab_width: ?u8, // nullなら言語デフォルト
     indent_style: ?syntax.IndentStyle, // nullなら言語デフォルト
+    show_line_numbers: bool, // 行番号表示（M-x lnでトグル）
 
     allocator: std.mem.Allocator,
 
@@ -277,6 +284,7 @@ pub const View = struct {
             .language = &syntax.lang_text, // デフォルトはテキストモード
             .tab_width = null, // 言語デフォルトを使用
             .indent_style = null, // 言語デフォルトを使用
+            .show_line_numbers = config.Editor.SHOW_LINE_NUMBERS, // デフォルト設定
             .cached_block_state = null, // キャッシュ無効
             .cached_block_top_line = 0,
             .expanded_line = expanded_line,
@@ -543,7 +551,7 @@ pub const View = struct {
 
     // 行番号の表示幅を計算（999行まで固定、1000行以上で動的拡張）
     pub fn getLineNumberWidth(self: *const View) usize {
-        if (!config.Editor.SHOW_LINE_NUMBERS) return 0;
+        if (!self.show_line_numbers) return 0;
 
         const total_lines = self.buffer.lineCount();
         if (total_lines == 0) return 0;
@@ -561,6 +569,12 @@ pub const View = struct {
             n /= 10;
         }
         return width + 2; // 行番号 + スペース2個
+    }
+
+    /// 行番号表示をトグル（M-x lnで呼び出し）
+    pub fn toggleLineNumbers(self: *View) void {
+        self.show_line_numbers = !self.show_line_numbers;
+        self.markFullRedraw();
     }
 
     pub fn markDirty(self: *View, start_line: usize, end_line: ?usize) void {
@@ -1317,8 +1331,19 @@ pub const View = struct {
                     }
                     col = next_tab_stop;
                     byte_idx += 1;
+                } else if (ch < ASCII.PRINTABLE_MIN or ch == ASCII.DEL) {
+                    // 制御文字（0x00-0x1F, 0x7F）を ^X 形式で表示
+                    if (col >= self.top_col and col + 1 < visible_end) {
+                        // グレー表示で制御文字を強調
+                        try self.expanded_line.appendSlice(self.allocator, ANSI.GRAY);
+                        const ctrl = if (ch == ASCII.DEL) [2]u8{ '^', '?' } else renderControlChar(ch);
+                        try self.expanded_line.appendSlice(self.allocator, &ctrl);
+                        try self.expanded_line.appendSlice(self.allocator, ANSI.RESET);
+                    }
+                    byte_idx += 1;
+                    col += 2; // ^X は幅2
                 } else {
-                    // 通常のASCII文字
+                    // 通常のASCII文字（0x20-0x7E）
                     if (col >= self.top_col) {
                         try self.expanded_line.append(self.allocator, ch);
                     }

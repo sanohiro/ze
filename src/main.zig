@@ -13,11 +13,13 @@ fn printHelp() void {
         \\Usage: ze [options] [file]
         \\
         \\Options:
+        \\  -R         Read-only mode (view mode)
         \\  --help     Show this help message
         \\  --version  Show version
         \\
         \\Examples:
         \\  ze file.txt    Open a file
+        \\  ze -R log.txt  View a file (read-only)
         \\  ze             Start with empty buffer
         \\
     ) catch {};
@@ -58,6 +60,7 @@ fn mainImpl() !u8 {
 
     // オプションとファイル名を処理
     var checked_filename: ?[]const u8 = null;
+    var read_only_mode = false;
     var options_ended = false; // "--"でオプション終了
     while (args.next()) |arg| {
         if (!options_ended and std.mem.eql(u8, arg, "--")) {
@@ -70,6 +73,9 @@ fn mainImpl() !u8 {
         } else if (!options_ended and (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v"))) {
             printVersion();
             return EXIT_SUCCESS;
+        } else if (!options_ended and std.mem.eql(u8, arg, "-R")) {
+            read_only_mode = true;
+            continue;
         } else if (!options_ended and arg.len > 0 and arg[0] == '-') {
             // 未知のオプション
             const stderr_file: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
@@ -103,8 +109,8 @@ fn mainImpl() !u8 {
                 return EXIT_IO_ERROR;
             } else if (err == error.FileNotFound) {
                 // 新規ファイルの場合、現在のバッファにファイル名を設定
-                const buffer = editor.getCurrentBuffer();
-                buffer.filename = try allocator.dupe(u8, filename);
+                const buffer_state = editor.getCurrentBuffer();
+                buffer_state.filename = try allocator.dupe(u8, filename);
                 // 新規ファイルでも拡張子から言語検出
                 const view = editor.getCurrentView();
                 view.detectLanguage(filename, null);
@@ -112,6 +118,11 @@ fn mainImpl() !u8 {
                 return err;
             }
         };
+
+        // -R オプションで読み取り専用モードを設定
+        if (read_only_mode) {
+            editor.getCurrentBuffer().readonly = true;
+        }
     }
 
     // エディタを実行

@@ -21,6 +21,7 @@ const Command = struct {
 const commands = [_]Command{
     .{ .name = "?", .alias = "help", .handler = .{ .special = cmdHelp } },
     .{ .name = "line", .handler = .{ .with_arg = cmdLine } },
+    .{ .name = "ln", .handler = .{ .special = cmdLineNumbers } },
     .{ .name = "tab", .handler = .{ .with_arg = cmdTab } },
     .{ .name = "indent", .handler = .{ .with_arg = cmdIndent } },
     .{ .name = "mode", .handler = .{ .with_arg = cmdMode } },
@@ -66,7 +67,18 @@ pub fn execute(e: *Editor) !void {
 
 /// help コマンド: コマンド一覧を表示
 fn cmdHelp(e: *Editor) void {
-    e.getCurrentView().setError("Commands: line tab indent mode revert key ro exit ?");
+    e.getCurrentView().setError("Commands: line ln tab indent mode revert key ro exit ?");
+}
+
+/// ln コマンド: 行番号表示のトグル
+fn cmdLineNumbers(e: *Editor) void {
+    const view = e.getCurrentView();
+    view.toggleLineNumbers();
+    if (view.show_line_numbers) {
+        view.setError("Line numbers: on");
+    } else {
+        view.setError("Line numbers: off");
+    }
 }
 
 /// key コマンド: キー説明モードに入る
