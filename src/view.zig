@@ -38,7 +38,7 @@ const ANSI = config.ANSI;
 const FULLWIDTH_SPACE: []const u8 = "\u{3000}"; // 0xE3 0x80 0x80
 /// 全角空白の視覚表示用（薄い背景色 + 全角空白自体で幅2を維持）
 /// 注: RESETを含めないことで選択範囲の反転表示を壊さない
-const FULLWIDTH_SPACE_VISUAL: []const u8 = "\x1b[48;5;236m" ++ "\u{3000}" ++ "\x1b[49m";
+const FULLWIDTH_SPACE_VISUAL: []const u8 = ANSI.BG_DARK_GRAY ++ "\u{3000}" ++ ANSI.BG_RESET;
 
 /// truncateUtf8の戻り値
 const TruncateResult = struct {
@@ -153,24 +153,22 @@ fn calculateScreenColumn(line: []const u8, start_byte: usize, end_byte: usize, i
     return screen_col;
 }
 
-/// 行の本文部分（行番号の後）にANSIグレーコード(\x1b[90m)が含まれているかチェック
+/// 行の本文部分（行番号の後）にANSIグレーコードが含まれているかチェック
 /// コメントハイライトの有無を判定するために使用
 fn hasAnsiGray(line: []const u8, content_start: usize) bool {
     // 行番号の後ろの部分のみチェック
     if (content_start >= line.len) return false;
     const content = line[content_start..];
-    // グレーのANSIコード \x1b[90m を探す
-    return std.mem.indexOf(u8, content, "\x1b[90m") != null;
+    return std.mem.indexOf(u8, content, ANSI.GRAY) != null;
 }
 
-/// 行の本文部分（行番号の後）にANSI反転コード(\x1b[7m)が含まれているかチェック
+/// 行の本文部分（行番号の後）にANSI反転コードが含まれているかチェック
 /// 選択範囲ハイライトの有無を判定するために使用
 fn hasAnsiInvert(line: []const u8, content_start: usize) bool {
     // 行番号の後ろの部分のみチェック
     if (content_start >= line.len) return false;
     const content = line[content_start..];
-    // 反転のANSIコード \x1b[7m を探す
-    return std.mem.indexOf(u8, content, "\x1b[7m") != null;
+    return std.mem.indexOf(u8, content, ANSI.INVERT) != null;
 }
 
 /// View: バッファの表示状態を管理する構造体
@@ -817,8 +815,8 @@ pub const View = struct {
         // カーソル位置を含むマッチかどうかで色を変える（表示幅で比較）
         // カーソルはマッチ終端に置かれる: (start, end] の範囲で判定（開始を除外、終端を含む）
         const is_current = if (cursor_in_content) |cursor| cursor > first_visible_pos and cursor <= first_visible_pos + search_display_width else false;
-        const hl_start = if (is_current) "\x1b[48;5;220m\x1b[30m" else ANSI.INVERT;
-        const hl_end = if (is_current) "\x1b[49m\x1b[39m" else ANSI.INVERT_OFF;
+        const hl_start = if (is_current) ANSI.HIGHLIGHT_CURRENT else ANSI.INVERT;
+        const hl_end = if (is_current) ANSI.HIGHLIGHT_OFF else ANSI.INVERT_OFF;
         try self.highlighted_line.appendSlice(self.allocator, hl_start);
         try self.highlighted_line.appendSlice(self.allocator, line[first_match .. first_match + search_str.len]);
         try self.highlighted_line.appendSlice(self.allocator, hl_end);
@@ -834,8 +832,8 @@ pub const View = struct {
                 // カーソル位置を含むマッチかどうかで色を変える（表示幅で比較）
                 // カーソルはマッチ終端に置かれる: (start, end] の範囲で判定（開始を除外、終端を含む）
                 const is_cur = if (cursor_in_content) |cursor| cursor > visible_pos and cursor <= visible_pos + search_display_width else false;
-                const start_seq = if (is_cur) "\x1b[48;5;220m\x1b[30m" else ANSI.INVERT;
-                const end_seq = if (is_cur) "\x1b[49m\x1b[39m" else ANSI.INVERT_OFF;
+                const start_seq = if (is_cur) ANSI.HIGHLIGHT_CURRENT else ANSI.INVERT;
+                const end_seq = if (is_cur) ANSI.HIGHLIGHT_OFF else ANSI.INVERT_OFF;
                 try self.highlighted_line.appendSlice(self.allocator, start_seq);
                 try self.highlighted_line.appendSlice(self.allocator, line[match_pos .. match_pos + search_str.len]);
                 try self.highlighted_line.appendSlice(self.allocator, end_seq);
@@ -952,8 +950,8 @@ pub const View = struct {
         // カーソル位置を含むマッチかどうかで色を変える（可視位置で比較）
         // リテラル検索と一貫性を保つため < を使用（マッチ終端位置はマッチ外）
         const is_current = if (cursor_in_content) |cursor| cursor >= match_start_vis and cursor < match_end_vis else false;
-        const hl_start = if (is_current) "\x1b[48;5;220m\x1b[30m" else ANSI.INVERT;
-        const hl_end = if (is_current) "\x1b[49m\x1b[39m" else ANSI.INVERT_OFF;
+        const hl_start = if (is_current) ANSI.HIGHLIGHT_CURRENT else ANSI.INVERT;
+        const hl_end = if (is_current) ANSI.HIGHLIGHT_OFF else ANSI.INVERT_OFF;
         try self.highlighted_line.appendSlice(self.allocator, hl_start);
         try self.highlighted_line.appendSlice(self.allocator, line[match_start_raw..match_end_raw]);
         try self.highlighted_line.appendSlice(self.allocator, hl_end);
@@ -983,8 +981,8 @@ pub const View = struct {
                 // カーソル位置を含むマッチかどうかで色を変える（可視位置で比較）
                 // リテラル検索と一貫性を保つため < を使用（マッチ終端位置はマッチ外）
                 const is_cur = if (cursor_in_content) |cursor| cursor >= match_start_vis and cursor < match_end_vis else false;
-                const start_seq = if (is_cur) "\x1b[48;5;220m\x1b[30m" else ANSI.INVERT;
-                const end_seq = if (is_cur) "\x1b[49m\x1b[39m" else ANSI.INVERT_OFF;
+                const start_seq = if (is_cur) ANSI.HIGHLIGHT_CURRENT else ANSI.INVERT;
+                const end_seq = if (is_cur) ANSI.HIGHLIGHT_OFF else ANSI.INVERT_OFF;
                 try self.highlighted_line.appendSlice(self.allocator, start_seq);
                 try self.highlighted_line.appendSlice(self.allocator, line[match_start_raw..match_end_raw]);
                 try self.highlighted_line.appendSlice(self.allocator, end_seq);

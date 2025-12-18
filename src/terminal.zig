@@ -239,7 +239,7 @@ pub const Terminal = struct {
 
     /// スクロール領域をリセット（全画面に戻す）
     pub fn resetScrollRegion(self: *Terminal) !void {
-        try self.buf.appendSlice(self.allocator, "\x1b[r");
+        try self.buf.appendSlice(self.allocator, config.ANSI.RESET_SCROLL_REGION);
     }
 
     /// 画面を上にスクロール（新しい行が下から入る）
@@ -247,7 +247,7 @@ pub const Terminal = struct {
     pub fn scrollUp(self: *Terminal, lines: usize) !void {
         var buf: [16]u8 = undefined;
         if (lines == 1) {
-            try self.buf.appendSlice(self.allocator, "\x1b[S");
+            try self.buf.appendSlice(self.allocator, config.ANSI.SCROLL_UP);
         } else {
             const str = try std.fmt.bufPrint(&buf, "\x1b[{d}S", .{lines});
             try self.buf.appendSlice(self.allocator, str);
@@ -259,7 +259,7 @@ pub const Terminal = struct {
     pub fn scrollDown(self: *Terminal, lines: usize) !void {
         var buf: [16]u8 = undefined;
         if (lines == 1) {
-            try self.buf.appendSlice(self.allocator, "\x1b[T");
+            try self.buf.appendSlice(self.allocator, config.ANSI.SCROLL_DOWN);
         } else {
             const str = try std.fmt.bufPrint(&buf, "\x1b[{d}T", .{lines});
             try self.buf.appendSlice(self.allocator, str);
@@ -268,6 +268,6 @@ pub const Terminal = struct {
 
     /// 行の末尾までクリア
     pub fn clearToEndOfLine(self: *Terminal) !void {
-        try self.buf.appendSlice(self.allocator, "\x1b[K");
+        try self.buf.appendSlice(self.allocator, config.ANSI.CLEAR_LINE);
     }
 };

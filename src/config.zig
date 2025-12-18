@@ -63,6 +63,26 @@ pub const ANSI = struct {
     pub const DIM = "\x1b[2m";
     /// グレー（明るい黒）
     pub const GRAY = "\x1b[90m";
+
+    // === スクロール制御 ===
+    /// スクロール領域をリセット
+    pub const RESET_SCROLL_REGION = "\x1b[r";
+    /// 1行スクロールアップ
+    pub const SCROLL_UP = "\x1b[S";
+    /// 1行スクロールダウン
+    pub const SCROLL_DOWN = "\x1b[T";
+
+    // === 検索ハイライト ===
+    /// 現在のマッチ（黄色背景、黒文字）
+    pub const HIGHLIGHT_CURRENT = "\x1b[48;5;220m\x1b[30m";
+    /// ハイライト解除（背景・前景リセット）
+    pub const HIGHLIGHT_OFF = "\x1b[49m\x1b[39m";
+
+    // === 背景色 ===
+    /// 暗いグレー背景（全角スペース表示用）
+    pub const BG_DARK_GRAY = "\x1b[48;5;236m";
+    /// 背景色リセット
+    pub const BG_RESET = "\x1b[49m";
 };
 
 /// UTF-8関連の定数
