@@ -17,16 +17,20 @@ pub fn build(b: *std.Build) void {
     // === モジュール定義（依存関係順） ===
 
     // 依存なしのモジュール
-    const unicode_mod = b.addModule("unicode", .{
-        .root_source_file = b.path("src/unicode.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
     const config_mod = b.addModule("config", .{
         .root_source_file = b.path("src/config.zig"),
         .target = target,
         .optimize = optimize,
+    });
+
+    // unicode <- config
+    const unicode_mod = b.addModule("unicode", .{
+        .root_source_file = b.path("src/unicode.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "config", .module = config_mod },
+        },
     });
 
     const history_mod = b.addModule("history", .{

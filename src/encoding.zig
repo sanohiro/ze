@@ -177,7 +177,7 @@ fn isValidUtf8(content: []const u8) bool {
         const byte = content[i];
 
         // ASCII (0x00-0x7F)
-        if (byte <= config.UTF8.ASCII_MAX) {
+        if (byte <= config.ASCII.MAX) {
             i += 1;
             continue;
         }

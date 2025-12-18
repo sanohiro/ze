@@ -927,7 +927,7 @@ pub const Buffer = struct {
         const first_byte = self.getByteAt(pos) orelse return null;
 
         // ASCII
-        if (first_byte < 0x80) {
+        if (unicode.isAsciiByte(first_byte)) {
             return @as(u21, first_byte);
         }
 

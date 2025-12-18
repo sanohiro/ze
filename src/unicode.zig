@@ -18,6 +18,9 @@
 // Last reviewed: 2024-12
 
 const std = @import("std");
+const config = @import("config");
+const ASCII = config.ASCII;
+const UTF8 = config.UTF8;
 
 // Grapheme Break Property types
 // These determine whether two codepoints should be kept together as a grapheme cluster
@@ -34,8 +37,8 @@ inline fn isLf(cp: u21) bool {
 
 /// Check if codepoint is a Control character
 inline fn isControl(cp: u21) bool {
-    // ASCII control characters
-    if (cp < 0x20 or (cp >= 0x7F and cp <= 0x9F)) return true;
+    // ASCII control characters (C0: 0x00-0x1F, DEL: 0x7F, C1: 0x80-0x9F)
+    if (cp <= ASCII.CTRL_MAX or (cp >= ASCII.DEL and cp <= 0x9F)) return true;
 
     // Unicode control characters (subset for performance)
     return switch (cp) {
@@ -286,8 +289,8 @@ pub fn graphemeBreak(cp1: u21, cp2: u21, state: *State) bool {
 /// OPTIMIZE: ASCII fast path first, then ranges by frequency
 pub fn displayWidth(cp: u21) usize {
     // Fast path: ASCII (most common) + DEL
-    if (cp <= 0x7F) {
-        if (cp < 0x20 or cp == 0x7F) return 0; // Control chars including DEL
+    if (cp <= ASCII.MAX) {
+        if (cp < ASCII.PRINTABLE_MIN or cp == ASCII.DEL) return 0; // Control chars including DEL
         return 1;
     }
 
@@ -395,37 +398,37 @@ pub inline fn isWordCharByte(c: u8) bool {
 
 /// ASCII範囲判定（コードポイント用）
 pub inline fn isAscii(cp: u21) bool {
-    return cp < 0x80;
+    return cp <= ASCII.MAX;
 }
 
 /// ASCII範囲判定（バイト用）
 pub inline fn isAsciiByte(byte: u8) bool {
-    return byte < 0x80;
+    return byte <= ASCII.MAX;
 }
 
 /// コードポイントをASCII文字に変換（ASCII外は0を返す）
 pub inline fn toAsciiChar(cp: u21) u8 {
-    return if (cp < 0x80) @truncate(cp) else 0;
+    return if (cp <= ASCII.MAX) @truncate(cp) else 0;
 }
 
 /// UTF-8シーケンス長を取得（先頭バイトから判定）
 pub inline fn utf8SeqLen(first_byte: u8) usize {
-    return if (first_byte < 0x80) 1 else if (first_byte < 0xE0) 2 else if (first_byte < 0xF0) 3 else 4;
+    return if (first_byte <= ASCII.MAX) 1 else if (first_byte < UTF8.BYTE3_MIN) 2 else if (first_byte < UTF8.BYTE4_MIN) 3 else 4;
 }
 
 /// UTF-8の先頭バイトかどうか（継続バイトでない）
 pub inline fn isUtf8Start(byte: u8) bool {
-    return byte < 0x80 or (byte & 0xC0) == 0xC0;
+    return byte <= ASCII.MAX or (byte & UTF8.CONTINUATION_MASK) == UTF8.CONTINUATION_MASK;
 }
 
 /// UTF-8の継続バイトかどうか（10xxxxxx形式）
 pub inline fn isUtf8Continuation(byte: u8) bool {
-    return (byte & 0xC0) == 0x80;
+    return (byte & UTF8.CONTINUATION_MASK) == UTF8.CONTINUATION_PATTERN;
 }
 
 /// ANSIエスケープシーケンスの開始かどうか（ESC [）
 pub inline fn isAnsiEscapeStart(c: u8, next: u8) bool {
-    return c == 0x1B and next == '[';
+    return c == ASCII.ESC and next == ASCII.CSI_BRACKET;
 }
 
 /// 全角英数記号（U+FF01〜U+FF5E）を半角（U+0021〜U+007E）に変換
@@ -463,8 +466,8 @@ pub fn nextGraphemeCluster(str: []const u8) ?GraphemeCluster {
 
     // ASCII高速パス: 0x00-0x7Fは単独でグラフェムクラスタを形成
     // ただし制御文字(0x00-0x1F, 0x7F)は幅0、印字可能文字は幅1
-    if (first_byte < 0x80) {
-        const width: usize = if (first_byte < 0x20 or first_byte == 0x7F) 0 else 1;
+    if (first_byte <= ASCII.MAX) {
+        const width: usize = if (first_byte < ASCII.PRINTABLE_MIN or first_byte == ASCII.DEL) 0 else 1;
         return GraphemeCluster{ .byte_len = 1, .display_width = width };
     }
 

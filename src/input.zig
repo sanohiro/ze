@@ -205,7 +205,7 @@ pub fn readKeyFromReader(reader: *InputReader) !?Key {
     // 特殊キーを先にチェック（Ctrlキーと重複するため）
     switch (ch) {
         '\r', '\n' => return Key.enter,
-        8, config.Input.DEL => return Key.backspace,
+        8, config.ASCII.DEL => return Key.backspace,
         '\t' => return Key.tab,
         else => {},
     }
@@ -226,7 +226,7 @@ pub fn readKeyFromReader(reader: *InputReader) !?Key {
     }
 
     // ESC シーケンス
-    if (ch == config.Input.ESC) {
+    if (ch == config.ASCII.ESC) {
         // まず1バイトだけ読む
         const first_byte = try reader.readByte() orelse return Key.escape;
         buf[1] = first_byte;

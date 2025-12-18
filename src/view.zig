@@ -33,6 +33,7 @@ const unicode = @import("unicode");
 
 // ANSIエスケープシーケンス定数（config.ANSIを参照）
 const ANSI = config.ANSI;
+const ASCII = config.ASCII;
 
 /// 全角空白（U+3000）のUTF-8バイト列
 const FULLWIDTH_SPACE: []const u8 = "\u{3000}"; // 0xE3 0x80 0x80
@@ -102,14 +103,14 @@ fn calculateScreenColumn(line: []const u8, start_byte: usize, end_byte: usize, i
     while (b < safe_end) {
         const c = line[b];
         // ANSIエスケープシーケンスをスキップ
-        if (c == 0x1b and b + 1 < line.len and line[b + 1] == '[') {
+        if (b + 1 < line.len and unicode.isAnsiEscapeStart(c, line[b + 1])) {
             b += 2;
             while (b < line.len and line[b] != 'm') : (b += 1) {}
             if (b < line.len) b += 1;
             continue;
         }
 
-        if (c < 0x80) {
+        if (unicode.isAsciiByte(c)) {
             // ASCII文字: 幅1
             screen_col += 1;
             b += 1;
@@ -125,14 +126,14 @@ fn calculateScreenColumn(line: []const u8, start_byte: usize, end_byte: usize, i
         while (b < safe_end) {
             const c = line[b];
             // ANSIエスケープシーケンスをスキップ
-            if (c == 0x1b and b + 1 < line.len and line[b + 1] == '[') {
+            if (b + 1 < line.len and unicode.isAnsiEscapeStart(c, line[b + 1])) {
                 b += 2;
                 while (b < line.len and line[b] != 'm') : (b += 1) {}
                 if (b < line.len) b += 1;
                 continue;
             }
 
-            if (c < 0x80) {
+            if (unicode.isAsciiByte(c)) {
                 // ASCII文字: 幅1
                 screen_col += 1;
                 b += 1;
@@ -481,12 +482,12 @@ pub const View = struct {
         // 第1パス: ASCII高速パス（エスケープシーケンスをスキップしながら）
         while (i < line.len) {
             const c = line[i];
-            if (c == 0x1b and i + 1 < line.len and line[i + 1] == '[') {
+            if (i + 1 < line.len and unicode.isAnsiEscapeStart(c, line[i + 1])) {
                 // ANSIエスケープシーケンスをスキップ
                 i += 2;
                 while (i < line.len and line[i] != 'm') : (i += 1) {}
                 if (i < line.len) i += 1;
-            } else if (c < 0x80) {
+            } else if (unicode.isAsciiByte(c)) {
                 // ASCII文字: 幅1
                 display_width += 1;
                 i += 1;
@@ -501,12 +502,12 @@ pub const View = struct {
         if (needs_grapheme_scan) {
             while (i < line.len) {
                 const c = line[i];
-                if (c == 0x1b and i + 1 < line.len and line[i + 1] == '[') {
+                if (i + 1 < line.len and unicode.isAnsiEscapeStart(c, line[i + 1])) {
                     // ANSIエスケープシーケンスをスキップ
                     i += 2;
                     while (i < line.len and line[i] != 'm') : (i += 1) {}
                     if (i < line.len) i += 1;
-                } else if (c < 0x80) {
+                } else if (unicode.isAsciiByte(c)) {
                     // ASCII文字: 幅1
                     display_width += 1;
                     i += 1;
@@ -700,8 +701,8 @@ pub const View = struct {
 
     /// ANSIエスケープシーケンス(\x1b[...m)をスキップ
     fn skipAnsiEscape(line: []const u8, pos: *usize) void {
-        while (pos.* < line.len and line[pos.*] == 0x1b) {
-            if (pos.* + 1 < line.len and line[pos.* + 1] == '[') {
+        while (pos.* < line.len and line[pos.*] == ASCII.ESC) {
+            if (pos.* + 1 < line.len and line[pos.* + 1] == ASCII.CSI_BRACKET) {
                 pos.* += 2;
                 while (pos.* < line.len and line[pos.*] != 'm') : (pos.* += 1) {}
                 if (pos.* < line.len) pos.* += 1; // 'm' をスキップ
@@ -857,7 +858,7 @@ pub const View = struct {
         var i: usize = safe_start;
         while (i < safe_end) {
             // ANSIエスケープシーケンスをスキップ
-            if (line[i] == 0x1b and i + 1 < line.len and line[i + 1] == '[') {
+            if (i + 1 < line.len and unicode.isAnsiEscapeStart(line[i], line[i + 1])) {
                 i += 2;
                 while (i < line.len and line[i] != 'm') : (i += 1) {}
                 if (i < line.len) i += 1; // 'm'をスキップ
@@ -905,8 +906,8 @@ pub const View = struct {
         // content_start以降から処理開始（行番号部分をスキップ）
         var raw_pos: usize = content_start;
         while (raw_pos < line.len) {
-            // ANSIエスケープシーケンスをスキップ (\x1b[...m)
-            if (line[raw_pos] == 0x1b and raw_pos + 1 < line.len and line[raw_pos + 1] == '[') {
+            // ANSIエスケープシーケンスをスキップ
+            if (raw_pos + 1 < line.len and unicode.isAnsiEscapeStart(line[raw_pos], line[raw_pos + 1])) {
                 raw_pos += 2;
                 while (raw_pos < line.len and line[raw_pos] != 'm') : (raw_pos += 1) {}
                 if (raw_pos < line.len) raw_pos += 1; // 'm' をスキップ
@@ -1385,7 +1386,7 @@ pub const View = struct {
                     // タブは次のタブストップまで展開（設定されたタブ幅を使用）
                     expanded_pos = (expanded_pos / tab_width + 1) * tab_width;
                     byte_offset += 1;
-                } else if (byte < 0x80) {
+                } else if (unicode.isAsciiByte(byte)) {
                     // ASCII文字: 幅1
                     expanded_pos += 1;
                     byte_offset += 1;

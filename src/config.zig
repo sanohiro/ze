@@ -85,13 +85,28 @@ pub const ANSI = struct {
     pub const BG_RESET = "\x1b[49m";
 };
 
+/// ASCII関連の定数
+pub const ASCII = struct {
+    /// ASCII範囲の最大値（0x7F = 127）
+    pub const MAX: u8 = 0x7F;
+    /// 制御文字の最大値（0x1F = 31）
+    pub const CTRL_MAX: u8 = 0x1F;
+    /// 印字可能文字の最小値（スペース）
+    pub const PRINTABLE_MIN: u8 = 0x20;
+    /// ESCキー（エスケープシーケンス開始）
+    pub const ESC: u8 = 0x1B;
+    /// DELキー
+    pub const DEL: u8 = 0x7F;
+    /// CSI開始の2文字目（'['）
+    pub const CSI_BRACKET: u8 = '[';
+};
+
 /// UTF-8関連の定数
 pub const UTF8 = struct {
-    /// 継続バイトのマスク
-    pub const CONTINUATION_MASK: u8 = 0b10000000;
-
-    /// ASCIIの最大値
-    pub const ASCII_MAX: u8 = 0b01111111;
+    /// 継続バイトのマスク（10xxxxxx）
+    pub const CONTINUATION_MASK: u8 = 0b11000000;
+    /// 継続バイトのパターン
+    pub const CONTINUATION_PATTERN: u8 = 0b10000000;
 
     /// 最大codepoint（Unicode上限）
     pub const MAX_CODEPOINT: u21 = 0x10FFFF;
@@ -159,14 +174,8 @@ pub const Input = struct {
     /// リングバッファサイズ（ペースト時等の大量入力に対応）
     pub const RING_BUF_SIZE: usize = 4096;
 
-    /// Escapeキー
-    pub const ESC: u8 = 27;
-
-    /// DELキー
-    pub const DEL: u8 = 127;
-
     /// Ctrl+キーのマスク
-    pub const CTRL_MASK: u8 = 0x1f;
+    pub const CTRL_MASK: u8 = ASCII.CTRL_MAX;
 };
 
 /// バッファ関連の定数
