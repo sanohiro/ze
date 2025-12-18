@@ -297,23 +297,19 @@ pub const SearchService = struct {
 
     /// Buffer直接検索（コピーなし、リテラル検索専用）
     /// 呼び出し側が既にリテラル検索であることを確認している前提
-    /// 注意: 前方検索ではカーソルはマッチの終端に配置されるため、skip_currentでもバイト加算は不要
+    /// 前方検索: カーソルはマッチ終端（skip_currentでもバイト加算は不要）
+    /// 後方検索: カーソルはマッチ先頭（skip_currentでstart_posまで検索でOK）
     pub fn searchBuffer(_: *Self, buffer: *const Buffer, pattern: []const u8, start_pos: usize, forward: bool, skip_current: bool) ?SearchMatch {
         if (forward) {
             // 前方検索: カーソル位置から検索（カーソルは既にマッチ終端なのでスキップ不要）
-            const search_from = start_pos;
-            if (buffer.searchForwardWrap(pattern, search_from)) |match| {
+            if (buffer.searchForwardWrap(pattern, start_pos)) |match| {
                 return .{ .start = match.start, .len = match.len };
             }
         } else {
-            // 後方検索: カーソルはマッチ末尾にあるので、マッチ開始位置より前から検索
-            // マッチ開始位置 = start_pos - pattern.len
-            const search_from = if (skip_current and start_pos >= pattern.len)
-                start_pos - pattern.len
-            else if (skip_current)
-                0
-            else
-                start_pos;
+            // 後方検索: カーソルはマッチ先頭にあるので、start_posより前を検索
+            // searchBackwardWrapは[0..search_from)を検索するので、start_posでOK
+            const search_from = start_pos;
+            _ = skip_current; // 後方検索ではカーソルがマッチ先頭なのでそのまま使用
             if (buffer.searchBackwardWrap(pattern, search_from)) |match| {
                 return .{ .start = match.start, .len = match.len };
             }

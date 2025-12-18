@@ -78,11 +78,8 @@ pub const BufferState = struct {
     /// バッファ名を取得（ファイル名がなければ*scratch*）
     pub fn getName(self: *const BufferState) []const u8 {
         if (self.filename) |fname| {
-            // パスからファイル名部分のみを抽出
-            if (std.mem.lastIndexOf(u8, fname, "/")) |idx| {
-                return fname[idx + 1 ..];
-            }
-            return fname;
+            // パスからファイル名部分のみを抽出（クロスプラットフォーム対応）
+            return std.fs.path.basename(fname);
         }
         return "*scratch*";
     }

@@ -607,6 +607,11 @@ pub const Editor = struct {
                         self.allocator.free(old);
                     }
                     buffer_state.filename = new_name;
+                    // ファイル名が変わったのでnormalized pathをリセット（saveFileで再計算）
+                    if (buffer_state.filename_normalized) |old_norm| {
+                        self.allocator.free(old_norm);
+                        buffer_state.filename_normalized = null;
+                    }
                     self.clearPendingFilename();
                 }
                 self.saveFile() catch |err| {
@@ -764,11 +769,8 @@ pub const Editor = struct {
     fn findBufferByBasename(self: *Editor, basename: []const u8) ?*BufferState {
         for (self.buffer_manager.iterator()) |buf| {
             if (buf.filename) |filename| {
-                // パスからファイル名部分を抽出
-                const buf_basename = if (std.mem.lastIndexOf(u8, filename, "/")) |idx|
-                    filename[idx + 1 ..]
-                else
-                    filename;
+                // パスからファイル名部分を抽出（クロスプラットフォーム対応）
+                const buf_basename = std.fs.path.basename(filename);
                 if (std.mem.eql(u8, buf_basename, basename)) {
                     return buf;
                 }
@@ -1359,41 +1361,53 @@ pub const Editor = struct {
         defer self.allocator.free(line);
 
         // バッファ名を抽出
-        // フォーマット: "  {c}{c} {s:<16} {d:>6}  {s}\n"
-        // 長いファイル名は16文字を超える場合がある
+        // フォーマット: "  {c}{c} {s} {d:>6}  {s}\n"
+        // 最後の列がファイルパス（= バッファ名）なので、右から解析する
         if (line.len < 5) {
             self.getCurrentView().setError("Invalid line format");
             return;
         }
 
-        // バッファ名は位置5から始まる
-        const name_start: usize = 5;
+        // 右から "  " (2スペース) を探してパス列を特定
+        // パス列の内容がバッファ名（ファイル名）
+        var buf_name: []const u8 = "";
 
-        // バッファ名の終端を探す（複数のスペース + 数字 = サイズ列の開始）
-        var name_end: usize = name_start;
-        var i: usize = name_start;
-        while (i < line.len) : (i += 1) {
-            if (line[i] == ' ') {
-                // スペースの連続を探す
-                var space_count: usize = 0;
-                var j = i;
-                while (j < line.len and line[j] == ' ') : (j += 1) {
-                    space_count += 1;
+        // 末尾から2スペースを探す（サイズ列とパス列の区切り）
+        var i: usize = line.len;
+        while (i >= 2) {
+            i -= 1;
+            if (i >= 1 and line[i - 1] == ' ' and line[i] == ' ') {
+                // "  " の後がパス列
+                const path_start = i + 1;
+                if (path_start < line.len) {
+                    buf_name = line[path_start..];
+                    // 末尾の改行を除去
+                    while (buf_name.len > 0 and (buf_name[buf_name.len - 1] == '\n' or buf_name[buf_name.len - 1] == '\r')) {
+                        buf_name = buf_name[0 .. buf_name.len - 1];
+                    }
                 }
-                // スペースの後に数字があればサイズ列
-                if (space_count >= 2 and j < line.len and line[j] >= '0' and line[j] <= '9') {
-                    name_end = i;
-                    break;
-                }
+                break;
             }
-            name_end = i + 1;
         }
 
-        var buf_name = line[name_start..name_end];
-
-        // 末尾の空白を除去
-        while (buf_name.len > 0 and buf_name[buf_name.len - 1] == ' ') {
-            buf_name = buf_name[0 .. buf_name.len - 1];
+        // パス列が空の場合は *scratch* バッファ
+        if (buf_name.len == 0) {
+            // 位置5からバッファ名を抽出（*scratch*など）
+            const name_start: usize = 5;
+            if (name_start >= line.len) {
+                self.getCurrentView().setError("Invalid line format");
+                return;
+            }
+            // サイズ列の前までを取得
+            var name_end = name_start;
+            while (name_end < line.len and !(line[name_end] == ' ' and name_end + 1 < line.len and line[name_end + 1] >= '0' and line[name_end + 1] <= '9')) {
+                name_end += 1;
+            }
+            buf_name = line[name_start..name_end];
+            // 末尾の空白を除去
+            while (buf_name.len > 0 and buf_name[buf_name.len - 1] == ' ') {
+                buf_name = buf_name[0 .. buf_name.len - 1];
+            }
         }
 
         if (buf_name.len == 0) {
@@ -2172,6 +2186,11 @@ pub const Editor = struct {
                         self.allocator.free(old);
                     }
                     buffer_state.filename = new_name;
+                    // ファイル名が変わったのでnormalized pathをリセット（saveFileで再計算）
+                    if (buffer_state.filename_normalized) |old_norm| {
+                        self.allocator.free(old_norm);
+                        buffer_state.filename_normalized = null;
+                    }
                     self.clearInputBuffer();
                     try self.saveFile();
                     self.resetToNormal();
@@ -3335,7 +3354,7 @@ pub const Editor = struct {
             // 正規表現検索（C-M-s / C-M-r）
             // チャンク化検索 + ラップアラウンドで全ファイルを検索
             const max_chunk_size: usize = 1024 * 1024; // 1MB
-            const overlap: usize = 4096; // チャンク境界マッチ用オーバーラップ
+            const overlap: usize = 64 * 1024; // チャンク境界マッチ用オーバーラップ（64KB）
             const buf_len = buffer.total_len;
 
             if (buf_len == 0) return;
@@ -3374,7 +3393,12 @@ pub const Editor = struct {
                     (if (chunk_len > overlap) chunk_len - overlap else chunk_len);
 
                 if (self.search_service.searchRegex(content, search_str, adjusted_start, forward, first_chunk and skip_current)) |match| {
-                    self.setCursorToPos(match.start + match.len + chunk_start);
+                    // Emacs風: 前方検索はマッチ終端、後方検索はマッチ先頭にカーソル
+                    const cursor_pos = if (forward)
+                        match.start + match.len + chunk_start
+                    else
+                        match.start + chunk_start;
+                    self.setCursorToPos(cursor_pos);
                     return;
                 }
 
@@ -3405,8 +3429,9 @@ pub const Editor = struct {
         } else {
             // リテラル検索（C-s / C-r）- コピーなしのBuffer直接検索
             if (self.search_service.searchBuffer(buffer, search_str, start_pos, forward, skip_current)) |match| {
-                // Emacs風：マッチ終端にカーソルを置く
-                self.setCursorToPos(match.start + match.len);
+                // Emacs風: 前方検索はマッチ終端、後方検索はマッチ先頭にカーソル
+                const cursor_pos = if (forward) match.start + match.len else match.start;
+                self.setCursorToPos(cursor_pos);
                 return;
             }
         }
@@ -3692,8 +3717,7 @@ pub const Editor = struct {
 
             try self.processShellResult(result.stdout, result.stderr, result.exit_status, result.input_source, result.output_dest);
 
-            // 完了後にステータスバーをクリアして再描画
-            self.getCurrentView().clearError();
+            // 完了後に再描画（processShellResultで設定したステータスメッセージを保持）
             self.getCurrentView().markFullRedraw();
         } else {
             // まだ実行中 - スピナーを更新

@@ -119,7 +119,7 @@ fn cleanupRectangleRing(e: *Editor) void {
 }
 
 /// 矩形領域の範囲情報を取得する共通関数
-fn getRectangleInfo(e: *Editor) ?struct {
+fn getRectangleInfo(e: *Editor, tab_width: u8) ?struct {
     start_line: usize,
     end_line: usize,
     left_col: usize,
@@ -140,8 +140,9 @@ fn getRectangleInfo(e: *Editor) ?struct {
     const start_line = buffer.findLineByPos(start_pos);
     const end_line = buffer.findLineByPos(end_pos);
 
-    const start_col = buffer.findColumnByPos(start_pos);
-    const end_col = buffer.findColumnByPos(end_pos);
+    // ビューのタブ幅を使用して列位置を計算
+    const start_col = buffer.findColumnByPosWithTabWidth(start_pos, tab_width);
+    const end_col = buffer.findColumnByPosWithTabWidth(end_pos, tab_width);
 
     return .{
         .start_line = start_line,
@@ -153,9 +154,9 @@ fn getRectangleInfo(e: *Editor) ?struct {
 
 /// 矩形領域をコピー（C-x r w）- 削除せずにコピーのみ
 pub fn copyRectangle(e: *Editor) !void {
-    const info = getRectangleInfo(e) orelse return;
+    const tab_width: u8 = e.getCurrentView().getTabWidth();
+    const info = getRectangleInfo(e, tab_width) orelse return;
     const buffer = e.getCurrentBufferContent();
-    const tab_width: usize = e.getCurrentView().getTabWidth();
 
     cleanupRectangleRing(e);
 
@@ -197,11 +198,11 @@ pub fn copyRectangle(e: *Editor) !void {
 pub fn killRectangle(e: *Editor) !void {
     if (e.isReadOnly()) return;
 
-    const info = getRectangleInfo(e) orelse return;
+    const tab_width: u8 = e.getCurrentView().getTabWidth();
+    const info = getRectangleInfo(e, tab_width) orelse return;
     const buffer = e.getCurrentBufferContent();
     const buffer_state = e.getCurrentBuffer();
     const editing_ctx = buffer_state.editing_ctx;
-    const tab_width: usize = e.getCurrentView().getTabWidth();
 
     cleanupRectangleRing(e);
 
@@ -300,10 +301,10 @@ pub fn yankRectangle(e: *Editor) !void {
     const buffer = e.getCurrentBufferContent();
     const buffer_state = e.getCurrentBuffer();
     const editing_ctx = buffer_state.editing_ctx;
+    const tab_width: u8 = e.getCurrentView().getTabWidth();
     const cursor_line = buffer.findLineByPos(cursor_pos);
-    const cursor_col = buffer.findColumnByPos(cursor_pos);
+    const cursor_col = buffer.findColumnByPosWithTabWidth(cursor_pos, tab_width);
     const cursor_before = editing_ctx.cursor;
-    const tab_width: usize = e.getCurrentView().getTabWidth();
 
     // 挿入情報を収集（上から下に挿入するため、位置調整が必要）
     const InsertInfo = struct {
