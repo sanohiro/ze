@@ -68,11 +68,10 @@ pub const Terminal = struct {
         self.setupTerminateSignals();
 
         // 代替画面バッファを有効化（終了時に元の画面に戻る）
-        // マウスイベントを有効化（スクロールジェスチャーをキャプチャして無視）
         // ブラケットペーストモードを有効化（ペースト時にまとめて挿入）
+        // 注: マウスモードは無効（ターミナルでのテキスト選択・コピーを優先）
         const stdout: std.fs.File = .{ .handle = posix.STDOUT_FILENO };
         stdout.writeAll(config.ANSI.ENTER_ALT_SCREEN) catch {};
-        stdout.writeAll(config.ANSI.ENABLE_MOUSE) catch {};
         stdout.writeAll(config.ANSI.ENABLE_BRACKETED_PASTE) catch {};
 
         return self;
@@ -114,8 +113,6 @@ pub const Terminal = struct {
     pub fn deinit(self: *Terminal) void {
         // ブラケットペーストモードを無効化
         self.write(config.ANSI.DISABLE_BRACKETED_PASTE) catch {};
-        // マウスイベントを無効化
-        self.write(config.ANSI.DISABLE_MOUSE) catch {};
         // カーソルを表示
         self.showCursor() catch {};
         // 代替画面バッファを終了（元の画面に戻る）
