@@ -157,25 +157,37 @@ pub fn backspace(e: *Editor) !void {
     }
 }
 
-/// C-k: 行末まで削除（Emacs互換）
-/// - 行に文字がある場合: 文字だけ削除（改行は残す）
+/// C-k: 行末まで削除（kill-whole-line モード）
+/// - 行頭にいる場合: 行全体（改行含む）を削除
+/// - 行中にいる場合: カーソルから行末まで削除（改行は残す）
 /// - 行末にいる場合: 改行を削除（次の行と結合）
 pub fn killLine(e: *Editor) !void {
     const buffer = e.getCurrentBufferContent();
     const pos = e.getCurrentView().getCursorBufferPos();
     const next_line_pos = buffer.findNextLineFromPos(pos);
 
-    // 削除範囲を決定
-    // next_line_pos は改行の次の位置（または EOF）
-    // 改行があるかどうかは next_line_pos > pos かつ前のバイトが '\n' かどうかで判定
+    // 行頭かどうか判定（pos==0 または前の文字が改行）
+    const at_line_start = pos == 0 or buffer.getByteAt(pos - 1) == '\n';
+
+    // 改行があるかどうか
     const has_newline = next_line_pos > pos and buffer.getByteAt(next_line_pos - 1) == '\n';
     const text_end = if (has_newline) next_line_pos - 1 else next_line_pos;
 
     // カーソルから行末までのテキストの長さ
     const text_len = text_end - pos;
 
-    // テキストがあればテキストを削除、なければ改行を削除
-    const delete_len = if (text_len > 0) text_len else if (has_newline) @as(usize, 1) else @as(usize, 0);
+    // 削除範囲を決定
+    const delete_len: usize = if (at_line_start and text_len > 0 and has_newline)
+        // 行頭: テキスト + 改行を削除
+        text_len + 1
+    else if (text_len > 0)
+        // 行中: テキストのみ削除
+        text_len
+    else if (has_newline)
+        // 行末: 改行のみ削除
+        1
+    else
+        0;
 
     if (delete_len == 0) return;
 
