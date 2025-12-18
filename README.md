@@ -65,6 +65,7 @@ cp ./zig-out/bin/ze ~/.local/bin/
 
 ```bash
 ze file.txt          # Open a file
+ze -R file.txt       # View file (read-only)
 ze                    # Start with empty buffer
 ```
 
@@ -152,8 +153,8 @@ ze highlights comments only. This is intentional:
 
 ### Terminal Tips
 
-- **Text selection**: Hold `Option` (Mac) or `Alt` (Linux) while dragging to use your terminal's native text selection. This copies to the system clipboard.
-- **Scrolling**: Use `C-v` / `M-v` or `PageDown` / `PageUp` for scrolling.
+- **Text selection**: Drag to select text with your terminal's native selection. Copies to system clipboard.
+- **Scrolling**: Use `C-v` / `M-v` or `PageDown` / `PageUp` for scrolling (trackpad scrolling is disabled).
 
 ---
 
@@ -171,6 +172,7 @@ ze highlights comments only. This is intentional:
 | Command | Description |
 |---------|-------------|
 | `line N` | Jump to line N |
+| `ln` | Toggle line numbers |
 | `tab` / `tab N` | Show/set tab width |
 | `indent` | Show/set indent style |
 | `mode` / `mode X` | Show/set language mode |
