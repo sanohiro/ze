@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.9] - 2025-12-18
+
+### Changed
+- `C-k` (kill-line): Now uses `kill-whole-line` mode - at beginning of line, kills entire line including newline
+
+### Fixed
+- Rectangle operations: use view's tab width instead of hardcoded 8-column tab stop
+- Backward search (C-r, C-M-r): cursor now placed at match start (Emacs-compatible)
+- Regex chunked search: increased overlap from 4KB to 64KB for longer matches
+- File rename (C-x C-w): `filename_normalized` now properly reset for new path
+- Shell command completion: status message ("Done", "Exit 1", etc.) now visible instead of being cleared
+- Windows path handling: use `std.fs.path.basename` for cross-platform compatibility
+- Buffer list (C-x C-b): parse from right to handle filenames with "two spaces + digit" pattern
+
 ## [1.0.8] - 2025-12-18
 
 ### Added
