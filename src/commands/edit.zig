@@ -157,13 +157,29 @@ pub fn backspace(e: *Editor) !void {
     }
 }
 
-/// C-k: 行末まで削除
+/// C-k: 行末まで削除（Emacs互換）
+/// - 行に文字がある場合: 文字だけ削除（改行は残す）
+/// - 行末にいる場合: 改行を削除（次の行と結合）
 pub fn killLine(e: *Editor) !void {
     const buffer = e.getCurrentBufferContent();
     const pos = e.getCurrentView().getCursorBufferPos();
-    const end_pos = buffer.findNextLineFromPos(pos);
+    const next_line_pos = buffer.findNextLineFromPos(pos);
 
-    if (try deleteRangeCommon(e, pos, end_pos - pos, pos)) |deleted| {
+    // 削除範囲を決定
+    // next_line_pos は改行の次の位置（または EOF）
+    // 改行があるかどうかは next_line_pos > pos かつ前のバイトが '\n' かどうかで判定
+    const has_newline = next_line_pos > pos and buffer.getByteAt(next_line_pos - 1) == '\n';
+    const text_end = if (has_newline) next_line_pos - 1 else next_line_pos;
+
+    // カーソルから行末までのテキストの長さ
+    const text_len = text_end - pos;
+
+    // テキストがあればテキストを削除、なければ改行を削除
+    const delete_len = if (text_len > 0) text_len else if (has_newline) @as(usize, 1) else @as(usize, 0);
+
+    if (delete_len == 0) return;
+
+    if (try deleteRangeCommon(e, pos, delete_len, pos)) |deleted| {
         // kill ringに保存（freeせずに所有権移転）
         if (e.kill_ring) |old_text| {
             e.allocator.free(old_text);
