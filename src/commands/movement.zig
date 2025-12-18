@@ -362,25 +362,25 @@ fn ensureMark(e: *Editor) void {
 /// Shift+Up: 選択しながら上に移動
 pub fn selectUp(e: *Editor) !void {
     ensureMark(e);
-    e.getCurrentView().moveCursorUp();
+    try cursorUp(e);
 }
 
 /// Shift+Down: 選択しながら下に移動
 pub fn selectDown(e: *Editor) !void {
     ensureMark(e);
-    e.getCurrentView().moveCursorDown();
+    try cursorDown(e);
 }
 
 /// Shift+Left: 選択しながら左に移動
 pub fn selectLeft(e: *Editor) !void {
     ensureMark(e);
-    e.getCurrentView().moveCursorLeft();
+    try cursorLeft(e);
 }
 
 /// Shift+Right: 選択しながら右に移動
 pub fn selectRight(e: *Editor) !void {
     ensureMark(e);
-    e.getCurrentView().moveCursorRight();
+    try cursorRight(e);
 }
 
 /// Shift+PageUp: 選択しながらページ上に移動

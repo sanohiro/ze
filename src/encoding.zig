@@ -87,21 +87,25 @@ pub fn isBinaryContent(content: []const u8) bool {
 /// エンコーディングと改行コードを自動検出
 pub fn detectEncoding(content: []const u8) DetectionResult {
     // ステップ1: BOM検出（最優先、UTF-16はNULLバイトを含むのでBOM検出を先に）
-    if (content.len >= 3 and
-        content[0] == 0xEF and content[1] == 0xBB and content[2] == 0xBF)
+    if (content.len >= config.BOM.UTF8.len and
+        std.mem.startsWith(u8, content, &config.BOM.UTF8))
     {
         return .{
             .encoding = .UTF8_BOM,
-            .line_ending = detectLineEnding(content[3..]),
+            .line_ending = detectLineEnding(content[config.BOM.UTF8.len..]),
         };
     }
-    if (content.len >= 2 and content[0] == 0xFF and content[1] == 0xFE) {
+    if (content.len >= config.BOM.UTF16LE.len and
+        std.mem.startsWith(u8, content, &config.BOM.UTF16LE))
+    {
         return .{
             .encoding = .UTF16LE_BOM,
             .line_ending = .LF, // UTF-16は変換後に改行検出
         };
     }
-    if (content.len >= 2 and content[0] == 0xFE and content[1] == 0xFF) {
+    if (content.len >= config.BOM.UTF16BE.len and
+        std.mem.startsWith(u8, content, &config.BOM.UTF16BE))
+    {
         return .{
             .encoding = .UTF16BE_BOM,
             .line_ending = .LF,
@@ -173,34 +177,34 @@ fn isValidUtf8(content: []const u8) bool {
         const byte = content[i];
 
         // ASCII (0x00-0x7F)
-        if (byte < 0x80) {
+        if (byte <= config.UTF8.ASCII_MAX) {
             i += 1;
             continue;
         }
 
         // 2バイト文字 (0xC0-0xDF)
-        if (byte >= 0xC0 and byte <= 0xDF) {
+        if (byte >= config.UTF8.BYTE2_MIN and byte <= config.UTF8.BYTE2_MAX) {
             if (i + 1 >= content.len) return false;
-            if (!isContinuationByte(content[i + 1])) return false;
+            if (!unicode.isUtf8Continuation(content[i + 1])) return false;
             i += 2;
             continue;
         }
 
         // 3バイト文字 (0xE0-0xEF)
-        if (byte >= 0xE0 and byte <= 0xEF) {
+        if (byte >= config.UTF8.BYTE3_MIN and byte <= config.UTF8.BYTE3_MAX) {
             if (i + 2 >= content.len) return false;
-            if (!isContinuationByte(content[i + 1])) return false;
-            if (!isContinuationByte(content[i + 2])) return false;
+            if (!unicode.isUtf8Continuation(content[i + 1])) return false;
+            if (!unicode.isUtf8Continuation(content[i + 2])) return false;
             i += 3;
             continue;
         }
 
         // 4バイト文字 (0xF0-0xF7)
-        if (byte >= 0xF0 and byte <= 0xF7) {
+        if (byte >= config.UTF8.BYTE4_MIN and byte <= config.UTF8.BYTE4_MAX) {
             if (i + 3 >= content.len) return false;
-            if (!isContinuationByte(content[i + 1])) return false;
-            if (!isContinuationByte(content[i + 2])) return false;
-            if (!isContinuationByte(content[i + 3])) return false;
+            if (!unicode.isUtf8Continuation(content[i + 1])) return false;
+            if (!unicode.isUtf8Continuation(content[i + 2])) return false;
+            if (!unicode.isUtf8Continuation(content[i + 3])) return false;
             i += 4;
             continue;
         }
@@ -212,10 +216,7 @@ fn isValidUtf8(content: []const u8) bool {
     return true;
 }
 
-/// UTF-8の継続バイト判定 (0x80-0xBF)
-fn isContinuationByte(byte: u8) bool {
-    return byte >= 0x80 and byte <= 0xBF;
-}
+// UTF-8の継続バイト判定は unicode.isUtf8Continuation() を使用
 
 /// 日本語エンコーディングを推測（Shift_JIS vs EUC-JP）
 ///
@@ -436,7 +437,7 @@ pub fn convertFromUtf8(allocator: std.mem.Allocator, content: []const u8, encodi
             // BOMを追加
             var result = try std.ArrayList(u8).initCapacity(allocator, 1024);
             errdefer result.deinit(allocator);
-            try result.appendSlice(allocator, &[_]u8{ 0xEF, 0xBB, 0xBF });
+            try result.appendSlice(allocator, &config.BOM.UTF8);
             try result.appendSlice(allocator, content);
             break :blk try result.toOwnedSlice(allocator);
         },
@@ -965,7 +966,7 @@ fn convertUtf8ToUtf16le(allocator: std.mem.Allocator, content: []const u8) ![]u8
     errdefer result.deinit(allocator);
 
     // BOMを追加（LE: 0xFF 0xFE）
-    try result.appendSlice(allocator, &[_]u8{ 0xFF, 0xFE });
+    try result.appendSlice(allocator, &config.BOM.UTF16LE);
 
     // UTF-8をデコードしてUTF-16LEにエンコード
     var i: usize = 0;
@@ -1061,7 +1062,7 @@ fn convertUtf8ToUtf16be(allocator: std.mem.Allocator, content: []const u8) ![]u8
     errdefer result.deinit(allocator);
 
     // BOMを追加（BE: 0xFE 0xFF）
-    try result.appendSlice(allocator, &[_]u8{ 0xFE, 0xFF });
+    try result.appendSlice(allocator, &config.BOM.UTF16BE);
 
     // UTF-8をデコードしてUTF-16BEにエンコード
     var i: usize = 0;

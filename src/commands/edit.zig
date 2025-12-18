@@ -95,10 +95,7 @@ fn getSelectedLineRange(e: *Editor) struct { start_line: usize, end_line: usize 
 
 /// C-d: カーソル位置の文字を削除
 pub fn deleteChar(e: *Editor) !void {
-    if (e.isReadOnly()) return;
-    const buffer_state = e.getCurrentBuffer();
     const buffer = e.getCurrentBufferContent();
-    const current_line = e.getCurrentLine();
     const pos = e.getCurrentView().getCursorBufferPos();
     if (pos >= buffer.len()) return;
 
@@ -106,45 +103,24 @@ pub fn deleteChar(e: *Editor) !void {
     var iter = PieceIterator.init(buffer);
     iter.seek(pos);
 
-    const cluster = iter.nextGraphemeCluster() catch {
-        const deleted = try e.extractText(pos, 1);
-        errdefer e.allocator.free(deleted);
-
-        try buffer.delete(pos, 1);
-        errdefer buffer.insertSlice(pos, deleted) catch unreachable;
-        try e.recordDelete(pos, deleted, pos);
-
-        buffer_state.editing_ctx.modified = true;
-        markDirtyForText(e, current_line, deleted);
-        e.allocator.free(deleted);
-        return;
+    const delete_len: usize = blk: {
+        const cluster = iter.nextGraphemeCluster() catch break :blk 1;
+        break :blk if (cluster) |gc| gc.byte_len else 1;
     };
 
-    if (cluster) |gc| {
-        const deleted = try e.extractText(pos, gc.byte_len);
-        errdefer e.allocator.free(deleted);
-
-        try buffer.delete(pos, gc.byte_len);
-        errdefer buffer.insertSlice(pos, deleted) catch unreachable;
-        try e.recordDelete(pos, deleted, pos);
-
-        buffer_state.editing_ctx.modified = true;
-        markDirtyForText(e, current_line, deleted);
+    // deleteRangeCommonで削除（戻り値は削除したテキスト、nullなら削除なし）
+    if (try deleteRangeCommon(e, pos, delete_len, pos)) |deleted| {
         e.allocator.free(deleted);
     }
 }
 
 /// Backspace: カーソル前の文字を削除
 pub fn backspace(e: *Editor) !void {
-    if (e.isReadOnly()) return;
-    const buffer_state = e.getCurrentBuffer();
     const buffer = e.getCurrentBufferContent();
-    const current_line = e.getCurrentLine();
     const pos = e.getCurrentView().getCursorBufferPos();
     if (pos == 0) return;
 
     // 削除するgrapheme clusterのバイト数と幅を取得
-    // findUtf8CharStart(pos)は内部でpos-1から探索する
     const char_start = buffer.findUtf8CharStart(pos);
     var iter = PieceIterator.init(buffer);
     iter.seek(char_start);
@@ -157,23 +133,16 @@ pub fn backspace(e: *Editor) !void {
         char_len = gc.byte_len;
     }
 
-    const deleted = try e.extractText(char_start, char_len);
-    errdefer e.allocator.free(deleted);
+    // deleteRangeCommonで削除
+    const deleted = try deleteRangeCommon(e, char_start, char_len, pos);
+    if (deleted == null) return;
+    defer e.allocator.free(deleted.?);
 
-    const is_newline = std.mem.indexOf(u8, deleted, "\n") != null;
+    const is_newline = std.mem.indexOf(u8, deleted.?, "\n") != null;
     const is_tab = char_base == '\t';
-
-    try buffer.delete(char_start, char_len);
-    errdefer buffer.insertSlice(char_start, deleted) catch unreachable;
-    try e.recordDelete(char_start, deleted, pos);
-
-    buffer_state.editing_ctx.modified = true;
-    markDirtyForText(e, current_line, deleted);
-    e.allocator.free(deleted);
 
     // カーソル移動（タブや改行は位置再計算が必要）
     if (is_tab or is_newline) {
-        // タブや改行削除後はカーソル位置を再計算
         e.setCursorToPos(char_start);
     } else {
         const view = e.getCurrentView();

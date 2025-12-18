@@ -335,10 +335,7 @@ pub const LineIndex = struct {
             // バイト毎のイテレーションより高速
             var global_pos: usize = 0;
             for (buffer.pieces.items) |piece| {
-                const data = switch (piece.source) {
-                    .original => buffer.original[piece.start .. piece.start + piece.length],
-                    .add => buffer.add_buffer.items[piece.start .. piece.start + piece.length],
-                };
+                const data = buffer.getPieceData(piece);
 
                 var search_start: usize = 0;
                 while (std.mem.indexOfScalar(u8, data[search_start..], '\n')) |rel_pos| {
@@ -382,10 +379,7 @@ pub const LineIndex = struct {
 
                 // このpieceがvalid_until_pos以降を含む場合のみ処理
                 if (piece_end > self.valid_until_pos) {
-                    const data = switch (piece.source) {
-                        .original => buffer.original[piece.start .. piece.start + piece.length],
-                        .add => buffer.add_buffer.items[piece.start .. piece.start + piece.length],
-                    };
+                    const data = buffer.getPieceData(piece);
 
                     // piece内の開始位置を計算
                     const start_in_piece = if (global_pos >= self.valid_until_pos) 0 else self.valid_until_pos - global_pos;
@@ -797,11 +791,7 @@ pub const Buffer = struct {
                 defer utf8_content.deinit(self.allocator);
 
                 for (self.pieces.items) |piece| {
-                    const data = switch (piece.source) {
-                        .original => self.original[piece.start .. piece.start + piece.length],
-                        .add => self.add_buffer.items[piece.start .. piece.start + piece.length],
-                    };
-                    try utf8_content.appendSlice(self.allocator, data);
+                    try utf8_content.appendSlice(self.allocator, self.getPieceData(piece));
                 }
 
                 // Step 2: 改行コード変換（LF → CRLF/CR）
@@ -838,19 +828,12 @@ pub const Buffer = struct {
                 if (self.detected_line_ending == .LF) {
                     // LF モードはそのまま書き込み
                     for (self.pieces.items) |piece| {
-                        const data = switch (piece.source) {
-                            .original => self.original[piece.start .. piece.start + piece.length],
-                            .add => self.add_buffer.items[piece.start .. piece.start + piece.length],
-                        };
-                        try writer.writeAll(data);
+                        try writer.writeAll(self.getPieceData(piece));
                     }
                 } else if (self.detected_line_ending == .CRLF) {
                     // CRLF モード: LF を CRLF に変換（チャンクベースで高速化）
                     for (self.pieces.items) |piece| {
-                        const data = switch (piece.source) {
-                            .original => self.original[piece.start .. piece.start + piece.length],
-                            .add => self.add_buffer.items[piece.start .. piece.start + piece.length],
-                        };
+                        const data = self.getPieceData(piece);
                         var chunk_start: usize = 0;
                         for (data, 0..) |byte, i| {
                             if (byte == '\n') {
@@ -871,10 +854,7 @@ pub const Buffer = struct {
                 } else if (self.detected_line_ending == .CR) {
                     // CR モード: LF を CR に変換（チャンクベースで高速化）
                     for (self.pieces.items) |piece| {
-                        const data = switch (piece.source) {
-                            .original => self.original[piece.start .. piece.start + piece.length],
-                            .add => self.add_buffer.items[piece.start .. piece.start + piece.length],
-                        };
+                        const data = self.getPieceData(piece);
                         var chunk_start: usize = 0;
                         for (data, 0..) |byte, i| {
                             if (byte == '\n') {
@@ -913,6 +893,15 @@ pub const Buffer = struct {
 
     pub fn len(self: *const Buffer) usize {
         return self.total_len;
+    }
+
+    /// ピースのデータを取得（共通パターンの統合）
+    /// 内部バッファ（original/add_buffer）への直接参照を返す
+    pub inline fn getPieceData(self: *const Buffer, piece: Piece) []const u8 {
+        return switch (piece.source) {
+            .original => self.original[piece.start..][0..piece.length],
+            .add => self.add_buffer.items[piece.start..][0..piece.length],
+        };
     }
 
     /// 指定位置のバイトを取得（O(pieces)だが、イテレータ作成よりも軽量）
@@ -1488,10 +1477,7 @@ pub const Buffer = struct {
 
             // このpieceがsearch_fromを含む場合のみ検索
             if (piece_end > search_from) {
-                const data = switch (piece.source) {
-                    .original => self.original[piece.start .. piece.start + piece.length],
-                    .add => self.add_buffer.items[piece.start .. piece.start + piece.length],
-                };
+                const data = self.getPieceData(piece);
 
                 // piece内の開始位置
                 const start_in_piece = if (global_pos >= search_from) 0 else search_from - global_pos;
@@ -1611,10 +1597,7 @@ pub const Buffer = struct {
 
         while (true) {
             const piece = pieces[current_piece_idx];
-            const data = switch (piece.source) {
-                .original => self.original[piece.start .. piece.start + piece.length],
-                .add => self.add_buffer.items[piece.start .. piece.start + piece.length],
-            };
+            const data = self.getPieceData(piece);
 
             // このpiece内での検索範囲を決定
             const search_limit = if (current_piece_idx == start_piece_idx)
@@ -1731,22 +1714,7 @@ pub const Buffer = struct {
         if (self.pieces.items.len == 0) return null;
 
         const first_piece = self.pieces.items[0];
-        const preview_len = @min(first_piece.length, max_len);
-
-        switch (first_piece.source) {
-            .original => {
-                const end = first_piece.start + preview_len;
-                if (end <= self.original.len) {
-                    return self.original[first_piece.start..end];
-                }
-            },
-            .add => {
-                const end = first_piece.start + preview_len;
-                if (end <= self.add_buffer.items.len) {
-                    return self.add_buffer.items[first_piece.start..end];
-                }
-            },
-        }
-        return null;
+        const data = self.getPieceData(first_piece);
+        return data[0..@min(data.len, max_len)];
     }
 };

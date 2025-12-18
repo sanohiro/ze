@@ -78,6 +78,35 @@ pub const UTF8 = struct {
 
     /// 最大バイト長
     pub const MAX_BYTE_LEN: usize = 4;
+
+    // === バイト範囲定数 ===
+    /// 2バイト文字の先頭バイト範囲
+    pub const BYTE2_MIN: u8 = 0xC0;
+    pub const BYTE2_MAX: u8 = 0xDF;
+    /// 3バイト文字の先頭バイト範囲
+    pub const BYTE3_MIN: u8 = 0xE0;
+    pub const BYTE3_MAX: u8 = 0xEF;
+    /// 4バイト文字の先頭バイト範囲
+    pub const BYTE4_MIN: u8 = 0xF0;
+    pub const BYTE4_MAX: u8 = 0xF7;
+};
+
+/// BOM (Byte Order Mark) 定数
+pub const BOM = struct {
+    /// UTF-8 BOM
+    pub const UTF8 = [_]u8{ 0xEF, 0xBB, 0xBF };
+    /// UTF-16LE BOM
+    pub const UTF16LE = [_]u8{ 0xFF, 0xFE };
+    /// UTF-16BE BOM
+    pub const UTF16BE = [_]u8{ 0xFE, 0xFF };
+};
+
+/// ウィンドウ関連の定数
+pub const Window = struct {
+    /// 最小幅
+    pub const MIN_WIDTH: usize = 10;
+    /// 最小高さ
+    pub const MIN_HEIGHT: usize = 3;
 };
 
 /// エディタ動作の定数
@@ -127,4 +156,34 @@ pub const Buffer = struct {
 
     /// 初期add_bufferのキャパシティ
     pub const INITIAL_ADD_CAPACITY: usize = 1024;
+};
+
+/// ユーザー向けメッセージ（一元管理）
+pub const Messages = struct {
+    // === エラーメッセージ ===
+    pub const BUFFER_READONLY = "Buffer is read-only";
+    pub const NO_MARK_SET = "No mark set";
+    pub const UNKNOWN_COMMAND = "Unknown command";
+    pub const FILE_NOT_FOUND = "File not found";
+    pub const BINARY_FILE = "Binary file detected";
+
+    // === 確認メッセージ ===
+    pub const CONFIRM_YES_NO = "Please answer: (y)es or (n)o";
+    pub const CONFIRM_YES_NO_CANCEL = "Please answer: (y)es, (n)o, (c)ancel";
+
+    // === 状態メッセージ ===
+    pub const RUNNING_SHELL = "Running... (C-g to cancel)";
+    pub const SEARCH_WRAPPED = "Wrapped";
+    pub const SEARCH_NOT_FOUND = "Not found";
+
+    // === 矩形操作メッセージ ===
+    pub const RECTANGLE_COPIED = "Rectangle copied";
+    pub const RECTANGLE_KILLED = "Rectangle killed";
+    pub const RECTANGLE_YANKED = "Rectangle yanked";
+    pub const NO_RECTANGLE_TO_YANK = "No rectangle to yank";
+    pub const RECTANGLE_EMPTY = "Rectangle is empty";
+
+    // === キープレフィックス ===
+    pub const KEY_PREFIX_CX = "C-x-";
+    pub const KEY_PREFIX_CXR = "C-x r ";
 };

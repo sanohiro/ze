@@ -700,6 +700,19 @@ pub const View = struct {
         return in_block;
     }
 
+    /// ANSIエスケープシーケンス(\x1b[...m)をスキップ
+    fn skipAnsiEscape(line: []const u8, pos: *usize) void {
+        while (pos.* < line.len and line[pos.*] == 0x1b) {
+            if (pos.* + 1 < line.len and line[pos.* + 1] == '[') {
+                pos.* += 2;
+                while (pos.* < line.len and line[pos.*] != 'm') : (pos.* += 1) {}
+                if (pos.* < line.len) pos.* += 1; // 'm' をスキップ
+            } else {
+                break;
+            }
+        }
+    }
+
     /// ANSIエスケープシーケンスをスキップして検索
     ///
     /// 【目的】
@@ -725,16 +738,7 @@ pub const View = struct {
         var line_pos = start;
 
         outer: while (line_pos + search_str.len <= line.len) {
-            // ANSIエスケープシーケンスをスキップ (\x1b[...m)
-            while (line_pos < line.len and line[line_pos] == 0x1b) {
-                if (line_pos + 1 < line.len and line[line_pos + 1] == '[') {
-                    line_pos += 2;
-                    while (line_pos < line.len and line[line_pos] != 'm') : (line_pos += 1) {}
-                    if (line_pos < line.len) line_pos += 1; // 'm' をスキップ
-                } else {
-                    break;
-                }
-            }
+            skipAnsiEscape(line, &line_pos);
 
             if (line_pos + search_str.len > line.len) return null;
 
@@ -743,16 +747,7 @@ pub const View = struct {
             var search_idx: usize = 0;
 
             while (search_idx < search_str.len) {
-                // ANSIシーケンスをスキップ
-                while (line_pos < line.len and line[line_pos] == 0x1b) {
-                    if (line_pos + 1 < line.len and line[line_pos + 1] == '[') {
-                        line_pos += 2;
-                        while (line_pos < line.len and line[line_pos] != 'm') : (line_pos += 1) {}
-                        if (line_pos < line.len) line_pos += 1;
-                    } else {
-                        break;
-                    }
-                }
+                skipAnsiEscape(line, &line_pos);
 
                 if (line_pos >= line.len) return null;
 

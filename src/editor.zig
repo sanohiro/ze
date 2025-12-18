@@ -357,7 +357,7 @@ pub const Editor = struct {
     /// 読み取り専用ならエラー表示してtrueを返す
     pub fn isReadOnly(self: *Editor) bool {
         if (self.getCurrentBuffer().readonly) {
-            self.getCurrentView().setError("Buffer is read-only");
+            self.getCurrentView().setError(config.Messages.BUFFER_READONLY);
             return true;
         }
         return false;
@@ -469,7 +469,7 @@ pub const Editor = struct {
     fn startQueryReplace(self: *Editor) void {
         // 読み取り専用バッファでは置換を禁止
         if (self.isReadOnly()) {
-            self.getCurrentView().setError("Buffer is read-only");
+            self.getCurrentView().setError(config.Messages.BUFFER_READONLY);
             return;
         }
         self.is_regex_replace = false;
@@ -480,7 +480,7 @@ pub const Editor = struct {
     fn startRegexQueryReplace(self: *Editor) !void {
         // 読み取り専用バッファでは置換を禁止
         if (self.isReadOnly()) {
-            self.getCurrentView().setError("Buffer is read-only");
+            self.getCurrentView().setError(config.Messages.BUFFER_READONLY);
             return;
         }
         self.is_regex_replace = true;
@@ -2547,7 +2547,7 @@ pub const Editor = struct {
                             self.running = false;
                         }
                     },
-                    else => self.getCurrentView().setError("Unknown command"),
+                    else => self.getCurrentView().setError(config.Messages.UNKNOWN_COMMAND),
                 }
             },
             .char => |c| {
@@ -2585,7 +2585,7 @@ pub const Editor = struct {
                     '(' => self.startMacroRecording(),
                     ')' => self.stopMacroRecording(),
                     'e' => self.executeMacro() catch |err| self.showError(err),
-                    else => self.getCurrentView().setError("Unknown command"),
+                    else => self.getCurrentView().setError(config.Messages.UNKNOWN_COMMAND),
                 }
             },
             else => self.getCurrentView().setError("Expected C-x C-[key]"),
@@ -3804,7 +3804,7 @@ pub const Editor = struct {
             .replace => {
                 // 読み取り専用バッファでは置換を禁止
                 if (self.isReadOnly()) {
-                    self.getCurrentView().setError("Buffer is read-only");
+                    self.getCurrentView().setError(config.Messages.BUFFER_READONLY);
                     return;
                 }
                 // 入力元を置換
@@ -3895,7 +3895,7 @@ pub const Editor = struct {
             .insert => {
                 // 読み取り専用バッファでは挿入を禁止
                 if (self.isReadOnly()) {
-                    self.getCurrentView().setError("Buffer is read-only");
+                    self.getCurrentView().setError(config.Messages.BUFFER_READONLY);
                     return;
                 }
                 // カーソル位置に挿入

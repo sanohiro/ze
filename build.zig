@@ -235,7 +235,7 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    // commands/rectangle <- buffer, editing_context
+    // commands/rectangle <- buffer, editing_context, config
     const rectangle_cmd_mod = b.addModule("commands_rectangle", .{
         .root_source_file = b.path("src/commands/rectangle.zig"),
         .target = target,
@@ -243,6 +243,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "buffer", .module = buffer_mod },
             .{ .name = "editing_context", .module = editing_context_mod },
+            .{ .name = "config", .module = config_mod },
         },
     });
 

@@ -70,13 +70,17 @@ pub const Minibuffer = struct {
         self.cursor = content.len;
     }
 
-    /// カーソル位置に文字を挿入
-    pub fn insertAtCursor(self: *Self, text: []const u8) !void {
-        if (text.len == 0) return;
-        // cursor が範囲外の場合は末尾に調整
+    /// カーソル位置を有効範囲に正規化
+    fn normalizeCursor(self: *Self) void {
         if (self.cursor > self.buffer.items.len) {
             self.cursor = self.buffer.items.len;
         }
+    }
+
+    /// カーソル位置に文字を挿入
+    pub fn insertAtCursor(self: *Self, text: []const u8) !void {
+        if (text.len == 0) return;
+        self.normalizeCursor();
         try self.buffer.insertSlice(self.allocator, self.cursor, text);
         self.cursor += text.len;
     }
@@ -91,10 +95,7 @@ pub const Minibuffer = struct {
     /// カーソル前の1文字（グラフェム）を削除（バックスペース）
     pub fn backspace(self: *Self) void {
         if (self.cursor == 0) return;
-        // cursor が範囲外の場合は末尾に調整
-        if (self.cursor > self.buffer.items.len) {
-            self.cursor = self.buffer.items.len;
-        }
+        self.normalizeCursor();
         if (self.cursor == 0) return; // 調整後の再チェック
 
         const prev_pos = findPrevGraphemeStart(self.buffer.items, self.cursor);
@@ -121,7 +122,7 @@ pub const Minibuffer = struct {
     /// カーソルを1文字左に移動
     pub fn moveLeft(self: *Self) void {
         if (self.cursor == 0) return;
-        // cursor が範囲外の場合は末尾に調整
+        // cursor が範囲外の場合は末尾に調整して終了（移動はしない）
         if (self.cursor > self.buffer.items.len) {
             self.cursor = self.buffer.items.len;
             return;
@@ -148,10 +149,7 @@ pub const Minibuffer = struct {
     /// カーソルを1単語前に移動
     pub fn moveWordBackward(self: *Self) void {
         if (self.cursor == 0) return;
-        // cursor が範囲外の場合は末尾に調整
-        if (self.cursor > self.buffer.items.len) {
-            self.cursor = self.buffer.items.len;
-        }
+        self.normalizeCursor();
         if (self.cursor == 0) return; // 調整後の再チェック
         const items = self.buffer.items;
         var pos = self.cursor;
@@ -193,10 +191,7 @@ pub const Minibuffer = struct {
     /// 前の単語を削除（M-Backspace）
     pub fn deleteWordBackward(self: *Self) void {
         if (self.cursor == 0) return;
-        // cursor が範囲外の場合は末尾に調整
-        if (self.cursor > self.buffer.items.len) {
-            self.cursor = self.buffer.items.len;
-        }
+        self.normalizeCursor();
         if (self.cursor == 0) return; // 調整後の再チェック
         const start_pos = self.cursor;
         self.moveWordBackward();

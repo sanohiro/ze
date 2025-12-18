@@ -1,7 +1,12 @@
 const std = @import("std");
+const config = @import("config");
 const Editor = @import("editor").Editor;
 const PieceIterator = @import("buffer").PieceIterator;
 const EditingContext = @import("editing_context").EditingContext;
+
+// ========================================
+// 共通ヘルパー関数
+// ========================================
 
 /// 文字の表示幅を計算（タブは現在列に基づいて展開）
 fn getCharWidth(base: u21, width: usize, current_col: usize, tab_width: usize) usize {
@@ -10,6 +15,107 @@ fn getCharWidth(base: u21, width: usize, current_col: usize, tab_width: usize) u
         return (current_col / tab_width + 1) * tab_width - current_col;
     }
     return width;
+}
+
+/// 行の境界を取得（line_start, line_end）
+/// line_endは改行を含まない（行の最後の文字の次の位置）
+const LineBounds = struct {
+    start: usize,
+    end: usize,
+};
+
+fn getLineBounds(buffer: anytype, line_num: usize) ?LineBounds {
+    const line_start = buffer.getLineStart(line_num) orelse return null;
+    const next_line_start = buffer.getLineStart(line_num + 1);
+    const line_end = if (next_line_start) |nls|
+        if (nls > 0 and nls > line_start) nls - 1 else nls
+    else
+        buffer.len();
+    return .{ .start = line_start, .end = line_end };
+}
+
+/// 列範囲をバイト位置に変換
+/// 表示幅（ダブルワイド文字、タブ展開）を考慮して、left_col〜right_colの範囲をバイト位置に変換
+const ByteRange = struct {
+    start: usize,
+    end: usize,
+};
+
+fn getColumnByteRange(buffer: anytype, line_bounds: LineBounds, left_col: usize, right_col: usize, tab_width: usize) ByteRange {
+    var iter = PieceIterator.init(buffer);
+    iter.seek(line_bounds.start);
+
+    var current_col: usize = 0;
+
+    // left_col の位置を探す
+    while (iter.global_pos < line_bounds.end and current_col < left_col) {
+        const gc = iter.nextGraphemeCluster() catch break;
+        if (gc) |cluster| {
+            current_col += getCharWidth(cluster.base, cluster.width, current_col, tab_width);
+        } else break;
+    }
+    const start_pos = iter.global_pos;
+
+    // right_col の位置を探す
+    while (iter.global_pos < line_bounds.end and current_col < right_col) {
+        const gc = iter.nextGraphemeCluster() catch break;
+        if (gc) |cluster| {
+            current_col += getCharWidth(cluster.base, cluster.width, current_col, tab_width);
+        } else break;
+    }
+    const end_pos = iter.global_pos;
+
+    return .{ .start = start_pos, .end = end_pos };
+}
+
+/// 指定位置のカラムまで進み、バイト位置を返す
+/// 行が短い場合は、到達したカラム数も返す（パディング計算用）
+const ColumnSeekResult = struct {
+    byte_pos: usize,
+    reached_col: usize,
+};
+
+fn seekToColumn(buffer: anytype, line_bounds: LineBounds, target_col: usize, tab_width: usize) ColumnSeekResult {
+    var iter = PieceIterator.init(buffer);
+    iter.seek(line_bounds.start);
+
+    var current_col: usize = 0;
+    while (iter.global_pos < line_bounds.end and current_col < target_col) {
+        const gc = iter.nextGraphemeCluster() catch break;
+        if (gc) |cluster| {
+            current_col += getCharWidth(cluster.base, cluster.width, current_col, tab_width);
+        } else break;
+    }
+
+    return .{ .byte_pos = iter.global_pos, .reached_col = current_col };
+}
+
+/// バッファからバイト範囲のテキストを抽出
+fn extractBytes(allocator: std.mem.Allocator, buffer: anytype, start: usize, end: usize) ![]const u8 {
+    if (end <= start) return allocator.dupe(u8, "");
+
+    var line_buf: std.ArrayList(u8) = .{};
+    errdefer line_buf.deinit(allocator);
+
+    var iter = PieceIterator.init(buffer);
+    iter.seek(start);
+    while (iter.global_pos < end) {
+        const byte = iter.next() orelse break;
+        try line_buf.append(allocator, byte);
+    }
+
+    return try line_buf.toOwnedSlice(allocator);
+}
+
+/// 古い rectangle_ring をクリーンアップ
+fn cleanupRectangleRing(e: *Editor) void {
+    if (e.rectangle_ring) |*old_ring| {
+        for (old_ring.items) |line| {
+            e.allocator.free(line);
+        }
+        old_ring.deinit(e.allocator);
+        e.rectangle_ring = null; // use-after-free防止
+    }
 }
 
 /// 矩形領域の範囲情報を取得する共通関数
@@ -21,7 +127,7 @@ fn getRectangleInfo(e: *Editor) ?struct {
 } {
     const window = e.getCurrentWindow();
     const mark = window.mark_pos orelse {
-        e.getCurrentView().setError("No mark set");
+        e.getCurrentView().setError(config.Messages.NO_MARK_SET);
         return null;
     };
 
@@ -51,14 +157,7 @@ pub fn copyRectangle(e: *Editor) !void {
     const buffer = e.getCurrentBufferContent();
     const tab_width: usize = e.getCurrentView().getTabWidth();
 
-    // 古い rectangle_ring をクリーンアップ
-    if (e.rectangle_ring) |*old_ring| {
-        for (old_ring.items) |line| {
-            e.allocator.free(line);
-        }
-        old_ring.deinit(e.allocator);
-        e.rectangle_ring = null; // use-after-free防止
-    }
+    cleanupRectangleRing(e);
 
     // 新しい rectangle_ring を作成
     var rect_ring: std.ArrayList([]const u8) = .{};
@@ -72,102 +171,31 @@ pub fn copyRectangle(e: *Editor) !void {
     // 各行から矩形領域を抽出
     var line_num = info.start_line;
     while (line_num <= info.end_line) : (line_num += 1) {
-        const line_start = buffer.getLineStart(line_num) orelse continue;
+        const bounds = getLineBounds(buffer, line_num) orelse continue;
+        const byte_range = getColumnByteRange(buffer, bounds, info.left_col, info.right_col, tab_width);
 
-        const next_line_start = buffer.getLineStart(line_num + 1);
-        const line_end = if (next_line_start) |nls|
-            if (nls > 0 and nls > line_start) nls - 1 else nls
-        else
-            buffer.len();
-
-        var iter = PieceIterator.init(buffer);
-        iter.seek(line_start);
-
-        var current_col: usize = 0;
-        var rect_start_pos: ?usize = null;
-        var rect_end_pos: ?usize = null;
-
-        while (iter.global_pos < line_end and current_col < info.left_col) {
-            const gc = iter.nextGraphemeCluster() catch break;
-            if (gc) |cluster| {
-                current_col += getCharWidth(cluster.base, cluster.width, current_col, tab_width);
-            } else break;
-        }
-        rect_start_pos = iter.global_pos;
-
-        while (iter.global_pos < line_end and current_col < info.right_col) {
-            const gc = iter.nextGraphemeCluster() catch break;
-            if (gc) |cluster| {
-                current_col += getCharWidth(cluster.base, cluster.width, current_col, tab_width);
-            } else break;
-        }
-        rect_end_pos = iter.global_pos;
-
-        if (rect_start_pos) |rsp| {
-            if (rect_end_pos) |rep| {
-                if (rep > rsp) {
-                    var line_buf: std.ArrayList(u8) = .{};
-                    errdefer line_buf.deinit(e.allocator);
-
-                    var extract_iter = PieceIterator.init(buffer);
-                    extract_iter.seek(rsp);
-                    while (extract_iter.global_pos < rep) {
-                        const byte = extract_iter.next() orelse break;
-                        try line_buf.append(e.allocator, byte);
-                    }
-
-                    const line_text = try line_buf.toOwnedSlice(e.allocator);
-                    try rect_ring.append(e.allocator, line_text);
-                }
-            }
+        if (byte_range.end > byte_range.start) {
+            const line_text = try extractBytes(e.allocator, buffer, byte_range.start, byte_range.end);
+            try rect_ring.append(e.allocator, line_text);
         }
     }
 
     e.rectangle_ring = rect_ring;
     e.getCurrentWindow().mark_pos = null;
-    e.getCurrentView().setError("Rectangle copied");
+    e.getCurrentView().setError(config.Messages.RECTANGLE_COPIED);
 }
 
 /// 矩形領域の削除（C-x r k）
 pub fn killRectangle(e: *Editor) !void {
     if (e.isReadOnly()) return;
 
-    const window = e.getCurrentWindow();
-    const mark = window.mark_pos orelse {
-        e.getCurrentView().setError("No mark set");
-        return;
-    };
-
-    const cursor = e.getCurrentView().getCursorBufferPos();
+    const info = getRectangleInfo(e) orelse return;
     const buffer = e.getCurrentBufferContent();
     const buffer_state = e.getCurrentBuffer();
     const editing_ctx = buffer_state.editing_ctx;
     const tab_width: usize = e.getCurrentView().getTabWidth();
 
-    // マークとカーソルの位置から矩形の範囲を決定
-    const start_pos = @min(mark, cursor);
-    const end_pos = @max(mark, cursor);
-
-    // 開始行と終了行を取得
-    const start_line = buffer.findLineByPos(start_pos);
-    const end_line = buffer.findLineByPos(end_pos);
-
-    // 開始カラムと終了カラムを取得
-    const start_col = buffer.findColumnByPos(start_pos);
-    const end_col = buffer.findColumnByPos(end_pos);
-
-    // カラム範囲を正規化（左から右へ）
-    const left_col = @min(start_col, end_col);
-    const right_col = @max(start_col, end_col);
-
-    // 古い rectangle_ring をクリーンアップ
-    if (e.rectangle_ring) |*old_ring| {
-        for (old_ring.items) |line| {
-            e.allocator.free(line);
-        }
-        old_ring.deinit(e.allocator);
-        e.rectangle_ring = null; // use-after-free防止
-    }
+    cleanupRectangleRing(e);
 
     // 新しい rectangle_ring を作成
     var rect_ring: std.ArrayList([]const u8) = .{};
@@ -186,78 +214,31 @@ pub fn killRectangle(e: *Editor) !void {
     };
     var delete_infos: std.ArrayList(DeleteInfo) = .{};
     defer {
-        for (delete_infos.items) |info| {
-            e.allocator.free(info.text);
+        for (delete_infos.items) |info_item| {
+            e.allocator.free(info_item.text);
         }
         delete_infos.deinit(e.allocator);
     }
 
     // 各行から矩形領域を抽出（まだ削除しない）
-    var line_num = start_line;
-    while (line_num <= end_line) : (line_num += 1) {
-        const line_start = buffer.getLineStart(line_num) orelse continue;
+    var line_num = info.start_line;
+    while (line_num <= info.end_line) : (line_num += 1) {
+        const bounds = getLineBounds(buffer, line_num) orelse continue;
+        const byte_range = getColumnByteRange(buffer, bounds, info.left_col, info.right_col, tab_width);
 
-        // 次の行の開始位置（または末尾）を取得
-        const next_line_start = buffer.getLineStart(line_num + 1);
-        const line_end = if (next_line_start) |nls|
-            if (nls > 0 and nls > line_start) nls - 1 else nls
-        else
-            buffer.len();
+        if (byte_range.end > byte_range.start) {
+            // テキストを抽出してrect_ringに追加
+            const line_text = try extractBytes(e.allocator, buffer, byte_range.start, byte_range.end);
+            errdefer e.allocator.free(line_text);
+            try rect_ring.append(e.allocator, line_text);
 
-        // 行内のカラム位置を探す
-        var iter = PieceIterator.init(buffer);
-        iter.seek(line_start);
-
-        var current_col: usize = 0;
-        var rect_start_pos: ?usize = null;
-        var rect_end_pos: ?usize = null;
-
-        // left_col の位置を探す（表示幅を考慮）
-        while (iter.global_pos < line_end and current_col < left_col) {
-            const gc = iter.nextGraphemeCluster() catch break;
-            if (gc) |cluster| {
-                current_col += getCharWidth(cluster.base, cluster.width, current_col, tab_width);
-            } else break;
-        }
-        rect_start_pos = iter.global_pos;
-
-        // right_col の位置を探す（表示幅を考慮）
-        while (iter.global_pos < line_end and current_col < right_col) {
-            const gc = iter.nextGraphemeCluster() catch break;
-            if (gc) |cluster| {
-                current_col += getCharWidth(cluster.base, cluster.width, current_col, tab_width);
-            } else break;
-        }
-        rect_end_pos = iter.global_pos;
-
-        // 矩形領域のテキストを抽出
-        if (rect_start_pos) |rsp| {
-            if (rect_end_pos) |rep| {
-                if (rep > rsp) {
-                    // テキストを抽出
-                    var line_buf: std.ArrayList(u8) = .{};
-                    errdefer line_buf.deinit(e.allocator);
-
-                    var extract_iter = PieceIterator.init(buffer);
-                    extract_iter.seek(rsp);
-                    while (extract_iter.global_pos < rep) {
-                        const byte = extract_iter.next() orelse break;
-                        try line_buf.append(e.allocator, byte);
-                    }
-
-                    const line_text = try line_buf.toOwnedSlice(e.allocator);
-                    errdefer e.allocator.free(line_text);
-                    try rect_ring.append(e.allocator, line_text);
-
-                    // 削除情報を保存（テキストのコピーを作成）
-                    const text_copy = try e.allocator.dupe(u8, line_text);
-                    try delete_infos.append(e.allocator, .{
-                        .pos = rsp,
-                        .len = rep - rsp,
-                        .text = text_copy,
-                    });
-                }
-            }
+            // 削除情報を保存（テキストのコピーを作成）
+            const text_copy = try e.allocator.dupe(u8, line_text);
+            try delete_infos.append(e.allocator, .{
+                .pos = byte_range.start,
+                .len = byte_range.end - byte_range.start,
+                .text = text_copy,
+            });
         }
     }
 
@@ -266,35 +247,35 @@ pub fn killRectangle(e: *Editor) !void {
     var i = delete_infos.items.len;
     while (i > 0) {
         i -= 1;
-        const info = delete_infos.items[i];
+        const del_info = delete_infos.items[i];
         // バッファから削除（先に実行、失敗時はUndo記録を残さない）
-        try buffer.delete(info.pos, info.len);
+        try buffer.delete(del_info.pos, del_info.len);
         // 削除後のロールバック用errdefer（recordDeleteOpが失敗した場合）
-        errdefer buffer.insertSlice(info.pos, info.text) catch {};
+        errdefer buffer.insertSlice(del_info.pos, del_info.text) catch {};
         // Undo履歴に記録
-        try editing_ctx.recordDeleteOp(info.pos, info.text, cursor_before);
+        try editing_ctx.recordDeleteOp(del_info.pos, del_info.text, cursor_before);
     }
 
     e.rectangle_ring = rect_ring;
 
     // modified と dirty を設定
     buffer_state.editing_ctx.modified = true;
-    e.markAllViewsDirtyForBuffer(buffer_state.id, start_line, null);
+    e.markAllViewsDirtyForBuffer(buffer_state.id, info.start_line, null);
 
-    window.mark_pos = null;
-    e.getCurrentView().setError("Rectangle killed");
+    e.getCurrentWindow().mark_pos = null;
+    e.getCurrentView().setError(config.Messages.RECTANGLE_KILLED);
 }
 
 /// 矩形の貼り付け（C-x r y）
 pub fn yankRectangle(e: *Editor) !void {
     if (e.isReadOnly()) return;
     const rect = e.rectangle_ring orelse {
-        e.getCurrentView().setError("No rectangle to yank");
+        e.getCurrentView().setError(config.Messages.NO_RECTANGLE_TO_YANK);
         return;
     };
 
     if (rect.items.len == 0) {
-        e.getCurrentView().setError("Rectangle is empty");
+        e.getCurrentView().setError(config.Messages.RECTANGLE_EMPTY);
         return;
     }
 
@@ -317,9 +298,9 @@ pub fn yankRectangle(e: *Editor) !void {
     var insert_infos: std.ArrayList(InsertInfo) = .{};
     defer {
         // ownedフラグが立っているテキストを解放
-        for (insert_infos.items) |info| {
-            if (info.owned) {
-                e.allocator.free(info.text);
+        for (insert_infos.items) |ins_info| {
+            if (ins_info.owned) {
+                e.allocator.free(ins_info.text);
             }
         }
         insert_infos.deinit(e.allocator);
@@ -329,76 +310,27 @@ pub fn yankRectangle(e: *Editor) !void {
     for (rect.items, 0..) |line_text, i| {
         const target_line = cursor_line + i;
 
-        // 対象行の開始位置を取得
-        const line_start = buffer.getLineStart(target_line) orelse blk: {
+        // 対象行の境界を取得（存在しない場合は新規作成）
+        const bounds = getLineBounds(buffer, target_line) orelse blk: {
             // 行が存在しない場合は、改行を追加して新しい行を作成
             const buf_end = buffer.len();
             buffer.insert(buf_end, '\n') catch continue;
             // Undo記録
             editing_ctx.recordInsertOp(buf_end, "\n", cursor_before) catch {};
-            // 新しく作成した行の開始位置を取得（改行の次の位置）
-            break :blk buffer.getLineStart(target_line) orelse continue;
+            // 新しく作成した行の境界を取得
+            break :blk getLineBounds(buffer, target_line) orelse continue;
         };
 
         // 対象行のカラム cursor_col の位置を探す
-        var iter = PieceIterator.init(buffer);
-        iter.seek(line_start);
-
-        // 次の行の開始位置（または末尾）を取得
-        const next_line_start = buffer.getLineStart(target_line + 1);
-        const line_end = if (next_line_start) |nls|
-            if (nls > 0 and nls > line_start) nls - 1 else nls
-        else
-            buffer.len();
-
-        var current_col: usize = 0;
-        while (iter.global_pos < line_end and current_col < cursor_col) {
-            const gc = iter.nextGraphemeCluster() catch break;
-            if (gc) |cluster| {
-                current_col += getCharWidth(cluster.base, cluster.width, current_col, tab_width);
-            } else break;
-        }
-
-        const insert_pos = iter.global_pos;
+        const seek_result = seekToColumn(buffer, bounds, cursor_col, tab_width);
 
         // 行が短くてcursor_colに届かない場合はスペースでパディング
-        if (current_col < cursor_col) {
-            const padding_needed = cursor_col - current_col;
-            // パディング + 矩形テキストを結合
-            var padded_text = std.ArrayList(u8).initCapacity(e.allocator, padding_needed + line_text.len) catch continue;
-            // initCapacity成功後、以降の操作で失敗した場合に確実にdeinitする
-            var padded_text_valid = true;
-            defer if (padded_text_valid) {} else padded_text.deinit(e.allocator);
-
-            var padding_ok = true;
-            for (0..padding_needed) |_| {
-                padded_text.append(e.allocator, ' ') catch {
-                    padding_ok = false;
-                    break;
-                };
-            }
-            if (!padding_ok) {
-                padded_text.deinit(e.allocator);
-                padded_text_valid = false;
-                continue;
-            }
-
-            padded_text.appendSlice(e.allocator, line_text) catch {
-                padded_text.deinit(e.allocator);
-                padded_text_valid = false;
-                continue;
-            };
-
-            // toOwnedSliceで所有権を取得（成功後はArrayListは空になる）
-            const owned_text = padded_text.toOwnedSlice(e.allocator) catch {
-                padded_text.deinit(e.allocator);
-                padded_text_valid = false;
-                continue;
-            };
-            padded_text_valid = false; // toOwnedSlice成功でArrayListは無効化済み
-            try insert_infos.append(e.allocator, .{ .pos = insert_pos, .text = owned_text, .owned = true });
+        if (seek_result.reached_col < cursor_col) {
+            const padding_needed = cursor_col - seek_result.reached_col;
+            const padded_text = createPaddedText(e.allocator, padding_needed, line_text) orelse continue;
+            try insert_infos.append(e.allocator, .{ .pos = seek_result.byte_pos, .text = padded_text, .owned = true });
         } else {
-            try insert_infos.append(e.allocator, .{ .pos = insert_pos, .text = line_text, .owned = false });
+            try insert_infos.append(e.allocator, .{ .pos = seek_result.byte_pos, .text = line_text, .owned = false });
         }
     }
 
@@ -406,18 +338,31 @@ pub fn yankRectangle(e: *Editor) !void {
     var i = insert_infos.items.len;
     while (i > 0) {
         i -= 1;
-        const info = insert_infos.items[i];
+        const ins_info = insert_infos.items[i];
         // バッファに挿入（先に実行、失敗時はUndo記録を残さない）
-        try buffer.insertSlice(info.pos, info.text);
+        try buffer.insertSlice(ins_info.pos, ins_info.text);
         // 挿入後のロールバック用errdefer（recordInsertOpが失敗した場合）
-        errdefer buffer.delete(info.pos, info.text.len) catch {};
+        errdefer buffer.delete(ins_info.pos, ins_info.text.len) catch {};
         // Undo履歴に記録
-        try editing_ctx.recordInsertOp(info.pos, info.text, cursor_before);
+        try editing_ctx.recordInsertOp(ins_info.pos, ins_info.text, cursor_before);
     }
 
     // modified と dirty を設定
     buffer_state.editing_ctx.modified = true;
     e.markAllViewsDirtyForBuffer(buffer_state.id, cursor_line, null);
 
-    e.getCurrentView().setError("Rectangle yanked");
+    e.getCurrentView().setError(config.Messages.RECTANGLE_YANKED);
+}
+
+/// パディング付きテキストを作成
+fn createPaddedText(allocator: std.mem.Allocator, padding: usize, text: []const u8) ?[]const u8 {
+    var padded = std.ArrayList(u8).initCapacity(allocator, padding + text.len) catch return null;
+    errdefer padded.deinit(allocator);
+
+    for (0..padding) |_| {
+        padded.append(allocator, ' ') catch return null;
+    }
+    padded.appendSlice(allocator, text) catch return null;
+
+    return padded.toOwnedSlice(allocator) catch null;
 }
