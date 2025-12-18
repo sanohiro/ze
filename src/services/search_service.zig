@@ -258,15 +258,22 @@ pub const SearchService = struct {
     }
 
     /// 正規表現検索（常に正規表現として処理）
-    /// 注意: 前方検索ではカーソルは既にマッチ終端にあるのでskip_currentでもバイト加算は不要
+    /// skip_current=true の場合、同じ位置での空マッチを回避するため位置を調整
     pub fn searchRegex(self: *Self, content: []const u8, pattern: []const u8, start_pos: usize, forward: bool, skip_current: bool) ?SearchMatch {
-        _ = skip_current; // カーソルは既にマッチ終端にあるのでスキップ不要
         if (forward) {
-            // 前方検索: カーソル位置から検索（カーソルは既にマッチ終端なのでスキップ不要）
-            return self.searchRegexForward(content, pattern, start_pos);
+            // 前方検索: skip_current時は1バイト進めて空マッチの無限ループを防止
+            const search_from = if (skip_current and start_pos < content.len)
+                start_pos + 1
+            else
+                start_pos;
+            return self.searchRegexForward(content, pattern, search_from);
         } else {
-            // 正規表現の後方検索: start_posから検索（マッチ終端より前を探す）
-            return self.searchRegexBackward(content, pattern, start_pos);
+            // 後方検索: skip_current時は1バイト戻して同位置マッチを回避
+            const search_from = if (skip_current and start_pos > 0)
+                start_pos - 1
+            else
+                start_pos;
+            return self.searchRegexBackward(content, pattern, search_from);
         }
     }
 

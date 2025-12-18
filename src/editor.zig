@@ -3346,12 +3346,17 @@ pub const Editor = struct {
 
             while (true) {
                 // チャンク範囲を計算
+                // 前方: 左端にオーバーラップ（前のチャンク境界を跨ぐマッチを検出）
+                // 後方: 右端にオーバーラップ（次のチャンク境界を跨ぐマッチを検出）
                 const chunk_start: usize = if (forward)
                     (if (first_chunk) search_pos else if (search_pos > overlap) search_pos - overlap else 0)
                 else
                     (if (search_pos > max_chunk_size) search_pos - max_chunk_size else 0);
 
-                const chunk_end: usize = @min(buf_len, chunk_start + max_chunk_size);
+                const chunk_end: usize = if (forward)
+                    @min(buf_len, chunk_start + max_chunk_size)
+                else
+                    @min(buf_len, if (first_chunk) search_pos else search_pos + overlap);
                 const chunk_len = chunk_end - chunk_start;
                 if (chunk_len == 0) break;
 
@@ -3359,12 +3364,14 @@ pub const Editor = struct {
                 defer self.allocator.free(content);
 
                 // チャンク内での検索開始位置
+                // 前方: オーバーラップ分をスキップ（既に検索済み）
+                // 後方: オーバーラップ領域より前を検索
                 const adjusted_start: usize = if (first_chunk)
                     (if (search_pos > chunk_start) search_pos - chunk_start else 0)
                 else if (forward)
                     (if (overlap < chunk_len) overlap else 0)
                 else
-                    chunk_len;
+                    (if (chunk_len > overlap) chunk_len - overlap else chunk_len);
 
                 if (self.search_service.searchRegex(content, search_str, adjusted_start, forward, first_chunk and skip_current)) |match| {
                     self.setCursorToPos(match.start + match.len + chunk_start);

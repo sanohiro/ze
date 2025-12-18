@@ -169,14 +169,22 @@ pub fn copyRectangle(e: *Editor) !void {
     }
 
     // 各行から矩形領域を抽出
+    // 短い行も空文字列で保持（行数を維持してyank時のズレを防止）
     var line_num = info.start_line;
     while (line_num <= info.end_line) : (line_num += 1) {
-        const bounds = getLineBounds(buffer, line_num) orelse continue;
+        const bounds = getLineBounds(buffer, line_num) orelse {
+            // 行が取得できない場合も空文字列を追加
+            try rect_ring.append(e.allocator, try e.allocator.dupe(u8, ""));
+            continue;
+        };
         const byte_range = getColumnByteRange(buffer, bounds, info.left_col, info.right_col, tab_width);
 
         if (byte_range.end > byte_range.start) {
             const line_text = try extractBytes(e.allocator, buffer, byte_range.start, byte_range.end);
             try rect_ring.append(e.allocator, line_text);
+        } else {
+            // 短い行は空文字列を追加（行数を維持）
+            try rect_ring.append(e.allocator, try e.allocator.dupe(u8, ""));
         }
     }
 
@@ -221,9 +229,14 @@ pub fn killRectangle(e: *Editor) !void {
     }
 
     // 各行から矩形領域を抽出（まだ削除しない）
+    // 短い行も空文字列で保持（行数を維持してyank時のズレを防止）
     var line_num = info.start_line;
     while (line_num <= info.end_line) : (line_num += 1) {
-        const bounds = getLineBounds(buffer, line_num) orelse continue;
+        const bounds = getLineBounds(buffer, line_num) orelse {
+            // 行が取得できない場合も空文字列を追加（削除はしない）
+            try rect_ring.append(e.allocator, try e.allocator.dupe(u8, ""));
+            continue;
+        };
         const byte_range = getColumnByteRange(buffer, bounds, info.left_col, info.right_col, tab_width);
 
         if (byte_range.end > byte_range.start) {
@@ -239,6 +252,9 @@ pub fn killRectangle(e: *Editor) !void {
                 .len = byte_range.end - byte_range.start,
                 .text = text_copy,
             });
+        } else {
+            // 短い行は空文字列を追加（削除はしない）
+            try rect_ring.append(e.allocator, try e.allocator.dupe(u8, ""));
         }
     }
 
