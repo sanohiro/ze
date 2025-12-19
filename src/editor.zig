@@ -3564,10 +3564,9 @@ pub const Editor = struct {
             if (iter.next()) |lead_byte| {
                 // UTF-8リードバイトからシーケンス長を計算
                 const byte_len = std.unicode.utf8ByteSequenceLength(lead_byte) catch 1;
-                new_pos += byte_len;
-            } else {
-                new_pos += 1;
+                new_pos = @min(new_pos + byte_len, buffer.total_len);
             }
+            // else: イテレータが終端に達している場合は進めない（new_posは既に有効な位置）
         }
         self.setCursorToPos(new_pos);
 

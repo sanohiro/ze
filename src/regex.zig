@@ -385,6 +385,8 @@ pub const Regex = struct {
                     }
                     if (pos < text.len) {
                         pos += 1;
+                    } else {
+                        break; // テキスト終端に達したので終了（無限ループ防止）
                     }
                     continue;
                 }

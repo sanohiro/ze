@@ -1981,9 +1981,8 @@ pub const View = struct {
             self.markScroll(@intCast(delta));
         } else if (lines < 0) {
             // 上スクロール
-            // @abs()を使用してi32.minのオーバーフローを防止
-            const abs_lines: u32 = @abs(lines);
-            const delta: usize = @intCast(abs_lines);
+            // i64経由でキャストすることでi32.minでもオーバーフローしない
+            const delta: usize = @intCast(-@as(i64, lines));
             if (self.top_line >= delta) {
                 self.top_line -= delta;
             } else {
