@@ -229,10 +229,16 @@ pub fn graphemeBreak(cp1: u21, cp2: u21, state: *State) bool {
     if (isCr(cp1) and isLf(cp2)) return false;
 
     // GB4: (Control | CR | LF) ÷ (break after controls)
-    if (isBreaker(cp1)) return true;
+    if (isBreaker(cp1)) {
+        state.* = .{};  // Reset state - sequence broken
+        return true;
+    }
 
     // GB5: ÷ (Control | CR | LF) (break before controls)
-    if (isBreaker(cp2)) return true;
+    if (isBreaker(cp2)) {
+        state.* = .{};  // Reset state - sequence broken
+        return true;
+    }
 
     // GB9: × (Extend | ZWJ) (don't break before extends/ZWJ)
     // This is the most common case for emoji with modifiers
@@ -248,7 +254,7 @@ pub fn graphemeBreak(cp1: u21, cp2: u21, state: *State) bool {
     // Flags are made of two Regional Indicator symbols
     if (isRegionalIndicator(cp1) and isRegionalIndicator(cp2)) {
         if (state.regional) {
-            state.regional = false;
+            state.* = .{};  // Reset all state - pair complete
             return true;  // Break after pair
         } else {
             state.regional = true;
@@ -282,6 +288,7 @@ pub fn graphemeBreak(cp1: u21, cp2: u21, state: *State) bool {
     }
 
     // GB999: Any ÷ Any (default: break between everything else)
+    state.* = .{};  // Reset state - sequence broken
     return true;
 }
 

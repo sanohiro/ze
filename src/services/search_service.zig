@@ -213,7 +213,7 @@ pub const SearchService = struct {
 
         // ラップアラウンド
         if (re.searchBackward(content, content.len)) |match| {
-            if (match.start > start_pos) {
+            if (match.start >= start_pos) {
                 return .{
                     .start = match.start,
                     .len = match.end - match.start,
@@ -242,16 +242,21 @@ pub const SearchService = struct {
             }
         } else {
             // 後方検索: カーソルはマッチ末尾にあるので、マッチ開始位置より前から検索
-            // skip_currentの場合、パターン長分戻す（リテラル検索のみ正確）
-            const search_from = if (skip_current and start_pos >= pattern.len)
-                start_pos - pattern.len
-            else if (skip_current)
-                0
-            else
-                start_pos;
             if (isRegexPattern(pattern)) {
+                // 正規表現: マッチ長は不明なので1バイト戻して同位置マッチを回避
+                const search_from = if (skip_current and start_pos > 0)
+                    start_pos - 1
+                else
+                    start_pos;
                 return self.searchRegexBackward(content, pattern, search_from);
             } else {
+                // リテラル: パターン長分戻す
+                const search_from = if (skip_current and start_pos >= pattern.len)
+                    start_pos - pattern.len
+                else if (skip_current)
+                    0
+                else
+                    start_pos;
                 return self.searchBackward(content, pattern, search_from);
             }
         }

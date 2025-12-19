@@ -234,7 +234,11 @@ pub const History = struct {
         file.close();
 
         // アトミックにリネーム（既存ファイルを上書き）
-        try std.fs.cwd().rename(tmp_path, path);
+        std.fs.cwd().rename(tmp_path, path) catch |err| {
+            // リネーム失敗時は一時ファイルを削除（残存防止）
+            std.fs.cwd().deleteFile(tmp_path) catch {};
+            return err;
+        };
 
         // ディレクトリをsyncしてメタデータの永続化を保証
         // 注: Zigのfs.Dirにはsyncメソッドがないため、fsyncで代替

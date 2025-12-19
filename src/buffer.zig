@@ -296,8 +296,6 @@ pub const LineIndex = struct {
     /// 指定位置以降を無効化（インクリメンタル更新用）
     /// 編集位置を含む行の開始位置から再スキャンが必要
     pub fn invalidateFrom(self: *LineIndex, pos: usize) void {
-        if (!self.valid) return; // 既に無効なら何もしない
-
         // posを含む行の開始位置を見つける
         // この行の開始位置より前の行は保持される
         var line_start_pos: usize = 0;
@@ -308,10 +306,18 @@ pub const LineIndex = struct {
 
         // valid_until_posを「posを含む行の開始位置」に設定
         // これより前の行のみ保持される
-        if (line_start_pos < self.valid_until_pos) {
+        // 既に無効化されている場合も、より早い位置があれば更新する
+        // （複数回の編集で最も早い位置から再構築するため）
+        if (!self.valid) {
+            // 既に無効: より早い位置なら更新
+            if (self.valid_until_pos == 0 or line_start_pos < self.valid_until_pos) {
+                self.valid_until_pos = line_start_pos;
+            }
+        } else {
+            // まだ有効: 無効化して位置を設定
             self.valid_until_pos = line_start_pos;
+            self.valid = false;
         }
-        self.valid = false;
     }
 
     pub fn rebuild(self: *LineIndex, buffer: *const Buffer) !void {
