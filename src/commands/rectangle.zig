@@ -41,33 +41,6 @@ const ByteRange = struct {
     end: usize,
 };
 
-fn getColumnByteRange(buffer: anytype, line_bounds: LineBounds, left_col: usize, right_col: usize, tab_width: usize) ByteRange {
-    var iter = PieceIterator.init(buffer);
-    iter.seek(line_bounds.start);
-
-    var current_col: usize = 0;
-
-    // left_col の位置を探す
-    while (iter.global_pos < line_bounds.end and current_col < left_col) {
-        const gc = iter.nextGraphemeCluster() catch break;
-        if (gc) |cluster| {
-            current_col += getCharWidth(cluster.base, cluster.width, current_col, tab_width);
-        } else break;
-    }
-    const start_pos = iter.global_pos;
-
-    // right_col の位置を探す
-    while (iter.global_pos < line_bounds.end and current_col < right_col) {
-        const gc = iter.nextGraphemeCluster() catch break;
-        if (gc) |cluster| {
-            current_col += getCharWidth(cluster.base, cluster.width, current_col, tab_width);
-        } else break;
-    }
-    const end_pos = iter.global_pos;
-
-    return .{ .start = start_pos, .end = end_pos };
-}
-
 /// 指定位置のカラムまで進み、バイト位置を返す
 /// 行が短い場合は、到達したカラム数も返す（パディング計算用）
 const ColumnSeekResult = struct {
@@ -75,19 +48,33 @@ const ColumnSeekResult = struct {
     reached_col: usize,
 };
 
-fn seekToColumn(buffer: anytype, line_bounds: LineBounds, target_col: usize, tab_width: usize) ColumnSeekResult {
-    var iter = PieceIterator.init(buffer);
-    iter.seek(line_bounds.start);
-
-    var current_col: usize = 0;
-    while (iter.global_pos < line_bounds.end and current_col < target_col) {
+/// イテレータをtarget_colまで進める共通処理
+fn advanceToColumn(iter: anytype, line_end: usize, start_col: usize, target_col: usize, tab_width: usize) ColumnSeekResult {
+    var current_col = start_col;
+    while (iter.global_pos < line_end and current_col < target_col) {
         const gc = iter.nextGraphemeCluster() catch break;
         if (gc) |cluster| {
             current_col += getCharWidth(cluster.base, cluster.width, current_col, tab_width);
         } else break;
     }
-
     return .{ .byte_pos = iter.global_pos, .reached_col = current_col };
+}
+
+fn getColumnByteRange(buffer: anytype, line_bounds: LineBounds, left_col: usize, right_col: usize, tab_width: usize) ByteRange {
+    var iter = PieceIterator.init(buffer);
+    iter.seek(line_bounds.start);
+
+    // left_col → right_col を連続して探索
+    const left_result = advanceToColumn(&iter, line_bounds.end, 0, left_col, tab_width);
+    const right_result = advanceToColumn(&iter, line_bounds.end, left_result.reached_col, right_col, tab_width);
+
+    return .{ .start = left_result.byte_pos, .end = right_result.byte_pos };
+}
+
+fn seekToColumn(buffer: anytype, line_bounds: LineBounds, target_col: usize, tab_width: usize) ColumnSeekResult {
+    var iter = PieceIterator.init(buffer);
+    iter.seek(line_bounds.start);
+    return advanceToColumn(&iter, line_bounds.end, 0, target_col, tab_width);
 }
 
 /// バッファからバイト範囲のテキストを抽出

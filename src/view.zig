@@ -395,6 +395,19 @@ pub const View = struct {
         self.indent_style = style;
     }
 
+    /// 前フレームバッファの行を更新（既存なら更新、新規なら追加）
+    fn updatePrevScreenBuffer(self: *View, screen_row: usize, line_content: []const u8) !void {
+        if (screen_row < self.prev_screen.items.len) {
+            self.prev_screen.items[screen_row].clearRetainingCapacity();
+            try self.prev_screen.items[screen_row].appendSlice(self.allocator, line_content);
+        } else {
+            const line_capacity = @max(line_content.len, self.viewport_width * 4);
+            var new_prev_line = try std.ArrayList(u8).initCapacity(self.allocator, line_capacity);
+            try new_prev_line.appendSlice(self.allocator, line_content);
+            try self.prev_screen.append(self.allocator, new_prev_line);
+        }
+    }
+
     pub fn deinit(self: *View, allocator: std.mem.Allocator) void {
         self.line_buffer.deinit(allocator);
         // 前フレームバッファのクリーンアップ
@@ -1165,16 +1178,7 @@ pub const View = struct {
         }
 
         // 前フレームバッファを更新
-        if (screen_row < self.prev_screen.items.len) {
-            self.prev_screen.items[screen_row].clearRetainingCapacity();
-            try self.prev_screen.items[screen_row].appendSlice(self.allocator, new_line);
-        } else {
-            // 新しい行を追加（事前に容量確保してアロケーション回数を削減）
-            const line_capacity = @max(new_line.len, self.viewport_width * 4);
-            var new_prev_line = try std.ArrayList(u8).initCapacity(self.allocator, line_capacity);
-            try new_prev_line.appendSlice(self.allocator, new_line);
-            try self.prev_screen.append(self.allocator, new_prev_line);
-        }
+        try self.updatePrevScreenBuffer(screen_row, new_line);
     }
 
     // イテレータを再利用して行を描画（セルレベル差分描画版）
@@ -1454,33 +1458,21 @@ pub const View = struct {
         const empty_line = "~";
         const abs_row = viewport_y + screen_row;
 
-        // 前フレームと比較
+        // 前フレームと比較して変更がなければスキップ
         if (screen_row < self.prev_screen.items.len) {
             const old_line = self.prev_screen.items[screen_row].items;
-            if (old_line.len != 1 or old_line[0] != '~') {
-                // 変更あり：描画
-                try term.moveCursor(abs_row, viewport_x);
-                try term.write(empty_line);
-                // 残りをスペースで埋める
-                try self.padToWidth(term, empty_line, viewport_width);
-
-                // 前フレームバッファ更新
-                self.prev_screen.items[screen_row].clearRetainingCapacity();
-                try self.prev_screen.items[screen_row].appendSlice(self.allocator, empty_line);
+            if (old_line.len == 1 and old_line[0] == '~') {
+                return; // 変更なし
             }
-        } else {
-            // 新しい行：描画
-            try term.moveCursor(abs_row, viewport_x);
-            try term.write(empty_line);
-            // 残りをスペースで埋める
-            try self.padToWidth(term, empty_line, viewport_width);
-
-            // 前フレームバッファ追加（事前に容量確保）
-            const line_capacity = @max(empty_line.len, self.viewport_width * 4);
-            var new_prev_line = try std.ArrayList(u8).initCapacity(self.allocator, line_capacity);
-            try new_prev_line.appendSlice(self.allocator, empty_line);
-            try self.prev_screen.append(self.allocator, new_prev_line);
         }
+
+        // 描画
+        try term.moveCursor(abs_row, viewport_x);
+        try term.write(empty_line);
+        try self.padToWidth(term, empty_line, viewport_width);
+
+        // 前フレームバッファを更新
+        try self.updatePrevScreenBuffer(screen_row, empty_line);
     }
 
     /// ウィンドウ境界内にレンダリング
