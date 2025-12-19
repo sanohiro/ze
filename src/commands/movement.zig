@@ -188,6 +188,8 @@ pub fn forwardParagraph(e: *Editor) !void {
             pos = line_end;
         }
 
+        // 進捗がない場合は無限ループ防止
+        if (line_end == line_start) break;
         if (pos >= buf_len) break;
     }
 

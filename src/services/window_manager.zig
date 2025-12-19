@@ -166,6 +166,8 @@ pub const WindowManager = struct {
         }
 
         // 旧サイズが0の場合はデフォルト値を使用
+        // 新サイズが0の場合はリサイズをスキップ（ゼロ除算防止）
+        if (total_width == 0 or total_height == 0) return;
         if (old_total_width == 0) old_total_width = total_width;
         if (old_total_height == 0) old_total_height = total_height;
 

@@ -392,6 +392,7 @@ pub const Editor = struct {
     fn cancelInput(self: *Editor) void {
         self.mode = .normal;
         self.clearInputBuffer();
+        self.clearPendingFilename(); // メモリリーク防止
         self.getCurrentView().clearError();
     }
 
@@ -696,13 +697,20 @@ pub const Editor = struct {
                 var pos = self.getCurrentView().getCursorBufferPos();
                 var prev_pos = start_pos;
 
-                while (true) {
+                var loop_count: usize = 0;
+                const buf_len = self.getCurrentBufferContent().len();
+                const max_iterations = buf_len + 1; // 安全上限
+                while (loop_count < max_iterations) : (loop_count += 1) {
                     const found = try self.findNextMatch(search, pos);
                     if (!found) break;
 
                     const new_pos = self.getCurrentView().getCursorBufferPos();
                     // ラップアラウンドで開始位置より前に戻った場合は終了
                     if (new_pos < prev_pos and new_pos < start_pos) {
+                        break;
+                    }
+                    // 位置が進まない場合は無限ループ防止（空マッチ等）
+                    if (new_pos == prev_pos and loop_count > 0) {
                         break;
                     }
 

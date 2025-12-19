@@ -763,6 +763,8 @@ fn sjisToUnicode(byte1: u8, byte2: u8) ?u21 {
     } else if (byte2 >= 0x9F and byte2 <= 0xFC) {
         ten = byte2 - 0x9E;
         ku += 1;
+        // ku が 94 を超える場合は無効
+        if (ku > 94) return null;
     } else {
         return null;
     }
