@@ -551,6 +551,20 @@ pub const Editor = struct {
         }
     }
 
+    /// 確認モードの共通キーディスパッチ
+    /// C-gとEscapeでキャンセル、それ以外はハンドラーに委譲
+    fn dispatchConfirmKey(self: *Editor, key: input.Key, handler: *const fn (*Editor, u21) void) void {
+        switch (key) {
+            .char => |c| handler(self, c),
+            .codepoint => |cp| handler(self, unicode.normalizeFullwidth(cp)),
+            .ctrl => |c| {
+                if (c == 'g') self.resetToNormal();
+            },
+            .escape => self.resetToNormal(),
+            else => {},
+        }
+    }
+
     /// 終了確認モードの文字処理
     fn handleQuitConfirmChar(self: *Editor, cp: u21) void {
         const c = unicode.toAsciiChar(cp);
@@ -3115,51 +3129,19 @@ pub const Editor = struct {
                 return;
             },
             .quit_confirm => {
-                switch (key) {
-                    .char => |c| self.handleQuitConfirmChar(c),
-                    .codepoint => |cp| self.handleQuitConfirmChar(unicode.normalizeFullwidth(cp)),
-                    .ctrl => |c| {
-                        if (c == 'g') self.resetToNormal();
-                    },
-                    .escape => self.resetToNormal(),
-                    else => {},
-                }
+                self.dispatchConfirmKey(key, handleQuitConfirmChar);
                 return;
             },
             .kill_buffer_confirm => {
-                switch (key) {
-                    .char => |c| self.handleKillBufferConfirmChar(c),
-                    .codepoint => |cp| self.handleKillBufferConfirmChar(unicode.normalizeFullwidth(cp)),
-                    .ctrl => |c| {
-                        if (c == 'g') self.resetToNormal();
-                    },
-                    .escape => self.resetToNormal(),
-                    else => {},
-                }
+                self.dispatchConfirmKey(key, handleKillBufferConfirmChar);
                 return;
             },
             .exit_confirm => {
-                switch (key) {
-                    .char => |c| self.handleExitConfirmChar(c),
-                    .codepoint => |cp| self.handleExitConfirmChar(unicode.normalizeFullwidth(cp)),
-                    .ctrl => |c| {
-                        if (c == 'g') self.resetToNormal();
-                    },
-                    .escape => self.resetToNormal(),
-                    else => {},
-                }
+                self.dispatchConfirmKey(key, handleExitConfirmChar);
                 return;
             },
             .overwrite_confirm => {
-                switch (key) {
-                    .char => |c| self.handleOverwriteConfirmChar(c),
-                    .codepoint => |cp| self.handleOverwriteConfirmChar(unicode.normalizeFullwidth(cp)),
-                    .ctrl => |c| {
-                        if (c == 'g') self.resetToNormal();
-                    },
-                    .escape => self.resetToNormal(),
-                    else => {},
-                }
+                self.dispatchConfirmKey(key, handleOverwriteConfirmChar);
                 return;
             },
             .prefix_r => {

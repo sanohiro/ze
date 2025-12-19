@@ -199,38 +199,35 @@ pub fn forwardParagraph(e: *Editor) !void {
     }
 }
 
+/// 指定位置を含む行の先頭を見つける
+fn findLineStart(buffer: *const Buffer, pos: usize) usize {
+    if (pos == 0) return 0;
+    var line_start = pos;
+    while (line_start > 0) {
+        var iter = PieceIterator.init(buffer);
+        iter.seek(line_start - 1);
+        const byte = iter.next() orelse break;
+        if (byte == '\n') break;
+        line_start -= 1;
+    }
+    return line_start;
+}
+
 /// M-{: 前の段落へ移動
 pub fn backwardParagraph(e: *Editor) !void {
     const buffer = e.getCurrentBufferContent();
     const start_pos = e.getCurrentView().getCursorBufferPos();
     if (start_pos == 0) return;
 
-    var pos = start_pos;
-    var found_blank_section = false;
-
-    // 現在行の先頭に移動
-    while (pos > 0) {
-        var iter = PieceIterator.init(buffer);
-        iter.seek(pos - 1);
-        const byte = iter.next() orelse break;
-        if (byte == '\n') break;
-        pos -= 1;
-    }
-
-    // 1つ前の行から開始
+    // 現在行の先頭に移動し、1つ前の行から開始
+    var pos = findLineStart(buffer, start_pos);
     if (pos > 0) pos -= 1;
+
+    var found_blank_section = false;
 
     // 空行のブロックを見つけて、その前の段落の先頭へ移動
     while (pos > 0) {
-        // 現在行の先頭を見つける
-        var line_start = pos;
-        while (line_start > 0) {
-            var iter = PieceIterator.init(buffer);
-            iter.seek(line_start - 1);
-            const byte = iter.next() orelse break;
-            if (byte == '\n') break;
-            line_start -= 1;
-        }
+        const line_start = findLineStart(buffer, pos);
 
         // 現在行が空行かチェック
         var iter = PieceIterator.init(buffer);
