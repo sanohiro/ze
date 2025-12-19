@@ -15,6 +15,7 @@
 
 const std = @import("std");
 const View = @import("view").View;
+const config = @import("config");
 
 /// ウィンドウ分割タイプ
 pub const SplitType = enum {
@@ -185,9 +186,9 @@ pub const WindowManager = struct {
             window.y = new_y;
             window.height = if (new_bottom > new_y) new_bottom - new_y else 1;
 
-            // 最小サイズを保証
-            if (window.width < 10) window.width = 10;
-            if (window.height < 3) window.height = 3;
+            // 最小サイズを保証（config定数を使用）
+            if (window.width < config.Window.MIN_WIDTH) window.width = config.Window.MIN_WIDTH;
+            if (window.height < config.Window.MIN_HEIGHT) window.height = config.Window.MIN_HEIGHT;
 
             window.view.markFullRedraw();
         }
@@ -223,8 +224,8 @@ pub const WindowManager = struct {
     pub fn splitHorizontally(self: *Self) !SplitResult {
         const current_idx = self.current_window_idx;
 
-        // ウィンドウの高さが2未満の場合は分割できない
-        if (self.windows.items[current_idx].height < 2) {
+        // 分割後に両ペインがMIN_HEIGHT以上になるよう要求
+        if (self.windows.items[current_idx].height < 2 * config.Window.MIN_HEIGHT) {
             return error.WindowTooSmall;
         }
 
@@ -275,8 +276,8 @@ pub const WindowManager = struct {
     pub fn splitVertically(self: *Self) !SplitResult {
         const current_idx = self.current_window_idx;
 
-        // ウィンドウの幅が最小幅未満の場合は分割できない（最低10列は必要）
-        if (self.windows.items[current_idx].width < 20) {
+        // 分割後に両ペインがMIN_WIDTH以上になるよう要求
+        if (self.windows.items[current_idx].width < 2 * config.Window.MIN_WIDTH) {
             return error.WindowTooSmall;
         }
 

@@ -252,20 +252,38 @@ pub const Minibuffer = struct {
     // ヘルパー関数
     // ========================================
 
+    /// 前のグラフェムクラスタの開始位置を見つける
+    /// ZWJ絵文字やスキントーン修飾子を含む複合文字を正しく扱う
     fn findPrevGraphemeStart(text: []const u8, pos: usize) usize {
         if (pos == 0) return 0;
-        // pos が text.len を超えている場合は text.len から開始
-        var p = @min(pos, text.len);
-        if (p > 0) p -= 1;
-        while (p > 0 and unicode.isUtf8Continuation(text[p])) {
-            p -= 1;
+        const target = @min(pos, text.len);
+
+        // 先頭から順にグラフェムクラスタを列挙し、
+        // target直前の境界を見つける
+        var last_boundary: usize = 0;
+        var current_pos: usize = 0;
+
+        while (current_pos < target) {
+            const cluster = unicode.nextGraphemeCluster(text[current_pos..]) orelse break;
+            const next_pos = current_pos + cluster.byte_len;
+
+            if (next_pos >= target) {
+                // このクラスタがtargetを含むか超える
+                return current_pos;
+            }
+
+            last_boundary = next_pos;
+            current_pos = next_pos;
         }
-        return p;
+
+        return last_boundary;
     }
 
+    /// 次のグラフェムクラスタの終端位置を見つける
     fn findNextGraphemeEnd(text: []const u8, pos: usize) usize {
         if (pos >= text.len) return text.len;
-        return @min(pos + unicode.utf8SeqLen(text[pos]), text.len);
+        const cluster = unicode.nextGraphemeCluster(text[pos..]) orelse return text.len;
+        return @min(pos + cluster.byte_len, text.len);
     }
 
     fn isWhitespaceAt(text: []const u8, pos: usize) bool {

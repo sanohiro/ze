@@ -567,10 +567,9 @@ pub fn deleteWord(e: *Editor) !void {
         end_pos = iter.global_pos;
     }
 
+    // deleteRangeCommon内でmarkDirtyForTextが呼ばれる
     if (try deleteRangeCommon(e, start_pos, end_pos - start_pos, start_pos)) |deleted| {
         e.allocator.free(deleted);
-        // 単語削除は全体再描画（行番号変動の可能性）
-        markFullRedrawAll(e);
     }
 }
 
@@ -662,9 +661,11 @@ pub fn indentRegion(e: *Editor) !void {
     const buffer = e.getCurrentBufferContent();
     const view = e.getCurrentView();
 
-    // インデント文字を検出
-    const indent_char = detectIndentStyle(e);
-    const indent_str: []const u8 = if (indent_char == '\t') "\t" else "    ";
+    // Viewの設定からインデント文字列を取得
+    const indent_style = view.getIndentStyle();
+    const tab_width = view.getTabWidth();
+    const spaces = "        "; // 8 spaces max
+    const indent_str: []const u8 = if (indent_style == .tab) "\t" else spaces[0..@min(tab_width, spaces.len)];
 
     // 選択範囲があればその行全体をインデント、なければ現在行のみ
     const range = getSelectedLineRange(e);
@@ -695,6 +696,9 @@ pub fn unindentRegion(e: *Editor) !void {
     const buffer = e.getCurrentBufferContent();
     const view = e.getCurrentView();
 
+    // Viewの設定からタブ幅を取得
+    const tab_width = view.getTabWidth();
+
     // 選択範囲があればその行全体をアンインデント、なければ現在行のみ
     const range = getSelectedLineRange(e);
     const start_line = range.start_line;
@@ -718,9 +722,9 @@ pub fn unindentRegion(e: *Editor) !void {
                 spaces_to_remove = 1;
             } else if (ch == ' ') {
                 spaces_to_remove = 1;
-                // 最大4スペースまで削除
+                // タブ幅分のスペースを削除
                 var count: usize = 1;
-                while (count < 4) : (count += 1) {
+                while (count < tab_width) : (count += 1) {
                     if (iter.next()) |next_ch| {
                         if (next_ch == ' ') {
                             spaces_to_remove += 1;
@@ -784,43 +788,6 @@ pub fn keyboardQuit(e: *Editor) !void {
 // ヘルパー関数
 // ========================================
 
-/// インデントスタイルを検出（タブ優先かスペース優先か）
-fn detectIndentStyle(e: *Editor) u8 {
-    const buffer = e.getCurrentBufferContent();
-    var iter = PieceIterator.init(buffer);
-
-    var tab_lines: usize = 0; // タブでインデントされた行数
-    var space_lines: usize = 0; // スペースでインデントされた行数
-    var line_spaces: usize = 0; // 現在行のスペース数
-    var at_line_start = true;
-
-    while (iter.next()) |ch| {
-        if (ch == '\n') {
-            at_line_start = true;
-            line_spaces = 0; // 改行ごとにリセット
-        } else if (at_line_start) {
-            if (ch == '\t') {
-                tab_lines += 1;
-                at_line_start = false;
-            } else if (ch == ' ') {
-                line_spaces += 1;
-                // 4スペース連続でスペースインデント行としてカウント
-                if (line_spaces >= 4) {
-                    space_lines += 1;
-                    at_line_start = false;
-                }
-            } else {
-                at_line_start = false;
-            }
-        }
-    }
-
-    // タブ行が多ければタブ、そうでなければスペース
-    if (tab_lines > space_lines) {
-        return '\t';
-    }
-    return ' ';
-}
 
 /// 現在行のインデント（先頭の空白）を取得
 /// Enter時の自動インデントに使用

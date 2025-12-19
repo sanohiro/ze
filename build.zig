@@ -176,13 +176,14 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    // services/window_manager <- view
+    // services/window_manager <- view, config
     const window_manager_mod = b.addModule("window_manager", .{
         .root_source_file = b.path("src/services/window_manager.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "view", .module = view_mod },
+            .{ .name = "config", .module = config_mod },
         },
     });
 
