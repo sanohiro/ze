@@ -75,6 +75,29 @@ pub const ShellService = struct {
     /// 出力バッファの上限（OOM防止）
     const MAX_OUTPUT_SIZE: usize = 10 * 1024 * 1024; // 10MB
 
+    /// バッファサイズ制限付きで読み取り（ノンブロッキング対応）
+    /// handle_would_block: trueならWouldBlockを特別処理、falseなら全エラーでbreak
+    fn readWithLimit(
+        allocator: std.mem.Allocator,
+        file: std.fs.File,
+        buffer: *std.ArrayListUnmanaged(u8),
+        read_buf: []u8,
+        handle_would_block: bool,
+    ) !void {
+        while (buffer.items.len < MAX_OUTPUT_SIZE) {
+            const bytes_read = file.read(read_buf) catch |err| {
+                if (handle_would_block and err == error.WouldBlock) break;
+                break;
+            };
+            if (bytes_read == 0) break;
+            const available = MAX_OUTPUT_SIZE - buffer.items.len;
+            const to_append = @min(bytes_read, available);
+            if (to_append > 0) {
+                try buffer.appendSlice(allocator, read_buf[0..to_append]);
+            }
+        }
+    }
+
     pub fn init(allocator: std.mem.Allocator) Self {
         var history = History.init(allocator);
         history.load(.shell) catch {}; // エラーは無視
@@ -266,20 +289,9 @@ pub const ShellService = struct {
 
         var read_buf: [8192]u8 = undefined;
 
-        // stdout から読み取り（上限チェック付き）
+        // stdout から読み取り（上限チェック付き、ノンブロッキング）
         if (state.child.stdout) |stdout_file| {
-            while (state.stdout_buffer.items.len < MAX_OUTPUT_SIZE) {
-                const bytes_read = stdout_file.read(&read_buf) catch |err| switch (err) {
-                    error.WouldBlock => break,
-                    else => break,
-                };
-                if (bytes_read == 0) break;
-                const available = MAX_OUTPUT_SIZE - state.stdout_buffer.items.len;
-                const to_append = @min(bytes_read, available);
-                if (to_append > 0) {
-                    try state.stdout_buffer.appendSlice(self.allocator, read_buf[0..to_append]);
-                }
-            }
+            try readWithLimit(self.allocator, stdout_file, &state.stdout_buffer, &read_buf, true);
             // 上限に達したらパイプを閉じる（子プロセスのブロックを防ぐ）
             if (state.stdout_buffer.items.len >= MAX_OUTPUT_SIZE) {
                 stdout_file.close();
@@ -287,20 +299,9 @@ pub const ShellService = struct {
             }
         }
 
-        // stderr から読み取り（上限チェック付き）
+        // stderr から読み取り（上限チェック付き、ノンブロッキング）
         if (state.child.stderr) |stderr_file| {
-            while (state.stderr_buffer.items.len < MAX_OUTPUT_SIZE) {
-                const bytes_read = stderr_file.read(&read_buf) catch |err| switch (err) {
-                    error.WouldBlock => break,
-                    else => break,
-                };
-                if (bytes_read == 0) break;
-                const available = MAX_OUTPUT_SIZE - state.stderr_buffer.items.len;
-                const to_append = @min(bytes_read, available);
-                if (to_append > 0) {
-                    try state.stderr_buffer.appendSlice(self.allocator, read_buf[0..to_append]);
-                }
-            }
+            try readWithLimit(self.allocator, stderr_file, &state.stderr_buffer, &read_buf, true);
             // 上限に達したらパイプを閉じる（子プロセスのブロックを防ぐ）
             if (state.stderr_buffer.items.len >= MAX_OUTPUT_SIZE) {
                 stderr_file.close();
@@ -365,28 +366,12 @@ pub const ShellService = struct {
             state.exit_status = null;
         }
 
-        // 残りのデータを読み取る（上限チェック付き）
+        // 残りのデータを読み取る（上限チェック付き、ブロッキング）
         if (state.child.stdout) |stdout_file| {
-            while (state.stdout_buffer.items.len < MAX_OUTPUT_SIZE) {
-                const bytes_read = stdout_file.read(&read_buf) catch break;
-                if (bytes_read == 0) break;
-                const available = MAX_OUTPUT_SIZE - state.stdout_buffer.items.len;
-                const to_append = @min(bytes_read, available);
-                if (to_append > 0) {
-                    try state.stdout_buffer.appendSlice(self.allocator, read_buf[0..to_append]);
-                }
-            }
+            try readWithLimit(self.allocator, stdout_file, &state.stdout_buffer, &read_buf, false);
         }
         if (state.child.stderr) |stderr_file| {
-            while (state.stderr_buffer.items.len < MAX_OUTPUT_SIZE) {
-                const bytes_read = stderr_file.read(&read_buf) catch break;
-                if (bytes_read == 0) break;
-                const available = MAX_OUTPUT_SIZE - state.stderr_buffer.items.len;
-                const to_append = @min(bytes_read, available);
-                if (to_append > 0) {
-                    try state.stderr_buffer.appendSlice(self.allocator, read_buf[0..to_append]);
-                }
-            }
+            try readWithLimit(self.allocator, stderr_file, &state.stderr_buffer, &read_buf, false);
         }
 
         // 結果を返す
