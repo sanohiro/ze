@@ -222,6 +222,8 @@ pub const View = struct {
     line_buffer: std.ArrayList(u8), // 行データの一時格納
     expanded_line: std.ArrayList(u8), // タブ展開後のデータ
     highlighted_line: std.ArrayList(u8), // ハイライト適用後のデータ
+    regex_visible_text: std.ArrayList(u8), // 正規表現マッチ用可視テキスト
+    regex_visible_to_raw: std.ArrayList(usize), // 可視位置→元位置マッピング
 
     // === UI表示用 ===
     error_msg_buf: [256]u8, // エラーメッセージ（固定バッファ）
@@ -261,6 +263,12 @@ pub const View = struct {
         var highlighted_line = try std.ArrayList(u8).initCapacity(allocator, 256);
         errdefer highlighted_line.deinit(allocator);
 
+        var regex_visible_text = try std.ArrayList(u8).initCapacity(allocator, 256);
+        errdefer regex_visible_text.deinit(allocator);
+
+        var regex_visible_to_raw = try std.ArrayList(usize).initCapacity(allocator, 257);
+        errdefer regex_visible_to_raw.deinit(allocator);
+
         return View{
             .buffer = buffer,
             .top_line = 0,
@@ -289,6 +297,8 @@ pub const View = struct {
             .cached_block_top_line = 0,
             .expanded_line = expanded_line,
             .highlighted_line = highlighted_line,
+            .regex_visible_text = regex_visible_text,
+            .regex_visible_to_raw = regex_visible_to_raw,
             .prev_top_line = 0, // スクロール追跡用
             .scroll_delta = 0, // スクロール差分
             .selection_start = null, // 選択範囲なし
@@ -418,6 +428,8 @@ pub const View = struct {
         // レンダリング用スクラッチバッファのクリーンアップ
         self.expanded_line.deinit(allocator);
         self.highlighted_line.deinit(allocator);
+        self.regex_visible_text.deinit(allocator);
+        self.regex_visible_to_raw.deinit(allocator);
         // 正規表現キャッシュのクリーンアップ
         if (self.compiled_highlight_regex) |*r| {
             r.deinit();
@@ -928,12 +940,12 @@ pub const View = struct {
         var re = self.compiled_highlight_regex orelse return line;
 
         // ANSIエスケープを除いた可視テキストと位置マッピングを構築
-        // visible_to_raw[i] = 可視位置iに対応する元の行の開始位置
+        // regex_visible_to_raw[i] = 可視位置iに対応する元の行の開始位置
         // content_start以降のみを検索対象とする（行番号部分をスキップ）
-        var visible_text = try std.ArrayList(u8).initCapacity(self.allocator, line.len);
-        defer visible_text.deinit(self.allocator);
-        var visible_to_raw = try std.ArrayList(usize).initCapacity(self.allocator, line.len + 1);
-        defer visible_to_raw.deinit(self.allocator);
+        self.regex_visible_text.clearRetainingCapacity();
+        try self.regex_visible_text.ensureTotalCapacity(self.allocator, line.len);
+        self.regex_visible_to_raw.clearRetainingCapacity();
+        try self.regex_visible_to_raw.ensureTotalCapacity(self.allocator, line.len + 1);
 
         // content_start以降から処理開始（行番号部分をスキップ）
         var raw_pos: usize = content_start;
@@ -945,18 +957,18 @@ pub const View = struct {
                 if (raw_pos < line.len) raw_pos += 1; // 'm' をスキップ
             } else {
                 // 可視文字を追加
-                visible_to_raw.appendAssumeCapacity(raw_pos);
-                visible_text.appendAssumeCapacity(line[raw_pos]);
+                self.regex_visible_to_raw.appendAssumeCapacity(raw_pos);
+                self.regex_visible_text.appendAssumeCapacity(line[raw_pos]);
                 raw_pos += 1;
             }
         }
         // 終端位置を追加（マッチ末尾の計算用）
-        visible_to_raw.appendAssumeCapacity(line.len);
+        self.regex_visible_to_raw.appendAssumeCapacity(line.len);
 
-        if (visible_text.items.len == 0) return line;
+        if (self.regex_visible_text.items.len == 0) return line;
 
         // 可視テキストに対して正規表現マッチ
-        const first_match_result = re.search(visible_text.items, 0) orelse return line;
+        const first_match_result = re.search(self.regex_visible_text.items, 0) orelse return line;
 
         // 空マッチの場合はスキップ
         if (first_match_result.end == first_match_result.start) return line;
@@ -971,12 +983,12 @@ pub const View = struct {
         // 最初のマッチを処理
         var match_start_vis = first_match_result.start;
         var match_end_vis = first_match_result.end;
-        // 境界チェック: visible_to_rawの範囲外アクセスを防止
-        if (match_start_vis >= visible_to_raw.items.len or match_end_vis >= visible_to_raw.items.len) {
+        // 境界チェック: regex_visible_to_rawの範囲外アクセスを防止
+        if (match_start_vis >= self.regex_visible_to_raw.items.len or match_end_vis >= self.regex_visible_to_raw.items.len) {
             return line;
         }
-        var match_start_raw = visible_to_raw.items[match_start_vis];
-        var match_end_raw = visible_to_raw.items[match_end_vis];
+        var match_start_raw = self.regex_visible_to_raw.items[match_start_vis];
+        var match_end_raw = self.regex_visible_to_raw.items[match_end_vis];
 
         // マッチ前の部分をコピー
         try self.highlighted_line.appendSlice(self.allocator, line[0..match_start_raw]);
@@ -993,8 +1005,8 @@ pub const View = struct {
         last_raw_pos = match_end_raw;
 
         // 残りのマッチを処理
-        while (visible_pos < visible_text.items.len) {
-            if (re.search(visible_text.items, visible_pos)) |match_result| {
+        while (visible_pos < self.regex_visible_text.items.len) {
+            if (re.search(self.regex_visible_text.items, visible_pos)) |match_result| {
                 if (match_result.end == match_result.start) {
                     visible_pos += 1;
                     continue;
@@ -1002,12 +1014,12 @@ pub const View = struct {
 
                 match_start_vis = match_result.start;
                 match_end_vis = match_result.end;
-                // 境界チェック: visible_to_rawの範囲外アクセスを防止
-                if (match_start_vis >= visible_to_raw.items.len or match_end_vis >= visible_to_raw.items.len) {
+                // 境界チェック: regex_visible_to_rawの範囲外アクセスを防止
+                if (match_start_vis >= self.regex_visible_to_raw.items.len or match_end_vis >= self.regex_visible_to_raw.items.len) {
                     break;
                 }
-                match_start_raw = visible_to_raw.items[match_start_vis];
-                match_end_raw = visible_to_raw.items[match_end_vis];
+                match_start_raw = self.regex_visible_to_raw.items[match_start_vis];
+                match_end_raw = self.regex_visible_to_raw.items[match_end_vis];
 
                 // マッチ前の部分をコピー
                 try self.highlighted_line.appendSlice(self.allocator, line[last_raw_pos..match_start_raw]);
