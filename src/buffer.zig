@@ -837,47 +837,11 @@ pub const Buffer = struct {
                         try writer.writeAll(self.getPieceData(piece));
                     }
                 } else if (self.detected_line_ending == .CRLF) {
-                    // CRLF モード: LF を CRLF に変換（チャンクベースで高速化）
-                    for (self.pieces.items) |piece| {
-                        const data = self.getPieceData(piece);
-                        var chunk_start: usize = 0;
-                        for (data, 0..) |byte, i| {
-                            if (byte == '\n') {
-                                // \n の前までを書き込み
-                                if (i > chunk_start) {
-                                    try writer.writeAll(data[chunk_start..i]);
-                                }
-                                // \r\n を書き込み
-                                try writer.writeAll("\r\n");
-                                chunk_start = i + 1;
-                            }
-                        }
-                        // 残りのチャンクを書き込み
-                        if (chunk_start < data.len) {
-                            try writer.writeAll(data[chunk_start..]);
-                        }
-                    }
+                    // CRLF モード: LF を CRLF に変換
+                    try self.writeWithLineEnding(writer, "\r\n");
                 } else if (self.detected_line_ending == .CR) {
-                    // CR モード: LF を CR に変換（チャンクベースで高速化）
-                    for (self.pieces.items) |piece| {
-                        const data = self.getPieceData(piece);
-                        var chunk_start: usize = 0;
-                        for (data, 0..) |byte, i| {
-                            if (byte == '\n') {
-                                // \n の前までを書き込み
-                                if (i > chunk_start) {
-                                    try writer.writeAll(data[chunk_start..i]);
-                                }
-                                // \r を書き込み（writeByte → writeAllで1バイト書き込み）
-                                try writer.writeAll(&[_]u8{'\r'});
-                                chunk_start = i + 1;
-                            }
-                        }
-                        // 残りのチャンクを書き込み
-                        if (chunk_start < data.len) {
-                            try writer.writeAll(data[chunk_start..]);
-                        }
-                    }
+                    // CR モード: LF を CR に変換
+                    try self.writeWithLineEnding(writer, "\r");
                 }
 
                 // バッファをフラッシュ
@@ -908,6 +872,26 @@ pub const Buffer = struct {
             .original => self.original[piece.start..][0..piece.length],
             .add => self.add_buffer.items[piece.start..][0..piece.length],
         };
+    }
+
+    /// LF を指定の改行文字列に変換しながら書き込み（チャンクベースで高速化）
+    fn writeWithLineEnding(self: *const Buffer, writer: anytype, line_ending: []const u8) !void {
+        for (self.pieces.items) |piece| {
+            const data = self.getPieceData(piece);
+            var chunk_start: usize = 0;
+            for (data, 0..) |byte, i| {
+                if (byte == '\n') {
+                    if (i > chunk_start) {
+                        try writer.writeAll(data[chunk_start..i]);
+                    }
+                    try writer.writeAll(line_ending);
+                    chunk_start = i + 1;
+                }
+            }
+            if (chunk_start < data.len) {
+                try writer.writeAll(data[chunk_start..]);
+            }
+        }
     }
 
     /// 指定位置のバイトを取得（O(pieces)だが、イテレータ作成よりも軽量）

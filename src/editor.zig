@@ -514,10 +514,7 @@ pub const Editor = struct {
         self.mode = if (forward) .isearch_forward else .isearch_backward;
         self.search_start_pos = self.getCurrentView().getCursorBufferPos();
 
-        const prefix = if (self.is_regex_search)
-            (if (forward) "Regexp I-search: " else "Regexp I-search backward: ")
-        else
-            (if (forward) "I-search: " else "I-search backward: ");
+        const prefix = self.getIsearchPrefix(forward);
         const prefix_len = stringDisplayWidth(prefix);
 
         if (self.last_search) |search_str| {
@@ -532,6 +529,31 @@ pub const Editor = struct {
             self.clearInputBuffer();
             self.prompt_prefix_len = prefix_len;
             self.getCurrentView().setError(prefix);
+        }
+    }
+
+    /// I-searchプロンプトのプレフィックスを取得
+    fn getIsearchPrefix(self: *const Editor, forward: bool) []const u8 {
+        return if (self.is_regex_search)
+            (if (forward) "Regexp I-search: " else "Regexp I-search backward: ")
+        else
+            (if (forward) "I-search: " else "I-search backward: ");
+    }
+
+    /// I-searchプロンプトを更新（ミニバッファ内容付き）
+    fn updateIsearchPrompt(self: *Editor, forward: bool) void {
+        const prefix = self.getIsearchPrefix(forward);
+        self.prompt_prefix_len = stringDisplayWidth(prefix);
+        self.setPrompt("{s}{s}", .{ prefix, self.minibuffer.getContent() });
+    }
+
+    /// I-searchハイライトを更新
+    fn updateIsearchHighlight(self: *Editor) void {
+        const content = self.minibuffer.getContent();
+        if (content.len > 0) {
+            self.getCurrentView().setSearchHighlightEx(content, self.is_regex_search);
+        } else {
+            self.getCurrentView().setSearchHighlight(null);
         }
     }
 
@@ -752,18 +774,12 @@ pub const Editor = struct {
         const len = std.unicode.utf8Encode(cp, &buf) catch return;
         try self.minibuffer.insertAtCursor(buf[0..len]);
 
-        // プロンプトを更新（正規表現モードの状態を考慮）
-        const prefix = if (self.is_regex_search)
-            (if (is_forward) "Regexp I-search: " else "Regexp I-search backward: ")
-        else
-            (if (is_forward) "I-search: " else "I-search backward: ");
-        self.prompt_prefix_len = stringDisplayWidth(prefix);
-        self.setPrompt("{s}{s}", .{ prefix, self.minibuffer.getContent() });
+        // プロンプトとハイライトを更新
+        self.updateIsearchPrompt(is_forward);
+        self.updateIsearchHighlight();
 
-        // 検索実行
+        // 検索開始位置からやり直す（パターンが変わったので最初から検索）
         if (self.minibuffer.getContent().len > 0) {
-            self.getCurrentView().setSearchHighlightEx(self.minibuffer.getContent(), self.is_regex_search);
-            // 検索開始位置からやり直す（パターンが変わったので最初から検索）
             if (self.search_start_pos) |start_pos| {
                 self.setCursorToPos(start_pos);
             }
@@ -2394,18 +2410,8 @@ pub const Editor = struct {
                     else => {
                         // C-f/C-b/C-a/C-e/C-d/C-k/C-y等はミニバッファ共通処理へ
                         if (try self.handleMinibufferKey(key)) {
-                            const prefix = if (self.is_regex_search)
-                                (if (is_forward) "Regexp I-search: " else "Regexp I-search backward: ")
-                            else
-                                (if (is_forward) "I-search: " else "I-search backward: ");
-                            self.prompt_prefix_len = stringDisplayWidth(prefix);
-                            self.setPrompt("{s}{s}", .{ prefix, self.minibuffer.getContent() });
-                            // 削除操作でミニバッファ内容が変わった可能性があるのでハイライト更新
-                            if (self.minibuffer.getContent().len > 0) {
-                                self.getCurrentView().setSearchHighlightEx(self.minibuffer.getContent(), self.is_regex_search);
-                            } else {
-                                self.getCurrentView().setSearchHighlight(null);
-                            }
+                            self.updateIsearchPrompt(is_forward);
+                            self.updateIsearchHighlight();
                         }
                     },
                 }
@@ -2415,32 +2421,14 @@ pub const Editor = struct {
                     'r' => {
                         // M-r: 正規表現/リテラルモードをトグル
                         self.is_regex_search = !self.is_regex_search;
-                        const prefix = if (self.is_regex_search)
-                            (if (is_forward) "Regexp I-search: " else "Regexp I-search backward: ")
-                        else
-                            (if (is_forward) "I-search: " else "I-search backward: ");
-                        self.prompt_prefix_len = stringDisplayWidth(prefix);
-                        self.setPrompt("{s}{s}", .{ prefix, self.minibuffer.getContent() });
-                        // ハイライトを更新
-                        if (self.minibuffer.getContent().len > 0) {
-                            self.getCurrentView().setSearchHighlightEx(self.minibuffer.getContent(), self.is_regex_search);
-                        }
+                        self.updateIsearchPrompt(is_forward);
+                        self.updateIsearchHighlight();
                     },
                     else => {
                         // その他のAltキーはミニバッファ共通処理へ（M-d/M-delete等の削除含む）
                         if (try self.handleMinibufferKey(key)) {
-                            const prefix = if (self.is_regex_search)
-                                (if (is_forward) "Regexp I-search: " else "Regexp I-search backward: ")
-                            else
-                                (if (is_forward) "I-search: " else "I-search backward: ");
-                            self.prompt_prefix_len = stringDisplayWidth(prefix);
-                            self.setPrompt("{s}{s}", .{ prefix, self.minibuffer.getContent() });
-                            // 削除操作でミニバッファ内容が変わった可能性があるのでハイライト更新
-                            if (self.minibuffer.getContent().len > 0) {
-                                self.getCurrentView().setSearchHighlightEx(self.minibuffer.getContent(), self.is_regex_search);
-                            } else {
-                                self.getCurrentView().setSearchHighlight(null);
-                            }
+                            self.updateIsearchPrompt(is_forward);
+                            self.updateIsearchHighlight();
                         }
                     },
                 }
@@ -2470,23 +2458,13 @@ pub const Editor = struct {
                 if (self.minibuffer.getContent().len > 0) {
                     self.minibuffer.moveToEnd();
                     self.minibuffer.backspace();
-                    const prefix = if (self.is_regex_search)
-                        (if (is_forward) "Regexp I-search: " else "Regexp I-search backward: ")
-                    else
-                        (if (is_forward) "I-search: " else "I-search backward: ");
-                    self.prompt_prefix_len = stringDisplayWidth(prefix);
-                    self.setPrompt("{s}{s}", .{ prefix, self.minibuffer.getContent() });
+                    self.updateIsearchPrompt(is_forward);
+                    self.updateIsearchHighlight();
+                    if (self.search_start_pos) |start_pos| {
+                        self.setCursorToPos(start_pos);
+                    }
                     if (self.minibuffer.getContent().len > 0) {
-                        self.getCurrentView().setSearchHighlightEx(self.minibuffer.getContent(), self.is_regex_search);
-                        if (self.search_start_pos) |start_pos| {
-                            self.setCursorToPos(start_pos);
-                        }
                         try self.performSearch(is_forward, false);
-                    } else {
-                        self.getCurrentView().setSearchHighlight(null);
-                        if (self.search_start_pos) |start_pos| {
-                            self.setCursorToPos(start_pos);
-                        }
                     }
                 }
             },
@@ -2504,18 +2482,8 @@ pub const Editor = struct {
                 // その他のキーはミニバッファ共通処理にフォールバック
                 // (C-f/C-b/C-a/C-e/M-f/M-b/左右矢印、C-d/delete削除など)
                 if (try self.handleMinibufferKey(key)) {
-                    const prefix = if (self.is_regex_search)
-                        (if (is_forward) "Regexp I-search: " else "Regexp I-search backward: ")
-                    else
-                        (if (is_forward) "I-search: " else "I-search backward: ");
-                    self.prompt_prefix_len = stringDisplayWidth(prefix);
-                    self.setPrompt("{s}{s}", .{ prefix, self.minibuffer.getContent() });
-                    // 削除操作でミニバッファ内容が変わった可能性があるのでハイライト更新
-                    if (self.minibuffer.getContent().len > 0) {
-                        self.getCurrentView().setSearchHighlightEx(self.minibuffer.getContent(), self.is_regex_search);
-                    } else {
-                        self.getCurrentView().setSearchHighlight(null);
-                    }
+                    self.updateIsearchPrompt(is_forward);
+                    self.updateIsearchHighlight();
                 }
             },
         }
@@ -3596,17 +3564,12 @@ pub const Editor = struct {
             // ミニバッファを履歴エントリで置き換え
             try self.minibuffer.setContent(text);
 
-            // プロンプトを更新（正規表現モードの状態を考慮）
-            const prefix = if (self.is_regex_search)
-                (if (is_forward) "Regexp I-search: " else "Regexp I-search backward: ")
-            else
-                (if (is_forward) "I-search: " else "I-search backward: ");
-            self.prompt_prefix_len = stringDisplayWidth(prefix);
-            self.setPrompt("{s}{s}", .{ prefix, text });
+            // プロンプトとハイライトを更新
+            self.updateIsearchPrompt(is_forward);
+            self.updateIsearchHighlight();
 
             // 検索を実行
             if (text.len > 0) {
-                self.getCurrentView().setSearchHighlightEx(text, self.is_regex_search);
                 if (self.search_start_pos) |start_pos| {
                     self.setCursorToPos(start_pos);
                 }

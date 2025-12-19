@@ -1316,7 +1316,7 @@ pub const View = struct {
                 // ASCII
                 if (ch == '\t') {
                     // Tabを空白に展開（バッチ処理で高速化）
-                    const next_tab_stop = (col / tab_width + 1) * tab_width;
+                    const next_tab_stop = nextTabStop(col, tab_width);
 
                     // 水平スクロール範囲内の空白数を計算
                     const tab_start = col;
@@ -1418,7 +1418,7 @@ pub const View = struct {
                 const byte = line_buffer.items[byte_offset];
                 if (byte == '\t') {
                     // タブは次のタブストップまで展開（設定されたタブ幅を使用）
-                    expanded_pos = (expanded_pos / tab_width + 1) * tab_width;
+                    expanded_pos = nextTabStop(expanded_pos, tab_width);
                     byte_offset += 1;
                 } else if (unicode.isAsciiByte(byte)) {
                     // ASCII文字: 幅1
@@ -1733,10 +1733,10 @@ pub const View = struct {
             if (gc.base == '\n') break;
 
             // タブ文字の場合は文脈依存の幅を計算
-            const char_width = if (gc.base == '\t') blk: {
-                const next_tab_stop = (display_col / self.getTabWidth() + 1) * self.getTabWidth();
-                break :blk next_tab_stop - display_col;
-            } else gc.width;
+            const char_width = if (gc.base == '\t')
+                nextTabStop(display_col, self.getTabWidth()) - display_col
+            else
+                gc.width;
 
             display_col += char_width;
 
@@ -1774,10 +1774,10 @@ pub const View = struct {
                 if (gc.base == '\n') break;
 
                 // タブ文字の場合は文脈依存の幅を計算
-                const char_width = if (gc.base == '\t') blk: {
-                    const next_tab_stop = (line_width / self.getTabWidth() + 1) * self.getTabWidth();
-                    break :blk next_tab_stop - line_width;
-                } else gc.width;
+                const char_width = if (gc.base == '\t')
+                    nextTabStop(line_width, self.getTabWidth()) - line_width
+                else
+                    gc.width;
 
                 line_width += char_width;
             } else {
@@ -1822,10 +1822,10 @@ pub const View = struct {
                     if (gc.base == '\n') break;
 
                     // タブ文字の場合は文脈依存の幅を計算
-                    last_width = if (gc.base == '\t') blk: {
-                        const next_tab_stop = (display_col / self.getTabWidth() + 1) * self.getTabWidth();
-                        break :blk next_tab_stop - display_col;
-                    } else gc.width;
+                    last_width = if (gc.base == '\t')
+                        nextTabStop(display_col, self.getTabWidth()) - display_col
+                    else
+                        gc.width;
 
                     display_col += last_width;
                     if (iter.global_pos >= pos) break;
@@ -1892,10 +1892,10 @@ pub const View = struct {
                 }
             } else {
                 // タブ文字の場合は文脈依存の幅を計算
-                const char_width = if (gc.base == '\t') blk: {
-                    const next_tab_stop = (self.cursor_x / self.getTabWidth() + 1) * self.getTabWidth();
-                    break :blk next_tab_stop - self.cursor_x;
-                } else gc.width;
+                const char_width = if (gc.base == '\t')
+                    nextTabStop(self.cursor_x, self.getTabWidth()) - self.cursor_x
+                else
+                    gc.width;
 
                 // grapheme clusterの幅分進める
                 self.cursor_x += char_width;
@@ -2036,10 +2036,10 @@ pub const View = struct {
             if (cluster) |gc| {
                 if (gc.base == '\n') break;
                 // タブ文字の場合は文脈依存の幅を計算
-                const char_width = if (gc.base == '\t') blk: {
-                    const next_tab_stop = (line_width / self.getTabWidth() + 1) * self.getTabWidth();
-                    break :blk next_tab_stop - line_width;
-                } else gc.width;
+                const char_width = if (gc.base == '\t')
+                    nextTabStop(line_width, self.getTabWidth()) - line_width
+                else
+                    gc.width;
                 line_width += char_width;
             } else {
                 break;
