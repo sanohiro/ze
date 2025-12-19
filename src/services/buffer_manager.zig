@@ -188,22 +188,22 @@ pub const BufferManager = struct {
     /// バッファをファイル名で検索
     /// パスを正規化して比較するため、相対/絶対パスの違いに関わらず同じファイルを検出
     pub fn findByFilename(self: *Self, filename: []const u8) ?*BufferState {
-        // 入力パスを正規化
-        const normalized_input = std.fs.cwd().realpathAlloc(self.allocator, filename) catch null;
-        defer if (normalized_input) |n| self.allocator.free(n);
-
+        // 高速パス: まず単純な文字列比較（realpath呼び出しを回避）
         for (self.buffers.items) |buffer| {
-            // キャッシュされた正規化パスがあれば使用（高速）
-            if (buffer.filename_normalized) |buf_norm| {
-                if (normalized_input) |norm_in| {
-                    if (std.mem.eql(u8, norm_in, buf_norm)) {
-                        return buffer;
-                    }
-                }
-            }
-            // フォールバック：元のファイル名で比較
             if (buffer.filename) |buf_filename| {
                 if (std.mem.eql(u8, buf_filename, filename)) {
+                    return buffer;
+                }
+            }
+        }
+
+        // 見つからなければ正規化パスで比較（ファイルシステムアクセスが必要）
+        const normalized_input = std.fs.cwd().realpathAlloc(self.allocator, filename) catch return null;
+        defer self.allocator.free(normalized_input);
+
+        for (self.buffers.items) |buffer| {
+            if (buffer.filename_normalized) |buf_norm| {
+                if (std.mem.eql(u8, normalized_input, buf_norm)) {
                     return buffer;
                 }
             }

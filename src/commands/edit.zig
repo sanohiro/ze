@@ -829,34 +829,23 @@ pub fn getCurrentLineIndent(e: *Editor) []const u8 {
 // ヘルパー関数
 // ========================================
 
-/// 指定のプレフィックスでコメント行かどうか判定（言語定義がない場合のフォールバック用）
-fn isCommentWithPrefix(line: []const u8, prefix: []const u8) bool {
-    // 行頭の空白をスキップ
+/// 行頭の空白（スペース/タブ）をスキップした位置を返す
+fn skipLeadingWhitespace(line: []const u8) usize {
     var i: usize = 0;
     while (i < line.len and (line[i] == ' ' or line[i] == '\t')) {
         i += 1;
     }
-    if (i >= line.len) return false;
+    return i;
+}
 
-    // プレフィックスをチェック
-    if (i + prefix.len <= line.len and std.mem.startsWith(u8, line[i..], prefix)) {
-        return true;
-    }
-    return false;
+/// 指定のプレフィックスでコメント行かどうか判定（言語定義がない場合のフォールバック用）
+fn isCommentWithPrefix(line: []const u8, prefix: []const u8) bool {
+    const i = skipLeadingWhitespace(line);
+    return i + prefix.len <= line.len and std.mem.startsWith(u8, line[i..], prefix);
 }
 
 /// 指定のプレフィックスでコメント開始位置を検索（言語定義がない場合のフォールバック用）
 fn findCommentStartWithPrefix(line: []const u8, prefix: []const u8) ?usize {
-    // 行頭の空白をスキップ
-    var i: usize = 0;
-    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) {
-        i += 1;
-    }
-    if (i >= line.len) return null;
-
-    // プレフィックスをチェック
-    if (i + prefix.len <= line.len and std.mem.startsWith(u8, line[i..], prefix)) {
-        return i;
-    }
-    return null;
+    const i = skipLeadingWhitespace(line);
+    return if (i + prefix.len <= line.len and std.mem.startsWith(u8, line[i..], prefix)) i else null;
 }

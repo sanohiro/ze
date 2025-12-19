@@ -374,6 +374,11 @@ pub const View = struct {
         return if (width == 0) 4 else width;
     }
 
+    /// 次のタブストップ位置を計算
+    pub inline fn nextTabStop(current_col: usize, tab_width: usize) usize {
+        return (current_col / tab_width + 1) * tab_width;
+    }
+
     /// タブ幅を設定（0は無効、最小1）
     pub fn setTabWidth(self: *View, width: u8) void {
         self.tab_width = if (width == 0) 1 else width;

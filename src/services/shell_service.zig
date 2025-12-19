@@ -311,7 +311,11 @@ pub const ShellService = struct {
         // stdin へのストリーミング書き込み
         if (state.child.stdin) |stdin_file| {
             if (state.stdin_data) |data| {
-                const remaining = data.len - state.stdin_write_pos;
+                // アンダーフロー防止: write_pos が data.len を超える場合は remaining = 0
+                const remaining = if (state.stdin_write_pos < data.len)
+                    data.len - state.stdin_write_pos
+                else
+                    0;
                 if (remaining > 0) {
                     const chunk_size = @min(remaining, 8192);
                     const chunk = data[state.stdin_write_pos .. state.stdin_write_pos + chunk_size];
