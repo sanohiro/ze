@@ -388,6 +388,41 @@ zig run test_harness_generic.zig -lc -- "test" "C-x" "C-g"
 zig run test_harness_generic.zig -lc -- "text" "C-x" "C-s" "/tmp/wrong" "Backspace" "Backspace" "Backspace" "Backspace" "Backspace" "right.txt" "Enter" "C-x" "C-c"
 ```
 
+## リリース手順
+
+**⚠️ 絶対に忘れるな：CHANGELOG.md の更新 ⚠️**
+
+リリース時は以下の手順を**必ず全て**実行すること：
+
+```bash
+# 1. CHANGELOG.md を更新（これを忘れるな！）
+#    - 新しいバージョンのセクションを追加
+#    - Changed, Fixed, Added, Refactored 等を記載
+
+# 2. build.zig.zon のバージョンを更新
+#    .version = "X.Y.Z",
+
+# 3. コミット
+git add CHANGELOG.md build.zig.zon
+git commit -m "chore: bump version to vX.Y.Z"
+
+# 4. タグ作成とプッシュ
+git tag vX.Y.Z
+git push origin main --tags
+
+# 5. GitHub Actions が自動でリリースを作成
+#    - バイナリビルド（macOS/Linux × arm64/amd64）
+#    - Homebrew formula 更新
+
+# 6. リリースノートを更新（任意）
+gh release edit vX.Y.Z --notes "..."
+```
+
+**チェックリスト（リリース前に確認）：**
+- [ ] CHANGELOG.md に新バージョンのエントリを追加したか？
+- [ ] build.zig.zon のバージョンを更新したか？
+- [ ] ビルドとテストが通るか？（`zig build && zig build test`）
+
 ## アーキテクチャの要点
 
 ### コアデータ構造
