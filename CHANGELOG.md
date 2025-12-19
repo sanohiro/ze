@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.10] - 2025-12-20
+
+### Changed
+- `view.zig`: `applyRegexHighlight()` buffer reuse to reduce per-line allocations
+- `shell_service.zig`: Added `readWithLimit()` helper to consolidate I/O read logic (-15 lines)
+
+### Refactored
+- Code quality improvements across 6 rounds of investigation, ~100 lines reduced total
+- `editor.zig`: Added `getIsearchPrefix()`, `updateIsearchPrompt()`, `updateIsearchHighlight()` helpers
+- `buffer.zig`: Added `writeWithLineEnding()` helper for CRLF/CR conversion
+- `rectangle.zig`: Added `advanceToColumn()` helper for column seek operations
+- `view.zig`: Added `updatePrevScreenBuffer()` helper, unified `nextTabStop()` usage
+
+### Fixed
+- Regex search prompt display and line number highlighting
+- M-r now toggles between literal/regex search modes
+- Fixed "Loading..." message remaining when opening non-existent files
+
 ## [1.0.9] - 2025-12-18
 
 ### Changed
