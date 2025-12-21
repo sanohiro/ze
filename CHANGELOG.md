@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2025-12-21
+
+### Added
+- Alias support for M-| shell integration
+  - Create `~/.ze/aliases` with standard bash alias syntax
+  - Automatically loaded when bash is available
+  - Enables shortcuts like `| upper >` for text processing
+
+### Changed
+- Pre-compile test harness for faster integration tests
+- `movement.zig`: Reuse PieceIterator instead of reinitializing
+- `regex.zig`: Use stack buffer before heap allocation for better performance
+- `window_manager.zig`: Unified horizontal/vertical split logic
+
 ## [1.0.10] - 2025-12-20
 
 ### Changed
