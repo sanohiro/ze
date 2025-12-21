@@ -581,6 +581,26 @@ pub const Regex = struct {
         return pos;
     }
 
+    /// 繰り返しマッチのバックトラック処理（共通ロジック）
+    /// positions配列を受け取り、貪欲マッチで最長から試行する
+    fn tryBacktrack(
+        self: *const Regex,
+        text: []const u8,
+        current_idx: usize,
+        positions: []const usize,
+        min_count: usize,
+    ) ?usize {
+        var i: usize = positions.len;
+        while (i > 0) {
+            i -= 1;
+            if (i < min_count and min_count > 0) break;
+            if (self.matchInstructions(text, positions[i], current_idx + 1)) |end| {
+                return end;
+            }
+        }
+        return null;
+    }
+
     fn matchRepeatLiteral(
         self: *const Regex,
         text: []const u8,
@@ -590,10 +610,14 @@ pub const Regex = struct {
         min_count: usize,
         max_count: ?usize,
     ) ?usize {
-        // 動的配列で全ての位置を記録（1024制限を撤廃）
-        var positions = std.ArrayList(usize).initCapacity(self.allocator, 64) catch return null;
-        defer positions.deinit(self.allocator);
-        positions.append(self.allocator, start_pos) catch return null;
+        // スタックバッファを優先使用（ほとんどのケースで十分）
+        var stack_buf: [256]usize = undefined;
+        var heap_buf: ?std.ArrayList(usize) = null;
+        defer if (heap_buf) |*h| h.deinit(self.allocator);
+
+        var positions: []usize = stack_buf[0..1];
+        positions[0] = start_pos;
+        var positions_len: usize = 1;
 
         var pos = start_pos;
         var count: usize = 0;
@@ -603,22 +627,29 @@ pub const Regex = struct {
             if (text[pos] != target) break;
             pos += 1;
             count += 1;
-            positions.append(self.allocator, pos) catch return null;
+
+            // バッファに追加
+            if (heap_buf) |*h| {
+                h.append(self.allocator, pos) catch return null;
+                positions = h.items;
+                positions_len = h.items.len;
+            } else if (positions_len < stack_buf.len) {
+                stack_buf[positions_len] = pos;
+                positions_len += 1;
+                positions = stack_buf[0..positions_len];
+            } else {
+                // スタックバッファが足りない場合、ヒープに移行
+                heap_buf = std.ArrayList(usize).initCapacity(self.allocator, stack_buf.len * 2) catch return null;
+                heap_buf.?.appendSlice(self.allocator, stack_buf[0..]) catch return null;
+                heap_buf.?.append(self.allocator, pos) catch return null;
+                positions = heap_buf.?.items;
+                positions_len = heap_buf.?.items.len;
+            }
         }
 
         if (count < min_count) return null;
 
-        var i: usize = positions.items.len;
-        while (i > 0) {
-            i -= 1;
-            if (i < min_count and min_count > 0) break;
-            const try_pos = positions.items[i];
-            if (self.matchInstructions(text, try_pos, current_idx + 1)) |end| {
-                return end;
-            }
-        }
-
-        return null;
+        return self.tryBacktrack(text, current_idx, positions[0..positions_len], min_count);
     }
 
     fn matchAny(c: u8) bool {
@@ -658,10 +689,14 @@ pub const Regex = struct {
         min_count: usize,
         max_count: ?usize,
     ) ?usize {
-        // 動的配列で全ての位置を記録（1024制限を撤廃）
-        var positions = std.ArrayList(usize).initCapacity(self.allocator, 64) catch return null;
-        defer positions.deinit(self.allocator);
-        positions.append(self.allocator, start_pos) catch return null;
+        // スタックバッファを優先使用（ほとんどのケースで十分）
+        var stack_buf: [256]usize = undefined;
+        var heap_buf: ?std.ArrayList(usize) = null;
+        defer if (heap_buf) |*h| h.deinit(self.allocator);
+
+        var positions: []usize = stack_buf[0..1];
+        positions[0] = start_pos;
+        var positions_len: usize = 1;
 
         var pos = start_pos;
         var count: usize = 0;
@@ -671,23 +706,29 @@ pub const Regex = struct {
             if (!matcher(text[pos])) break;
             pos += 1;
             count += 1;
-            positions.append(self.allocator, pos) catch return null;
+
+            // バッファに追加
+            if (heap_buf) |*h| {
+                h.append(self.allocator, pos) catch return null;
+                positions = h.items;
+                positions_len = h.items.len;
+            } else if (positions_len < stack_buf.len) {
+                stack_buf[positions_len] = pos;
+                positions_len += 1;
+                positions = stack_buf[0..positions_len];
+            } else {
+                // スタックバッファが足りない場合、ヒープに移行
+                heap_buf = std.ArrayList(usize).initCapacity(self.allocator, stack_buf.len * 2) catch return null;
+                heap_buf.?.appendSlice(self.allocator, stack_buf[0..]) catch return null;
+                heap_buf.?.append(self.allocator, pos) catch return null;
+                positions = heap_buf.?.items;
+                positions_len = heap_buf.?.items.len;
+            }
         }
 
         if (count < min_count) return null;
 
-        // 貪欲マッチ: 最長から試す
-        var i: usize = positions.items.len;
-        while (i > 0) {
-            i -= 1;
-            if (i < min_count and min_count > 0) break;
-            const try_pos = positions.items[i];
-            if (self.matchInstructions(text, try_pos, current_idx + 1)) |end| {
-                return end;
-            }
-        }
-
-        return null;
+        return self.tryBacktrack(text, current_idx, positions[0..positions_len], min_count);
     }
 
     fn matchRepeatClass(
@@ -699,10 +740,14 @@ pub const Regex = struct {
         min_count: usize,
         max_count: ?usize,
     ) ?usize {
-        // 動的配列で全ての位置を記録（1024制限を撤廃）
-        var positions = std.ArrayList(usize).initCapacity(self.allocator, 64) catch return null;
-        defer positions.deinit(self.allocator);
-        positions.append(self.allocator, start_pos) catch return null;
+        // スタックバッファを優先使用（ほとんどのケースで十分）
+        var stack_buf: [256]usize = undefined;
+        var heap_buf: ?std.ArrayList(usize) = null;
+        defer if (heap_buf) |*h| h.deinit(self.allocator);
+
+        var positions: []usize = stack_buf[0..1];
+        positions[0] = start_pos;
+        var positions_len: usize = 1;
 
         var pos = start_pos;
         var count: usize = 0;
@@ -712,22 +757,29 @@ pub const Regex = struct {
             if (!cc.matches(text[pos])) break;
             pos += 1;
             count += 1;
-            positions.append(self.allocator, pos) catch return null;
+
+            // バッファに追加
+            if (heap_buf) |*h| {
+                h.append(self.allocator, pos) catch return null;
+                positions = h.items;
+                positions_len = h.items.len;
+            } else if (positions_len < stack_buf.len) {
+                stack_buf[positions_len] = pos;
+                positions_len += 1;
+                positions = stack_buf[0..positions_len];
+            } else {
+                // スタックバッファが足りない場合、ヒープに移行
+                heap_buf = std.ArrayList(usize).initCapacity(self.allocator, stack_buf.len * 2) catch return null;
+                heap_buf.?.appendSlice(self.allocator, stack_buf[0..]) catch return null;
+                heap_buf.?.append(self.allocator, pos) catch return null;
+                positions = heap_buf.?.items;
+                positions_len = heap_buf.?.items.len;
+            }
         }
 
         if (count < min_count) return null;
 
-        var i: usize = positions.items.len;
-        while (i > 0) {
-            i -= 1;
-            if (i < min_count and min_count > 0) break;
-            const try_pos = positions.items[i];
-            if (self.matchInstructions(text, try_pos, current_idx + 1)) |end| {
-                return end;
-            }
-        }
-
-        return null;
+        return self.tryBacktrack(text, current_idx, positions[0..positions_len], min_count);
     }
 
     fn isDigit(c: u8) bool {

@@ -108,9 +108,28 @@ Advanced text processing is delegated to existing tools like `sort`, `jq`, `awk`
 % | jq . >             # Format entire JSON buffer
 . | sh >               # Execute current line as shell
 % | grep TODO n>       # Extract TODO lines to new buffer
+| upper >              # Convert selection to uppercase (with alias)
+| lower >              # Convert selection to lowercase (with alias)
 ```
 
 **C-g** cancels at any time. Long-running processes (LLM calls, etc.) are fine.
+
+### Aliases
+
+Create `~/.ze/aliases` to define shortcuts for common operations:
+
+```bash
+alias upper='tr a-z A-Z'
+alias lower='tr A-Z a-z'
+alias trim='sed "s/^[[:space:]]*//;s/[[:space:]]*$//"'
+alias uniq='sort | uniq'
+```
+
+When this file exists and bash is available, ze automatically loads your aliases.
+
+**Not familiar with Unix text tools?** Check out:
+- [awesome-text-tools](https://github.com/sanohiro/awesome-text-tools) — Curated list of text processing tools
+- [txtk](https://github.com/sanohiro/txtk) — Simple text toolkit for common operations (includes Japanese text handling)
 
 ---
 
@@ -123,6 +142,7 @@ ze uses Emacs-style keybindings. `C-` means Ctrl, `M-` means Alt/Option.
 | `C-f` / `C-b` / `C-n` / `C-p` | Move cursor |
 | `C-s` / `C-r` | Search forward/backward |
 | `M-%` | Query replace |
+| `M-\|` | Shell command |
 | `C-Space` | Start selection |
 | `C-w` / `M-w` / `C-y` | Cut/copy/paste |
 | `C-x 2` / `C-x 3` | Split window (horizontal/vertical) |

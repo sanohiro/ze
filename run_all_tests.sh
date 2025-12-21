@@ -65,7 +65,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-HARNESS="zig run test_harness_generic.zig -lc --"
+# 事前コンパイル済みハーネスを使用（存在しなければビルド）
+if [[ ! -f "./test_harness_generic" ]]; then
+    echo "ハーネスをビルド中..."
+    zig build-exe test_harness_generic.zig -lc -O ReleaseFast
+fi
+HARNESS="./test_harness_generic"
 PASS_COUNT=0
 FAIL_COUNT=0
 TOTAL_COUNT=0

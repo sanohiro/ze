@@ -219,44 +219,71 @@ pub const WindowManager = struct {
         }
     }
 
-    /// 現在のウィンドウを横（上下）に分割
-    /// 新しいWindowを返す（Viewの初期化は呼び出し側で行う）
-    pub fn splitHorizontally(self: *Self) !SplitResult {
-        const current_idx = self.current_window_idx;
+    /// 分割方向
+    pub const SplitDirection = enum { horizontal, vertical };
 
-        // 分割後に両ペインがMIN_HEIGHT以上になるよう要求
-        if (self.windows.items[current_idx].height < 2 * config.Window.MIN_HEIGHT) {
+    /// ウィンドウ分割の共通実装
+    fn splitWindow(self: *Self, direction: SplitDirection) !SplitResult {
+        const current_idx = self.current_window_idx;
+        const current = &self.windows.items[current_idx];
+
+        // 分割後に両ペインが最小サイズ以上になるよう要求
+        const min_size = switch (direction) {
+            .horizontal => config.Window.MIN_HEIGHT,
+            .vertical => config.Window.MIN_WIDTH,
+        };
+        const current_size = switch (direction) {
+            .horizontal => current.height,
+            .vertical => current.width,
+        };
+        if (current_size < 2 * min_size) {
             return error.WindowTooSmall;
         }
 
         // 分割後のサイズを計算（append前に全て読み取る）
-        const old_height = self.windows.items[current_idx].height;
-        const new_height = old_height / 2;
-        const buffer_id = self.windows.items[current_idx].buffer_id;
-        const current_id = self.windows.items[current_idx].id;
-        const current_x = self.windows.items[current_idx].x;
-        const current_y = self.windows.items[current_idx].y;
-        const current_width = self.windows.items[current_idx].width;
+        const half_size = current_size / 2;
+        const buffer_id = current.buffer_id;
+        const current_id = current.id;
+        const current_x = current.x;
+        const current_y = current.y;
+        const current_width = current.width;
+        const current_height = current.height;
 
         // 新しいウィンドウID
         const new_window_id = self.next_window_id;
         self.next_window_id += 1;
 
-        // 現在のウィンドウの高さを半分にする（append前に変更）
-        self.windows.items[current_idx].height = new_height;
+        // 現在のウィンドウのサイズを半分にする（append前に変更）
+        switch (direction) {
+            .horizontal => self.windows.items[current_idx].height = half_size,
+            .vertical => self.windows.items[current_idx].width = half_size,
+        }
 
-        // 新しいウィンドウを下半分に作成
-        var new_window = Window.init(
-            new_window_id,
-            buffer_id,
-            current_x,
-            current_y + new_height,
-            current_width,
-            old_height - new_height,
-        );
+        // 新しいウィンドウを作成（位置とサイズは分割方向で異なる）
+        var new_window = switch (direction) {
+            .horizontal => Window.init(
+                new_window_id,
+                buffer_id,
+                current_x,
+                current_y + half_size,
+                current_width,
+                current_height - half_size,
+            ),
+            .vertical => Window.init(
+                new_window_id,
+                buffer_id,
+                current_x + half_size,
+                current_y,
+                current_width - half_size,
+                current_height,
+            ),
+        };
 
         // 分割情報を設定
-        new_window.split_type = .horizontal;
+        new_window.split_type = switch (direction) {
+            .horizontal => .horizontal,
+            .vertical => .vertical,
+        };
         new_window.split_parent_id = current_id;
 
         // ウィンドウリストに追加（リアロケーション発生の可能性あり）
@@ -272,56 +299,15 @@ pub const WindowManager = struct {
         };
     }
 
+    /// 現在のウィンドウを横（上下）に分割
+    /// 新しいWindowを返す（Viewの初期化は呼び出し側で行う）
+    pub fn splitHorizontally(self: *Self) !SplitResult {
+        return self.splitWindow(.horizontal);
+    }
+
     /// 現在のウィンドウを縦（左右）に分割
     pub fn splitVertically(self: *Self) !SplitResult {
-        const current_idx = self.current_window_idx;
-
-        // 分割後に両ペインがMIN_WIDTH以上になるよう要求
-        if (self.windows.items[current_idx].width < 2 * config.Window.MIN_WIDTH) {
-            return error.WindowTooSmall;
-        }
-
-        // 分割後のサイズを計算（append前に全て読み取る）
-        const old_width = self.windows.items[current_idx].width;
-        const new_width = old_width / 2;
-        const buffer_id = self.windows.items[current_idx].buffer_id;
-        const current_id = self.windows.items[current_idx].id;
-        const current_x = self.windows.items[current_idx].x;
-        const current_y = self.windows.items[current_idx].y;
-        const current_height = self.windows.items[current_idx].height;
-
-        // 新しいウィンドウID
-        const new_window_id = self.next_window_id;
-        self.next_window_id += 1;
-
-        // 現在のウィンドウの幅を半分にする（append前に変更）
-        self.windows.items[current_idx].width = new_width;
-
-        // 新しいウィンドウを右半分に作成
-        var new_window = Window.init(
-            new_window_id,
-            buffer_id,
-            current_x + new_width,
-            current_y,
-            old_width - new_width,
-            current_height,
-        );
-
-        // 分割情報を設定
-        new_window.split_type = .vertical;
-        new_window.split_parent_id = current_id;
-
-        // ウィンドウリストに追加（リアロケーション発生の可能性あり）
-        try self.windows.append(self.allocator, new_window);
-
-        // 新しいウィンドウのインデックス（append後に取得）
-        const new_idx = self.windows.items.len - 1;
-
-        return .{
-            .new_window = &self.windows.items[new_idx],
-            .original_window = &self.windows.items[current_idx],
-            .new_window_idx = new_idx,
-        };
+        return self.splitWindow(.vertical);
     }
 
     /// 分割結果

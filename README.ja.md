@@ -107,9 +107,28 @@ zeは「テキストはストリーム」というUnix哲学に基づいてい�
 % | jq . >             # JSON全体を整形
 . | sh >               # 現在行をシェル実行
 % | grep TODO n>       # TODO行を新規バッファに抽出
+| upper >              # 選択範囲を大文字に変換（alias使用）
+| lower >              # 選択範囲を小文字に変換（alias使用）
 ```
 
 **C-g** でいつでもキャンセル可能。LLM呼び出しなど長時間処理もOK。
+
+### Alias
+
+`~/.ze/aliases` を作成すると、よく使う操作のショートカットを定義できます：
+
+```bash
+alias upper='tr a-z A-Z'
+alias lower='tr A-Z a-z'
+alias trim='sed "s/^[[:space:]]*//;s/[[:space:]]*$//"'
+alias uniq='sort | uniq'
+```
+
+このファイルが存在し、bashが利用可能な場合、zeが自動的に読み込みます。
+
+**Unixのテキスト処理ツールに詳しくない方へ:**
+- [awesome-text-tools](https://github.com/sanohiro/awesome-text-tools) — テキスト処理ツールのキュレーションリスト
+- [txtk](https://github.com/sanohiro/txtk) — 日本語処理も含む、便利なテキストツールキット
 
 ---
 
@@ -122,6 +141,7 @@ zeはEmacsスタイルのキーバインドを採用しています。`C-` は C
 | `C-f` / `C-b` / `C-n` / `C-p` | カーソル移動 |
 | `C-s` / `C-r` | 前方/後方検索 |
 | `M-%` | 対話的置換 |
+| `M-\|` | シェルコマンド |
 | `C-Space` | 範囲選択開始 |
 | `C-w` / `M-w` / `C-y` | カット/コピー/ペースト |
 | `C-x 2` / `C-x 3` | ウィンドウ分割（横/縦） |

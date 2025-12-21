@@ -4,3 +4,4 @@ dist/
 *.o
 
 .DS_Store
+test_harness_generic

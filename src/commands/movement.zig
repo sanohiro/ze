@@ -161,7 +161,7 @@ pub fn forwardParagraph(e: *Editor) !void {
 
     // 空行のブロックを探し、その後の非空白行の先頭へ移動
     while (pos < buf_len) {
-        iter = PieceIterator.init(buffer);
+        // イテレータを再利用（init不要、seekで位置リセット）
         iter.seek(pos);
 
         // 現在行が空行かチェック
@@ -202,9 +202,9 @@ pub fn forwardParagraph(e: *Editor) !void {
 /// 指定位置を含む行の先頭を見つける
 fn findLineStart(buffer: *const Buffer, pos: usize) usize {
     if (pos == 0) return 0;
+    var iter = PieceIterator.init(buffer);
     var line_start = pos;
     while (line_start > 0) {
-        var iter = PieceIterator.init(buffer);
         iter.seek(line_start - 1);
         const byte = iter.next() orelse break;
         if (byte == '\n') break;
@@ -226,11 +226,11 @@ pub fn backwardParagraph(e: *Editor) !void {
     var found_blank_section = false;
 
     // 空行のブロックを見つけて、その前の段落の先頭へ移動
+    var iter = PieceIterator.init(buffer);
     while (pos > 0) {
         const line_start = findLineStart(buffer, pos);
 
-        // 現在行が空行かチェック
-        var iter = PieceIterator.init(buffer);
+        // 現在行が空行かチェック（イテレータを再利用）
         iter.seek(line_start);
         var is_blank = true;
 

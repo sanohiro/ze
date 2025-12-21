@@ -69,6 +69,8 @@ pub const ShellService = struct {
     allocator: std.mem.Allocator,
     state: ?*CommandState,
     history: History,
+    has_bash: bool, // bashが利用可能か
+    aliases_path: ?[]const u8, // ~/.ze/aliasesのパス（存在する場合）
 
     const Self = @This();
 
@@ -101,10 +103,29 @@ pub const ShellService = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         var history = History.init(allocator);
         history.load(.shell) catch {}; // エラーは無視
+
+        // bashが利用可能かチェック
+        const has_bash = if (std.fs.accessAbsolute("/bin/bash", .{})) |_| true else |_| false;
+
+        // ~/.ze/aliases が存在するかチェック
+        var aliases_path: ?[]const u8 = null;
+        if (std.posix.getenv("HOME")) |home| {
+            const path = std.fmt.allocPrint(allocator, "{s}/.ze/aliases", .{home}) catch null;
+            if (path) |p| {
+                if (std.fs.accessAbsolute(p, .{})) |_| {
+                    aliases_path = p;
+                } else |_| {
+                    allocator.free(p);
+                }
+            }
+        }
+
         return .{
             .allocator = allocator,
             .state = null,
             .history = history,
+            .has_bash = has_bash,
+            .aliases_path = aliases_path,
         };
     }
 
@@ -114,6 +135,9 @@ pub const ShellService = struct {
         }
         self.history.save(.shell) catch {};
         self.history.deinit();
+        if (self.aliases_path) |p| {
+            self.allocator.free(p);
+        }
     }
 
     /// 指定位置が引用符の内部にあるかどうかをチェック
@@ -229,7 +253,10 @@ pub const ShellService = struct {
             self.state = null;
         }
 
-        // コマンドをヒープにコピー
+        // bash + alias を使うかどうか判定
+        const use_bash_aliases = self.has_bash and self.aliases_path != null;
+
+        // コマンド文字列をヒープにコピー
         const command_copy = try self.allocator.dupe(u8, parsed.command);
         errdefer self.allocator.free(command_copy);
 
@@ -237,9 +264,15 @@ pub const ShellService = struct {
         const state = try self.allocator.create(CommandState);
         errdefer self.allocator.destroy(state);
 
-        // 子プロセスを起動
-        const argv = [_][]const u8{ "/bin/sh", "-c", command_copy };
-        state.child = std.process.Child.init(&argv, self.allocator);
+        // 子プロセスを起動（bash --rcfile + -ic or sh -c）
+        if (use_bash_aliases) {
+            // bash --rcfile ~/.ze/aliases -ic 'command'
+            const argv = [_][]const u8{ "/bin/bash", "--rcfile", self.aliases_path.?, "-ic", command_copy };
+            state.child = std.process.Child.init(&argv, self.allocator);
+        } else {
+            const argv = [_][]const u8{ "/bin/sh", "-c", command_copy };
+            state.child = std.process.Child.init(&argv, self.allocator);
+        }
         state.child.stdin_behavior = if (stdin_data != null) .Pipe else .Close;
         state.child.stdout_behavior = .Pipe;
         state.child.stderr_behavior = .Pipe;
