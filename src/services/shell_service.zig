@@ -188,9 +188,13 @@ pub const ShellService = struct {
                 cmd_start += 1;
                 while (cmd_start < cmd.len and cmd[cmd_start] == ' ') : (cmd_start += 1) {}
             } else if (cmd[cmd_start] == '.') {
-                input_source = .current_line;
-                cmd_start += 1;
-                while (cmd_start < cmd.len and cmd[cmd_start] == ' ') : (cmd_start += 1) {}
+                // ". " または ".|" の場合のみ現在行プレフィックス（"./cmd" は通常コマンド）
+                const next_idx = cmd_start + 1;
+                if (next_idx >= cmd.len or cmd[next_idx] == ' ' or cmd[next_idx] == '|') {
+                    input_source = .current_line;
+                    cmd_start += 1;
+                    while (cmd_start < cmd.len and cmd[cmd_start] == ' ') : (cmd_start += 1) {}
+                }
             }
         }
 
