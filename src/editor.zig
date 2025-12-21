@@ -3785,6 +3785,15 @@ pub const Editor = struct {
                 }
             },
             .replace => {
+                // コマンドが失敗した場合は置換しない
+                if (exit_status) |status| {
+                    if (status != 0) {
+                        var msg_buf: [128]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&msg_buf, "Command failed (exit {d}), buffer unchanged", .{status}) catch "Command failed";
+                        self.getCurrentView().setError(msg);
+                        return;
+                    }
+                }
                 // 読み取り専用バッファでは置換を禁止
                 if (self.isReadOnly()) {
                     self.getCurrentView().setError(config.Messages.BUFFER_READONLY);
@@ -3876,6 +3885,15 @@ pub const Editor = struct {
                 }
             },
             .insert => {
+                // コマンドが失敗した場合は挿入しない
+                if (exit_status) |status| {
+                    if (status != 0) {
+                        var msg_buf: [128]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&msg_buf, "Command failed (exit {d}), buffer unchanged", .{status}) catch "Command failed";
+                        self.getCurrentView().setError(msg);
+                        return;
+                    }
+                }
                 // 読み取り専用バッファでは挿入を禁止
                 if (self.isReadOnly()) {
                     self.getCurrentView().setError(config.Messages.BUFFER_READONLY);
