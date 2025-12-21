@@ -264,16 +264,22 @@ pub const ShellService = struct {
         const state = try self.allocator.create(CommandState);
         errdefer self.allocator.destroy(state);
 
-        // 子プロセスを起動（bash --rcfile + -ic or sh -c）
-        if (use_bash_aliases) {
-            // bash --rcfile ~/.ze/aliases -ic 'command'
-            const argv = [_][]const u8{ "/bin/bash", "--rcfile", self.aliases_path.?, "-ic", command_copy };
+        // 子プロセスを起動
+        const actual_command: []const u8 = if (use_bash_aliases) blk: {
+            // bash -c 'shopt -s expand_aliases; . ~/.ze/aliases; eval command'
+            // 注: エイリアスは非対話モードでは展開されないため shopt + eval が必要
+            const wrapped = try std.fmt.allocPrint(self.allocator, "shopt -s expand_aliases; . {s}; eval {s}", .{ self.aliases_path.?, command_copy });
+            self.allocator.free(command_copy);
+            const argv = [_][]const u8{ "/bin/bash", "-c", wrapped };
             state.child = std.process.Child.init(&argv, self.allocator);
-        } else {
+            break :blk wrapped;
+        } else blk: {
             const argv = [_][]const u8{ "/bin/sh", "-c", command_copy };
             state.child = std.process.Child.init(&argv, self.allocator);
-        }
-        state.child.stdin_behavior = if (stdin_data != null) .Pipe else .Close;
+            break :blk command_copy;
+        };
+        // 入力ソースなしの場合は /dev/null に接続（.Close だと Bad file descriptor エラー）
+        state.child.stdin_behavior = if (stdin_data != null) .Pipe else .Ignore;
         state.child.stdout_behavior = .Pipe;
         state.child.stderr_behavior = .Pipe;
         state.input_source = parsed.input_source;
@@ -281,7 +287,7 @@ pub const ShellService = struct {
         state.stdin_data = stdin_data;
         state.stdin_allocated = stdin_allocated;
         state.stdin_write_pos = 0;
-        state.command = command_copy;
+        state.command = actual_command;
         state.stdout_buffer = .{};
         state.stderr_buffer = .{};
         state.child_reaped = false;
