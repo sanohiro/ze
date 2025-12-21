@@ -178,15 +178,18 @@ pub const ShellService = struct {
         var cmd_start: usize = 0;
         var cmd_end: usize = cmd.len;
 
+        // 先頭の空白をスキップ
+        while (cmd_start < cmd.len and cmd[cmd_start] == ' ') : (cmd_start += 1) {}
+
         // プレフィックス解析
-        if (cmd.len > 0) {
-            if (cmd[0] == '%') {
+        if (cmd_start < cmd.len) {
+            if (cmd[cmd_start] == '%') {
                 input_source = .buffer_all;
-                cmd_start = 1;
+                cmd_start += 1;
                 while (cmd_start < cmd.len and cmd[cmd_start] == ' ') : (cmd_start += 1) {}
-            } else if (cmd[0] == '.') {
+            } else if (cmd[cmd_start] == '.') {
                 input_source = .current_line;
-                cmd_start = 1;
+                cmd_start += 1;
                 while (cmd_start < cmd.len and cmd[cmd_start] == ' ') : (cmd_start += 1) {}
             }
         }
