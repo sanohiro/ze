@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] - 2025-12-21
+
+### Fixed
+- Shell command prefix parsing improvements
+  - Trim leading whitespace before parsing prefixes
+  - Distinguish `./command` from `. ` prefix (current line)
+  - Distinguish `%PATH%` from `% ` prefix (buffer all)
+
 ## [1.1.1] - 2025-12-21
 
 ### Fixed
