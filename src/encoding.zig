@@ -74,13 +74,32 @@ pub const DetectionResult = struct {
     line_ending: LineEnding,
 };
 
-/// バイナリファイル判定（NULLバイトの有無）
+/// バイナリファイル判定
+/// NULLバイトだけでなく、制御文字の頻度も考慮
 pub fn isBinaryContent(content: []const u8) bool {
     // 先頭8KBをチェック（全体をチェックすると大きいファイルで遅い）
     const check_size = @min(content.len, 8192);
+    var control_count: usize = 0;
+
     for (content[0..check_size]) |byte| {
+        // NULLバイトは即座にバイナリ判定
         if (byte == 0) return true;
+
+        // 制御文字（タブ、改行、CRを除く）
+        if (byte < 0x20 and byte != '\t' and byte != '\n' and byte != '\r') {
+            control_count += 1;
+        }
+        // DEL (0x7F)
+        if (byte == 0x7F) {
+            control_count += 1;
+        }
     }
+
+    // 制御文字が5%を超えたらバイナリ
+    if (check_size > 0 and control_count * 20 > check_size) {
+        return true;
+    }
+
     return false;
 }
 
@@ -171,6 +190,7 @@ pub fn detectLineEnding(content: []const u8) LineEnding {
 }
 
 /// Valid UTF-8判定
+/// RFC 3629準拠: オーバーロングエンコーディング、サロゲート範囲、無効な範囲を拒否
 fn isValidUtf8(content: []const u8) bool {
     var i: usize = 0;
     while (i < content.len) {
@@ -182,8 +202,14 @@ fn isValidUtf8(content: []const u8) bool {
             continue;
         }
 
-        // 2バイト文字 (0xC0-0xDF)
-        if (byte >= config.UTF8.BYTE2_MIN and byte <= config.UTF8.BYTE2_MAX) {
+        // 0x80-0xBF: 継続バイトが先頭に来るのは不正
+        // 0xC0-0xC1: オーバーロング（2バイトでASCII範囲を表現）
+        if (byte <= 0xC1) {
+            return false;
+        }
+
+        // 2バイト文字 (0xC2-0xDF)
+        if (byte <= config.UTF8.BYTE2_MAX) {
             if (i + 1 >= content.len) return false;
             if (!unicode.isUtf8Continuation(content[i + 1])) return false;
             i += 2;
@@ -191,25 +217,45 @@ fn isValidUtf8(content: []const u8) bool {
         }
 
         // 3バイト文字 (0xE0-0xEF)
-        if (byte >= config.UTF8.BYTE3_MIN and byte <= config.UTF8.BYTE3_MAX) {
+        if (byte <= config.UTF8.BYTE3_MAX) {
             if (i + 2 >= content.len) return false;
-            if (!unicode.isUtf8Continuation(content[i + 1])) return false;
-            if (!unicode.isUtf8Continuation(content[i + 2])) return false;
+            const b1 = content[i + 1];
+            const b2 = content[i + 2];
+            if (!unicode.isUtf8Continuation(b1)) return false;
+            if (!unicode.isUtf8Continuation(b2)) return false;
+
+            // オーバーロング検出: 0xE0の後は0xA0-0xBFのみ有効
+            if (byte == 0xE0 and b1 < 0xA0) return false;
+
+            // サロゲート範囲（U+D800-U+DFFF）の拒否: 0xED 0xA0以上
+            if (byte == 0xED and b1 >= 0xA0) return false;
+
             i += 3;
             continue;
         }
 
-        // 4バイト文字 (0xF0-0xF7)
-        if (byte >= config.UTF8.BYTE4_MIN and byte <= config.UTF8.BYTE4_MAX) {
+        // 4バイト文字 (0xF0-0xF4)
+        // 0xF5以上は無効（U+10FFFFを超える）
+        if (byte <= 0xF4) {
             if (i + 3 >= content.len) return false;
-            if (!unicode.isUtf8Continuation(content[i + 1])) return false;
-            if (!unicode.isUtf8Continuation(content[i + 2])) return false;
-            if (!unicode.isUtf8Continuation(content[i + 3])) return false;
+            const b1 = content[i + 1];
+            const b2 = content[i + 2];
+            const b3 = content[i + 3];
+            if (!unicode.isUtf8Continuation(b1)) return false;
+            if (!unicode.isUtf8Continuation(b2)) return false;
+            if (!unicode.isUtf8Continuation(b3)) return false;
+
+            // オーバーロング検出: 0xF0の後は0x90-0xBFのみ有効
+            if (byte == 0xF0 and b1 < 0x90) return false;
+
+            // 範囲制限: 0xF4の後は0x80-0x8Fのみ有効（U+10FFFF以下）
+            if (byte == 0xF4 and b1 > 0x8F) return false;
+
             i += 4;
             continue;
         }
 
-        // 不正なバイト
+        // 0xF5-0xFF: 無効なバイト
         return false;
     }
 

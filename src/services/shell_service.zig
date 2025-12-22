@@ -53,6 +53,8 @@ pub const CommandState = struct {
     stderr_buffer: std.ArrayListUnmanaged(u8),
     child_reaped: bool,
     exit_status: ?u32,
+    stdout_truncated: bool, // 出力が10MB制限で切り詰められた
+    stderr_truncated: bool,
 };
 
 /// シェルコマンド実行結果
@@ -62,6 +64,7 @@ pub const CommandResult = struct {
     exit_status: ?u32,
     input_source: InputSource,
     output_dest: OutputDest,
+    truncated: bool, // 出力が10MB制限で切り詰められた
 };
 
 /// シェルコマンド実行サービス
@@ -69,7 +72,7 @@ pub const ShellService = struct {
     allocator: std.mem.Allocator,
     state: ?*CommandState,
     history: History,
-    has_bash: bool, // bashが利用可能か
+    bash_path: ?[]const u8, // bashのパス（見つかった場合）
     aliases_path: ?[]const u8, // ~/.ze/aliasesのパス（存在する場合）
 
     const Self = @This();
@@ -79,13 +82,15 @@ pub const ShellService = struct {
 
     /// バッファサイズ制限付きで読み取り（ノンブロッキング対応）
     /// handle_would_block: trueならWouldBlockを特別処理、falseなら全エラーでbreak
+    /// 戻り値: trueなら制限に達して切り詰めた
     fn readWithLimit(
         allocator: std.mem.Allocator,
         file: std.fs.File,
         buffer: *std.ArrayListUnmanaged(u8),
         read_buf: []u8,
         handle_would_block: bool,
-    ) !void {
+    ) !bool {
+        var truncated = false;
         while (buffer.items.len < MAX_OUTPUT_SIZE) {
             const bytes_read = file.read(read_buf) catch |err| {
                 if (handle_would_block and err == error.WouldBlock) break;
@@ -97,15 +102,24 @@ pub const ShellService = struct {
             if (to_append > 0) {
                 try buffer.appendSlice(allocator, read_buf[0..to_append]);
             }
+            if (to_append < bytes_read) {
+                truncated = true;
+                break;
+            }
         }
+        // 上限に達したかチェック
+        if (buffer.items.len >= MAX_OUTPUT_SIZE) {
+            truncated = true;
+        }
+        return truncated;
     }
 
     pub fn init(allocator: std.mem.Allocator) Self {
         var history = History.init(allocator);
         history.load(.shell) catch {}; // エラーは無視
 
-        // bashが利用可能かチェック
-        const has_bash = if (std.fs.accessAbsolute("/bin/bash", .{})) |_| true else |_| false;
+        // bashのパスを探す（$SHELL → 一般的なパス）
+        const bash_path = findBashPath(allocator);
 
         // ~/.ze/aliases が存在するかチェック
         var aliases_path: ?[]const u8 = null;
@@ -124,9 +138,109 @@ pub const ShellService = struct {
             .allocator = allocator,
             .state = null,
             .history = history,
-            .has_bash = has_bash,
+            .bash_path = bash_path,
             .aliases_path = aliases_path,
         };
+    }
+
+    /// シェル用にパスをクォート（シングルクォート使用）
+    fn shellQuote(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
+        // シングルクォートで囲む。内部の ' は '\'' に置換
+        var size: usize = 2; // 開始と終了の '
+        for (s) |c| {
+            if (c == '\'') {
+                size += 4; // '\''
+            } else {
+                size += 1;
+            }
+        }
+        var result = try allocator.alloc(u8, size);
+        var i: usize = 0;
+        result[i] = '\'';
+        i += 1;
+        for (s) |c| {
+            if (c == '\'') {
+                result[i] = '\'';
+                result[i + 1] = '\\';
+                result[i + 2] = '\'';
+                result[i + 3] = '\'';
+                i += 4;
+            } else {
+                result[i] = c;
+                i += 1;
+            }
+        }
+        result[i] = '\'';
+        return result;
+    }
+
+    /// bashのパスを探す
+    fn findBashPath(allocator: std.mem.Allocator) ?[]const u8 {
+        // 1. $SHELL がbashなら使用（絶対パスの場合）
+        if (std.posix.getenv("SHELL")) |shell| {
+            if (std.mem.endsWith(u8, shell, "/bash")) {
+                if (std.fs.accessAbsolute(shell, .{})) |_| {
+                    return allocator.dupe(u8, shell) catch null;
+                } else |_| {}
+            }
+        }
+        // 2. PATH環境変数から探す
+        if (std.posix.getenv("PATH")) |path_env| {
+            var it = std.mem.splitScalar(u8, path_env, ':');
+            while (it.next()) |dir| {
+                const bash_path = std.fmt.allocPrint(allocator, "{s}/bash", .{dir}) catch continue;
+                if (std.fs.accessAbsolute(bash_path, .{})) |_| {
+                    return bash_path;
+                } else |_| {
+                    allocator.free(bash_path);
+                }
+            }
+        }
+        // 3. 一般的なパスを試す（フォールバック）
+        const paths = [_][]const u8{
+            "/bin/bash",
+            "/usr/bin/bash",
+            "/usr/local/bin/bash",
+            "/opt/homebrew/bin/bash",
+            "/opt/local/bin/bash",
+        };
+        for (paths) |path| {
+            if (std.fs.accessAbsolute(path, .{})) |_| {
+                return allocator.dupe(u8, path) catch null;
+            } else |_| {}
+        }
+        return null;
+    }
+
+    /// shのパスを探す（/bin/shが無い環境用）
+    fn findShPath(allocator: std.mem.Allocator) []const u8 {
+        // 1. /bin/sh を試す（最も一般的）
+        if (std.fs.accessAbsolute("/bin/sh", .{})) |_| {
+            return "/bin/sh";
+        } else |_| {}
+        // 2. PATH環境変数から探す
+        if (std.posix.getenv("PATH")) |path_env| {
+            var it = std.mem.splitScalar(u8, path_env, ':');
+            while (it.next()) |dir| {
+                const sh_path = std.fmt.allocPrint(allocator, "{s}/sh", .{dir}) catch continue;
+                if (std.fs.accessAbsolute(sh_path, .{})) |_| {
+                    // 静的な文字列を返すためにleakする（プロセス終了まで保持）
+                    // 実際には呼び出し回数が限られるので問題ない
+                    return sh_path;
+                } else |_| {
+                    allocator.free(sh_path);
+                }
+            }
+        }
+        // 3. フォールバック
+        const paths = [_][]const u8{ "/usr/bin/sh", "/system/bin/sh" };
+        for (paths) |path| {
+            if (std.fs.accessAbsolute(path, .{})) |_| {
+                return path;
+            } else |_| {}
+        }
+        // 最終手段: /bin/sh を返す（存在しなくてもspawnでエラーになる）
+        return "/bin/sh";
     }
 
     pub fn deinit(self: *Self) void {
@@ -135,6 +249,9 @@ pub const ShellService = struct {
         }
         self.history.save(.shell) catch {};
         self.history.deinit();
+        if (self.bash_path) |p| {
+            self.allocator.free(p);
+        }
         if (self.aliases_path) |p| {
             self.allocator.free(p);
         }
@@ -209,31 +326,30 @@ pub const ShellService = struct {
         }
 
         // サフィックス解析（末尾から、引用符を考慮）
+        // 重要: サフィックスはコマンドとスペースで区切られている必要がある
+        // 例: "sort >" は有効、"grep -n>out" は無効（シェルのリダイレクト構文）
         if (cmd_end > cmd_start) {
             while (cmd_end > cmd_start and cmd[cmd_end - 1] == ' ') : (cmd_end -= 1) {}
 
             // 引用符の外にあるサフィックスのみ解釈
             // サフィックスの開始位置が引用符内かどうかをチェック
             if (cmd_end > cmd_start) {
-                if (cmd_end >= 2 and cmd[cmd_end - 2] == 'n' and cmd[cmd_end - 1] == '>') {
-                    // n> の位置（cmd_end - 2）が引用符外ならサフィックスとして解釈
+                if (cmd_end >= 3 and cmd[cmd_end - 2] == 'n' and cmd[cmd_end - 1] == '>' and cmd[cmd_end - 3] == ' ') {
+                    // " n>" の場合のみ新規バッファとして解釈
                     if (!isPositionInsideQuotes(cmd, cmd_end - 2)) {
                         output_dest = .new_buffer;
                         cmd_end -= 2;
                     }
-                } else if (cmd_end >= 2 and cmd[cmd_end - 2] == '+' and cmd[cmd_end - 1] == '>') {
-                    // +> の位置が引用符外ならサフィックスとして解釈
+                } else if (cmd_end >= 3 and cmd[cmd_end - 2] == '+' and cmd[cmd_end - 1] == '>' and cmd[cmd_end - 3] == ' ') {
+                    // " +>" の場合のみ挿入として解釈
                     if (!isPositionInsideQuotes(cmd, cmd_end - 2)) {
                         output_dest = .insert;
                         cmd_end -= 2;
                     }
                 } else if (cmd[cmd_end - 1] == '>') {
-                    // > の位置が引用符外で、かつスペースの後ならサフィックスとして解釈
+                    // " >" の場合のみ置換として解釈
                     if (!isPositionInsideQuotes(cmd, cmd_end - 1)) {
                         if (cmd_end >= 2 and cmd[cmd_end - 2] == ' ') {
-                            output_dest = .replace;
-                            cmd_end -= 1;
-                        } else if (cmd_end == 1) {
                             output_dest = .replace;
                             cmd_end -= 1;
                         }
@@ -265,11 +381,7 @@ pub const ShellService = struct {
         }
 
         // bash + alias を使うかどうか判定
-        const use_bash_aliases = self.has_bash and self.aliases_path != null;
-
-        // コマンド文字列をヒープにコピー
-        const command_copy = try self.allocator.dupe(u8, parsed.command);
-        errdefer self.allocator.free(command_copy);
+        const use_bash_aliases = self.bash_path != null and self.aliases_path != null;
 
         // 状態を作成
         const state = try self.allocator.create(CommandState);
@@ -277,15 +389,23 @@ pub const ShellService = struct {
 
         // 子プロセスを起動
         const actual_command: []const u8 = if (use_bash_aliases) blk: {
-            // bash -c 'shopt -s expand_aliases; . ~/.ze/aliases; eval command'
+            // bash -c 'shopt -s expand_aliases; . "path"; eval "command"'
             // 注: エイリアスは非対話モードでは展開されないため shopt + eval が必要
-            const wrapped = try std.fmt.allocPrint(self.allocator, "shopt -s expand_aliases; . {s}; eval {s}", .{ self.aliases_path.?, command_copy });
-            self.allocator.free(command_copy);
-            const argv = [_][]const u8{ "/bin/bash", "-c", wrapped };
+            // パスとコマンドの両方をクォート（injection防止）
+            const quoted_path = try shellQuote(self.allocator, self.aliases_path.?);
+            defer self.allocator.free(quoted_path);
+            const quoted_cmd = try shellQuote(self.allocator, parsed.command);
+            defer self.allocator.free(quoted_cmd);
+            const wrapped = try std.fmt.allocPrint(self.allocator, "shopt -s expand_aliases; . {s}; eval {s}", .{ quoted_path, quoted_cmd });
+            const argv = [_][]const u8{ self.bash_path.?, "-c", wrapped };
             state.child = std.process.Child.init(&argv, self.allocator);
             break :blk wrapped;
         } else blk: {
-            const argv = [_][]const u8{ "/bin/sh", "-c", command_copy };
+            // shを使用（POSIX準拠を保証）
+            // 注: $SHELLはfish等の場合があり-cの挙動が異なる可能性がある
+            const command_copy = try self.allocator.dupe(u8, parsed.command);
+            const sh_path = findShPath(self.allocator);
+            const argv = [_][]const u8{ sh_path, "-c", command_copy };
             state.child = std.process.Child.init(&argv, self.allocator);
             break :blk command_copy;
         };
@@ -303,6 +423,8 @@ pub const ShellService = struct {
         state.stderr_buffer = .{};
         state.child_reaped = false;
         state.exit_status = null;
+        state.stdout_truncated = false;
+        state.stderr_truncated = false;
 
         try state.child.spawn();
 
@@ -341,7 +463,9 @@ pub const ShellService = struct {
 
         // stdout から読み取り（上限チェック付き、ノンブロッキング）
         if (state.child.stdout) |stdout_file| {
-            try readWithLimit(self.allocator, stdout_file, &state.stdout_buffer, &read_buf, true);
+            if (try readWithLimit(self.allocator, stdout_file, &state.stdout_buffer, &read_buf, true)) {
+                state.stdout_truncated = true;
+            }
             // 上限に達したらパイプを閉じる（子プロセスのブロックを防ぐ）
             if (state.stdout_buffer.items.len >= MAX_OUTPUT_SIZE) {
                 stdout_file.close();
@@ -351,7 +475,9 @@ pub const ShellService = struct {
 
         // stderr から読み取り（上限チェック付き、ノンブロッキング）
         if (state.child.stderr) |stderr_file| {
-            try readWithLimit(self.allocator, stderr_file, &state.stderr_buffer, &read_buf, true);
+            if (try readWithLimit(self.allocator, stderr_file, &state.stderr_buffer, &read_buf, true)) {
+                state.stderr_truncated = true;
+            }
             // 上限に達したらパイプを閉じる（子プロセスのブロックを防ぐ）
             if (state.stderr_buffer.items.len >= MAX_OUTPUT_SIZE) {
                 stderr_file.close();
@@ -394,6 +520,7 @@ pub const ShellService = struct {
                 .exit_status = state.exit_status,
                 .input_source = state.input_source,
                 .output_dest = state.output_dest,
+                .truncated = state.stdout_truncated or state.stderr_truncated,
             };
             return cmd_result;
         }
@@ -418,10 +545,14 @@ pub const ShellService = struct {
 
         // 残りのデータを読み取る（上限チェック付き、ブロッキング）
         if (state.child.stdout) |stdout_file| {
-            try readWithLimit(self.allocator, stdout_file, &state.stdout_buffer, &read_buf, false);
+            if (try readWithLimit(self.allocator, stdout_file, &state.stdout_buffer, &read_buf, false)) {
+                state.stdout_truncated = true;
+            }
         }
         if (state.child.stderr) |stderr_file| {
-            try readWithLimit(self.allocator, stderr_file, &state.stderr_buffer, &read_buf, false);
+            if (try readWithLimit(self.allocator, stderr_file, &state.stderr_buffer, &read_buf, false)) {
+                state.stderr_truncated = true;
+            }
         }
 
         // 結果を返す
@@ -431,6 +562,7 @@ pub const ShellService = struct {
             .exit_status = state.exit_status,
             .input_source = state.input_source,
             .output_dest = state.output_dest,
+            .truncated = state.stdout_truncated or state.stderr_truncated,
         };
 
         return cmd_result;

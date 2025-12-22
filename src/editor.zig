@@ -1621,7 +1621,7 @@ pub const Editor = struct {
                 }
             }
 
-            try buffer_state.editing_ctx.buffer.saveToFile(path);
+            const save_warning = try buffer_state.editing_ctx.buffer.saveToFile(path);
             buffer_state.markSaved(); // 保存時点を記録
 
             // 保存後に新しい mtime を記録
@@ -1633,6 +1633,11 @@ pub const Editor = struct {
             // 保存後にfilename_normalizedを更新（新規ファイル対応）
             if (buffer_state.filename_normalized == null) {
                 buffer_state.filename_normalized = std.fs.cwd().realpathAlloc(self.allocator, path) catch null;
+            }
+
+            // 所有権変更警告がある場合は表示
+            if (save_warning) |warning| {
+                view.setError(warning);
             }
         }
     }
@@ -3667,7 +3672,7 @@ pub const Editor = struct {
             defer self.shell_service.finish();
             defer self.mode = .normal; // エラー時も必ずモード復帰
 
-            try self.processShellResult(result.stdout, result.stderr, result.exit_status, result.input_source, result.output_dest);
+            try self.processShellResult(result.stdout, result.stderr, result.exit_status, result.input_source, result.output_dest, result.truncated);
 
             // 完了後に再描画（processShellResultで設定したステータスメッセージを保持）
             self.getCurrentView().markFullRedraw();
@@ -3689,8 +3694,11 @@ pub const Editor = struct {
     }
 
     /// シェル実行結果を処理
-    fn processShellResult(self: *Editor, stdout: []const u8, stderr: []const u8, exit_status: ?u32, input_source: ShellInputSource, output_dest: ShellOutputDest) !void {
+    fn processShellResult(self: *Editor, stdout: []const u8, stderr: []const u8, exit_status: ?u32, input_source: ShellInputSource, output_dest: ShellOutputDest, truncated: bool) !void {
         const window = self.window_manager.getCurrentWindow();
+
+        // truncated警告はステータスメッセージに含める（上書きされないように）
+        const truncated_suffix: []const u8 = if (truncated) " [TRUNCATED]" else "";
 
         // 結果を処理
         switch (output_dest) {
@@ -3712,14 +3720,18 @@ pub const Editor = struct {
                 if (output.len == 0) {
                     if (exit_status) |status| {
                         if (status != 0) {
-                            var msg_buf: [64]u8 = undefined;
-                            const msg = std.fmt.bufPrint(&msg_buf, "Exit status: {d}", .{status}) catch "(exit error)";
+                            var msg_buf: [128]u8 = undefined;
+                            const msg = std.fmt.bufPrint(&msg_buf, "Exit status: {d}{s}", .{ status, truncated_suffix }) catch "(exit error)";
                             self.getCurrentView().setError(msg);
                         } else {
-                            self.getCurrentView().setError("(no output)");
+                            var msg_buf: [64]u8 = undefined;
+                            const msg = std.fmt.bufPrint(&msg_buf, "(no output){s}", .{truncated_suffix}) catch "(no output)";
+                            self.getCurrentView().setError(msg);
                         }
                     } else {
-                        self.getCurrentView().setError("(no output)");
+                        var msg_buf: [64]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&msg_buf, "(no output){s}", .{truncated_suffix}) catch "(no output)";
+                        self.getCurrentView().setError(msg);
                     }
                     return;
                 }
@@ -3735,25 +3747,24 @@ pub const Editor = struct {
                 // 出力を挿入
                 cmd_buffer.editing_ctx.buffer.insertSlice(0, output) catch {};
 
-                // *Command* バッファがどこかのウィンドウに表示されているか確認
+                // コマンド出力は再生成可能なのでmodifiedをクリア
+                cmd_buffer.editing_ctx.modified = false;
+
+                // *Command* バッファを表示している全ウィンドウを更新
                 const windows = self.window_manager.iterator();
-                var cmd_window_idx: ?usize = null;
-                for (windows, 0..) |*win, idx| {
+                var found_cmd_window = false;
+                for (windows) |*win| {
                     if (win.buffer_id == cmd_buffer.id) {
-                        cmd_window_idx = idx;
-                        break;
+                        found_cmd_window = true;
+                        win.view.markFullRedraw();
+                        win.view.cursor_x = 0;
+                        win.view.cursor_y = 0;
+                        win.view.top_line = 0;
+                        win.view.top_col = 0;
                     }
                 }
 
-                if (cmd_window_idx) |idx| {
-                    // 既に表示されている：そのウィンドウを更新
-                    var win = &self.window_manager.iterator()[idx];
-                    win.view.markFullRedraw();
-                    win.view.cursor_x = 0;
-                    win.view.cursor_y = 0;
-                    win.view.top_line = 0;
-                    win.view.top_col = 0;
-                } else {
+                if (!found_cmd_window) {
                     // 表示されていない：ウィンドウを分割して下に *Command* を表示
                     const new_win_idx = try self.openCommandBufferWindow();
                     // 新しいウィンドウのビューを更新（バッファが更新されているため）
@@ -3770,18 +3781,26 @@ pub const Editor = struct {
                 // ステータス表示
                 if (exit_status) |status| {
                     if (status != 0) {
-                        var msg_buf: [64]u8 = undefined;
-                        const msg = std.fmt.bufPrint(&msg_buf, "Exit {d} (see below)", .{status}) catch "Exit error";
+                        var msg_buf: [128]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&msg_buf, "Exit {d} (see below){s}", .{ status, truncated_suffix }) catch "Exit error";
                         self.getCurrentView().setError(msg);
                     } else if (stderr.len > 0) {
-                        self.getCurrentView().setError("Done with warnings (see below)");
+                        var msg_buf: [128]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&msg_buf, "Done with warnings (see below){s}", .{truncated_suffix}) catch "Done with warnings";
+                        self.getCurrentView().setError(msg);
                     } else {
-                        self.getCurrentView().setError("Done (see below)");
+                        var msg_buf: [128]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&msg_buf, "Done (see below){s}", .{truncated_suffix}) catch "Done";
+                        self.getCurrentView().setError(msg);
                     }
                 } else if (stderr.len > 0) {
-                    self.getCurrentView().setError("Done with warnings (see below)");
+                    var msg_buf: [128]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&msg_buf, "Done with warnings (see below){s}", .{truncated_suffix}) catch "Done with warnings";
+                    self.getCurrentView().setError(msg);
                 } else {
-                    self.getCurrentView().setError("Done (see below)");
+                    var msg_buf: [128]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&msg_buf, "Done (see below){s}", .{truncated_suffix}) catch "Done";
+                    self.getCurrentView().setError(msg);
                 }
             },
             .replace => {
@@ -3789,7 +3808,7 @@ pub const Editor = struct {
                 if (exit_status) |status| {
                     if (status != 0) {
                         var msg_buf: [128]u8 = undefined;
-                        const msg = std.fmt.bufPrint(&msg_buf, "Command failed (exit {d}), buffer unchanged", .{status}) catch "Command failed";
+                        const msg = std.fmt.bufPrint(&msg_buf, "Command failed (exit {d}), buffer unchanged{s}", .{ status, truncated_suffix }) catch "Command failed";
                         self.getCurrentView().setError(msg);
                         return;
                     }
@@ -3912,11 +3931,28 @@ pub const Editor = struct {
                 }
             },
             .new_buffer => {
+                // コマンドが失敗した場合は新規バッファを作成しない
+                if (exit_status) |status| {
+                    if (status != 0) {
+                        var msg_buf: [128]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&msg_buf, "Command failed (exit {d}){s}", .{ status, truncated_suffix }) catch "Command failed";
+                        self.getCurrentView().setError(msg);
+                        return;
+                    }
+                }
                 // 新規バッファに出力（stdoutのみ、stderrはdisplayモードで確認）
                 if (stdout.len > 0) {
                     const new_buffer = try self.createNewBuffer();
                     try new_buffer.editing_ctx.buffer.insertSlice(0, stdout);
                     try self.switchToBuffer(new_buffer.id);
+                    // truncatedの場合は警告を表示
+                    if (truncated) {
+                        self.getCurrentView().setError("Warning: output truncated (10MB limit)");
+                    }
+                } else {
+                    var msg_buf: [64]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&msg_buf, "(no output){s}", .{truncated_suffix}) catch "(no output)";
+                    self.getCurrentView().setError(msg);
                 }
             },
         }

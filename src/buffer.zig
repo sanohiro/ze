@@ -765,16 +765,30 @@ pub const Buffer = struct {
     ///
     /// 【パーミッション保持】
     /// 元ファイルのパーミッション（chmod）を新ファイルに引き継ぐ
-    pub fn saveToFile(self: *Buffer, path: []const u8) !void {
-        const tmp_path = try std.fmt.allocPrint(self.allocator, "{s}.tmp", .{path});
+    /// ファイルを保存し、オプションで警告メッセージを返す
+    pub fn saveToFile(self: *Buffer, path: []const u8) !?[]const u8 {
+        // シンボリックリンクの場合は実際のターゲットに書き込む
+        const real_path = std.fs.cwd().realpathAlloc(self.allocator, path) catch path;
+        const should_free_real_path = real_path.ptr != path.ptr;
+        defer if (should_free_real_path) self.allocator.free(real_path);
+
+        // PID付きの一時ファイル名（複数インスタンスの競合防止）
+        const pid = std.c.getpid();
+        const tmp_path = try std.fmt.allocPrint(self.allocator, "{s}.{d}.tmp", .{ real_path, pid });
         defer self.allocator.free(tmp_path);
 
-        // 元のファイルのパーミッションを取得（存在する場合）
+        // 元のファイルのパーミッションと所有権を取得（存在する場合）
         var original_mode: ?std.posix.mode_t = null;
-        if (std.fs.cwd().statFile(path)) |stat| {
-            original_mode = stat.mode;
+        var original_uid: ?std.posix.uid_t = null;
+        var original_gid: ?std.posix.gid_t = null;
+
+        // fstatatでuid/gidを取得
+        if (std.posix.fstatat(std.fs.cwd().fd, real_path, 0)) |stat_buf| {
+            original_mode = stat_buf.mode;
+            original_uid = stat_buf.uid;
+            original_gid = stat_buf.gid;
         } else |_| {
-            // ファイルが存在しない場合は新規作成なので、デフォルトパーミッション
+            // ファイルが存在しない場合は新規作成なので、デフォルト
         }
 
         // 一時ファイルに書き込み
@@ -858,7 +872,38 @@ pub const Buffer = struct {
         }
 
         // 成功したら rename で置き換え（アトミック操作）
-        try std.fs.cwd().rename(tmp_path, path);
+        try std.fs.cwd().rename(tmp_path, real_path);
+
+        // ディレクトリをfsyncして、renameの耐久性を保証
+        // （クラッシュ時にディレクトリエントリが確実に永続化されるように）
+        if (std.fs.path.dirname(real_path)) |dir_path| {
+            if (std.fs.cwd().openDir(dir_path, .{})) |dir| {
+                var d = dir;
+                defer d.close();
+                std.posix.fsync(d.fd) catch {};
+            } else |_| {}
+        }
+
+        // 元のファイルの所有権を復元
+        // 現在のプロセスのUIDと異なる場合のみ警告の可能性がある
+        const current_uid = std.c.getuid();
+        var ownership_warning: ?[]const u8 = null;
+
+        if (original_uid != null or original_gid != null) {
+            // 元の所有権が現在のユーザーと異なる場合
+            const needs_chown = if (original_uid) |ouid| ouid != current_uid else false;
+            if (needs_chown) {
+                // ファイルを再度開いてfchownで所有権を復元
+                if (std.fs.cwd().openFile(real_path, .{ .mode = .read_write })) |file| {
+                    defer file.close();
+                    std.posix.fchown(file.handle, original_uid, original_gid) catch {
+                        // 権限エラー：所有権が変更されることを警告
+                        ownership_warning = "Warning: file ownership changed (permission denied for chown)";
+                    };
+                } else |_| {}
+            }
+        }
+        return ownership_warning;
     }
 
     pub fn len(self: *const Buffer) usize {
