@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.1.3] - 2025-12-22
 
 ### Fixed
+- Cross-compilation: use `std.os.linux.getpid/getuid` for Linux targets (libc not available)
 - Shell service security and robustness improvements
   - Fix double-free in alias command execution path
   - Add shellQuote for eval to prevent command injection

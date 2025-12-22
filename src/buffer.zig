@@ -773,7 +773,10 @@ pub const Buffer = struct {
         defer if (should_free_real_path) self.allocator.free(real_path);
 
         // PID付きの一時ファイル名（複数インスタンスの競合防止）
-        const pid = std.c.getpid();
+        const pid = if (@import("builtin").os.tag == .linux)
+            std.os.linux.getpid()
+        else
+            std.c.getpid();
         const tmp_path = try std.fmt.allocPrint(self.allocator, "{s}.{d}.tmp", .{ real_path, pid });
         defer self.allocator.free(tmp_path);
 
@@ -886,7 +889,10 @@ pub const Buffer = struct {
 
         // 元のファイルの所有権を復元
         // 現在のプロセスのUIDと異なる場合のみ警告の可能性がある
-        const current_uid = std.c.getuid();
+        const current_uid = if (@import("builtin").os.tag == .linux)
+            std.os.linux.getuid()
+        else
+            std.c.getuid();
         var ownership_warning: ?[]const u8 = null;
 
         if (original_uid != null or original_gid != null) {
