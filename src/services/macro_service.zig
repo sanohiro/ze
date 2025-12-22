@@ -65,13 +65,14 @@ pub const MacroService = struct {
         // 空のマクロは保存しない（前のマクロを保持）
         if (self.recording.items.len == 0) return;
 
-        // 前のマクロを解放
+        // 記録をコピーして保存（失敗時は前のマクロを保持）
+        const new_macro = self.allocator.dupe(input.Key, self.recording.items) catch return;
+
+        // 成功したら前のマクロを解放
         if (self.last_macro) |macro| {
             self.allocator.free(macro);
         }
-
-        // 記録をコピーして保存
-        self.last_macro = self.allocator.dupe(input.Key, self.recording.items) catch null;
+        self.last_macro = new_macro;
     }
 
     /// 記録をキャンセル
