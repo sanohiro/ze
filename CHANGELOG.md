@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.3] - 2025-12-22
+
+### Fixed
+- Shell service security and robustness improvements
+  - Fix double-free in alias command execution path
+  - Add shellQuote for eval to prevent command injection
+  - Require space before `n>`, `+>`, `>` suffixes to avoid hijacking
+  - Add PATH environment search for bash/sh executables
+- File save improvements
+  - Resolve symlinks with realpath before saving
+  - Add PID suffix to temp filename to prevent race conditions
+  - Add directory fsync after rename for durability
+  - Warn when file ownership cannot be preserved
+- Shell command output handling
+  - Include `[TRUNCATED]` in status messages instead of separate warning
+  - Check exit_status before creating new_buffer
+  - Update all windows showing command buffer
+  - Clear modified flag on command buffer
+- Macro recording: prevent data loss when memory allocation fails
+
 ## [1.1.2] - 2025-12-21
 
 ### Fixed
