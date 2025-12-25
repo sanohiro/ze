@@ -18,6 +18,9 @@ const history_mod = @import("history");
 const History = history_mod.History;
 const HistoryType = history_mod.HistoryType;
 
+/// I/O読み取りバッファサイズ
+const READ_BUFFER_SIZE: usize = 8192;
+
 /// シェルコマンド出力先
 pub const OutputDest = enum {
     command_buffer, // Command Bufferに表示（デフォルト）
@@ -459,7 +462,7 @@ pub const ShellService = struct {
     pub fn poll(self: *Self) !?CommandResult {
         var state = self.state orelse return null;
 
-        var read_buf: [8192]u8 = undefined;
+        var read_buf: [READ_BUFFER_SIZE]u8 = undefined;
 
         // stdout から読み取り（上限チェック付き、ノンブロッキング）
         if (state.child.stdout) |stdout_file| {
@@ -494,7 +497,7 @@ pub const ShellService = struct {
                 else
                     0;
                 if (remaining > 0) {
-                    const chunk_size = @min(remaining, 8192);
+                    const chunk_size = @min(remaining, READ_BUFFER_SIZE);
                     const chunk = data[state.stdin_write_pos .. state.stdin_write_pos + chunk_size];
                     const bytes_written = stdin_file.write(chunk) catch |err| switch (err) {
                         error.WouldBlock => 0,

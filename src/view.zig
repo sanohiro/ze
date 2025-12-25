@@ -35,6 +35,30 @@ const unicode = @import("unicode");
 const ANSI = config.ANSI;
 const ASCII = config.ASCII;
 
+/// ANSIエスケープシーケンス(\x1b[...m)をスキップして次の位置を返す
+/// シーケンスでなければnullを返す
+inline fn skipAnsiSequence(line: []const u8, pos: usize) ?usize {
+    if (pos + 1 >= line.len) return null;
+    if (!unicode.isAnsiEscapeStart(line[pos], line[pos + 1])) return null;
+    var i = pos + 2;
+    while (i < line.len and line[i] != 'm') : (i += 1) {}
+    return if (i < line.len) i + 1 else i;
+}
+
+/// 検索ハイライトの色ペア
+const HighlightColors = struct {
+    start: []const u8,
+    end: []const u8,
+};
+
+/// カーソル位置かどうかでハイライト色を選択
+inline fn getHighlightColors(is_current: bool) HighlightColors {
+    return if (is_current)
+        .{ .start = ANSI.HIGHLIGHT_CURRENT, .end = ANSI.HIGHLIGHT_OFF }
+    else
+        .{ .start = ANSI.INVERT, .end = ANSI.INVERT_OFF };
+}
+
 /// 全角空白（U+3000）のUTF-8バイト列
 const FULLWIDTH_SPACE: []const u8 = "\u{3000}"; // 0xE3 0x80 0x80
 /// 全角空白の視覚表示用（薄い背景色 + 全角空白自体で幅2を維持）
@@ -107,16 +131,13 @@ fn calculateScreenColumn(line: []const u8, start_byte: usize, end_byte: usize, i
 
     // 第1パス: ASCII高速パス（エスケープシーケンスをスキップしながら）
     while (b < safe_end) {
-        const c = line[b];
         // ANSIエスケープシーケンスをスキップ
-        if (b + 1 < line.len and unicode.isAnsiEscapeStart(c, line[b + 1])) {
-            b += 2;
-            while (b < line.len and line[b] != 'm') : (b += 1) {}
-            if (b < line.len) b += 1;
+        if (skipAnsiSequence(line, b)) |new_pos| {
+            b = new_pos;
             continue;
         }
 
-        if (unicode.isAsciiByte(c)) {
+        if (unicode.isAsciiByte(line[b])) {
             // ASCII文字: 幅1
             screen_col += 1;
             b += 1;
@@ -130,16 +151,13 @@ fn calculateScreenColumn(line: []const u8, start_byte: usize, end_byte: usize, i
     // 非ASCII文字が見つかった場合は残りをグラフェムクラスタ単位で処理
     if (needs_grapheme_scan) {
         while (b < safe_end) {
-            const c = line[b];
             // ANSIエスケープシーケンスをスキップ
-            if (b + 1 < line.len and unicode.isAnsiEscapeStart(c, line[b + 1])) {
-                b += 2;
-                while (b < line.len and line[b] != 'm') : (b += 1) {}
-                if (b < line.len) b += 1;
+            if (skipAnsiSequence(line, b)) |new_pos| {
+                b = new_pos;
                 continue;
             }
 
-            if (unicode.isAsciiByte(c)) {
+            if (unicode.isAsciiByte(line[b])) {
                 // ASCII文字: 幅1
                 screen_col += 1;
                 b += 1;
@@ -519,13 +537,9 @@ pub const View = struct {
 
         // 第1パス: ASCII高速パス（エスケープシーケンスをスキップしながら）
         while (i < line.len) {
-            const c = line[i];
-            if (i + 1 < line.len and unicode.isAnsiEscapeStart(c, line[i + 1])) {
-                // ANSIエスケープシーケンスをスキップ
-                i += 2;
-                while (i < line.len and line[i] != 'm') : (i += 1) {}
-                if (i < line.len) i += 1;
-            } else if (unicode.isAsciiByte(c)) {
+            if (skipAnsiSequence(line, i)) |new_pos| {
+                i = new_pos;
+            } else if (unicode.isAsciiByte(line[i])) {
                 // ASCII文字: 幅1
                 display_width += 1;
                 i += 1;
@@ -539,13 +553,9 @@ pub const View = struct {
         // 非ASCII文字が見つかった場合は残りをグラフェムクラスタ単位で処理
         if (needs_grapheme_scan) {
             while (i < line.len) {
-                const c = line[i];
-                if (i + 1 < line.len and unicode.isAnsiEscapeStart(c, line[i + 1])) {
-                    // ANSIエスケープシーケンスをスキップ
-                    i += 2;
-                    while (i < line.len and line[i] != 'm') : (i += 1) {}
-                    if (i < line.len) i += 1;
-                } else if (unicode.isAsciiByte(c)) {
+                if (skipAnsiSequence(line, i)) |new_pos| {
+                    i = new_pos;
+                } else if (unicode.isAsciiByte(line[i])) {
                     // ASCII文字: 幅1
                     display_width += 1;
                     i += 1;
@@ -860,11 +870,10 @@ pub const View = struct {
         // カーソル位置を含むマッチかどうかで色を変える（表示幅で比較）
         // カーソルはマッチ終端に置かれる: (start, end] の範囲で判定（開始を除外、終端を含む）
         const is_current = if (cursor_in_content) |cursor| cursor > first_visible_pos and cursor <= first_visible_pos + search_display_width else false;
-        const hl_start = if (is_current) ANSI.HIGHLIGHT_CURRENT else ANSI.INVERT;
-        const hl_end = if (is_current) ANSI.HIGHLIGHT_OFF else ANSI.INVERT_OFF;
-        try self.highlighted_line.appendSlice(self.allocator, hl_start);
+        const hl = getHighlightColors(is_current);
+        try self.highlighted_line.appendSlice(self.allocator, hl.start);
         try self.highlighted_line.appendSlice(self.allocator, line[first_match .. first_match + search_str.len]);
-        try self.highlighted_line.appendSlice(self.allocator, hl_end);
+        try self.highlighted_line.appendSlice(self.allocator, hl.end);
         var pos: usize = first_match + search_str.len;
 
         // 残りのマッチを処理
@@ -877,11 +886,10 @@ pub const View = struct {
                 // カーソル位置を含むマッチかどうかで色を変える（表示幅で比較）
                 // カーソルはマッチ終端に置かれる: (start, end] の範囲で判定（開始を除外、終端を含む）
                 const is_cur = if (cursor_in_content) |cursor| cursor > visible_pos and cursor <= visible_pos + search_display_width else false;
-                const start_seq = if (is_cur) ANSI.HIGHLIGHT_CURRENT else ANSI.INVERT;
-                const end_seq = if (is_cur) ANSI.HIGHLIGHT_OFF else ANSI.INVERT_OFF;
-                try self.highlighted_line.appendSlice(self.allocator, start_seq);
+                const hl_cur = getHighlightColors(is_cur);
+                try self.highlighted_line.appendSlice(self.allocator, hl_cur.start);
                 try self.highlighted_line.appendSlice(self.allocator, line[match_pos .. match_pos + search_str.len]);
-                try self.highlighted_line.appendSlice(self.allocator, end_seq);
+                try self.highlighted_line.appendSlice(self.allocator, hl_cur.end);
                 pos = match_pos + search_str.len;
             } else {
                 // これ以上マッチなし：残りをコピー
@@ -902,10 +910,8 @@ pub const View = struct {
         var i: usize = safe_start;
         while (i < safe_end) {
             // ANSIエスケープシーケンスをスキップ
-            if (i + 1 < line.len and unicode.isAnsiEscapeStart(line[i], line[i + 1])) {
-                i += 2;
-                while (i < line.len and line[i] != 'm') : (i += 1) {}
-                if (i < line.len) i += 1; // 'm'をスキップ
+            if (skipAnsiSequence(line, i)) |new_pos| {
+                i = new_pos;
             } else {
                 // UTF-8文字の表示幅を計算
                 const remaining = line[i..safe_end];
@@ -951,10 +957,8 @@ pub const View = struct {
         var raw_pos: usize = content_start;
         while (raw_pos < line.len) {
             // ANSIエスケープシーケンスをスキップ
-            if (raw_pos + 1 < line.len and unicode.isAnsiEscapeStart(line[raw_pos], line[raw_pos + 1])) {
-                raw_pos += 2;
-                while (raw_pos < line.len and line[raw_pos] != 'm') : (raw_pos += 1) {}
-                if (raw_pos < line.len) raw_pos += 1; // 'm' をスキップ
+            if (skipAnsiSequence(line, raw_pos)) |new_pos| {
+                raw_pos = new_pos;
             } else {
                 // 可視文字を追加
                 self.regex_visible_to_raw.appendAssumeCapacity(raw_pos);
@@ -995,11 +999,10 @@ pub const View = struct {
         // カーソル位置を含むマッチかどうかで色を変える（可視位置で比較）
         // リテラル検索と一貫性を保つため < を使用（マッチ終端位置はマッチ外）
         const is_current = if (cursor_in_content) |cursor| cursor >= match_start_vis and cursor < match_end_vis else false;
-        const hl_start = if (is_current) ANSI.HIGHLIGHT_CURRENT else ANSI.INVERT;
-        const hl_end = if (is_current) ANSI.HIGHLIGHT_OFF else ANSI.INVERT_OFF;
-        try self.highlighted_line.appendSlice(self.allocator, hl_start);
+        const hl = getHighlightColors(is_current);
+        try self.highlighted_line.appendSlice(self.allocator, hl.start);
         try self.highlighted_line.appendSlice(self.allocator, line[match_start_raw..match_end_raw]);
-        try self.highlighted_line.appendSlice(self.allocator, hl_end);
+        try self.highlighted_line.appendSlice(self.allocator, hl.end);
 
         visible_pos = match_end_vis;
         last_raw_pos = match_end_raw;
@@ -1026,11 +1029,10 @@ pub const View = struct {
                 // カーソル位置を含むマッチかどうかで色を変える（可視位置で比較）
                 // リテラル検索と一貫性を保つため < を使用（マッチ終端位置はマッチ外）
                 const is_cur = if (cursor_in_content) |cursor| cursor >= match_start_vis and cursor < match_end_vis else false;
-                const start_seq = if (is_cur) ANSI.HIGHLIGHT_CURRENT else ANSI.INVERT;
-                const end_seq = if (is_cur) ANSI.HIGHLIGHT_OFF else ANSI.INVERT_OFF;
-                try self.highlighted_line.appendSlice(self.allocator, start_seq);
+                const hl_cur = getHighlightColors(is_cur);
+                try self.highlighted_line.appendSlice(self.allocator, hl_cur.start);
                 try self.highlighted_line.appendSlice(self.allocator, line[match_start_raw..match_end_raw]);
-                try self.highlighted_line.appendSlice(self.allocator, end_seq);
+                try self.highlighted_line.appendSlice(self.allocator, hl_cur.end);
 
                 visible_pos = match_end_vis;
                 last_raw_pos = match_end_raw;

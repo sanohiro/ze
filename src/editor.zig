@@ -3178,7 +3178,7 @@ pub const Editor = struct {
     }
 
     fn insertChar(self: *Editor, ch: u8) !void {
-        return self.insertCodepoint(@as(u21, ch));
+        return self.insertCodepoint(ch); // u8→u21 自動昇格
     }
 
     fn insertCodepoint(self: *Editor, codepoint: u21) !void {

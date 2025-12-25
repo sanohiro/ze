@@ -102,14 +102,14 @@ pub const PieceIterator = struct {
 
         // ASCIIの場合は1バイト
         if (first_byte < config.UTF8.CONTINUATION_MASK) {
-            return @as(u21, first_byte);
+            return first_byte; // u8→u21 自動昇格
         }
 
         // UTF-8のバイト数を判定
         const len = std.unicode.utf8ByteSequenceLength(first_byte) catch return error.InvalidUtf8;
 
         if (len == 1) {
-            return @as(u21, first_byte);
+            return first_byte; // u8→u21 自動昇格
         }
 
         // 残りのバイトを読み取る
@@ -969,14 +969,14 @@ pub const Buffer = struct {
 
         // ASCII
         if (unicode.isAsciiByte(first_byte)) {
-            return @as(u21, first_byte);
+            return first_byte; // u8→u21 自動昇格
         }
 
         // UTF-8のバイト数を判定
         const byte_len = std.unicode.utf8ByteSequenceLength(first_byte) catch return null;
 
         if (byte_len == 1) {
-            return @as(u21, first_byte);
+            return first_byte; // u8→u21 自動昇格
         }
 
         // マルチバイト文字を読み取る
