@@ -318,6 +318,7 @@ pub fn joinLine(e: *Editor) !void {
 
     const current_line = e.getCurrentLine();
     if (current_line == 0) {
+        view.setError("Beginning of buffer");
         return;
     }
 

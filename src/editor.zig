@@ -802,6 +802,19 @@ pub const Editor = struct {
         return null;
     }
 
+    /// 特殊バッファ（*Command*, *Buffer List*, *Help*等）を名前で検索
+    /// 特殊バッファの検索処理を共通化
+    fn findBufferBySpecialName(self: *Editor, name: []const u8) ?*BufferState {
+        for (self.buffer_manager.iterator()) |buf| {
+            if (buf.filename) |fname| {
+                if (std.mem.eql(u8, fname, name)) {
+                    return buf;
+                }
+            }
+        }
+        return null;
+    }
+
     // ========================================
     // ミニバッファ（ステータスバー入力）操作
     // Minibufferサービスへの委譲
@@ -1035,13 +1048,22 @@ pub const Editor = struct {
     /// 文字列の表示幅（カラム数）を計算
     const stringDisplayWidth = unicode.stringDisplayWidth;
 
+    /// Query Replace プロンプトの表示幅を計算
+    /// "Query replace (regexp) <search> with: " の表示幅を返す
+    fn calculateReplacementPromptWidth(self: *Editor) usize {
+        if (self.replace_search) |search| {
+            const prefix = if (self.is_regex_replace) "Query replace regexp " else "Query replace ";
+            return stringDisplayWidth(prefix) + stringDisplayWidth(search) + 7; // " with: " = 7
+        } else {
+            return 20; // "Query replace with: " = 20
+        }
+    }
+
     /// *Command* バッファを取得または作成
     fn getOrCreateCommandBuffer(self: *Editor) !*BufferState {
-        // 既存の *Command* バッファを探す（BufferManager経由）
-        for (self.buffer_manager.iterator()) |buf| {
-            if (buf.filename) |name| {
-                if (std.mem.eql(u8, name, "*Command*")) return buf;
-            }
+        // 既存の *Command* バッファを探す
+        if (self.findBufferBySpecialName("*Command*")) |buf| {
+            return buf;
         }
         // なければ新規作成
         const new_buffer = try self.createNewBuffer();
@@ -1215,16 +1237,7 @@ pub const Editor = struct {
 
         // "*Buffer List*"という名前のバッファを探す
         const buffer_list_name = "*Buffer List*";
-        var buffer_list: ?*BufferState = null;
-
-        for (self.buffer_manager.iterator()) |buf| {
-            if (buf.filename) |fname| {
-                if (std.mem.eql(u8, fname, buffer_list_name)) {
-                    buffer_list = buf;
-                    break;
-                }
-            }
-        }
+        var buffer_list = self.findBufferBySpecialName(buffer_list_name);
 
         if (buffer_list == null) {
             // 新しいバッファを作成
@@ -1250,16 +1263,7 @@ pub const Editor = struct {
     /// ヘルプ画面を表示
     pub fn showHelp(self: *Editor) !void {
         // "*Help*"という名前のバッファを探す
-        var help_buffer: ?*BufferState = null;
-
-        for (self.buffer_manager.iterator()) |buf| {
-            if (buf.filename) |fname| {
-                if (std.mem.eql(u8, fname, help.help_buffer_name)) {
-                    help_buffer = buf;
-                    break;
-                }
-            }
-        }
+        var help_buffer = self.findBufferBySpecialName(help.help_buffer_name);
 
         if (help_buffer == null) {
             // 新しいバッファを作成
@@ -1625,13 +1629,13 @@ pub const Editor = struct {
         if (matches.items.len == 1) {
             // 一意のマッチ: 完全補完
             const match = matches.items[0];
+            var path_buf: [std.fs.max_path_bytes]u8 = undefined;
             const new_path = if (std.mem.eql(u8, dir_path, "."))
-                try self.allocator.dupe(u8, match)
+                match
             else if (std.mem.eql(u8, dir_path, "/"))
-                try std.fmt.allocPrint(self.allocator, "/{s}", .{match})
+                try std.fmt.bufPrint(&path_buf, "/{s}", .{match})
             else
-                try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ dir_path, match });
-            defer self.allocator.free(new_path);
+                try std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, match });
 
             try self.minibuffer.setContent(new_path);
             // プロンプトを更新（clearError()ではなく）
@@ -1643,13 +1647,13 @@ pub const Editor = struct {
 
             if (common.len > prefix.len) {
                 // 共通部分で補完
+                var path_buf: [std.fs.max_path_bytes]u8 = undefined;
                 const new_path = if (std.mem.eql(u8, dir_path, "."))
-                    try self.allocator.dupe(u8, common)
+                    common
                 else if (std.mem.eql(u8, dir_path, "/"))
-                    try std.fmt.allocPrint(self.allocator, "/{s}", .{common})
+                    try std.fmt.bufPrint(&path_buf, "/{s}", .{common})
                 else
-                    try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ dir_path, common });
-                defer self.allocator.free(new_path);
+                    try std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, common });
 
                 try self.minibuffer.setContent(new_path);
             }
@@ -1684,18 +1688,19 @@ pub const Editor = struct {
     }
 
     /// 文字列配列の共通プレフィックスを見つける
+    /// 配列はソート済みであることを前提とし、最初と最後の文字列のみを比較
     fn findCommonPrefix(strings: []const []const u8) []const u8 {
         if (strings.len == 0) return "";
         if (strings.len == 1) return strings[0];
 
+        // ソート済み配列なので、最初と最後の文字列の共通プレフィックスが
+        // 全体の共通プレフィックスになる
         const first = strings[0];
-        var common_len: usize = first.len;
+        const last = strings[strings.len - 1];
+        const min_len = @min(first.len, last.len);
 
-        for (strings[1..]) |s| {
-            var i: usize = 0;
-            while (i < common_len and i < s.len and first[i] == s[i]) : (i += 1) {}
-            common_len = i;
-        }
+        var common_len: usize = 0;
+        while (common_len < min_len and first[common_len] == last[common_len]) : (common_len += 1) {}
 
         return first[0..common_len];
     }
@@ -2619,7 +2624,7 @@ pub const Editor = struct {
             self.is_regex_replace = !self.is_regex_replace;
             if (self.replace_search) |search| {
                 const prefix = if (self.is_regex_replace) "Query replace regexp " else "Query replace ";
-                self.prompt_prefix_len = stringDisplayWidth(prefix) + stringDisplayWidth(search) + 7; // " with: " = 7
+                self.prompt_prefix_len = self.calculateReplacementPromptWidth();
                 self.setPrompt("{s}{s} with: {s}", .{ prefix, search, self.minibuffer.getContent() });
                 // ハイライトを更新
                 self.getCurrentView().setSearchHighlightEx(search, self.is_regex_replace);
@@ -2629,10 +2634,10 @@ pub const Editor = struct {
         _ = try self.handleMinibufferKey(key);
         if (self.replace_search) |search| {
             const prefix = if (self.is_regex_replace) "Query replace regexp " else "Query replace ";
-            self.prompt_prefix_len = stringDisplayWidth(prefix) + stringDisplayWidth(search) + 7; // " with: " = 7
+            self.prompt_prefix_len = self.calculateReplacementPromptWidth();
             self.setPrompt("{s}{s} with: {s}", .{ prefix, search, self.minibuffer.getContent() });
         } else {
-            self.prompt_prefix_len = 20; // "Query replace with: " = 20
+            self.prompt_prefix_len = self.calculateReplacementPromptWidth();
             self.setPrompt("Query replace with: {s}", .{self.minibuffer.getContent()});
         }
         return true;

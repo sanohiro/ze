@@ -266,6 +266,8 @@ pub const Minibuffer = struct {
 
         while (current_pos < target) {
             const cluster = unicode.nextGraphemeCluster(text[current_pos..]) orelse break;
+            // 防御的チェック: byte_len == 0 の場合は無限ループを防ぐ
+            if (cluster.byte_len == 0) break;
             const next_pos = current_pos + cluster.byte_len;
 
             if (next_pos >= target) {

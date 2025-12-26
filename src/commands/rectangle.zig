@@ -81,14 +81,16 @@ fn seekToColumn(buffer: anytype, line_bounds: LineBounds, target_col: usize, tab
 fn extractBytes(allocator: std.mem.Allocator, buffer: anytype, start: usize, end: usize) ![]const u8 {
     if (end <= start) return allocator.dupe(u8, "");
 
-    var line_buf: std.ArrayList(u8) = .{};
+    // 事前に容量を確保してアロケーションを最小化
+    const capacity = end - start;
+    var line_buf = try std.ArrayList(u8).initCapacity(allocator, capacity);
     errdefer line_buf.deinit(allocator);
 
     var iter = PieceIterator.init(buffer);
     iter.seek(start);
     while (iter.global_pos < end) {
         const byte = iter.next() orelse break;
-        try line_buf.append(allocator, byte);
+        line_buf.appendAssumeCapacity(byte);
     }
 
     return try line_buf.toOwnedSlice(allocator);
@@ -97,11 +99,11 @@ fn extractBytes(allocator: std.mem.Allocator, buffer: anytype, start: usize, end
 /// 古い rectangle_ring をクリーンアップ
 fn cleanupRectangleRing(e: *Editor) void {
     if (e.rectangle_ring) |*old_ring| {
+        defer e.rectangle_ring = null; // use-after-free防止（確実にnull化）
         for (old_ring.items) |line| {
             e.allocator.free(line);
         }
         old_ring.deinit(e.allocator);
-        e.rectangle_ring = null; // use-after-free防止
     }
 }
 
