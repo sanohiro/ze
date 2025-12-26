@@ -1011,16 +1011,23 @@ pub fn detectLanguage(filename: ?[]const u8, content: ?[]const u8) *const Langua
 
 /// シグネチャから言語を検出
 fn detectBySignature(content: []const u8) ?*const LanguageDef {
+    // 早期終了: 空またはシグネチャを持ちそうにないファイルはスキップ
+    // シグネチャの大半はshebang (#!) なので、先頭2バイトでチェック
+    if (content.len < 2) return null;
+
+    // 先頭256バイトのみをチェック対象にする（シグネチャは必ず先頭付近）
+    const check_content = content[0..@min(content.len, 256)];
+
     // 最初の数行を取得
     var lines: [5][]const u8 = undefined;
     var line_count: usize = 0;
     var start: usize = 0;
 
-    for (content, 0..) |c, i| {
-        if (c == '\n' or i == content.len - 1) {
+    for (check_content, 0..) |c, i| {
+        if (c == '\n' or i == check_content.len - 1) {
             const end = if (c == '\n') i else i + 1;
             if (line_count < 5) {
-                lines[line_count] = content[start..end];
+                lines[line_count] = check_content[start..end];
                 line_count += 1;
             }
             start = i + 1;

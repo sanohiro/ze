@@ -267,26 +267,8 @@ pub const View = struct {
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, buffer: *Buffer) !View {
-        // 典型的なライン幅（256バイト）で事前確保してリアロケーションを削減
-        var line_buffer = try std.ArrayList(u8).initCapacity(allocator, 256);
-        errdefer line_buffer.deinit(allocator);
-
-        // prev_screen: 24行分を事前確保（典型的なターミナルサイズ）
-        var prev_screen = try std.ArrayList(std.ArrayList(u8)).initCapacity(allocator, 24);
-        errdefer prev_screen.deinit(allocator);
-
-        var expanded_line = try std.ArrayList(u8).initCapacity(allocator, 256);
-        errdefer expanded_line.deinit(allocator);
-
-        var highlighted_line = try std.ArrayList(u8).initCapacity(allocator, 256);
-        errdefer highlighted_line.deinit(allocator);
-
-        var regex_visible_text = try std.ArrayList(u8).initCapacity(allocator, 256);
-        errdefer regex_visible_text.deinit(allocator);
-
-        var regex_visible_to_raw = try std.ArrayList(usize).initCapacity(allocator, 257);
-        errdefer regex_visible_to_raw.deinit(allocator);
-
+        // 空のArrayListで初期化（遅延アロケーション）
+        // 初回レンダリング時に自動的に拡張される
         return View{
             .buffer = buffer,
             .top_line = 0,
@@ -298,10 +280,10 @@ pub const View = struct {
             .dirty_start = null,
             .dirty_end = null,
             .needs_full_redraw = true,
-            .line_buffer = line_buffer,
+            .line_buffer = .{},
             .error_msg_buf = undefined,
             .error_msg_len = 0,
-            .prev_screen = prev_screen,
+            .prev_screen = .{},
             .search_highlight_buf = undefined,
             .search_highlight_len = 0,
             .is_regex_highlight = false,
@@ -313,10 +295,10 @@ pub const View = struct {
             .show_line_numbers = config.Editor.SHOW_LINE_NUMBERS, // デフォルト設定
             .cached_block_state = null, // キャッシュ無効
             .cached_block_top_line = 0,
-            .expanded_line = expanded_line,
-            .highlighted_line = highlighted_line,
-            .regex_visible_text = regex_visible_text,
-            .regex_visible_to_raw = regex_visible_to_raw,
+            .expanded_line = .{},
+            .highlighted_line = .{},
+            .regex_visible_text = .{},
+            .regex_visible_to_raw = .{},
             .prev_top_line = 0, // スクロール追跡用
             .scroll_delta = 0, // スクロール差分
             .selection_start = null, // 選択範囲なし

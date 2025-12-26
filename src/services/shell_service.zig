@@ -75,8 +75,10 @@ pub const ShellService = struct {
     allocator: std.mem.Allocator,
     state: ?*CommandState,
     history: History,
-    bash_path: ?[]const u8, // bashのパス（見つかった場合）
-    aliases_path: ?[]const u8, // ~/.ze/aliasesのパス（存在する場合）
+    bash_path: ?[]const u8, // bashのパス（見つかった場合、遅延初期化）
+    aliases_path: ?[]const u8, // ~/.ze/aliasesのパス（存在する場合、遅延初期化）
+    paths_initialized: bool, // bash_path/aliases_pathが初期化済みか
+    history_loaded: bool, // 履歴がロード済みか
 
     const Self = @This();
 
@@ -118,32 +120,44 @@ pub const ShellService = struct {
     }
 
     pub fn init(allocator: std.mem.Allocator) Self {
-        var history = History.init(allocator);
-        history.load(.shell) catch {}; // エラーは無視
-
-        // bashのパスを探す（$SHELL → 一般的なパス）
-        const bash_path = findBashPath(allocator);
-
-        // ~/.ze/aliases が存在するかチェック
-        var aliases_path: ?[]const u8 = null;
-        if (std.posix.getenv("HOME")) |home| {
-            const path = std.fmt.allocPrint(allocator, "{s}/.ze/aliases", .{home}) catch null;
-            if (path) |p| {
-                if (std.fs.accessAbsolute(p, .{})) |_| {
-                    aliases_path = p;
-                } else |_| {
-                    allocator.free(p);
-                }
-            }
-        }
-
+        // 履歴とパス検索は遅延初期化（起動高速化）
         return .{
             .allocator = allocator,
             .state = null,
-            .history = history,
-            .bash_path = bash_path,
-            .aliases_path = aliases_path,
+            .history = History.init(allocator),
+            .bash_path = null,
+            .aliases_path = null,
+            .paths_initialized = false,
+            .history_loaded = false,
         };
+    }
+
+    /// パス検索の遅延初期化（初回コマンド実行時に呼ばれる）
+    fn ensurePathsInitialized(self: *Self) void {
+        if (self.paths_initialized) return;
+        self.paths_initialized = true;
+
+        // bashのパスを探す（$SHELL → 一般的なパス）
+        self.bash_path = findBashPath(self.allocator);
+
+        // ~/.ze/aliases が存在するかチェック
+        if (std.posix.getenv("HOME")) |home| {
+            const path = std.fmt.allocPrint(self.allocator, "{s}/.ze/aliases", .{home}) catch null;
+            if (path) |p| {
+                if (std.fs.accessAbsolute(p, .{})) |_| {
+                    self.aliases_path = p;
+                } else |_| {
+                    self.allocator.free(p);
+                }
+            }
+        }
+    }
+
+    /// 履歴の遅延ロード（初回履歴アクセス時に呼ばれる）
+    fn ensureHistoryLoaded(self: *Self) void {
+        if (self.history_loaded) return;
+        self.history_loaded = true;
+        self.history.load(.shell) catch {};
     }
 
     /// シェル用にパスをクォート（シングルクォート使用）
@@ -375,6 +389,9 @@ pub const ShellService = struct {
         const parsed = parseCommand(cmd_input);
         if (parsed.command.len == 0) return error.NoCommand;
 
+        // 遅延初期化: bashパスとaliasesパスを検索（初回のみ）
+        self.ensurePathsInitialized();
+
         // 既存の状態をクリア（リーク防止）
         if (self.state) |old_state| {
             self.cleanupState(old_state);
@@ -596,21 +613,25 @@ pub const ShellService = struct {
 
     /// 履歴にコマンドを追加
     pub fn addToHistory(self: *Self, cmd: []const u8) !void {
+        self.ensureHistoryLoaded();
         try self.history.add(cmd);
     }
 
     /// 履歴ナビゲーション開始
     pub fn startHistoryNavigation(self: *Self, current_input: []const u8) !void {
+        self.ensureHistoryLoaded();
         try self.history.startNavigation(current_input);
     }
 
     /// 履歴の前のエントリを取得
     pub fn historyPrev(self: *Self) ?[]const u8 {
+        self.ensureHistoryLoaded();
         return self.history.prev();
     }
 
     /// 履歴の次のエントリを取得
     pub fn historyNext(self: *Self) ?[]const u8 {
+        self.ensureHistoryLoaded();
         return self.history.next();
     }
 

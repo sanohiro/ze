@@ -165,11 +165,14 @@ pub const BufferManager = struct {
         // 正規化パスをキャッシュ（検索高速化用）
         buffer_state.filename_normalized = std.fs.cwd().realpathAlloc(self.allocator, path) catch null;
 
-        // ファイルのmtimeを取得
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
-        const stat = try file.stat();
-        buffer_state.file_mtime = stat.mtime;
+        // ファイルのmtimeを取得（ファイル再オープン不要でstatAbsoluteを使用）
+        // 相対パスの場合はnormalized（あれば）を使い、なければpathをそのまま使用
+        const stat_path = buffer_state.filename_normalized orelse path;
+        if (std.fs.cwd().statFile(stat_path)) |stat| {
+            buffer_state.file_mtime = stat.mtime;
+        } else |_| {
+            buffer_state.file_mtime = 0;
+        }
 
         try self.buffers.append(self.allocator, buffer_state);
         return buffer_state;

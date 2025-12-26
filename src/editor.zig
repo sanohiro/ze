@@ -149,7 +149,6 @@ pub const Editor = struct {
     mode: EditorMode,
     minibuffer: Minibuffer, // ミニバッファ入力用
     quit_after_save: bool,
-    prompt_buffer: ?[]const u8, // allocPrintで作成したプロンプト文字列
     prompt_prefix_len: usize, // プロンプト文字列のプレフィックス長（カーソル位置計算用）
     cached_prompt_prefix: ?[]const u8, // プレフィックスキャッシュ（再計算回避）
 
@@ -206,7 +205,7 @@ pub const Editor = struct {
         // ビューポートサイズを設定（カーソル移動の境界判定に使用）
         first_window.view.setViewport(terminal.width, terminal.height);
 
-        var editor = Editor{
+        const editor = Editor{
             .terminal = terminal,
             .allocator = allocator,
             .running = true,
@@ -215,7 +214,6 @@ pub const Editor = struct {
             .mode = .normal,
             .minibuffer = Minibuffer.init(allocator),
             .quit_after_save = false,
-            .prompt_buffer = null,
             .prompt_prefix_len = 0,
             .cached_prompt_prefix = null,
             .kill_ring = null,
@@ -240,9 +238,6 @@ pub const Editor = struct {
             .paste_buffer = std.ArrayList(u8){},
             .keymap = try Keymap.init(allocator),
         };
-
-        // デフォルトキーバインドを登録
-        try editor.keymap.loadDefaults();
 
         return editor;
     }
@@ -282,11 +277,6 @@ pub const Editor = struct {
         }
         if (self.replace_replacement) |replacement| {
             self.allocator.free(replacement);
-        }
-
-        // プロンプトバッファのクリーンアップ
-        if (self.prompt_buffer) |prompt| {
-            self.allocator.free(prompt);
         }
 
         // pending_filenameのクリーンアップ
@@ -376,14 +366,6 @@ pub const Editor = struct {
             return;
         };
         self.getCurrentView().setError(prompt);
-    }
-
-    /// プロンプトを解放
-    fn clearPrompt(self: *Editor) void {
-        if (self.prompt_buffer) |old| {
-            self.allocator.free(old);
-            self.prompt_buffer = null;
-        }
     }
 
     /// エラーを表示（anyerror対応）
@@ -1471,16 +1453,8 @@ pub const Editor = struct {
         const buffer_state = self.getCurrentBuffer();
         const view = self.getCurrentView();
 
-        // 読み込み中メッセージを表示（大きなファイルでのフィードバック）
-        {
-            var msg_buf: [config.Editor.STATUS_BUF_SIZE]u8 = undefined;
-            const msg = std.fmt.bufPrint(&msg_buf, "Loading {s}...", .{path}) catch "Loading...";
-            view.setError(msg);
-            // メッセージを即座に表示するため、ステータスバーを描画してフラッシュ
-            try self.renderAllWindows();
-        }
-        // エラー時もLoadingメッセージをクリア
-        errdefer view.clearError();
+        // Loading表示を省略（ほとんどのファイルは即座にロードされるため）
+        // 大きなファイルでも最初のレンダリングで結果が見える
 
         // 新しいバッファを先にロード（失敗しても古いバッファは残る）
         var new_buffer = try Buffer.loadFromFile(self.allocator, path);
@@ -2943,12 +2917,6 @@ pub const Editor = struct {
     /// 【キャンセル】
     /// 多くのモードで C-g または Escape でキャンセルし、normalモードに戻る。
     fn processKey(self: *Editor, key: input.Key) !void {
-        // 古いプロンプトバッファを解放
-        if (self.prompt_buffer) |old_prompt| {
-            self.allocator.free(old_prompt);
-            self.prompt_buffer = null;
-        }
-
         // ブラケットペーストモードの処理
         // ペースト開始: ESC[200~ → paste_mode = true
         // ペースト終了: ESC[201~ → 蓄積した内容を一括挿入

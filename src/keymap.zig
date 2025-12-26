@@ -3,10 +3,9 @@
 // ホットパスでO(1)ルックアップを実現
 //
 // 使い方:
-// 1. Editor.initでKeymap.initを呼ぶ
-// 2. loadDefaults()でデフォルトキーバインドを登録
-// 3. handleNormalKeyでfindCtrl/findAlt/findSpecialを使う
-// 4. ユーザー設定ファイル対応時はbindCtrl等で上書き
+// 1. Editor.initでKeymap.initを呼ぶ（デフォルトキーバインドはcomptime適用済み）
+// 2. handleNormalKeyでfindCtrl/findAlt/findSpecialを使う
+// 3. ユーザー設定ファイル対応時はbindCtrl等で上書き
 //
 // ========================================
 // 検索・置換キーバインド（editor.zigで直接処理）
@@ -105,20 +104,156 @@ const SPECIAL_KEY_COUNT = @typeInfo(SpecialKey).@"enum".fields.len;
 /// - special_table[N]: 矢印、Page Up/Down、Home/Endなど
 ///
 /// 【使い方】
-/// 1. Editor.initでKeymap.initを呼ぶ
-/// 2. loadDefaults()でEmacsキーバインドを登録
-/// 3. handleNormalKeyでfindCtrl/findAlt/findSpecialを呼ぶ
+/// 1. Editor.initでKeymap.initを呼ぶ（デフォルトキーバインドはcomptime適用済み）
+/// 2. handleNormalKeyでfindCtrl/findAlt/findSpecialを呼ぶ
+/// Ctrlキーバインドのエントリ
+const CtrlBinding = struct { key: u8, handler: CommandFn };
+
+/// Altキーバインドのエントリ
+const AltBinding = struct { key: u8, handler: CommandFn };
+
+/// 特殊キーバインドのエントリ
+const SpecialBinding = struct { key: SpecialKey, handler: CommandFn };
+
+/// デフォルトCtrlキーバインド（comptime配列）
+const default_ctrl_bindings = [_]CtrlBinding{
+    // マーク設定 (C-@ / C-Space)
+    .{ .key = CtrlCode.SPACE, .handler = edit.setMark },
+    .{ .key = '@', .handler = edit.setMark },
+    // カーソル移動
+    .{ .key = 'f', .handler = movement.cursorRight },
+    .{ .key = 'b', .handler = movement.cursorLeft },
+    .{ .key = 'n', .handler = movement.cursorDown },
+    .{ .key = 'p', .handler = movement.cursorUp },
+    .{ .key = 'a', .handler = movement.lineStart },
+    .{ .key = 'e', .handler = movement.lineEnd },
+    // 編集
+    .{ .key = 'd', .handler = edit.deleteChar },
+    .{ .key = 'k', .handler = edit.killLine },
+    .{ .key = 'w', .handler = edit.killRegion },
+    .{ .key = 'y', .handler = edit.yank },
+    // その他
+    .{ .key = 'g', .handler = edit.keyboardQuit },
+    .{ .key = 'u', .handler = edit.undo },
+    .{ .key = CtrlCode.SLASH, .handler = edit.redo },
+    .{ .key = '/', .handler = edit.redo },
+    // ページスクロール
+    .{ .key = 'v', .handler = movement.pageDown },
+    // 画面中央化
+    .{ .key = 'l', .handler = movement.recenter },
+};
+
+/// デフォルトAltキーバインド（comptime配列）
+const default_alt_bindings = [_]AltBinding{
+    // 単語移動
+    .{ .key = 'f', .handler = movement.forwardWord },
+    .{ .key = 'b', .handler = movement.backwardWord },
+    .{ .key = 'd', .handler = edit.deleteWord },
+    // 選択しながら単語移動 (Alt+Shift+f/b = M-F/B)
+    .{ .key = 'F', .handler = movement.selectForwardWord },
+    .{ .key = 'B', .handler = movement.selectBackwardWord },
+    // コピー
+    .{ .key = 'w', .handler = edit.copyRegion },
+    // バッファ移動
+    .{ .key = '<', .handler = movement.bufferStart },
+    .{ .key = '>', .handler = movement.bufferEnd },
+    // 段落移動
+    .{ .key = '{', .handler = movement.backwardParagraph },
+    .{ .key = '}', .handler = movement.forwardParagraph },
+    // 行操作
+    .{ .key = '^', .handler = edit.joinLine },
+    .{ .key = ';', .handler = edit.toggleComment },
+    // ウィンドウ切り替え（C-x oの短縮版）
+    .{ .key = 'o', .handler = movement.nextWindow },
+    // ページスクロール（上）
+    .{ .key = 'v', .handler = movement.pageUp },
+    // 選択しながらページスクロール（上）(Alt+Shift+v = M-V)
+    .{ .key = 'V', .handler = movement.selectPageUpAlt },
+};
+
+/// デフォルト特殊キーバインド（comptime配列）
+const default_special_bindings = [_]SpecialBinding{
+    // 矢印キー
+    .{ .key = .arrow_up, .handler = movement.cursorUp },
+    .{ .key = .arrow_down, .handler = movement.cursorDown },
+    .{ .key = .arrow_left, .handler = movement.cursorLeft },
+    .{ .key = .arrow_right, .handler = movement.cursorRight },
+    // Shift+矢印（選択移動）
+    .{ .key = .shift_arrow_up, .handler = movement.selectUp },
+    .{ .key = .shift_arrow_down, .handler = movement.selectDown },
+    .{ .key = .shift_arrow_left, .handler = movement.selectLeft },
+    .{ .key = .shift_arrow_right, .handler = movement.selectRight },
+    // Alt+矢印
+    .{ .key = .alt_arrow_up, .handler = edit.moveLineUp },
+    .{ .key = .alt_arrow_down, .handler = edit.moveLineDown },
+    .{ .key = .alt_arrow_left, .handler = movement.backwardWord },
+    .{ .key = .alt_arrow_right, .handler = movement.forwardWord },
+    .{ .key = .alt_delete, .handler = edit.deleteWord },
+    // Shift+Alt+矢印（選択しながら単語/行移動）
+    .{ .key = .shift_alt_arrow_up, .handler = movement.selectUp },
+    .{ .key = .shift_alt_arrow_down, .handler = movement.selectDown },
+    .{ .key = .shift_alt_arrow_left, .handler = movement.selectBackwardWord },
+    .{ .key = .shift_alt_arrow_right, .handler = movement.selectForwardWord },
+    // ページ
+    .{ .key = .page_down, .handler = movement.pageDown },
+    .{ .key = .page_up, .handler = movement.pageUp },
+    // Shift+ページ（選択移動）
+    .{ .key = .shift_page_up, .handler = movement.selectPageUp },
+    .{ .key = .shift_page_down, .handler = movement.selectPageDown },
+    // ホーム/エンド
+    .{ .key = .home, .handler = movement.lineStart },
+    .{ .key = .end_key, .handler = movement.lineEnd },
+    // 編集
+    .{ .key = .delete, .handler = edit.deleteChar },
+    .{ .key = .backspace, .handler = edit.backspace },
+    // ウィンドウ切り替え
+    .{ .key = .ctrl_tab, .handler = movement.nextWindow },
+    .{ .key = .ctrl_shift_tab, .handler = movement.prevWindow },
+};
+
+/// comptimeでデフォルトテーブルを生成
+fn makeDefaultCtrlTable() [256]?CommandFn {
+    var table = [_]?CommandFn{null} ** 256;
+    for (default_ctrl_bindings) |binding| {
+        table[binding.key] = binding.handler;
+    }
+    return table;
+}
+
+fn makeDefaultAltTable() [256]?CommandFn {
+    var table = [_]?CommandFn{null} ** 256;
+    for (default_alt_bindings) |binding| {
+        table[binding.key] = binding.handler;
+    }
+    return table;
+}
+
+fn makeDefaultSpecialTable() [SPECIAL_KEY_COUNT]?CommandFn {
+    var table = [_]?CommandFn{null} ** SPECIAL_KEY_COUNT;
+    for (default_special_bindings) |binding| {
+        table[@intFromEnum(binding.key)] = binding.handler;
+    }
+    return table;
+}
+
+/// comptime生成されたデフォルトテーブル
+const DEFAULT_CTRL_TABLE: [256]?CommandFn = makeDefaultCtrlTable();
+const DEFAULT_ALT_TABLE: [256]?CommandFn = makeDefaultAltTable();
+const DEFAULT_SPECIAL_TABLE: [SPECIAL_KEY_COUNT]?CommandFn = makeDefaultSpecialTable();
+
 pub const Keymap = struct {
     // 固定長配列: O(1)ルックアップ
     ctrl_table: [256]?CommandFn,
     alt_table: [256]?CommandFn,
     special_table: [SPECIAL_KEY_COUNT]?CommandFn,
 
+    /// 初期化（デフォルトキーバインド適用済み）
+    /// comptimeテーブルからの単純コピーなので高速
     pub fn init(_: std.mem.Allocator) !Keymap {
         return .{
-            .ctrl_table = [_]?CommandFn{null} ** 256,
-            .alt_table = [_]?CommandFn{null} ** 256,
-            .special_table = [_]?CommandFn{null} ** SPECIAL_KEY_COUNT,
+            .ctrl_table = DEFAULT_CTRL_TABLE,
+            .alt_table = DEFAULT_ALT_TABLE,
+            .special_table = DEFAULT_SPECIAL_TABLE,
         };
     }
 
@@ -126,16 +261,16 @@ pub const Keymap = struct {
         // 固定長配列なので解放不要
     }
 
-    // キーバインド登録
-    pub fn bindCtrl(self: *Keymap, key: u8, handler: CommandFn) !void {
+    // キーバインド登録（ユーザー設定で上書き用）
+    pub fn bindCtrl(self: *Keymap, key: u8, handler: CommandFn) void {
         self.ctrl_table[key] = handler;
     }
 
-    pub fn bindAlt(self: *Keymap, key: u8, handler: CommandFn) !void {
+    pub fn bindAlt(self: *Keymap, key: u8, handler: CommandFn) void {
         self.alt_table[key] = handler;
     }
 
-    pub fn bindSpecial(self: *Keymap, key: SpecialKey, handler: CommandFn) !void {
+    pub fn bindSpecial(self: *Keymap, key: SpecialKey, handler: CommandFn) void {
         self.special_table[@intFromEnum(key)] = handler;
     }
 
@@ -189,126 +324,4 @@ pub const Keymap = struct {
         };
     }
 
-    // デフォルトキーバインドを登録
-    pub fn loadDefaults(self: *Keymap) !void {
-        // ========================================
-        // Ctrl キーバインド
-        // ========================================
-
-        // マーク設定 (C-@ / C-Space)
-        try self.bindCtrl(CtrlCode.SPACE, edit.setMark);
-        try self.bindCtrl('@', edit.setMark);
-
-        // カーソル移動
-        try self.bindCtrl('f', movement.cursorRight);
-        try self.bindCtrl('b', movement.cursorLeft);
-        try self.bindCtrl('n', movement.cursorDown);
-        try self.bindCtrl('p', movement.cursorUp);
-        try self.bindCtrl('a', movement.lineStart);
-        try self.bindCtrl('e', movement.lineEnd);
-
-        // 編集
-        try self.bindCtrl('d', edit.deleteChar);
-        try self.bindCtrl('k', edit.killLine);
-        try self.bindCtrl('w', edit.killRegion);
-        try self.bindCtrl('y', edit.yank);
-
-        // その他
-        try self.bindCtrl('g', edit.keyboardQuit);
-        try self.bindCtrl('u', edit.undo);
-        try self.bindCtrl(CtrlCode.SLASH, edit.redo); // C-/
-        try self.bindCtrl('/', edit.redo);
-
-        // ページスクロール
-        try self.bindCtrl('v', movement.pageDown);
-
-        // 画面中央化
-        try self.bindCtrl('l', movement.recenter);
-
-        // ========================================
-        // Alt キーバインド
-        // ========================================
-
-        // 単語移動
-        try self.bindAlt('f', movement.forwardWord);
-        try self.bindAlt('b', movement.backwardWord);
-        try self.bindAlt('d', edit.deleteWord);
-
-        // 選択しながら単語移動 (Alt+Shift+f/b = M-F/B)
-        try self.bindAlt('F', movement.selectForwardWord);
-        try self.bindAlt('B', movement.selectBackwardWord);
-
-        // コピー
-        try self.bindAlt('w', edit.copyRegion);
-
-        // バッファ移動
-        try self.bindAlt('<', movement.bufferStart);
-        try self.bindAlt('>', movement.bufferEnd);
-
-        // 段落移動
-        try self.bindAlt('{', movement.backwardParagraph);
-        try self.bindAlt('}', movement.forwardParagraph);
-
-        // 行操作
-        try self.bindAlt('^', edit.joinLine);
-        try self.bindAlt(';', edit.toggleComment);
-
-        // ウィンドウ切り替え（C-x oの短縮版）
-        try self.bindAlt('o', movement.nextWindow);
-
-        // ページスクロール（上）
-        try self.bindAlt('v', movement.pageUp);
-
-        // 選択しながらページスクロール（上）(Alt+Shift+v = M-V)
-        try self.bindAlt('V', movement.selectPageUpAlt);
-
-        // ========================================
-        // 特殊キー
-        // ========================================
-
-        // 矢印キー
-        try self.bindSpecial(.arrow_up, movement.cursorUp);
-        try self.bindSpecial(.arrow_down, movement.cursorDown);
-        try self.bindSpecial(.arrow_left, movement.cursorLeft);
-        try self.bindSpecial(.arrow_right, movement.cursorRight);
-
-        // Shift+矢印（選択移動）
-        try self.bindSpecial(.shift_arrow_up, movement.selectUp);
-        try self.bindSpecial(.shift_arrow_down, movement.selectDown);
-        try self.bindSpecial(.shift_arrow_left, movement.selectLeft);
-        try self.bindSpecial(.shift_arrow_right, movement.selectRight);
-
-        // Alt+矢印
-        try self.bindSpecial(.alt_arrow_up, edit.moveLineUp);
-        try self.bindSpecial(.alt_arrow_down, edit.moveLineDown);
-        try self.bindSpecial(.alt_arrow_left, movement.backwardWord);
-        try self.bindSpecial(.alt_arrow_right, movement.forwardWord);
-        try self.bindSpecial(.alt_delete, edit.deleteWord);
-
-        // Shift+Alt+矢印（選択しながら単語/行移動）
-        try self.bindSpecial(.shift_alt_arrow_up, movement.selectUp);
-        try self.bindSpecial(.shift_alt_arrow_down, movement.selectDown);
-        try self.bindSpecial(.shift_alt_arrow_left, movement.selectBackwardWord);
-        try self.bindSpecial(.shift_alt_arrow_right, movement.selectForwardWord);
-
-        // ページ
-        try self.bindSpecial(.page_down, movement.pageDown);
-        try self.bindSpecial(.page_up, movement.pageUp);
-
-        // Shift+ページ（選択移動）
-        try self.bindSpecial(.shift_page_up, movement.selectPageUp);
-        try self.bindSpecial(.shift_page_down, movement.selectPageDown);
-
-        // ホーム/エンド
-        try self.bindSpecial(.home, movement.lineStart);
-        try self.bindSpecial(.end_key, movement.lineEnd);
-
-        // 編集
-        try self.bindSpecial(.delete, edit.deleteChar);
-        try self.bindSpecial(.backspace, edit.backspace);
-
-        // ウィンドウ切り替え
-        try self.bindSpecial(.ctrl_tab, movement.nextWindow);
-        try self.bindSpecial(.ctrl_shift_tab, movement.prevWindow);
-    }
 };

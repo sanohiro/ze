@@ -71,8 +71,8 @@ pub const Terminal = struct {
         // ブラケットペーストモードを有効化（ペースト時にまとめて挿入）
         // 注: マウスモードは無効（ターミナルでのテキスト選択・コピーを優先）
         const stdout: std.fs.File = .{ .handle = posix.STDOUT_FILENO };
-        stdout.writeAll(config.ANSI.ENTER_ALT_SCREEN) catch {};
-        stdout.writeAll(config.ANSI.ENABLE_BRACKETED_PASTE) catch {};
+        // 1回のwrite()にまとめてシステムコール削減
+        stdout.writeAll(config.ANSI.ENTER_ALT_SCREEN ++ config.ANSI.ENABLE_BRACKETED_PASTE) catch {};
 
         return self;
     }
@@ -168,27 +168,12 @@ pub const Terminal = struct {
     }
 
     /// 端末サイズが変更されたかチェックし、変更されていればサイズを更新してtrueを返す
+    /// SIGWINCHのみに依存（ioctlポーリングを削除して高速化）
     pub fn checkResize(self: *Terminal) bool {
         // SIGWINCHフラグをチェック（シグナル駆動の高速検出）
         if (g_resize_pending.swap(false, .acquire)) {
             self.getWindowSize();
             return true;
-        }
-
-        // ポーリングでも確認（フォールバック）
-        var ws: posix.winsize = undefined;
-        const stdout: std.fs.File = .{ .handle = posix.STDOUT_FILENO };
-
-        const result = posix.system.ioctl(stdout.handle, posix.system.T.IOCGWINSZ, @intFromPtr(&ws));
-        if (result == 0) {
-            const new_width = ws.col;
-            const new_height = ws.row;
-
-            if (new_width != self.width or new_height != self.height) {
-                self.width = new_width;
-                self.height = new_height;
-                return true;
-            }
         }
         return false;
     }

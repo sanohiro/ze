@@ -47,27 +47,36 @@ pub const ReplaceState = struct {
 /// - 正規表現のコンパイル結果をキャッシュ（同パターンで再コンパイル不要）
 /// - リテラル検索はBuffer直接検索（コピーなし、SIMD最適化）
 /// - 正規表現検索のみ範囲制限（1MB）で体感速度を維持
+/// - 履歴は遅延ロード（起動高速化）
 ///
 /// 【検索モード】
 /// - リテラル: 特殊文字がなければそのまま文字列検索
 /// - 正規表現: []、()、*、+、?、|、.、^、$、\ を含む場合
 pub const SearchService = struct {
     allocator: std.mem.Allocator,
-    history: History, // 検索履歴（永続化対応）
+    history: History, // 検索履歴（永続化対応、遅延ロード）
     compiled_regex: ?regex.Regex, // コンパイル済み正規表現（キャッシュ）
     cached_pattern: ?[]const u8, // キャッシュ中のパターン文字列
+    history_loaded: bool, // 履歴がロード済みか
 
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator) Self {
-        var history = History.init(allocator);
-        history.load(.search) catch {};
+        // 履歴は遅延ロード（起動高速化）
         return .{
             .allocator = allocator,
-            .history = history,
+            .history = History.init(allocator),
             .compiled_regex = null,
             .cached_pattern = null,
+            .history_loaded = false,
         };
+    }
+
+    /// 履歴の遅延ロード（初回アクセス時に呼ばれる）
+    fn ensureHistoryLoaded(self: *Self) void {
+        if (self.history_loaded) return;
+        self.history_loaded = true;
+        self.history.load(.search) catch {};
     }
 
     pub fn deinit(self: *Self) void {
@@ -329,21 +338,25 @@ pub const SearchService = struct {
 
     /// 履歴にパターンを追加
     pub fn addToHistory(self: *Self, pattern: []const u8) !void {
+        self.ensureHistoryLoaded();
         try self.history.add(pattern);
     }
 
     /// 履歴ナビゲーション開始
     pub fn startHistoryNavigation(self: *Self, current_input: []const u8) !void {
+        self.ensureHistoryLoaded();
         try self.history.startNavigation(current_input);
     }
 
     /// 履歴の前のエントリを取得
     pub fn historyPrev(self: *Self) ?[]const u8 {
+        self.ensureHistoryLoaded();
         return self.history.prev();
     }
 
     /// 履歴の次のエントリを取得
     pub fn historyNext(self: *Self) ?[]const u8 {
+        self.ensureHistoryLoaded();
         return self.history.next();
     }
 

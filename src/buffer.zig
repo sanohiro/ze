@@ -453,16 +453,12 @@ pub const Buffer = struct {
     detected_encoding: encoding.Encoding, // 検出したエンコーディング（保存時に復元）
 
     pub fn init(allocator: std.mem.Allocator) !Buffer {
-        var add_buffer = try std.ArrayList(u8).initCapacity(allocator, config.Buffer.INITIAL_ADD_CAPACITY);
-        errdefer add_buffer.deinit(allocator);
-
-        var pieces = try std.ArrayList(Piece).initCapacity(allocator, config.Buffer.INITIAL_PIECES_CAPACITY);
-        errdefer pieces.deinit(allocator);
-
+        // 空のArrayListで初期化（遅延アロケーション）
+        // 初回編集時に自動的に拡張される
         return Buffer{
             .original = &[_]u8{},
-            .add_buffer = add_buffer,
-            .pieces = pieces,
+            .add_buffer = .{},
+            .pieces = .{},
             .allocator = allocator,
             .owns_original = false,
             .is_mmap = false,
@@ -576,8 +572,7 @@ pub const Buffer = struct {
                     .length = file_size,
                 });
 
-                // LineIndexを即座に構築
-                try self.line_index.rebuild(&self);
+                // LineIndexは遅延構築（初回アクセス時に自動的に構築される）
 
                 mmap_kept = true; // 成功したのでmmapを保持
                 return self;
