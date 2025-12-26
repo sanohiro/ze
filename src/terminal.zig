@@ -46,14 +46,21 @@ pub const Terminal = struct {
     buf: std.ArrayList(u8),
     allocator: std.mem.Allocator,
 
+    /// 出力バッファの初期容量（典型的なフレームで1-3KB必要）
+    const INITIAL_BUFFER_CAPACITY: usize = 4096;
+
     pub fn init(allocator: std.mem.Allocator) !Terminal {
         const original = try posix.tcgetattr(posix.STDIN_FILENO);
+
+        // 出力バッファを事前確保（毎フレームのアロケーションを回避）
+        var buf = try std.ArrayList(u8).initCapacity(allocator, INITIAL_BUFFER_CAPACITY);
+        errdefer buf.deinit(allocator);
 
         var self = Terminal{
             .original_termios = original,
             .width = config.Terminal.DEFAULT_WIDTH,
             .height = config.Terminal.DEFAULT_HEIGHT,
-            .buf = std.ArrayList(u8){},
+            .buf = buf,
             .allocator = allocator,
         };
 

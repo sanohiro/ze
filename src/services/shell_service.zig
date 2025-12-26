@@ -76,6 +76,7 @@ pub const ShellService = struct {
     state: ?*CommandState,
     history: History,
     bash_path: ?[]const u8, // bashのパス（見つかった場合、遅延初期化）
+    sh_path: ?[]const u8, // shのパス（見つかった場合、遅延初期化）
     aliases_path: ?[]const u8, // ~/.ze/aliasesのパス（存在する場合、遅延初期化）
     paths_initialized: bool, // bash_path/aliases_pathが初期化済みか
     history_loaded: bool, // 履歴がロード済みか
@@ -126,6 +127,7 @@ pub const ShellService = struct {
             .state = null,
             .history = History.init(allocator),
             .bash_path = null,
+            .sh_path = null,
             .aliases_path = null,
             .paths_initialized = false,
             .history_loaded = false,
@@ -139,6 +141,9 @@ pub const ShellService = struct {
 
         // bashのパスを探す（$SHELL → 一般的なパス）
         self.bash_path = findBashPath(self.allocator);
+
+        // shのパスを探す（POSIX準拠シェル用）
+        self.sh_path = findShPath(self.allocator);
 
         // ~/.ze/aliases が存在するかチェック
         if (std.posix.getenv("HOME")) |home| {
@@ -229,11 +234,13 @@ pub const ShellService = struct {
         return null;
     }
 
-    /// shのパスを探す（/bin/shが無い環境用、スタックバッファ使用）
-    fn findShPath(allocator: std.mem.Allocator) []const u8 {
+    /// shのパスを探す（/bin/shが無い環境用）
+    /// 戻り値: 見つかった場合はアロケートされたパス、見つからない場合はnull
+    /// 呼び出し側は戻り値を解放する責任を持つ
+    fn findShPath(allocator: std.mem.Allocator) ?[]const u8 {
         // 1. /bin/sh を試す（最も一般的）
         if (std.fs.accessAbsolute("/bin/sh", .{})) |_| {
-            return "/bin/sh";
+            return allocator.dupe(u8, "/bin/sh") catch null;
         } else |_| {}
         // 2. PATH環境変数から探す（スタックバッファ使用）
         if (std.posix.getenv("PATH")) |path_env| {
@@ -242,8 +249,7 @@ pub const ShellService = struct {
             while (it.next()) |dir| {
                 const sh_path = std.fmt.bufPrint(&path_buf, "{s}/sh", .{dir}) catch continue;
                 if (std.fs.accessAbsolute(sh_path, .{})) |_| {
-                    // 見つかった時だけアロケーション
-                    return allocator.dupe(u8, sh_path) catch "/bin/sh";
+                    return allocator.dupe(u8, sh_path) catch null;
                 } else |_| {}
             }
         }
@@ -251,11 +257,11 @@ pub const ShellService = struct {
         const paths = [_][]const u8{ "/usr/bin/sh", "/system/bin/sh" };
         for (paths) |path| {
             if (std.fs.accessAbsolute(path, .{})) |_| {
-                return path;
+                return allocator.dupe(u8, path) catch null;
             } else |_| {}
         }
-        // 最終手段: /bin/sh を返す（存在しなくてもspawnでエラーになる）
-        return "/bin/sh";
+        // 見つからない場合はnull（呼び出し側でデフォルト値を使用）
+        return null;
     }
 
     pub fn deinit(self: *Self) void {
@@ -265,6 +271,9 @@ pub const ShellService = struct {
         self.history.save(.shell) catch {};
         self.history.deinit();
         if (self.bash_path) |p| {
+            self.allocator.free(p);
+        }
+        if (self.sh_path) |p| {
             self.allocator.free(p);
         }
         if (self.aliases_path) |p| {
@@ -422,11 +431,15 @@ pub const ShellService = struct {
             // shを使用（POSIX準拠を保証）
             // 注: $SHELLはfish等の場合があり-cの挙動が異なる可能性がある
             const command_copy = try self.allocator.dupe(u8, parsed.command);
-            const sh_path = findShPath(self.allocator);
+            // キャッシュされたsh_pathを使用（見つからない場合はデフォルト）
+            const sh_path = self.sh_path orelse "/bin/sh";
             const argv = [_][]const u8{ sh_path, "-c", command_copy };
             state.child = std.process.Child.init(&argv, self.allocator);
             break :blk command_copy;
         };
+        // spawn失敗時にactual_commandを解放（成功時はcleanupStateで解放）
+        errdefer self.allocator.free(actual_command);
+
         // 入力ソースなしの場合は /dev/null に接続（.Close だと Bad file descriptor エラー）
         state.child.stdin_behavior = if (stdin_data != null) .Pipe else .Ignore;
         state.child.stdout_behavior = .Pipe;
