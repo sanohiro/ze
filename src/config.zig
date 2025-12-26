@@ -124,6 +124,10 @@ pub const UTF8 = struct {
     /// 4バイト文字の先頭バイト範囲
     pub const BYTE4_MIN: u8 = 0xF0;
     pub const BYTE4_MAX: u8 = 0xF7;
+
+    // === 特殊文字 ===
+    /// 全角スペース (U+3000) の UTF-8 バイト列
+    pub const FULLWIDTH_SPACE = [_]u8{ 0xE3, 0x80, 0x80 };
 };
 
 /// BOM (Byte Order Mark) 定数

@@ -132,7 +132,7 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    // services/minibuffer <- unicode, input
+    // services/minibuffer <- unicode, input, config
     const minibuffer_mod = b.addModule("minibuffer", .{
         .root_source_file = b.path("src/services/minibuffer.zig"),
         .target = target,
@@ -140,6 +140,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "unicode", .module = unicode_mod },
             .{ .name = "input", .module = input_mod },
+            .{ .name = "config", .module = config_mod },
         },
     });
 

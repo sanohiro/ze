@@ -15,6 +15,7 @@
 const std = @import("std");
 const unicode = @import("unicode");
 const input = @import("input");
+const config = @import("config");
 
 /// ミニバッファ
 pub const Minibuffer = struct {
@@ -291,9 +292,11 @@ pub const Minibuffer = struct {
         const c = text[pos];
         // ASCII空白
         if (c == ' ' or c == '\t' or c == '\n' or c == '\r') return true;
-        // 全角スペース (U+3000 = 0xE3 0x80 0x80)
-        if (c == 0xE3 and pos + 2 < text.len) {
-            if (text[pos + 1] == 0x80 and text[pos + 2] == 0x80) {
+        // 全角スペース (U+3000)
+        if (c == config.UTF8.FULLWIDTH_SPACE[0] and pos + 2 < text.len) {
+            if (text[pos + 1] == config.UTF8.FULLWIDTH_SPACE[1] and
+                text[pos + 2] == config.UTF8.FULLWIDTH_SPACE[2])
+            {
                 return true;
             }
         }

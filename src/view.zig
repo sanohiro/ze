@@ -554,20 +554,28 @@ pub const View = struct {
             }
         }
 
-        // 残りをスペースで埋める（バッファリングで効率化）
+        // 残りをスペースで埋める（バッチ書き込みで高速化）
         if (display_width < viewport_width) {
-            const padding = viewport_width - display_width;
-            // 8スペースずつバッチで書き込み
-            const batch: []const u8 = "        "; // 8 spaces
-            var remaining = padding;
-            while (remaining >= 8) {
-                try term.write(batch);
-                remaining -= 8;
-            }
-            // 残りを1文字ずつ
-            while (remaining > 0) : (remaining -= 1) {
-                try term.write(" ");
-            }
+            try writeSpaces(term, viewport_width - display_width);
+        }
+    }
+
+    /// スペースをバッチ書き込み（高速化）
+    fn writeSpaces(term: anytype, count: usize) !void {
+        const SPACES_32 = "                                "; // 32 spaces
+        const SPACES_8 = "        "; // 8 spaces
+        var remaining = count;
+        // 32スペースずつバッチ書き込み
+        while (remaining >= 32) : (remaining -= 32) {
+            try term.write(SPACES_32);
+        }
+        // 8スペースずつバッチ書き込み
+        while (remaining >= 8) : (remaining -= 8) {
+            try term.write(SPACES_8);
+        }
+        // 残り1-7スペースはスライスで一括書き込み
+        if (remaining > 0) {
+            try term.write(SPACES_8[0..remaining]);
         }
     }
 
@@ -1363,7 +1371,9 @@ pub const View = struct {
                     if (col >= self.top_col) {
                         // 全角空白（U+3000）を視覚的に表示
                         if (cluster.byte_len == 3 and
-                            remaining[0] == 0xE3 and remaining[1] == 0x80 and remaining[2] == 0x80)
+                            remaining[0] == config.UTF8.FULLWIDTH_SPACE[0] and
+                            remaining[1] == config.UTF8.FULLWIDTH_SPACE[1] and
+                            remaining[2] == config.UTF8.FULLWIDTH_SPACE[2])
                         {
                             // 全角空白 → 薄い「□」に置換（幅2）
                             try self.expanded_line.appendSlice(self.allocator, FULLWIDTH_SPACE_VISUAL);
