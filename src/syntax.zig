@@ -981,6 +981,27 @@ pub const all_languages = [_]*const LanguageDef{
 };
 
 // ============================================
+// 言語アクセスヘルパー
+// ============================================
+
+/// デフォルトのテキスト言語を取得（コメントなし）
+/// 外部からlang_textを直接参照する代わりにこれを使用
+pub inline fn getTextLanguage() *const LanguageDef {
+    return all_languages[all_languages.len - 1];
+}
+
+/// 言語名で言語定義を検索（テスト用）
+/// 見つからない場合はnullを返す
+pub fn findLanguageByName(name: []const u8) ?*const LanguageDef {
+    for (all_languages) |lang| {
+        if (std.mem.eql(u8, lang.name, name)) {
+            return lang;
+        }
+    }
+    return null;
+}
+
+// ============================================
 // 言語検出
 // ============================================
 
@@ -994,7 +1015,7 @@ pub fn detectLanguage(filename: ?[]const u8, content: ?[]const u8) *const Langua
         }
     }
 
-    const fname = filename orelse return &lang_text;
+    const fname = filename orelse return getTextLanguage();
 
     // 2. ファイル名でチェック
     if (detectByFilename(fname)) |lang| {
@@ -1006,7 +1027,7 @@ pub fn detectLanguage(filename: ?[]const u8, content: ?[]const u8) *const Langua
         return lang;
     }
 
-    return &lang_text;
+    return getTextLanguage();
 }
 
 /// シグネチャから言語を検出

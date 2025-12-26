@@ -3,17 +3,11 @@ const testing = std.testing;
 const syntax = @import("syntax");
 const detectLanguage = syntax.detectLanguage;
 const LanguageDef = syntax.LanguageDef;
-const lang_python = syntax.lang_python;
-const lang_zig = syntax.lang_zig;
-const lang_shell = syntax.lang_shell;
-const lang_c = syntax.lang_c;
-const lang_cpp = syntax.lang_cpp;
-const lang_rust = syntax.lang_rust;
-const lang_makefile = syntax.lang_makefile;
-const lang_dockerfile = syntax.lang_dockerfile;
-const lang_javascript = syntax.lang_javascript;
-const lang_sql = syntax.lang_sql;
-const lang_text = syntax.lang_text;
+
+// 言語取得ヘルパー（findLanguageByName経由で個別変数への依存を削減）
+fn getLang(name: []const u8) *const LanguageDef {
+    return syntax.findLanguageByName(name) orelse unreachable;
+}
 
 // ヘルパー: 言語名で比較（ポインタアドレスは別モジュール間で異なるため）
 fn expectLanguage(expected_name: []const u8, actual: *const LanguageDef) !void {
@@ -41,6 +35,11 @@ test "detectLanguage by shebang" {
 }
 
 test "isCommentLine" {
+    const lang_python = getLang("Python");
+    const lang_zig = getLang("Zig");
+    const lang_sql = getLang("SQL");
+    const lang_text = syntax.getTextLanguage();
+
     // Python
     try testing.expect(lang_python.isCommentLine("# comment"));
     try testing.expect(lang_python.isCommentLine("  # indented"));
@@ -58,6 +57,9 @@ test "isCommentLine" {
 }
 
 test "findCommentStart - basic" {
+    const lang_cpp = getLang("C++");
+    const lang_python = getLang("Python");
+
     // C++: 行末コメント
     // "int x = 0; // comment"
     //  0123456789AB  (Aは10、Bは11)
@@ -74,6 +76,9 @@ test "findCommentStart - basic" {
 }
 
 test "findCommentStart - string skip" {
+    const lang_cpp = getLang("C++");
+    const lang_python = getLang("Python");
+
     // 文字列内の // はコメントじゃない
     // "char* s = \"// not comment\";"  (28文字、0-27)
     try testing.expectEqual(@as(?usize, null), lang_cpp.findCommentStart("char* s = \"// not comment\";"));

@@ -418,6 +418,29 @@ pub const LineIndex = struct {
     }
 };
 
+/// バッファの内部コンポーネント（ArrayListとLineIndex）を初期化
+/// エラーハンドリングを統一し、コードの重複を削減する
+fn initBufferComponents(allocator: std.mem.Allocator) !struct {
+    add_buffer: std.ArrayList(u8),
+    pieces: std.ArrayList(Piece),
+    line_index: LineIndex,
+} {
+    var add_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
+    errdefer add_buffer.deinit(allocator);
+
+    var pieces = try std.ArrayList(Piece).initCapacity(allocator, 0);
+    errdefer pieces.deinit(allocator);
+
+    const line_index = LineIndex.init(allocator);
+    // line_index.init()はアロケーションしないのでerrdefer不要
+
+    return .{
+        .add_buffer = add_buffer,
+        .pieces = pieces,
+        .line_index = line_index,
+    };
+}
+
 /// Piece Table バッファ: テキストエディタの中核データ構造
 ///
 /// 【概要】

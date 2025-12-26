@@ -198,10 +198,29 @@ pub const Terminal = struct {
         try self.buf.appendSlice(self.allocator, config.ANSI.SHOW_CURSOR);
     }
 
+    /// 整数を文字列に変換してバッファに追加（手書き最適化版）
+    fn appendUint(self: *Terminal, n: usize) !void {
+        if (n == 0) {
+            try self.buf.append(self.allocator, '0');
+            return;
+        }
+
+        var buf: [20]u8 = undefined; // usizeの最大桁数（64bit: 20桁）
+        var i: usize = buf.len;
+        var val = n;
+        while (val > 0) : (val /= 10) {
+            i -= 1;
+            buf[i] = @as(u8, @intCast('0' + val % 10));
+        }
+        try self.buf.appendSlice(self.allocator, buf[i..]);
+    }
+
     pub fn moveCursor(self: *Terminal, row: usize, col: usize) !void {
-        var buf: [config.Terminal.CURSOR_BUF_SIZE]u8 = undefined;
-        const str = try std.fmt.bufPrint(&buf, "\x1b[{d};{d}H", .{ row + 1, col + 1 });
-        try self.buf.appendSlice(self.allocator, str);
+        try self.buf.appendSlice(self.allocator, "\x1b[");
+        try self.appendUint(row + 1);
+        try self.buf.append(self.allocator, ';');
+        try self.appendUint(col + 1);
+        try self.buf.append(self.allocator, 'H');
     }
 
     pub fn write(self: *Terminal, text: []const u8) !void {
