@@ -48,6 +48,9 @@ const Minibuffer = @import("minibuffer").Minibuffer;
 const SearchService = @import("search_service").SearchService;
 const shell_service_mod = @import("shell_service");
 const ShellService = shell_service_mod.ShellService;
+
+// コマンド
+const help = @import("commands_help");
 const ShellOutputDest = shell_service_mod.OutputDest;
 const ShellInputSource = shell_service_mod.InputSource;
 const buffer_manager_mod = @import("buffer_manager");
@@ -1204,7 +1207,7 @@ pub const Editor = struct {
             // 特殊バッファは除外
             if (buf.filename) |fname| {
                 if (std.mem.eql(u8, fname, "*Buffer List*")) continue;
-                if (std.mem.eql(u8, fname, "*Help*")) continue;
+                if (std.mem.eql(u8, fname, help.help_buffer_name)) continue;
             }
 
             // 変更フラグ
@@ -1264,68 +1267,12 @@ pub const Editor = struct {
 
     /// ヘルプ画面を表示
     pub fn showHelp(self: *Editor) !void {
-        const help_text =
-            \\ze - Zero-latency Editor
-            \\
-            \\NAVIGATION
-            \\  C-f/C-b     Forward/backward char     M-f/M-b     Forward/backward word
-            \\  C-n/C-p     Next/previous line        C-v/M-v     Page down/up
-            \\  C-a/C-e     Beginning/end of line     M-</M->     Beginning/end of buffer
-            \\  C-l         Center cursor on screen   M-{/M-}     Backward/forward paragraph
-            \\
-            \\SELECTION
-            \\  C-Space     Set/unset mark            C-x h       Select all
-            \\  Shift+Arrow Select while moving       M-F/M-B     Select word (Shift+Alt)
-            \\
-            \\EDITING
-            \\  C-d         Delete char               M-d         Delete word
-            \\  C-k         Kill to end of line       C-u/C-/     Undo/redo
-            \\  C-w/M-w     Cut/copy region           C-y         Paste
-            \\  M-^         Join lines                M-;         Toggle comment
-            \\  Tab/S-Tab   Indent/unindent           M-Up/Down   Move line up/down
-            \\
-            \\SEARCH & REPLACE
-            \\  C-s/C-r     Search forward/backward   M-%         Query replace
-            \\  C-M-s/C-M-r Regex search fwd/bwd      C-M-%       Regex query replace
-            \\  M-r         Toggle regex/literal      Up/Down     Search history
-            \\
-            \\FILE
-            \\  C-x C-f     Open file                 C-x C-s     Save
-            \\  C-x C-w     Save as                   C-x C-c     Quit
-            \\  C-x C-n     New buffer
-            \\
-            \\WINDOW & BUFFER
-            \\  C-x 2/3     Split horizontal/vertical C-x o/M-o   Next window
-            \\  C-x 0/1     Close window/others       C-x b       Switch buffer
-            \\  C-x C-b     Buffer list               C-x k       Kill buffer
-            \\
-            \\MACRO
-            \\  C-x (       Start recording           C-x )       Stop recording
-            \\  C-x e       Execute macro             e           Repeat (after C-x e)
-            \\
-            \\RECTANGLE (mark + cursor = opposite corners, no visual rect)
-            \\  C-x r k     Kill (cut)                C-x r w     Copy
-            \\  C-x r y     Yank at cursor
-            \\
-            \\SHELL (M-|)
-            \\  [source] | cmd [dest]     Source: (selection), %, .  Dest: (show), >, +>, n>
-            \\
-            \\OTHER
-            \\  M-x         Execute command           M-?         This help
-            \\  C-g/Esc     Cancel
-            \\
-            \\M-x COMMANDS: line N, tab, indent, mode, key, revert, ro, ?
-            \\
-            \\Note: Tab completes file paths and M-x commands.
-        ;
-
         // "*Help*"という名前のバッファを探す
-        const help_buffer_name = "*Help*";
         var help_buffer: ?*BufferState = null;
 
         for (self.buffer_manager.iterator()) |buf| {
             if (buf.filename) |fname| {
-                if (std.mem.eql(u8, fname, help_buffer_name)) {
+                if (std.mem.eql(u8, fname, help.help_buffer_name)) {
                     help_buffer = buf;
                     break;
                 }
@@ -1335,7 +1282,7 @@ pub const Editor = struct {
         if (help_buffer == null) {
             // 新しいバッファを作成
             const new_buffer = try self.createNewBuffer();
-            new_buffer.filename = try self.allocator.dupe(u8, help_buffer_name);
+            new_buffer.filename = try self.allocator.dupe(u8, help.help_buffer_name);
             new_buffer.readonly = true;
             help_buffer = new_buffer;
         }
@@ -1346,7 +1293,7 @@ pub const Editor = struct {
         if (buf.editing_ctx.buffer.total_len > 0) {
             try buf.editing_ctx.buffer.delete(0, buf.editing_ctx.buffer.total_len);
         }
-        try buf.editing_ctx.buffer.insertSlice(0, help_text);
+        try buf.editing_ctx.buffer.insertSlice(0, help.help_text);
         buf.editing_ctx.modified = false;
 
         // ヘルプバッファに切り替え
@@ -1889,10 +1836,15 @@ pub const Editor = struct {
         // ポーリングではなくイベント駆動で、入力待機中はCPUを消費しない
         var poll = poller.Poller.init(std.posix.STDIN_FILENO) catch {
             // Poller初期化失敗: 従来のVTIMEポーリングにフォールバック
-            return self.runWithoutPoller(&input_reader);
+            return self.mainLoop(&input_reader, null);
         };
         defer poll.deinit();
 
+        try self.mainLoop(&input_reader, &poll);
+    }
+
+    /// メインループ（Pollerの有無で動作を切り替え）
+    fn mainLoop(self: *Editor, input_reader: *input.InputReader, poll: ?*poller.Poller) !void {
         while (self.running) {
             // 終了シグナルチェック
             if (self.terminal.checkTerminate()) break;
@@ -1924,63 +1876,23 @@ pub const Editor = struct {
                 try self.terminal.flush();
             }
 
-            // 入力を待機
-            // 重要: InputReaderのバッファにデータがあればkqueueをスキップ
-            // （バッファリングにより、カーネルバッファは空でもデータが残っている可能性がある）
-            if (!input_reader.hasData()) {
-                // 100msタイムアウトで待機
-                // 注意: 無限待機(null)だとPTY環境で問題が発生することがある
-                const poll_result = poll.wait(100);
-                if (poll_result == .signal) {
-                    // SIGWINCH等のシグナル: ループ先頭に戻ってリサイズチェック
-                    continue;
+            // 入力を待機（Pollerがある場合はイベント駆動、なければVTIMEポーリング）
+            if (poll) |p| {
+                // 重要: InputReaderのバッファにデータがあればkqueueをスキップ
+                // （バッファリングにより、カーネルバッファは空でもデータが残っている可能性がある）
+                if (!input_reader.hasData()) {
+                    // 100msタイムアウトで待機
+                    // 注意: 無限待機(null)だとPTY環境で問題が発生することがある
+                    const poll_result = p.wait(100);
+                    if (poll_result == .signal) {
+                        // SIGWINCH等のシグナル: ループ先頭に戻ってリサイズチェック
+                        continue;
+                    }
+                    // タイムアウトでも入力チェックは行う（VTIMEモードで読み取り可能な場合がある）
                 }
-                // タイムアウトでも入力チェックは行う（VTIMEモードで読み取り可能な場合がある）
             }
 
             // キー入力を処理
-            if (try input.readKeyFromReader(&input_reader)) |key| {
-                // ミニバッファモード中はプロンプトを維持
-                if (!self.isMinibufferMode()) {
-                    self.getCurrentView().clearError();
-                }
-                self.processKey(key) catch |err| {
-                    const err_name = @errorName(err);
-                    self.getCurrentView().setError(err_name);
-                };
-            }
-        }
-    }
-
-    /// Poller初期化失敗時のフォールバック（従来のVTIMEポーリング）
-    fn runWithoutPoller(self: *Editor, input_reader: *input.InputReader) !void {
-        while (self.running) {
-            if (self.terminal.checkTerminate()) break;
-
-            if (self.terminal.checkResize()) {
-                try self.recalculateWindowSizes();
-            }
-
-            // シェルコマンド実行中はその出力をポーリング（描画前に処理）
-            if (self.mode == .shell_running) {
-                try self.pollShellCommand();
-            }
-
-            self.clampCursorPosition();
-            try self.renderAllWindows();
-
-            // 補完候補表示中はカーソルを隠す
-            if (self.isMinibufferMode() and !self.completion_shown) {
-                const window = self.getCurrentWindow();
-                // +1 はステータスバー描画時の先頭スペース分
-                const cursor_col = 1 + self.prompt_prefix_len + self.getMinibufferCursorColumn();
-                // 現在のウィンドウのステータスバー行（ウィンドウの最下行）
-                const status_row = window.y + window.height - 1;
-                try self.terminal.moveCursor(status_row, cursor_col);
-                try self.terminal.showCursor();
-                try self.terminal.flush();
-            }
-
             if (try input.readKeyFromReader(input_reader)) |key| {
                 // ミニバッファモード中はプロンプトを維持
                 if (!self.isMinibufferMode()) {
@@ -3154,7 +3066,7 @@ pub const Editor = struct {
                 return;
             },
             .mx_key_describe => {
-                const key_desc = self.describeKey(key);
+                const key_desc = help.describeKey(key);
                 self.getCurrentView().setError(key_desc);
                 self.mode = .normal;
                 return;
@@ -4063,95 +3975,5 @@ pub const Editor = struct {
         self.mode = .normal;
         self.getCurrentView().clearError();
         try self.handleNormalKey(key);
-    }
-
-    /// キーの説明を返す
-    fn describeKey(self: *Editor, key: input.Key) []const u8 {
-        _ = self;
-        return switch (key) {
-            .ctrl => |c| switch (c) {
-                0, '@' => "C-Space/C-@: set-mark",
-                'a' => "C-a: beginning-of-line",
-                'b' => "C-b: backward-char",
-                'd' => "C-d: delete-char",
-                'e' => "C-e: end-of-line",
-                'f' => "C-f: forward-char",
-                'g' => "C-g: cancel",
-                'h' => "C-h: backspace",
-                'k' => "C-k: kill-line",
-                'l' => "C-l: recenter",
-                'n' => "C-n: next-line",
-                'p' => "C-p: previous-line",
-                'r' => "C-r: isearch-backward",
-                's' => "C-s: isearch-forward",
-                'u' => "C-u: undo",
-                'v' => "C-v: scroll-down",
-                'w' => "C-w: kill-region",
-                'x' => "C-x: prefix",
-                'y' => "C-y: yank",
-                '/' => "C-/: redo",
-                else => "Unknown key",
-            },
-            .alt => |c| switch (c) {
-                '%' => "M-%: query-replace",
-                ';' => "M-;: comment-toggle",
-                '<' => "M-<: beginning-of-buffer",
-                '>' => "M->: end-of-buffer",
-                '?' => "M-?: help",
-                '^' => "M-^: join-line",
-                'b' => "M-b: backward-word",
-                'B' => "M-B: select-backward-word",
-                'd' => "M-d: kill-word",
-                'f' => "M-f: forward-word",
-                'F' => "M-F: select-forward-word",
-                'o' => "M-o: next-window",
-                'v' => "M-v: scroll-up",
-                'V' => "M-V: select-scroll-up",
-                'w' => "M-w: copy-region",
-                'x' => "M-x: command",
-                '{' => "M-{: backward-paragraph",
-                '}' => "M-}: forward-paragraph",
-                '|' => "M-|: shell-command",
-                else => "Unknown key",
-            },
-            .ctrl_alt => |c| switch (c) {
-                's' => "C-M-s: regex-isearch-forward",
-                'r' => "C-M-r: regex-isearch-backward",
-                '%' => "C-M-%: regex-query-replace",
-                else => "Unknown key",
-            },
-            .enter => "Enter: newline",
-            .backspace => "Backspace: delete-backward-char",
-            .tab => "Tab: indent / insert-tab",
-            .shift_tab => "S-Tab: unindent",
-            .arrow_up => "Up: previous-line",
-            .arrow_down => "Down: next-line",
-            .arrow_left => "Left: backward-char",
-            .arrow_right => "Right: forward-char",
-            .home => "Home: beginning-of-line",
-            .end_key => "End: end-of-line",
-            .page_up => "PageUp: scroll-up",
-            .page_down => "PageDown: scroll-down",
-            .delete => "Delete: delete-char",
-            .escape => "Escape: cancel",
-            .alt_delete => "M-Delete: kill-word",
-            .alt_arrow_up => "M-Up: move-line-up",
-            .alt_arrow_down => "M-Down: move-line-down",
-            .alt_arrow_left => "M-Left: backward-word",
-            .alt_arrow_right => "M-Right: forward-word",
-            .shift_arrow_up => "S-Up: select-up",
-            .shift_arrow_down => "S-Down: select-down",
-            .shift_arrow_left => "S-Left: select-left",
-            .shift_arrow_right => "S-Right: select-right",
-            .shift_alt_arrow_up => "S-M-Up: select-up",
-            .shift_alt_arrow_down => "S-M-Down: select-down",
-            .shift_alt_arrow_left => "S-M-Left: select-backward-word",
-            .shift_alt_arrow_right => "S-M-Right: select-forward-word",
-            .shift_page_up => "S-PageUp: select-page-up",
-            .shift_page_down => "S-PageDown: select-page-down",
-            .ctrl_tab => "C-Tab: next-window",
-            .ctrl_shift_tab => "C-S-Tab: previous-window",
-            else => "Unknown key",
-        };
     }
 };

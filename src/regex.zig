@@ -70,24 +70,39 @@ pub const Regex = struct {
         question_class: CharClass, // []?
     };
 
+    /// 文字クラス（256ビットマップで O(1) マッチング）
     pub const CharClass = struct {
-        ranges: []const Range,
+        bitmap: [32]u8, // 256 bits
         negated: bool,
 
-        pub const Range = struct {
-            start: u8,
-            end: u8,
-        };
-
+        /// ビットマップで文字をマッチ（O(1)）
         pub fn matches(self: CharClass, c: u8) bool {
-            var found = false;
-            for (self.ranges) |range| {
-                if (c >= range.start and c <= range.end) {
-                    found = true;
-                    break;
-                }
-            }
+            const byte_idx = c >> 3; // c / 8
+            const bit_idx: u3 = @truncate(c); // c % 8
+            const found = (self.bitmap[byte_idx] & (@as(u8, 1) << bit_idx)) != 0;
             return if (self.negated) !found else found;
+        }
+
+        /// 空のビットマップを作成
+        pub fn init() CharClass {
+            return .{ .bitmap = [_]u8{0} ** 32, .negated = false };
+        }
+
+        /// ビットを設定
+        pub fn setBit(self: *CharClass, c: u8) void {
+            const byte_idx = c >> 3;
+            const bit_idx: u3 = @truncate(c);
+            self.bitmap[byte_idx] |= (@as(u8, 1) << bit_idx);
+        }
+
+        /// 範囲のビットを設定
+        pub fn setRange(self: *CharClass, start: u8, end: u8) void {
+            var c = start;
+            while (true) {
+                self.setBit(c);
+                if (c == end) break;
+                c += 1;
+            }
         }
     };
 
@@ -99,13 +114,7 @@ pub const Regex = struct {
     pub fn compile(allocator: std.mem.Allocator, pattern: []const u8) !Regex {
         var instructions = try std.ArrayList(Instruction).initCapacity(allocator, pattern.len);
         errdefer {
-            // CharClass内のrangesスライスも解放する必要がある
-            for (instructions.items) |instr| {
-                switch (instr) {
-                    .char_class, .star_class, .plus_class, .question_class => |cc| allocator.free(cc.ranges),
-                    else => {},
-                }
-            }
+            // CharClassはビットマップなのでアロケーション解放不要
             instructions.deinit(allocator);
         }
 
@@ -278,20 +287,19 @@ pub const Regex = struct {
         consumed: usize,
     };
 
-    fn parseCharClass(allocator: std.mem.Allocator, pattern: []const u8) !CharClassResult {
-        var ranges = try std.ArrayList(CharClass.Range).initCapacity(allocator, 8);
-        errdefer ranges.deinit(allocator);
+    /// 文字クラスをパース（ビットマップに直接構築、アロケーション不要）
+    fn parseCharClass(_: std.mem.Allocator, pattern: []const u8) !CharClassResult {
+        var cc = CharClass.init();
 
         var i: usize = 1; // skip '['
-        var negated = false;
 
         if (i < pattern.len and pattern[i] == '^') {
-            negated = true;
+            cc.negated = true;
             i += 1;
         }
 
         if (i < pattern.len and pattern[i] == ']') {
-            try ranges.append(allocator, .{ .start = ']', .end = ']' });
+            cc.setBit(']');
             i += 1;
         }
 
@@ -302,23 +310,23 @@ pub const Regex = struct {
                 i += 1;
                 c = switch (pattern[i]) {
                     'd' => {
-                        try ranges.append(allocator, .{ .start = '0', .end = '9' });
+                        cc.setRange('0', '9');
                         i += 1;
                         continue;
                     },
                     'w' => {
-                        try ranges.append(allocator, .{ .start = 'a', .end = 'z' });
-                        try ranges.append(allocator, .{ .start = 'A', .end = 'Z' });
-                        try ranges.append(allocator, .{ .start = '0', .end = '9' });
-                        try ranges.append(allocator, .{ .start = '_', .end = '_' });
+                        cc.setRange('a', 'z');
+                        cc.setRange('A', 'Z');
+                        cc.setRange('0', '9');
+                        cc.setBit('_');
                         i += 1;
                         continue;
                     },
                     's' => {
-                        try ranges.append(allocator, .{ .start = ' ', .end = ' ' });
-                        try ranges.append(allocator, .{ .start = '\t', .end = '\t' });
-                        try ranges.append(allocator, .{ .start = '\n', .end = '\n' });
-                        try ranges.append(allocator, .{ .start = '\r', .end = '\r' });
+                        cc.setBit(' ');
+                        cc.setBit('\t');
+                        cc.setBit('\n');
+                        cc.setBit('\r');
                         i += 1;
                         continue;
                     },
@@ -340,10 +348,10 @@ pub const Regex = struct {
                     };
                     i += 1;
                 }
-                try ranges.append(allocator, .{ .start = c, .end = end_c });
+                cc.setRange(c, end_c);
                 i += 3;
             } else {
-                try ranges.append(allocator, .{ .start = c, .end = c });
+                cc.setBit(c);
                 i += 1;
             }
         }
@@ -353,21 +361,13 @@ pub const Regex = struct {
         }
 
         return CharClassResult{
-            .class = CharClass{
-                .ranges = try ranges.toOwnedSlice(allocator),
-                .negated = negated,
-            },
+            .class = cc,
             .consumed = i,
         };
     }
 
     pub fn deinit(self: *Regex) void {
-        for (self.compiled) |instr| {
-            switch (instr) {
-                .char_class, .star_class, .plus_class, .question_class => |cc| self.allocator.free(cc.ranges),
-                else => {},
-            }
-        }
+        // CharClassはビットマップなのでアロケーション解放不要
         self.allocator.free(self.compiled);
     }
 
@@ -601,6 +601,56 @@ pub const Regex = struct {
         return null;
     }
 
+    /// 繰り返しマッチのバッファ管理（スタック優先、必要時ヒープ移行）
+    const PositionCollector = struct {
+        stack_buf: [256]usize,
+        heap_buf: ?std.ArrayList(usize),
+        positions: []usize,
+        len: usize,
+        allocator: std.mem.Allocator,
+
+        fn init(allocator: std.mem.Allocator, start_pos: usize) PositionCollector {
+            var self = PositionCollector{
+                .stack_buf = undefined,
+                .heap_buf = null,
+                .positions = undefined,
+                .len = 1,
+                .allocator = allocator,
+            };
+            self.stack_buf[0] = start_pos;
+            self.positions = self.stack_buf[0..1];
+            return self;
+        }
+
+        fn deinit(self: *PositionCollector) void {
+            if (self.heap_buf) |*h| h.deinit(self.allocator);
+        }
+
+        fn append(self: *PositionCollector, pos: usize) bool {
+            if (self.heap_buf) |*h| {
+                h.append(self.allocator, pos) catch return false;
+                self.positions = h.items;
+                self.len = h.items.len;
+            } else if (self.len < self.stack_buf.len) {
+                self.stack_buf[self.len] = pos;
+                self.len += 1;
+                self.positions = self.stack_buf[0..self.len];
+            } else {
+                // スタックバッファが足りない場合、ヒープに移行
+                self.heap_buf = std.ArrayList(usize).initCapacity(self.allocator, self.stack_buf.len * 2) catch return false;
+                self.heap_buf.?.appendSlice(self.allocator, self.stack_buf[0..]) catch return false;
+                self.heap_buf.?.append(self.allocator, pos) catch return false;
+                self.positions = self.heap_buf.?.items;
+                self.len = self.heap_buf.?.items.len;
+            }
+            return true;
+        }
+
+        fn getPositions(self: *const PositionCollector) []const usize {
+            return self.positions[0..self.len];
+        }
+    };
+
     fn matchRepeatLiteral(
         self: *const Regex,
         text: []const u8,
@@ -610,46 +660,21 @@ pub const Regex = struct {
         min_count: usize,
         max_count: ?usize,
     ) ?usize {
-        // スタックバッファを優先使用（ほとんどのケースで十分）
-        var stack_buf: [256]usize = undefined;
-        var heap_buf: ?std.ArrayList(usize) = null;
-        defer if (heap_buf) |*h| h.deinit(self.allocator);
-
-        var positions: []usize = stack_buf[0..1];
-        positions[0] = start_pos;
-        var positions_len: usize = 1;
+        var collector = PositionCollector.init(self.allocator, start_pos);
+        defer collector.deinit();
 
         var pos = start_pos;
         var count: usize = 0;
 
         while (max_count == null or count < max_count.?) {
-            if (pos >= text.len) break;
-            if (text[pos] != target) break;
+            if (pos >= text.len or text[pos] != target) break;
             pos += 1;
             count += 1;
-
-            // バッファに追加
-            if (heap_buf) |*h| {
-                h.append(self.allocator, pos) catch return null;
-                positions = h.items;
-                positions_len = h.items.len;
-            } else if (positions_len < stack_buf.len) {
-                stack_buf[positions_len] = pos;
-                positions_len += 1;
-                positions = stack_buf[0..positions_len];
-            } else {
-                // スタックバッファが足りない場合、ヒープに移行
-                heap_buf = std.ArrayList(usize).initCapacity(self.allocator, stack_buf.len * 2) catch return null;
-                heap_buf.?.appendSlice(self.allocator, stack_buf[0..]) catch return null;
-                heap_buf.?.append(self.allocator, pos) catch return null;
-                positions = heap_buf.?.items;
-                positions_len = heap_buf.?.items.len;
-            }
+            if (!collector.append(pos)) return null;
         }
 
         if (count < min_count) return null;
-
-        return self.tryBacktrack(text, current_idx, positions[0..positions_len], min_count);
+        return self.tryBacktrack(text, current_idx, collector.getPositions(), min_count);
     }
 
     fn matchAny(c: u8) bool {
@@ -689,46 +714,21 @@ pub const Regex = struct {
         min_count: usize,
         max_count: ?usize,
     ) ?usize {
-        // スタックバッファを優先使用（ほとんどのケースで十分）
-        var stack_buf: [256]usize = undefined;
-        var heap_buf: ?std.ArrayList(usize) = null;
-        defer if (heap_buf) |*h| h.deinit(self.allocator);
-
-        var positions: []usize = stack_buf[0..1];
-        positions[0] = start_pos;
-        var positions_len: usize = 1;
+        var collector = PositionCollector.init(self.allocator, start_pos);
+        defer collector.deinit();
 
         var pos = start_pos;
         var count: usize = 0;
 
         while (max_count == null or count < max_count.?) {
-            if (pos >= text.len) break;
-            if (!matcher(text[pos])) break;
+            if (pos >= text.len or !matcher(text[pos])) break;
             pos += 1;
             count += 1;
-
-            // バッファに追加
-            if (heap_buf) |*h| {
-                h.append(self.allocator, pos) catch return null;
-                positions = h.items;
-                positions_len = h.items.len;
-            } else if (positions_len < stack_buf.len) {
-                stack_buf[positions_len] = pos;
-                positions_len += 1;
-                positions = stack_buf[0..positions_len];
-            } else {
-                // スタックバッファが足りない場合、ヒープに移行
-                heap_buf = std.ArrayList(usize).initCapacity(self.allocator, stack_buf.len * 2) catch return null;
-                heap_buf.?.appendSlice(self.allocator, stack_buf[0..]) catch return null;
-                heap_buf.?.append(self.allocator, pos) catch return null;
-                positions = heap_buf.?.items;
-                positions_len = heap_buf.?.items.len;
-            }
+            if (!collector.append(pos)) return null;
         }
 
         if (count < min_count) return null;
-
-        return self.tryBacktrack(text, current_idx, positions[0..positions_len], min_count);
+        return self.tryBacktrack(text, current_idx, collector.getPositions(), min_count);
     }
 
     fn matchRepeatClass(
@@ -740,46 +740,21 @@ pub const Regex = struct {
         min_count: usize,
         max_count: ?usize,
     ) ?usize {
-        // スタックバッファを優先使用（ほとんどのケースで十分）
-        var stack_buf: [256]usize = undefined;
-        var heap_buf: ?std.ArrayList(usize) = null;
-        defer if (heap_buf) |*h| h.deinit(self.allocator);
-
-        var positions: []usize = stack_buf[0..1];
-        positions[0] = start_pos;
-        var positions_len: usize = 1;
+        var collector = PositionCollector.init(self.allocator, start_pos);
+        defer collector.deinit();
 
         var pos = start_pos;
         var count: usize = 0;
 
         while (max_count == null or count < max_count.?) {
-            if (pos >= text.len) break;
-            if (!cc.matches(text[pos])) break;
+            if (pos >= text.len or !cc.matches(text[pos])) break;
             pos += 1;
             count += 1;
-
-            // バッファに追加
-            if (heap_buf) |*h| {
-                h.append(self.allocator, pos) catch return null;
-                positions = h.items;
-                positions_len = h.items.len;
-            } else if (positions_len < stack_buf.len) {
-                stack_buf[positions_len] = pos;
-                positions_len += 1;
-                positions = stack_buf[0..positions_len];
-            } else {
-                // スタックバッファが足りない場合、ヒープに移行
-                heap_buf = std.ArrayList(usize).initCapacity(self.allocator, stack_buf.len * 2) catch return null;
-                heap_buf.?.appendSlice(self.allocator, stack_buf[0..]) catch return null;
-                heap_buf.?.append(self.allocator, pos) catch return null;
-                positions = heap_buf.?.items;
-                positions_len = heap_buf.?.items.len;
-            }
+            if (!collector.append(pos)) return null;
         }
 
         if (count < min_count) return null;
-
-        return self.tryBacktrack(text, current_idx, positions[0..positions_len], min_count);
+        return self.tryBacktrack(text, current_idx, collector.getPositions(), min_count);
     }
 
     fn isDigit(c: u8) bool {

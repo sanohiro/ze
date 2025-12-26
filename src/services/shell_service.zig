@@ -177,7 +177,7 @@ pub const ShellService = struct {
         return result;
     }
 
-    /// bashのパスを探す
+    /// bashのパスを探す（スタックバッファ使用でアロケーション削減）
     fn findBashPath(allocator: std.mem.Allocator) ?[]const u8 {
         // 1. $SHELL がbashなら使用（絶対パスの場合）
         if (std.posix.getenv("SHELL")) |shell| {
@@ -187,16 +187,16 @@ pub const ShellService = struct {
                 } else |_| {}
             }
         }
-        // 2. PATH環境変数から探す
+        // 2. PATH環境変数から探す（スタックバッファ使用）
         if (std.posix.getenv("PATH")) |path_env| {
+            var path_buf: [512]u8 = undefined;
             var it = std.mem.splitScalar(u8, path_env, ':');
             while (it.next()) |dir| {
-                const bash_path = std.fmt.allocPrint(allocator, "{s}/bash", .{dir}) catch continue;
+                const bash_path = std.fmt.bufPrint(&path_buf, "{s}/bash", .{dir}) catch continue;
                 if (std.fs.accessAbsolute(bash_path, .{})) |_| {
-                    return bash_path;
-                } else |_| {
-                    allocator.free(bash_path);
-                }
+                    // 見つかった時だけアロケーション
+                    return allocator.dupe(u8, bash_path) catch null;
+                } else |_| {}
             }
         }
         // 3. 一般的なパスを試す（フォールバック）
@@ -215,24 +215,22 @@ pub const ShellService = struct {
         return null;
     }
 
-    /// shのパスを探す（/bin/shが無い環境用）
+    /// shのパスを探す（/bin/shが無い環境用、スタックバッファ使用）
     fn findShPath(allocator: std.mem.Allocator) []const u8 {
         // 1. /bin/sh を試す（最も一般的）
         if (std.fs.accessAbsolute("/bin/sh", .{})) |_| {
             return "/bin/sh";
         } else |_| {}
-        // 2. PATH環境変数から探す
+        // 2. PATH環境変数から探す（スタックバッファ使用）
         if (std.posix.getenv("PATH")) |path_env| {
+            var path_buf: [512]u8 = undefined;
             var it = std.mem.splitScalar(u8, path_env, ':');
             while (it.next()) |dir| {
-                const sh_path = std.fmt.allocPrint(allocator, "{s}/sh", .{dir}) catch continue;
+                const sh_path = std.fmt.bufPrint(&path_buf, "{s}/sh", .{dir}) catch continue;
                 if (std.fs.accessAbsolute(sh_path, .{})) |_| {
-                    // 静的な文字列を返すためにleakする（プロセス終了まで保持）
-                    // 実際には呼び出し回数が限られるので問題ない
-                    return sh_path;
-                } else |_| {
-                    allocator.free(sh_path);
-                }
+                    // 見つかった時だけアロケーション
+                    return allocator.dupe(u8, sh_path) catch "/bin/sh";
+                } else |_| {}
             }
         }
         // 3. フォールバック

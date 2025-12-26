@@ -263,6 +263,16 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // commands/help <- input
+    const help_cmd_mod = b.addModule("commands_help", .{
+        .root_source_file = b.path("src/commands/help.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "input", .module = input_mod },
+        },
+    });
+
     // editor <- 全モジュール + commands
     const editor_mod = b.addModule("editor", .{
         .root_source_file = b.path("src/editor.zig"),
@@ -274,6 +284,7 @@ pub fn build(b: *std.Build) void {
     editor_mod.addImport("commands_movement", movement_cmd_mod);
     editor_mod.addImport("commands_rectangle", rectangle_cmd_mod);
     editor_mod.addImport("commands_mx", mx_cmd_mod);
+    editor_mod.addImport("commands_help", help_cmd_mod);
 
     // commandsモジュールにeditorを追加（循環参照解決）
     edit_cmd_mod.addImport("editor", editor_mod);
