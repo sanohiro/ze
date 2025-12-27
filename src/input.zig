@@ -194,6 +194,137 @@ pub const Key = union(enum) {
     paste_end, // ブラケットペーストモード終了 (ESC[201~)
 };
 
+/// 修飾キー付き矢印キーをパース
+fn parseModifiedArrowKey(buf: []u8, reader: *InputReader) !?Key {
+    const n4 = try reader.readBytes(buf[4..6]);
+    if (n4 < 2) return null;
+
+    const modifier = buf[4];
+    const key = buf[5];
+    return switch (modifier) {
+        '2' => switch (key) {
+            'A' => Key.shift_arrow_up,
+            'B' => Key.shift_arrow_down,
+            'C' => Key.shift_arrow_right,
+            'D' => Key.shift_arrow_left,
+            else => null,
+        },
+        '3' => switch (key) {
+            'A' => Key.alt_arrow_up,
+            'B' => Key.alt_arrow_down,
+            'C' => Key.alt_arrow_right,
+            'D' => Key.alt_arrow_left,
+            else => null,
+        },
+        '4' => switch (key) {
+            'A' => Key.shift_alt_arrow_up,
+            'B' => Key.shift_alt_arrow_down,
+            'C' => Key.shift_alt_arrow_right,
+            'D' => Key.shift_alt_arrow_left,
+            else => null,
+        },
+        else => null,
+    };
+}
+
+/// CSIシーケンスをパース（ESC [ ... の部分）
+fn parseCSISequence(reader: *InputReader, buf: []u8) !?Key {
+    const second_byte = try reader.readByte() orelse return Key.escape;
+    buf[2] = second_byte;
+
+    // シンプルなシーケンス（ESC [ X）
+    switch (buf[2]) {
+        'A' => return Key.arrow_up,
+        'B' => return Key.arrow_down,
+        'C' => return Key.arrow_right,
+        'D' => return Key.arrow_left,
+        'H' => return Key.home,
+        'F' => return Key.end_key,
+        'Z' => return Key.shift_tab,
+        'M' => {
+            // マウスイベント（X10形式）: ESC [ M <button> <x> <y>
+            _ = reader.readBytes(buf[3..6]) catch {};
+            return null;
+        },
+        '<' => {
+            // SGR拡張マウスイベント: ESC [ < ... m/M
+            var sgr_count: usize = 0;
+            while (sgr_count < 32) : (sgr_count += 1) {
+                const b = try reader.readByte() orelse break;
+                if (b == 'm' or b == 'M') break;
+            }
+            return null;
+        },
+        '1'...'9' => {
+            const n3 = try reader.readBytes(buf[3..4]);
+            if (n3 == 0) return null;
+
+            // チルダ終端（ESC [ N ~）
+            if (buf[3] == '~') {
+                return switch (buf[2]) {
+                    '1', '7' => Key.home,
+                    '2' => Key.insert,
+                    '3' => Key.delete,
+                    '4', '8' => Key.end_key,
+                    '5' => Key.page_up,
+                    '6' => Key.page_down,
+                    else => null,
+                };
+            }
+
+            // セミコロン区切りのパラメータ
+            if (buf[3] == ';') {
+                // ESC [ 1 ; <modifier> <key>
+                if (buf[2] == '1') {
+                    return try parseModifiedArrowKey(buf, reader);
+                }
+                // ESC [ 5 ; 2 ~ (Shift+PageUp)
+                if (buf[2] == '5') {
+                    const n4 = try reader.readBytes(buf[4..6]);
+                    if (n4 >= 2 and buf[4] == '2' and buf[5] == '~') {
+                        return Key.shift_page_up;
+                    }
+                }
+                // ESC [ 6 ; 2 ~ (Shift+PageDown)
+                if (buf[2] == '6') {
+                    const n4 = try reader.readBytes(buf[4..6]);
+                    if (n4 >= 2 and buf[4] == '2' and buf[5] == '~') {
+                        return Key.shift_page_down;
+                    }
+                }
+                // ESC [ 3 ; 3 ~ (Alt+Delete)
+                if (buf[2] == '3') {
+                    const n4 = try reader.readBytes(buf[4..6]);
+                    if (n4 >= 2 and buf[4] == '3' and buf[5] == '~') {
+                        return Key.alt_delete;
+                    }
+                }
+            }
+
+            // ESC [ 2 7 ; ... (Ctrl+Tab系)
+            if (buf[2] == '2' and buf[3] == '7') {
+                const n4 = try reader.readBytes(buf[4..9]);
+                if (n4 >= 5 and buf[4] == ';' and buf[6] == ';' and buf[7] == '9' and buf[8] == '~') {
+                    if (buf[5] == '5') return Key.ctrl_tab;
+                    if (buf[5] == '6') return Key.ctrl_shift_tab;
+                }
+            }
+
+            // ESC [ 2 0 0/1 ~ (ブラケットペースト)
+            if (buf[2] == '2' and buf[3] == '0') {
+                const n4 = try reader.readBytes(buf[4..6]);
+                if (n4 >= 2 and buf[5] == '~') {
+                    if (buf[4] == '0') return Key.paste_start;
+                    if (buf[4] == '1') return Key.paste_end;
+                }
+            }
+        },
+        else => {},
+    }
+
+    return null;
+}
+
 /// InputReaderを使ってキーを読み取る
 pub fn readKeyFromReader(reader: *InputReader) !?Key {
     var buf: [config.Input.BUF_SIZE]u8 = undefined;
@@ -250,123 +381,9 @@ pub fn readKeyFromReader(reader: *InputReader) !?Key {
             return Key{ .alt = first_byte };
         }
 
-        // CSIシーケンス（ESC [）の場合、2バイト目を読む
+        // CSIシーケンス（ESC [）の場合、パーサーに委譲
         if (first_byte == '[') {
-            const second_byte = try reader.readByte() orelse return Key.escape;
-            buf[2] = second_byte;
-            switch (buf[2]) {
-                'A' => return Key.arrow_up,
-                'B' => return Key.arrow_down,
-                'C' => return Key.arrow_right,
-                'D' => return Key.arrow_left,
-                'H' => return Key.home,
-                'F' => return Key.end_key,
-                'Z' => return Key.shift_tab,
-                'M' => {
-                    // マウスイベント（X10形式）: ESC [ M <button> <x> <y>
-                    // マウスモード無効のため通常は届かないが、念のため読み捨て
-                    // エラーは無視して続行（読み捨て失敗しても問題ない）
-                    _ = reader.readBytes(buf[3..6]) catch {};
-                    return null;
-                },
-                '<' => {
-                    // SGR拡張マウスイベント: ESC [ < ... m/M
-                    // 'm'または'M'が来るまで読み捨てる（上限32バイト）
-                    var sgr_count: usize = 0;
-                    while (sgr_count < 32) : (sgr_count += 1) {
-                        const b = try reader.readByte() orelse break;
-                        if (b == 'm' or b == 'M') break;
-                    }
-                    return null; // 無視して次のキーを待つ
-                },
-                '1'...'9' => {
-                    const n3 = try reader.readBytes(buf[3..4]);
-                    if (n3 > 0) {
-                        if (buf[3] == '~') {
-                            switch (buf[2]) {
-                                '1', '7' => return Key.home,
-                                '2' => return Key.insert,
-                                '3' => return Key.delete,
-                                '4', '8' => return Key.end_key,
-                                '5' => return Key.page_up,
-                                '6' => return Key.page_down,
-                                else => {},
-                            }
-                        } else if (buf[2] == '1' and buf[3] == ';') {
-                            // ESC [ 1 ; <modifier> <key>
-                            // modifier: 2=Shift, 3=Alt, 5=Ctrl, 6=Ctrl+Shift
-                            const n4 = try reader.readBytes(buf[4..6]);
-                            if (n4 >= 2) {
-                                if (buf[4] == '2') {
-                                    // Shift+矢印キー (modifier 2)
-                                    switch (buf[5]) {
-                                        'A' => return Key.shift_arrow_up,
-                                        'B' => return Key.shift_arrow_down,
-                                        'C' => return Key.shift_arrow_right,
-                                        'D' => return Key.shift_arrow_left,
-                                        else => {},
-                                    }
-                                } else if (buf[4] == '3') {
-                                    // Alt+矢印キー (modifier 3)
-                                    switch (buf[5]) {
-                                        'A' => return Key.alt_arrow_up,
-                                        'B' => return Key.alt_arrow_down,
-                                        'C' => return Key.alt_arrow_right,
-                                        'D' => return Key.alt_arrow_left,
-                                        else => {},
-                                    }
-                                } else if (buf[4] == '4') {
-                                    // Shift+Alt+矢印キー (modifier 4)
-                                    switch (buf[5]) {
-                                        'A' => return Key.shift_alt_arrow_up,
-                                        'B' => return Key.shift_alt_arrow_down,
-                                        'C' => return Key.shift_alt_arrow_right,
-                                        'D' => return Key.shift_alt_arrow_left,
-                                        else => {},
-                                    }
-                                }
-                            }
-                        } else if (buf[2] == '5' and buf[3] == ';') {
-                            // ESC [ 5 ; 2 ~ = Shift+PageUp
-                            const n4 = try reader.readBytes(buf[4..6]);
-                            if (n4 >= 2 and buf[4] == '2' and buf[5] == '~') {
-                                return Key.shift_page_up;
-                            }
-                        } else if (buf[2] == '6' and buf[3] == ';') {
-                            // ESC [ 6 ; 2 ~ = Shift+PageDown
-                            const n4 = try reader.readBytes(buf[4..6]);
-                            if (n4 >= 2 and buf[4] == '2' and buf[5] == '~') {
-                                return Key.shift_page_down;
-                            }
-                        } else if (buf[2] == '3' and buf[3] == ';') {
-                            const n4 = try reader.readBytes(buf[4..6]);
-                            if (n4 >= 2 and buf[4] == '3' and buf[5] == '~') {
-                                return Key.alt_delete;
-                            }
-                        } else if (buf[2] == '2' and buf[3] == '7') {
-                            const n4 = try reader.readBytes(buf[4..9]);
-                            if (n4 >= 5 and buf[4] == ';' and buf[6] == ';' and buf[7] == '9' and buf[8] == '~') {
-                                if (buf[5] == '5') {
-                                    return Key.ctrl_tab;
-                                } else if (buf[5] == '6') {
-                                    return Key.ctrl_shift_tab;
-                                }
-                            }
-                        } else if (buf[2] == '2' and buf[3] == '0') {
-                            // ブラケットペーストモード: ESC [ 2 0 0 ~ (開始) / ESC [ 2 0 1 ~ (終了)
-                            const n4 = try reader.readBytes(buf[4..6]);
-                            if (n4 >= 2 and buf[5] == '~') {
-                                if (buf[4] == '0') {
-                                    return Key.paste_start;
-                                } else if (buf[4] == '1') {
-                                    return Key.paste_end;
-                                }
-                            }
-                        }
-                    }
-                },
-                else => {},
-            }
+            return try parseCSISequence(reader, &buf);
         }
 
         return Key.escape;

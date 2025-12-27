@@ -495,29 +495,8 @@ pub fn convertFromUtf8(allocator: std.mem.Allocator, content: []const u8, encodi
     };
 }
 
-/// UTF-16LE (BOM付き) → UTF-8 変換
-fn convertUtf16leToUtf8(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
-    // BOMをスキップ（先頭2バイト: 0xFF 0xFE）
-    const utf16_bytes = if (content.len >= 2) content[2..] else content;
-
-    // バイト数が奇数なら不正
-    if (utf16_bytes.len % 2 != 0) {
-        return error.InvalidUtf16;
-    }
-
-    // UTF-16のu16配列を作成（LE → ホストエンディアン）
-    const u16_count = utf16_bytes.len / 2;
-    const utf16_array = try allocator.alloc(u16, u16_count);
-    defer allocator.free(utf16_array);
-
-    for (0..u16_count) |i| {
-        const byte_idx = i * 2;
-        // Little Endian: 下位バイトが先
-        utf16_array[i] = @as(u16, utf16_bytes[byte_idx]) |
-                        (@as(u16, utf16_bytes[byte_idx + 1]) << 8);
-    }
-
-    // UTF-16 → UTF-8 変換（最大バイト数は元の3倍）
+/// UTF-16配列からUTF-8に変換する共通処理
+fn convertUtf16ArrayToUtf8(allocator: std.mem.Allocator, utf16_array: []const u16) ![]u8 {
     var result = try std.ArrayList(u8).initCapacity(allocator, 1024);
     errdefer result.deinit(allocator);
 
@@ -559,6 +538,31 @@ fn convertUtf16leToUtf8(allocator: std.mem.Allocator, content: []const u8) ![]u8
     return try result.toOwnedSlice(allocator);
 }
 
+/// UTF-16LE (BOM付き) → UTF-8 変換
+fn convertUtf16leToUtf8(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
+    // BOMをスキップ（先頭2バイト: 0xFF 0xFE）
+    const utf16_bytes = if (content.len >= 2) content[2..] else content;
+
+    // バイト数が奇数なら不正
+    if (utf16_bytes.len % 2 != 0) {
+        return error.InvalidUtf16;
+    }
+
+    // UTF-16のu16配列を作成（LE → ホストエンディアン）
+    const u16_count = utf16_bytes.len / 2;
+    const utf16_array = try allocator.alloc(u16, u16_count);
+    defer allocator.free(utf16_array);
+
+    for (0..u16_count) |i| {
+        const byte_idx = i * 2;
+        // Little Endian: 下位バイトが先
+        utf16_array[i] = @as(u16, utf16_bytes[byte_idx]) |
+                        (@as(u16, utf16_bytes[byte_idx + 1]) << 8);
+    }
+
+    return try convertUtf16ArrayToUtf8(allocator, utf16_array);
+}
+
 /// UTF-16BE (BOM付き) → UTF-8 変換
 fn convertUtf16beToUtf8(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
     // BOMをスキップ（先頭2バイト: 0xFE 0xFF）
@@ -581,46 +585,7 @@ fn convertUtf16beToUtf8(allocator: std.mem.Allocator, content: []const u8) ![]u8
                         @as(u16, utf16_bytes[byte_idx + 1]);
     }
 
-    // UTF-16 → UTF-8 変換（最大バイト数は元の3倍）
-    var result = try std.ArrayList(u8).initCapacity(allocator, 1024);
-    errdefer result.deinit(allocator);
-
-    var i: usize = 0;
-    while (i < utf16_array.len) {
-        const codepoint = blk: {
-            const first = utf16_array[i];
-
-            // サロゲートペア判定（U+D800-U+DBFF）
-            if (first >= 0xD800 and first <= 0xDBFF) {
-                if (i + 1 >= utf16_array.len) {
-                    return error.InvalidUtf16; // 後続がない
-                }
-                const second = utf16_array[i + 1];
-                if (second < 0xDC00 or second > 0xDFFF) {
-                    return error.InvalidUtf16; // 不正なサロゲートペア
-                }
-
-                // サロゲートペアをデコード
-                const high = @as(u32, first - 0xD800);
-                const low = @as(u32, second - 0xDC00);
-                const cp = 0x10000 + (high << 10) + low;
-                i += 2;
-                break :blk @as(u21, @intCast(cp));
-            } else if (first >= 0xDC00 and first <= 0xDFFF) {
-                return error.InvalidUtf16; // 単独の下位サロゲート
-            } else {
-                i += 1;
-                break :blk @as(u21, @intCast(first));
-            }
-        };
-
-        // codepointをUTF-8にエンコード
-        var utf8_buf: [4]u8 = undefined;
-        const utf8_len = try std.unicode.utf8Encode(codepoint, &utf8_buf);
-        try result.appendSlice(allocator, utf8_buf[0..utf8_len]);
-    }
-
-    return try result.toOwnedSlice(allocator);
+    return try convertUtf16ArrayToUtf8(allocator, utf16_array);
 }
 
 /// Shift_JIS → UTF-8 変換

@@ -107,6 +107,14 @@ fn extractBytes(allocator: std.mem.Allocator, buffer: anytype, start: usize, end
     return extractBytesReusing(allocator, &iter, start, end);
 }
 
+/// 矩形領域の範囲情報
+const RectangleInfo = struct {
+    start_line: usize,
+    end_line: usize,
+    left_col: usize,
+    right_col: usize,
+};
+
 /// 古い rectangle_ring をクリーンアップ
 fn cleanupRectangleRing(e: *Editor) void {
     if (e.rectangle_ring) |*old_ring| {
@@ -119,12 +127,7 @@ fn cleanupRectangleRing(e: *Editor) void {
 }
 
 /// 矩形領域の範囲情報を取得する共通関数
-fn getRectangleInfo(e: *Editor, tab_width: u8) ?struct {
-    start_line: usize,
-    end_line: usize,
-    left_col: usize,
-    right_col: usize,
-} {
+fn getRectangleInfo(e: *Editor, tab_width: u8) ?RectangleInfo {
     const window = e.getCurrentWindow();
     const mark = window.mark_pos orelse {
         e.getCurrentView().setError(config.Messages.NO_MARK_SET);

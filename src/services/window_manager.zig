@@ -17,13 +17,6 @@ const std = @import("std");
 const View = @import("view").View;
 const config = @import("config");
 
-/// ウィンドウ分割タイプ
-pub const SplitType = enum {
-    none, // 分割なし（単一ウィンドウまたは最初のウィンドウ）
-    horizontal, // 横分割（上下に分割）で作られたウィンドウ
-    vertical, // 縦分割（左右に分割）で作られたウィンドウ
-};
-
 /// ウィンドウ構造体
 pub const Window = struct {
     id: usize, // ウィンドウID
@@ -35,8 +28,6 @@ pub const Window = struct {
     height: usize, // ウィンドウの高さ
     mark_pos: ?usize, // 範囲選択のマーク位置
     shift_select: bool, // Shift+矢印で選択中かどうか（通常矢印で解除される）
-    split_type: SplitType, // このウィンドウがどの分割で作られたか
-    split_parent_id: ?usize, // 分割元ウィンドウのID
 
     pub fn init(id: usize, buffer_id: usize, x: usize, y: usize, width: usize, height: usize) Window {
         return Window{
@@ -49,8 +40,6 @@ pub const Window = struct {
             .height = height,
             .mark_pos = null,
             .shift_select = false,
-            .split_type = .none,
-            .split_parent_id = null,
         };
     }
 
@@ -243,7 +232,6 @@ pub const WindowManager = struct {
         // 分割後のサイズを計算（append前に全て読み取る）
         const half_size = current_size / 2;
         const buffer_id = current.buffer_id;
-        const current_id = current.id;
         const current_x = current.x;
         const current_y = current.y;
         const current_width = current.width;
@@ -260,7 +248,7 @@ pub const WindowManager = struct {
         }
 
         // 新しいウィンドウを作成（位置とサイズは分割方向で異なる）
-        var new_window = switch (direction) {
+        const new_window = switch (direction) {
             .horizontal => Window.init(
                 new_window_id,
                 buffer_id,
@@ -278,13 +266,6 @@ pub const WindowManager = struct {
                 current_height,
             ),
         };
-
-        // 分割情報を設定
-        new_window.split_type = switch (direction) {
-            .horizontal => .horizontal,
-            .vertical => .vertical,
-        };
-        new_window.split_parent_id = current_id;
 
         // ウィンドウリストに追加（リアロケーション発生の可能性あり）
         try self.windows.append(self.allocator, new_window);

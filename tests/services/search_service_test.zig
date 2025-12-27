@@ -142,3 +142,127 @@ test "SearchService - regex backward wraparound" {
     // ラップアラウンドで start_pos より後ろのマッチを返す（位置11）
     try testing.expectEqual(@as(usize, 11), result.?.start);
 }
+
+// ============================================================
+// エッジケース
+// ============================================================
+
+test "SearchService - empty pattern" {
+    var service = SearchService.init(testing.allocator);
+    defer service.deinit();
+
+    const content = "hello world";
+    // 空パターンで検索 → nullを返す
+    const result = service.searchForward(content, "", 0);
+    try testing.expect(result == null);
+}
+
+test "SearchService - empty buffer" {
+    var service = SearchService.init(testing.allocator);
+    defer service.deinit();
+
+    const content = "";
+    // 空バッファで検索 → nullを返す
+    const result = service.searchForward(content, "hello", 0);
+    try testing.expect(result == null);
+}
+
+test "SearchService - empty pattern and empty buffer" {
+    var service = SearchService.init(testing.allocator);
+    defer service.deinit();
+
+    const content = "";
+    const result = service.searchForward(content, "", 0);
+    try testing.expect(result == null);
+}
+
+test "SearchService - pattern longer than buffer" {
+    var service = SearchService.init(testing.allocator);
+    defer service.deinit();
+
+    const content = "hi";
+    const result = service.searchForward(content, "hello world", 0);
+    try testing.expect(result == null);
+}
+
+test "SearchService - search at buffer boundary" {
+    var service = SearchService.init(testing.allocator);
+    defer service.deinit();
+
+    const content = "hello";
+    // バッファ末尾から検索
+    const result = service.searchForward(content, "hello", 5);
+    try testing.expect(result != null);
+    // ラップアラウンドで先頭を見つける
+    try testing.expectEqual(@as(usize, 0), result.?.start);
+}
+
+test "SearchService - regex empty pattern" {
+    var service = SearchService.init(testing.allocator);
+    defer service.deinit();
+
+    const content = "test";
+    // 正規表現で空パターン → nullを返す
+    const result = service.searchRegexForward(content, "", 0);
+    try testing.expect(result == null);
+}
+
+test "SearchService - regex invalid pattern" {
+    var service = SearchService.init(testing.allocator);
+    defer service.deinit();
+
+    const content = "test";
+    // 不正な正規表現パターン → コンパイルエラーでnullを返す
+    const result = service.searchRegexForward(content, "[", 0);
+    try testing.expect(result == null);
+}
+
+test "SearchService - single character buffer" {
+    var service = SearchService.init(testing.allocator);
+    defer service.deinit();
+
+    const content = "a";
+    const result1 = service.searchForward(content, "a", 0);
+    try testing.expect(result1 != null);
+    try testing.expectEqual(@as(usize, 0), result1.?.start);
+    try testing.expectEqual(@as(usize, 1), result1.?.len);
+
+    const result2 = service.searchForward(content, "b", 0);
+    try testing.expect(result2 == null);
+}
+
+test "SearchService - backward search from start" {
+    var service = SearchService.init(testing.allocator);
+    defer service.deinit();
+
+    const content = "hello world hello";
+    // 先頭から後方検索 → ラップアラウンドで末尾のhelloを見つける
+    const result = service.searchBackward(content, "hello", 0);
+    try testing.expect(result != null);
+    try testing.expectEqual(@as(usize, 12), result.?.start);
+}
+
+test "SearchService - regex single character" {
+    var service = SearchService.init(testing.allocator);
+    defer service.deinit();
+
+    const content = "abcabc";
+    const result = service.searchRegexForward(content, "b", 0);
+    try testing.expect(result != null);
+    try testing.expectEqual(@as(usize, 1), result.?.start);
+    try testing.expectEqual(@as(usize, 1), result.?.len);
+}
+
+test "SearchService - case sensitive literal" {
+    var service = SearchService.init(testing.allocator);
+    defer service.deinit();
+
+    const content = "Hello hello HELLO";
+    const result1 = service.searchForward(content, "hello", 0);
+    try testing.expect(result1 != null);
+    try testing.expectEqual(@as(usize, 6), result1.?.start);
+
+    const result2 = service.searchForward(content, "HELLO", 0);
+    try testing.expect(result2 != null);
+    try testing.expectEqual(@as(usize, 12), result2.?.start);
+}

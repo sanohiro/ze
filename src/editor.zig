@@ -2141,178 +2141,180 @@ pub const Editor = struct {
     // キー処理：モードハンドラー
     // ========================================
 
-    /// ファイル名入力モード（C-x C-s で新規ファイル保存時）
-    fn handleFilenameInputKey(self: *Editor, key: input.Key) !bool {
+    /// ファイル入力モード共通処理（保存/開く）
+    fn handleFileInputKey(self: *Editor, key: input.Key, comptime is_save: bool) !bool {
+        const prompt = if (is_save) "Write file: " else "Find file: ";
+
         if (isCancelKey(key)) {
             self.completion_shown = false;
-            self.cancelSaveInput();
-            return true;
-        }
-        if (key == .tab) {
-            _ = try self.completeFilename("Write file: ");
-            return true;
-        }
-        // 補完候補表示中は、Tab以外のキーで候補をクリア
-        if (self.completion_shown) {
-            self.completion_shown = false;
-            // プロンプトを再描画（候補表示をクリアして入力状態に戻す）
-            self.updateMinibufferPrompt("Write file: ");
-            // Enterは候補クリアのみで処理しない（誤操作防止）
-            if (key == .enter) {
-                return true;
-            }
-        }
-        if (key == .enter) {
-            if (self.minibuffer.getContent().len > 0) {
-                const new_filename = self.minibuffer.getContent();
-                const buffer_state = self.getCurrentBuffer();
-
-                // 同じファイル名なら確認不要
-                const is_same_file = if (buffer_state.filename) |old|
-                    std.mem.eql(u8, old, new_filename)
-                else
-                    false;
-
-                // ファイルが存在し、かつ別のファイルなら確認が必要
-                const file_exists = blk: {
-                    std.fs.cwd().access(new_filename, .{}) catch |err| {
-                        // FileNotFound以外のエラーは「存在するかも」として確認を出す
-                        break :blk (err != error.FileNotFound);
-                    };
-                    break :blk true; // accessが成功 = ファイルが存在する
-                };
-
-                if (file_exists and !is_same_file) {
-                    // 確認待ちのファイル名を保存（buffer_state.filenameは確認後に設定）
-                    // 先にdupeしてからfreeする（dupe失敗時のダングリングポインタ防止）
-                    const new_pending = try self.allocator.dupe(u8, new_filename);
-                    if (self.pending_filename) |old| {
-                        self.allocator.free(old);
-                    }
-                    self.pending_filename = new_pending;
-                    self.clearInputBuffer();
-                    self.mode = .overwrite_confirm;
-                    self.getCurrentView().setError("File exists. Overwrite? (y)es (n)o");
-                } else {
-                    // ファイルが存在しないか、同じファイルなら直接保存
-                    // 先にdupeしてからfreeする（dupe失敗時のダングリングポインタ防止）
-                    const new_name = try self.allocator.dupe(u8, new_filename);
-                    if (buffer_state.filename) |old| {
-                        self.allocator.free(old);
-                    }
-                    buffer_state.filename = new_name;
-                    // ファイル名が変わったのでnormalized pathをリセット（saveFileで再計算）
-                    if (buffer_state.filename_normalized) |old_norm| {
-                        self.allocator.free(old_norm);
-                        buffer_state.filename_normalized = null;
-                    }
-                    self.clearInputBuffer();
-                    try self.saveFile();
-                    self.resetToNormal();
-                    if (self.quit_after_save) {
-                        self.quit_after_save = false;
-                        self.running = false;
-                    }
-                }
-            }
-            return true;
-        }
-        try self.processMinibufferKeyWithPrompt(key, "Write file: ");
-        return true;
-    }
-
-    /// ファイルを開くモード（C-x C-f）
-    fn handleFindFileInputKey(self: *Editor, key: input.Key) !bool {
-        if (isCancelKey(key)) {
-            self.completion_shown = false;
-            self.cancelInput();
-            return true;
-        }
-        if (key == .tab) {
-            _ = try self.completeFilename("Find file: ");
-            return true;
-        }
-        // 補完候補表示中は、Tab以外のキーで候補をクリア
-        if (self.completion_shown) {
-            self.completion_shown = false;
-            // プロンプトを再描画（候補表示をクリアして入力状態に戻す）
-            self.updateMinibufferPrompt("Find file: ");
-            // Enterは候補クリアのみで処理しない（誤操作防止）
-            if (key == .enter) {
-                return true;
-            }
-        }
-        if (key == .enter) {
-            if (self.minibuffer.getContent().len > 0) {
-                const filename = self.minibuffer.getContent();
-                const existing_buffer = self.findBufferByFilename(filename);
-                if (existing_buffer) |buf| {
-                    try self.switchToBuffer(buf.id);
-                } else {
-                    const new_buffer = try self.createNewBuffer();
-
-                    // filename_copyのdupe失敗時にnew_bufferをクリーンアップ
-                    const filename_copy = self.allocator.dupe(u8, filename) catch |err| {
-                        _ = self.closeBuffer(new_buffer.id) catch {};
-                        return err;
-                    };
-
-                    const loaded_buffer = Buffer.loadFromFile(self.allocator, filename_copy) catch |err| {
-                        self.allocator.free(filename_copy);
-                        if (err == error.FileNotFound) {
-                            // dupe失敗時にnew_bufferをクリーンアップ
-                            new_buffer.filename = self.allocator.dupe(u8, filename) catch |e| {
-                                _ = self.closeBuffer(new_buffer.id) catch {};
-                                return e;
-                            };
-                            try self.switchToBuffer(new_buffer.id);
-                            self.cancelInput();
-                            return true;
-                        } else if (err == error.BinaryFile) {
-                            // エラーパスではcatch {}を使用（tryだと失敗時にリーク）
-                            _ = self.closeBuffer(new_buffer.id) catch {};
-                            self.getCurrentView().setError("Cannot open binary file");
-                            self.mode = .normal;
-                            self.clearInputBuffer();
-                            return true;
-                        } else if (err == error.IsDir) {
-                            _ = self.closeBuffer(new_buffer.id) catch {};
-                            self.getCurrentView().setError("Cannot open directory");
-                            self.mode = .normal;
-                            self.clearInputBuffer();
-                            return true;
-                        } else {
-                            _ = self.closeBuffer(new_buffer.id) catch {};
-                            self.showError(err);
-                            self.mode = .normal;
-                            self.clearInputBuffer();
-                            return true;
-                        }
-                    };
-
-                    new_buffer.editing_ctx.buffer.deinit();
-                    new_buffer.editing_ctx.buffer.* = loaded_buffer;
-                    new_buffer.filename = filename_copy;
-                    // 正規化パスをキャッシュ
-                    new_buffer.filename_normalized = std.fs.cwd().realpathAlloc(self.allocator, filename_copy) catch null;
-                    new_buffer.editing_ctx.modified = false;
-
-                    const file = std.fs.cwd().openFile(filename_copy, .{}) catch null;
-                    if (file) |f| {
-                        defer f.close();
-                        const stat = f.stat() catch null;
-                        if (stat) |s| {
-                            new_buffer.file_mtime = s.mtime;
-                        }
-                    }
-                    try self.switchToBuffer(new_buffer.id);
-                }
+            if (is_save) {
+                self.cancelSaveInput();
+            } else {
                 self.cancelInput();
             }
             return true;
         }
-        try self.processMinibufferKeyWithPrompt(key, "Find file: ");
+
+        if (key == .tab) {
+            _ = try self.completeFilename(prompt);
+            return true;
+        }
+
+        // 補完候補表示中は、Tab以外のキーで候補をクリア
+        if (self.completion_shown) {
+            self.completion_shown = false;
+            self.updateMinibufferPrompt(prompt);
+            // Enterは候補クリアのみで処理しない（誤操作防止）
+            if (key == .enter) {
+                return true;
+            }
+        }
+
+        if (key == .enter) {
+            if (self.minibuffer.getContent().len > 0) {
+                if (is_save) {
+                    try self.handleSaveFileEnter();
+                } else {
+                    try self.handleFindFileEnter();
+                }
+            }
+            return true;
+        }
+
+        try self.processMinibufferKeyWithPrompt(key, prompt);
         return true;
+    }
+
+    /// ファイル名入力モード（C-x C-s で新規ファイル保存時）
+    fn handleFilenameInputKey(self: *Editor, key: input.Key) !bool {
+        return self.handleFileInputKey(key, true);
+    }
+
+    /// ファイルを開くモード（C-x C-f）
+    fn handleFindFileInputKey(self: *Editor, key: input.Key) !bool {
+        return self.handleFileInputKey(key, false);
+    }
+
+    /// 保存時のEnter処理
+    fn handleSaveFileEnter(self: *Editor) !void {
+        const new_filename = self.minibuffer.getContent();
+        const buffer_state = self.getCurrentBuffer();
+
+        // 同じファイル名なら確認不要
+        const is_same_file = if (buffer_state.filename) |old|
+            std.mem.eql(u8, old, new_filename)
+        else
+            false;
+
+        // ファイルが存在し、かつ別のファイルなら確認が必要
+        const file_exists = blk: {
+            std.fs.cwd().access(new_filename, .{}) catch |err| {
+                // FileNotFound以外のエラーは「存在するかも」として確認を出す
+                break :blk (err != error.FileNotFound);
+            };
+            break :blk true; // accessが成功 = ファイルが存在する
+        };
+
+        if (file_exists and !is_same_file) {
+            // 確認待ちのファイル名を保存（buffer_state.filenameは確認後に設定）
+            // 先にdupeしてからfreeする（dupe失敗時のダングリングポインタ防止）
+            const new_pending = try self.allocator.dupe(u8, new_filename);
+            if (self.pending_filename) |old| {
+                self.allocator.free(old);
+            }
+            self.pending_filename = new_pending;
+            self.clearInputBuffer();
+            self.mode = .overwrite_confirm;
+            self.getCurrentView().setError("File exists. Overwrite? (y)es (n)o");
+        } else {
+            // ファイルが存在しないか、同じファイルなら直接保存
+            // 先にdupeしてからfreeする（dupe失敗時のダングリングポインタ防止）
+            const new_name = try self.allocator.dupe(u8, new_filename);
+            if (buffer_state.filename) |old| {
+                self.allocator.free(old);
+            }
+            buffer_state.filename = new_name;
+            // ファイル名が変わったのでnormalized pathをリセット（saveFileで再計算）
+            if (buffer_state.filename_normalized) |old_norm| {
+                self.allocator.free(old_norm);
+                buffer_state.filename_normalized = null;
+            }
+            self.clearInputBuffer();
+            try self.saveFile();
+            self.resetToNormal();
+            if (self.quit_after_save) {
+                self.quit_after_save = false;
+                self.running = false;
+            }
+        }
+    }
+
+    /// ファイルを開く時のEnter処理
+    fn handleFindFileEnter(self: *Editor) !void {
+        const filename = self.minibuffer.getContent();
+        const existing_buffer = self.findBufferByFilename(filename);
+        if (existing_buffer) |buf| {
+            try self.switchToBuffer(buf.id);
+        } else {
+            const new_buffer = try self.createNewBuffer();
+
+            // filename_copyのdupe失敗時にnew_bufferをクリーンアップ
+            const filename_copy = self.allocator.dupe(u8, filename) catch |err| {
+                _ = self.closeBuffer(new_buffer.id) catch {};
+                return err;
+            };
+
+            const loaded_buffer = Buffer.loadFromFile(self.allocator, filename_copy) catch |err| {
+                self.allocator.free(filename_copy);
+                if (err == error.FileNotFound) {
+                    // dupe失敗時にnew_bufferをクリーンアップ
+                    new_buffer.filename = self.allocator.dupe(u8, filename) catch |e| {
+                        _ = self.closeBuffer(new_buffer.id) catch {};
+                        return e;
+                    };
+                    try self.switchToBuffer(new_buffer.id);
+                    self.cancelInput();
+                    return;
+                } else if (err == error.BinaryFile) {
+                    // エラーパスではcatch {}を使用（tryだと失敗時にリーク）
+                    _ = self.closeBuffer(new_buffer.id) catch {};
+                    self.getCurrentView().setError("Cannot open binary file");
+                    self.mode = .normal;
+                    self.clearInputBuffer();
+                    return;
+                } else if (err == error.IsDir) {
+                    _ = self.closeBuffer(new_buffer.id) catch {};
+                    self.getCurrentView().setError("Cannot open directory");
+                    self.mode = .normal;
+                    self.clearInputBuffer();
+                    return;
+                } else {
+                    _ = self.closeBuffer(new_buffer.id) catch {};
+                    self.showError(err);
+                    self.mode = .normal;
+                    self.clearInputBuffer();
+                    return;
+                }
+            };
+
+            new_buffer.editing_ctx.buffer.deinit();
+            new_buffer.editing_ctx.buffer.* = loaded_buffer;
+            new_buffer.filename = filename_copy;
+            // 正規化パスをキャッシュ
+            new_buffer.filename_normalized = std.fs.cwd().realpathAlloc(self.allocator, filename_copy) catch null;
+            new_buffer.editing_ctx.modified = false;
+
+            const file = std.fs.cwd().openFile(filename_copy, .{}) catch null;
+            if (file) |f| {
+                defer f.close();
+                const stat = f.stat() catch null;
+                if (stat) |s| {
+                    new_buffer.file_mtime = s.mtime;
+                }
+            }
+            try self.switchToBuffer(new_buffer.id);
+        }
+        self.cancelInput();
     }
 
     /// バッファ切り替えモード（C-x b）

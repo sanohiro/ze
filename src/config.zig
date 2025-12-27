@@ -210,12 +210,27 @@ pub const Messages = struct {
     pub const SEARCH_WRAPPED = "Wrapped";
     pub const SEARCH_NOT_FOUND = "Not found";
 
+    // === バッファ境界メッセージ ===
+    pub const BEGINNING_OF_BUFFER = "Beginning of buffer";
+    pub const END_OF_BUFFER = "End of buffer";
+
+    // === キルリング/ヤンクメッセージ ===
+    pub const KILL_RING_EMPTY = "Kill ring is empty";
+    pub const YANKED_TEXT = "Yanked text";
+    pub const KILLED_REGION = "Killed region";
+    pub const SAVED_TEXT = "Saved text to kill ring";
+    pub const MARK_SET = "Mark set";
+    pub const MARK_DEACTIVATED = "Mark deactivated";
+
     // === 矩形操作メッセージ ===
     pub const RECTANGLE_COPIED = "Rectangle copied";
     pub const RECTANGLE_KILLED = "Rectangle killed";
     pub const RECTANGLE_YANKED = "Rectangle yanked";
     pub const NO_RECTANGLE_TO_YANK = "No rectangle to yank";
     pub const RECTANGLE_EMPTY = "Rectangle is empty";
+
+    // === コメント操作メッセージ ===
+    pub const LINE_COMMENT_NOT_SUPPORTED = "Line comment not supported for this language";
 
     // === キープレフィックス ===
     pub const KEY_PREFIX_CX = "C-x-";

@@ -103,20 +103,6 @@ test "Window.init" {
     try testing.expectEqual(@as(usize, 80), window.width);
     try testing.expectEqual(@as(usize, 24), window.height);
     try testing.expect(window.mark_pos == null);
-    try testing.expect(window.split_type == .none);
-    try testing.expect(window.split_parent_id == null);
-}
-
-// ============================================================
-// SplitType enum tests
-// ============================================================
-
-test "SplitType values" {
-    const SplitType = @import("window_manager").SplitType;
-
-    try testing.expect(SplitType.none == .none);
-    try testing.expect(SplitType.horizontal == .horizontal);
-    try testing.expect(SplitType.vertical == .vertical);
 }
 
 // ============================================================

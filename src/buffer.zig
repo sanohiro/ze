@@ -680,22 +680,14 @@ pub const Buffer = struct {
         };
     }
 
-    /// mmapデータから直接変換（I/O削減版）
-    fn loadFromMappedContent(allocator: std.mem.Allocator, raw_content: []const u8, detected: encoding.DetectionResult, file_mtime: i128) !Buffer {
-        // UTF-8に変換（BOM削除、UTF-16デコード等）
-        const utf8_content = try encoding.convertToUtf8(allocator, raw_content, detected.encoding);
-        defer allocator.free(utf8_content);
-
-        // UTF-16の場合、改行検出は変換後のUTF-8で行う（元のバイト列では検出できない）
-        const actual_line_ending = if (detected.encoding == .UTF16LE_BOM or detected.encoding == .UTF16BE_BOM)
-            encoding.detectLineEnding(utf8_content)
-        else
-            detected.line_ending;
-
-        // 改行コードを正規化（LFに統一）
-        const normalized = try encoding.normalizeLineEndings(allocator, utf8_content, actual_line_ending);
-        errdefer allocator.free(normalized);
-
+    /// UTF-8正規化済みコンテンツからBufferを作成（共通処理）
+    fn createBufferFromContent(
+        allocator: std.mem.Allocator,
+        normalized: []const u8,
+        line_ending: encoding.LineEnding,
+        detected_encoding: encoding.Encoding,
+        file_mtime: i128,
+    ) !Buffer {
         var add_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
         errdefer add_buffer.deinit(allocator);
 
@@ -715,8 +707,8 @@ pub const Buffer = struct {
             .mmap_len = 0,
             .total_len = normalized.len,
             .line_index = line_index,
-            .detected_line_ending = actual_line_ending,
-            .detected_encoding = detected.encoding,
+            .detected_line_ending = line_ending,
+            .detected_encoding = detected_encoding,
             .loaded_mtime = file_mtime,
         };
 
@@ -730,6 +722,25 @@ pub const Buffer = struct {
 
         try self.line_index.rebuild(&self);
         return self;
+    }
+
+    /// mmapデータから直接変換（I/O削減版）
+    fn loadFromMappedContent(allocator: std.mem.Allocator, raw_content: []const u8, detected: encoding.DetectionResult, file_mtime: i128) !Buffer {
+        // UTF-8に変換（BOM削除、UTF-16デコード等）
+        const utf8_content = try encoding.convertToUtf8(allocator, raw_content, detected.encoding);
+        defer allocator.free(utf8_content);
+
+        // UTF-16の場合、改行検出は変換後のUTF-8で行う（元のバイト列では検出できない）
+        const actual_line_ending = if (detected.encoding == .UTF16LE_BOM or detected.encoding == .UTF16BE_BOM)
+            encoding.detectLineEnding(utf8_content)
+        else
+            detected.line_ending;
+
+        // 改行コードを正規化（LFに統一）
+        const normalized = try encoding.normalizeLineEndings(allocator, utf8_content, actual_line_ending);
+        errdefer allocator.free(normalized);
+
+        return createBufferFromContent(allocator, normalized, actual_line_ending, detected.encoding, file_mtime);
     }
 
     /// フォールバックパス: UTF-8+LF以外のファイルを変換して読み込む（mmapが使えない場合）
@@ -758,11 +769,11 @@ pub const Buffer = struct {
         }
 
         const detected = encoding.detectEncoding(raw_content);
-
         if (detected.encoding == .Unknown) {
             return error.UnsupportedEncoding;
         }
 
+        // UTF-8に変換
         const utf8_content = try encoding.convertToUtf8(allocator, raw_content, detected.encoding);
         defer allocator.free(utf8_content);
 
@@ -772,43 +783,11 @@ pub const Buffer = struct {
         else
             detected.line_ending;
 
+        // 改行コードを正規化
         const normalized = try encoding.normalizeLineEndings(allocator, utf8_content, actual_line_ending);
         errdefer allocator.free(normalized);
 
-        var add_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
-        errdefer add_buffer.deinit(allocator);
-
-        var pieces = try std.ArrayList(Piece).initCapacity(allocator, 0);
-        errdefer pieces.deinit(allocator);
-
-        var line_index = LineIndex.init(allocator);
-        errdefer line_index.deinit();
-
-        var self = Buffer{
-            .original = normalized,
-            .add_buffer = add_buffer,
-            .pieces = pieces,
-            .allocator = allocator,
-            .owns_original = true,
-            .is_mmap = false,
-            .mmap_len = 0,
-            .total_len = normalized.len,
-            .line_index = line_index,
-            .detected_line_ending = actual_line_ending,
-            .detected_encoding = detected.encoding,
-            .loaded_mtime = stat.mtime,
-        };
-
-        if (normalized.len > 0) {
-            try self.pieces.append(allocator, .{
-                .source = .original,
-                .start = 0,
-                .length = normalized.len,
-            });
-        }
-
-        try self.line_index.rebuild(&self);
-        return self;
+        return createBufferFromContent(allocator, normalized, actual_line_ending, detected.encoding, stat.mtime);
     }
 
     /// バッファをファイルに保存
@@ -1635,6 +1614,63 @@ pub const Buffer = struct {
         return null;
     }
 
+    /// 単一piece内での後方検索
+    fn searchBackwardSimple(
+        self: *const Buffer,
+        pattern: []const u8,
+        piece: Piece,
+        piece_start: usize,
+        search_limit: usize,
+    ) ?SearchMatch {
+        if (search_limit < pattern.len) return null;
+
+        const data = self.getPieceData(piece);
+        if (std.mem.lastIndexOf(u8, data[0..search_limit], pattern)) |rel_pos| {
+            const global_pos = piece_start + rel_pos;
+            // マッチがpiece境界をまたがないか確認
+            if (rel_pos + pattern.len <= piece.length) {
+                return .{ .start = global_pos, .len = pattern.len };
+            }
+            // 境界またぎの場合、実際にマッチするか確認
+            if (self.verifyMatch(global_pos, pattern)) {
+                return .{ .start = global_pos, .len = pattern.len };
+            }
+        }
+        return null;
+    }
+
+    /// piece境界をまたぐパターンをチェック
+    fn searchBackwardBoundary(
+        self: *const Buffer,
+        pattern: []const u8,
+        current_piece_start: usize,
+        piece_len: usize,
+        search_end: usize,
+    ) ?SearchMatch {
+        // パターンがpiece長+1より長い場合、境界マッチは不可能
+        if (piece_len + 1 < pattern.len) return null;
+
+        const boundary_start = current_piece_start + piece_len - pattern.len + 1;
+        if (boundary_start >= current_piece_start + piece_len) return null;
+
+        const check_start = @max(boundary_start, current_piece_start);
+        var check_pos = current_piece_start + piece_len - 1;
+        while (check_pos >= check_start) {
+            // パターン長以上の位置でのみマッチ可能（アンダーフロー防止）
+            if (check_pos + 1 >= pattern.len) {
+                if (self.verifyMatch(check_pos - pattern.len + 1, pattern)) {
+                    const match_pos = check_pos - pattern.len + 1;
+                    if (match_pos + pattern.len <= search_end) {
+                        return .{ .start = match_pos, .len = pattern.len };
+                    }
+                }
+            }
+            if (check_pos == 0 or check_pos == check_start) break;
+            check_pos -= 1;
+        }
+        return null;
+    }
+
     /// 後方検索（コピーなし）
     /// 効率のため、チャンク単位で読み取って検索
     pub fn searchBackward(self: *const Buffer, pattern: []const u8, start_pos: usize) ?SearchMatch {
@@ -1643,13 +1679,11 @@ pub const Buffer = struct {
         const search_end = @min(start_pos, self.total_len);
         if (search_end < pattern.len) return null;
 
-        // piece毎にstd.mem.lastIndexOfを使用して後方検索（O(n)）
-        // pieceを逆順に走査し、各piece内でlastIndexOfを使う
         const pieces = self.pieces.items;
         if (pieces.len == 0) return null;
 
-        // 各pieceの終了位置を計算しながら、search_endを含むpieceを特定
-        var piece_ends: [256]usize = undefined; // 小さい固定バッファ（大きい場合はフォールバック）
+        // 各pieceの終了位置を計算
+        var piece_ends: [256]usize = undefined;
         const use_stack_buf = pieces.len <= 256;
 
         if (use_stack_buf) {
@@ -1676,7 +1710,6 @@ pub const Buffer = struct {
         }
 
         if (start_piece_idx >= pieces.len) {
-            // search_endがバッファ外
             if (pieces.len > 0) {
                 start_piece_idx = pieces.len - 1;
                 piece_start = if (use_stack_buf and start_piece_idx > 0)
@@ -1697,59 +1730,28 @@ pub const Buffer = struct {
 
         while (true) {
             const piece = pieces[current_piece_idx];
-            const data = self.getPieceData(piece);
 
-            // このpiece内での検索範囲を決定
+            // piece内での検索範囲を決定
             const search_limit = if (current_piece_idx == start_piece_idx)
                 search_end - current_piece_start
             else
                 piece.length;
 
-            if (search_limit >= pattern.len) {
-                // piece内で後方検索
-                if (std.mem.lastIndexOf(u8, data[0..search_limit], pattern)) |rel_pos| {
-                    const global_pos = current_piece_start + rel_pos;
-                    // マッチがpiece境界をまたがないか確認
-                    if (rel_pos + pattern.len <= piece.length) {
-                        return .{ .start = global_pos, .len = pattern.len };
-                    }
-                    // 境界またぎの場合、実際にマッチするか確認
-                    if (self.verifyMatch(global_pos, pattern)) {
-                        return .{ .start = global_pos, .len = pattern.len };
-                    }
-                }
+            // piece内で検索
+            if (self.searchBackwardSimple(pattern, piece, current_piece_start, search_limit)) |match| {
+                return match;
             }
 
             // 前のpieceへ
             if (current_piece_idx == 0) break;
             current_piece_idx -= 1;
-            // 前のpieceの開始位置 = 現在位置 - 前のpieceの長さ（O(1)）
             current_piece_start -= pieces[current_piece_idx].length;
 
-            // piece境界をまたぐパターンのチェック
-            // 前のpieceの末尾 + 現在のpieceの先頭でマッチする可能性
+            // piece境界チェック
             if (current_piece_idx + 1 < pieces.len) {
                 const piece_len = pieces[current_piece_idx].length;
-                // パターンがpiece長+1より長い場合、境界マッチは不可能（アンダーフロー防止）
-                if (piece_len + 1 >= pattern.len) {
-                    const boundary_start = current_piece_start + piece_len - pattern.len + 1;
-                    if (boundary_start < current_piece_start + piece_len) {
-                        const check_start = @max(boundary_start, current_piece_start);
-                        var check_pos = current_piece_start + piece_len - 1;
-                        while (check_pos >= check_start) {
-                            // パターン長以上の位置でのみマッチ可能（アンダーフロー防止）
-                            if (check_pos + 1 >= pattern.len) {
-                                if (self.verifyMatch(check_pos - pattern.len + 1, pattern)) {
-                                    const match_pos = check_pos - pattern.len + 1;
-                                    if (match_pos + pattern.len <= search_end) {
-                                        return .{ .start = match_pos, .len = pattern.len };
-                                    }
-                                }
-                            }
-                            if (check_pos == 0 or check_pos == check_start) break;
-                            check_pos -= 1;
-                        }
-                    }
+                if (self.searchBackwardBoundary(pattern, current_piece_start, piece_len, search_end)) |match| {
+                    return match;
                 }
             }
         }

@@ -357,3 +357,157 @@ test "repeated insert and delete" {
     }
     try testing.expectEqual(@as(usize, 0), buffer.len());
 }
+
+// ============================================================
+// Piece境界をまたぐ検索テスト
+// ============================================================
+
+test "search across piece boundary" {
+    const allocator = testing.allocator;
+
+    var buffer = try Buffer.init(allocator);
+    defer buffer.deinit();
+
+    // 最初のpiece
+    try buffer.insertSlice(0, "hello ");
+    // 2番目のpiece
+    try buffer.insertSlice(6, "world");
+
+    // piece境界をまたぐ検索（"o w"）
+    const content = try buffer.getRange(allocator, 0, buffer.len());
+    defer allocator.free(content);
+
+    const pos = std.mem.indexOf(u8, content, "o w");
+    try testing.expect(pos != null);
+    try testing.expectEqual(@as(usize, 4), pos.?);
+}
+
+test "search pattern split across pieces" {
+    const allocator = testing.allocator;
+
+    var buffer = try Buffer.init(allocator);
+    defer buffer.deinit();
+
+    // パターンがpiece境界で分割される場合
+    try buffer.insertSlice(0, "abc");
+    try buffer.insertSlice(3, "def");
+    try buffer.insertSlice(6, "ghi");
+
+    // "cdefg"はpiece境界をまたぐ
+    const content = try buffer.getRange(allocator, 0, buffer.len());
+    defer allocator.free(content);
+
+    const pos = std.mem.indexOf(u8, content, "cdefg");
+    try testing.expect(pos != null);
+    try testing.expectEqual(@as(usize, 2), pos.?);
+}
+
+test "search in single piece buffer" {
+    const allocator = testing.allocator;
+
+    var buffer = try Buffer.init(allocator);
+    defer buffer.deinit();
+
+    try buffer.insertSlice(0, "the quick brown fox");
+
+    const content = try buffer.getRange(allocator, 0, buffer.len());
+    defer allocator.free(content);
+
+    const pos1 = std.mem.indexOf(u8, content, "quick");
+    try testing.expect(pos1 != null);
+    try testing.expectEqual(@as(usize, 4), pos1.?);
+
+    const pos2 = std.mem.indexOf(u8, content, "xyz");
+    try testing.expect(pos2 == null);
+}
+
+test "search after delete creates piece boundary" {
+    const allocator = testing.allocator;
+
+    var buffer = try Buffer.init(allocator);
+    defer buffer.deinit();
+
+    try buffer.insertSlice(0, "abcdefghijkl");
+    // 中間を削除してpiece境界を作る
+    try buffer.delete(3, 3); // "def"削除 → "abcghijkl"
+
+    const content = try buffer.getRange(allocator, 0, buffer.len());
+    defer allocator.free(content);
+
+    // piece境界をまたぐ検索
+    const pos = std.mem.indexOf(u8, content, "cgh");
+    try testing.expect(pos != null);
+    try testing.expectEqual(@as(usize, 2), pos.?);
+}
+
+test "search multibyte across piece boundary" {
+    const allocator = testing.allocator;
+
+    var buffer = try Buffer.init(allocator);
+    defer buffer.deinit();
+
+    // UTF-8マルチバイト文字がpiece境界をまたぐ
+    try buffer.insertSlice(0, "日本");
+    try buffer.insertSlice(6, "語");
+
+    const content = try buffer.getRange(allocator, 0, buffer.len());
+    defer allocator.free(content);
+
+    try testing.expectEqualStrings("日本語", content);
+
+    // "本語"を検索
+    const pos = std.mem.indexOf(u8, content, "本語");
+    try testing.expect(pos != null);
+    try testing.expectEqual(@as(usize, 3), pos.?);
+}
+
+test "search at piece boundaries exactly" {
+    const allocator = testing.allocator;
+
+    var buffer = try Buffer.init(allocator);
+    defer buffer.deinit();
+
+    try buffer.insertSlice(0, "aaa");
+    try buffer.insertSlice(3, "bbb");
+    try buffer.insertSlice(6, "ccc");
+
+    // piece境界ちょうどから始まる検索
+    const content = try buffer.getRange(allocator, 0, buffer.len());
+    defer allocator.free(content);
+
+    const pos1 = std.mem.indexOf(u8, content, "bbb");
+    try testing.expect(pos1 != null);
+    try testing.expectEqual(@as(usize, 3), pos1.?);
+
+    const pos2 = std.mem.indexOf(u8, content, "ccc");
+    try testing.expect(pos2 != null);
+    try testing.expectEqual(@as(usize, 6), pos2.?);
+}
+
+// ============================================================
+// 長いコンテンツでのpiece境界テスト
+// ============================================================
+
+test "search in fragmented buffer" {
+    const allocator = testing.allocator;
+
+    var buffer = try Buffer.init(allocator);
+    defer buffer.deinit();
+
+    // 断片化されたバッファ
+    for (0..10) |i| {
+        var char_buf: [1]u8 = undefined;
+        char_buf[0] = @intCast('a' + (i % 26));
+        try buffer.insertSlice(i, &char_buf);
+    }
+
+    const content = try buffer.getRange(allocator, 0, buffer.len());
+    defer allocator.free(content);
+
+    try testing.expectEqual(@as(usize, 10), content.len);
+
+    // 複数pieceにまたがる検索
+    const pos = std.mem.indexOf(u8, content, "abc");
+    try testing.expect(pos != null);
+    try testing.expectEqual(@as(usize, 0), pos.?);
+}

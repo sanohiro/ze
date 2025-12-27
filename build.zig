@@ -367,6 +367,9 @@ pub fn build(b: *std.Build) void {
         "tests/services/shell_service_test.zig",
         "tests/services/window_manager_test.zig",
         "tests/services/macro_service_test.zig",
+        // commands/
+        "tests/commands/edit_test.zig",
+        "tests/commands/rectangle_test.zig",
     };
 
     const test_step = b.step("test", "Run unit tests");

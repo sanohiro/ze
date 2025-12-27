@@ -121,7 +121,7 @@ pub fn backspace(e: *Editor) !void {
     const view = e.getCurrentView();
     const pos = view.getCursorBufferPos();
     if (pos == 0) {
-        view.setError("Beginning of buffer");
+        view.setError(config.Messages.BEGINNING_OF_BUFFER);
         return;
     }
 
@@ -245,7 +245,7 @@ pub fn yank(e: *Editor) !void {
     const buffer = e.getCurrentBufferContent();
     const current_line = e.getCurrentLine();
     const text = e.kill_ring.get() orelse {
-        e.getCurrentView().setError("Kill ring is empty");
+        e.getCurrentView().setError(config.Messages.KILL_RING_EMPTY);
         return;
     };
 
@@ -261,7 +261,7 @@ pub fn yank(e: *Editor) !void {
 
     markDirtyForText(e, current_line, text);
 
-    e.getCurrentView().setError("Yanked text");
+    e.getCurrentView().setError(config.Messages.YANKED_TEXT);
 }
 
 /// C-w: 選択範囲を削除してkill ringに保存
@@ -280,7 +280,7 @@ pub fn killRegion(e: *Editor) !void {
 
     e.setCursorToPos(region.start);
     window.mark_pos = null;
-    e.getCurrentView().setError("Killed region");
+    e.getCurrentView().setError(config.Messages.KILLED_REGION);
 }
 
 /// M-w: 選択範囲をkill ringにコピー
@@ -298,7 +298,7 @@ pub fn copyRegion(e: *Editor) !void {
 
     window.mark_pos = null;
 
-    e.getCurrentView().setError("Saved text to kill ring");
+    e.getCurrentView().setError(config.Messages.SAVED_TEXT);
 }
 
 // ========================================
@@ -314,7 +314,7 @@ pub fn joinLine(e: *Editor) !void {
 
     const current_line = e.getCurrentLine();
     if (current_line == 0) {
-        view.setError("Beginning of buffer");
+        view.setError(config.Messages.BEGINNING_OF_BUFFER);
         return;
     }
 
@@ -387,7 +387,7 @@ pub fn toggleComment(e: *Editor) !void {
     // block_commentがある場合は警告を出す（行コメントトグルは未対応）
     const line_comment = view.language.line_comment orelse blk: {
         if (view.language.block_comment != null) {
-            view.setError("Line comment not supported for this language");
+            view.setError(config.Messages.LINE_COMMENT_NOT_SUPPORTED);
             return;
         }
         break :blk "#"; // 両方ともnullの場合のみフォールバック
@@ -462,7 +462,7 @@ pub fn moveLineUp(e: *Editor) !void {
     const current_line = e.getCurrentLine();
 
     if (current_line == 0) {
-        view.setError("Beginning of buffer");
+        view.setError(config.Messages.BEGINNING_OF_BUFFER);
         return;
     }
 
@@ -503,7 +503,7 @@ pub fn moveLineDown(e: *Editor) !void {
     const total_lines = buffer.lineCount();
 
     if (current_line + 1 >= total_lines) {
-        view.setError("End of buffer");
+        view.setError(config.Messages.END_OF_BUFFER);
         return;
     }
 
@@ -592,11 +592,11 @@ pub fn setMark(e: *Editor) !void {
     if (window.mark_pos) |_| {
         window.mark_pos = null;
         window.shift_select = false;
-        e.getCurrentView().setError("Mark deactivated");
+        e.getCurrentView().setError(config.Messages.MARK_DEACTIVATED);
     } else {
         window.mark_pos = e.getCurrentView().getCursorBufferPos();
         window.shift_select = false; // C-Spaceで設定したマークは矢印キーで解除しない
-        e.getCurrentView().setError("Mark set");
+        e.getCurrentView().setError(config.Messages.MARK_SET);
     }
     // 選択範囲のハイライトが変わるので再描画
     e.getCurrentView().markFullRedraw();
@@ -795,7 +795,7 @@ pub fn keyboardQuit(e: *Editor) !void {
     if (window.mark_pos != null) {
         window.mark_pos = null;
         e.getCurrentView().markFullRedraw(); // 選択ハイライトを消すため
-        e.getCurrentView().setError("Mark deactivated");
+        e.getCurrentView().setError(config.Messages.MARK_DEACTIVATED);
     } else {
         e.getCurrentView().clearError();
     }

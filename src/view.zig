@@ -1244,6 +1244,233 @@ pub const View = struct {
         return self.renderLineWithIterOffset(term, 0, 0, self.viewport_width, screen_row, file_line, iter, line_buffer, false);
     }
 
+    /// 行データを読み取る（イテレータから改行まで）
+    fn readLineData(iter: *PieceIterator, line_buffer: *std.ArrayList(u8), allocator: std.mem.Allocator) !struct { start_pos: usize, end_pos: usize } {
+        const line_start_pos = iter.global_pos;
+        line_buffer.clearRetainingCapacity();
+        while (iter.next()) |ch| {
+            if (ch == '\n') break;
+            try line_buffer.append(allocator, ch);
+        }
+        const line_end_pos = line_start_pos + line_buffer.items.len;
+        return .{ .start_pos = line_start_pos, .end_pos = line_end_pos };
+    }
+
+    /// 行番号を expanded_line に追加
+    fn renderLineNumber(self: *View, file_line: usize) !usize {
+        const line_num_width = self.getLineNumberWidth();
+        if (line_num_width > 0) {
+            var num_buf: [64]u8 = undefined;
+            const num_width = if (line_num_width >= 2) line_num_width - 2 else 1;
+            const line_num_str = std.fmt.bufPrint(&num_buf, "\x1b[90m{d: >[1]}\x1b[m  ", .{ file_line + 1, num_width }) catch "";
+            try self.expanded_line.appendSlice(self.allocator, line_num_str);
+        }
+        return self.expanded_line.items.len;
+    }
+
+    /// 選択範囲情報
+    const SelectionBounds = struct {
+        has_selection: bool,
+        start: ?usize,
+        end: ?usize,
+    };
+
+    /// 選択範囲の行内位置を計算
+    fn calculateSelectionBounds(self: *View, line_start_pos: usize, line_end_pos: usize, line_buffer_len: usize) SelectionBounds {
+        const has_selection = self.selection_start != null and self.selection_end != null;
+        if (!has_selection) return .{ .has_selection = false, .start = null, .end = null };
+
+        const sel_start_in_line: ?usize = blk: {
+            const sel_start = self.selection_start.?;
+            if (sel_start >= line_end_pos) break :blk null;
+            if (sel_start <= line_start_pos) break :blk 0;
+            break :blk sel_start - line_start_pos;
+        };
+        const sel_end_in_line: ?usize = blk: {
+            const sel_end = self.selection_end.?;
+            if (sel_end <= line_start_pos) break :blk null;
+            if (sel_end >= line_end_pos) break :blk line_buffer_len;
+            break :blk sel_end - line_start_pos;
+        };
+        return .{ .has_selection = has_selection, .start = sel_start_in_line, .end = sel_end_in_line };
+    }
+
+    /// タブ展開と水平スクロール処理（ハイライト適用）
+    fn expandLineWithHighlights(
+        self: *View,
+        line_buffer: []const u8,
+        analysis: syntax.LanguageDef.LineAnalysis,
+        selection: SelectionBounds,
+        viewport_width: usize,
+        line_num_width: usize,
+    ) !usize {
+        var byte_idx: usize = 0;
+        var col: usize = 0;
+        const visible_width = if (viewport_width > line_num_width) viewport_width - line_num_width else 1;
+        const visible_end = self.top_col + visible_width;
+        const tab_width = self.getTabWidth();
+
+        // コメントスパン追跡
+        const has_spans = analysis.span_count > 0;
+        var in_comment = false;
+        var current_span_idx: usize = 0;
+        var current_span: ?syntax.LanguageDef.CommentSpan = if (has_spans) analysis.spans[0] else null;
+
+        // 選択範囲追跡
+        var in_selection = false;
+
+        while (byte_idx < line_buffer.len and col < visible_end) {
+            // 選択範囲チェック
+            if (selection.has_selection and selection.start != null and selection.end != null) {
+                if (!in_selection and byte_idx >= selection.start.? and byte_idx < selection.end.?) {
+                    try self.expanded_line.appendSlice(self.allocator, ANSI.INVERT);
+                    in_selection = true;
+                }
+                if (in_selection and byte_idx >= selection.end.?) {
+                    try self.expanded_line.appendSlice(self.allocator, ANSI.RESET);
+                    in_selection = false;
+                }
+            }
+
+            // コメントスパンチェック
+            if (has_spans) {
+                if (current_span) |span| {
+                    if (!in_comment and byte_idx == span.start) {
+                        try self.expanded_line.appendSlice(self.allocator, ANSI.GRAY);
+                        in_comment = true;
+                    }
+                    if (in_comment) {
+                        if (span.end) |end| {
+                            if (byte_idx == end) {
+                                try self.expanded_line.appendSlice(self.allocator, ANSI.RESET);
+                                in_comment = false;
+                                current_span_idx += 1;
+                                current_span = if (current_span_idx < analysis.span_count) analysis.spans[current_span_idx] else null;
+                            }
+                        }
+                    }
+                }
+            }
+
+            const ch = line_buffer[byte_idx];
+            if (ch < config.UTF8.CONTINUATION_MASK) {
+                // ASCII処理
+                if (ch == '\t') {
+                    const next_tab_stop = nextTabStop(col, tab_width);
+                    const tab_start = col;
+                    const tab_end = next_tab_stop;
+                    if (tab_end > self.top_col and tab_start < visible_end) {
+                        const visible_start = if (tab_start >= self.top_col) tab_start else self.top_col;
+                        const visible_stop = if (tab_end <= visible_end) tab_end else visible_end;
+                        const visible_spaces = visible_stop - visible_start;
+
+                        const spaces8: []const u8 = "        ";
+                        var remaining = visible_spaces;
+                        while (remaining >= 8) {
+                            try self.expanded_line.appendSlice(self.allocator, spaces8);
+                            remaining -= 8;
+                        }
+                        if (remaining > 0) {
+                            try self.expanded_line.appendSlice(self.allocator, spaces8[0..remaining]);
+                        }
+                    }
+                    col = next_tab_stop;
+                    byte_idx += 1;
+                } else if (ch < ASCII.PRINTABLE_MIN or ch == ASCII.DEL) {
+                    if (col >= self.top_col and col + 1 < visible_end) {
+                        try self.expanded_line.appendSlice(self.allocator, ANSI.GRAY);
+                        const ctrl = if (ch == ASCII.DEL) [2]u8{ '^', '?' } else renderControlChar(ch);
+                        try self.expanded_line.appendSlice(self.allocator, &ctrl);
+                        try self.expanded_line.appendSlice(self.allocator, ANSI.RESET);
+                    }
+                    byte_idx += 1;
+                    col += 2;
+                } else {
+                    if (col >= self.top_col) {
+                        try self.expanded_line.append(self.allocator, ch);
+                    }
+                    byte_idx += 1;
+                    col += 1;
+                }
+            } else {
+                // UTF-8処理
+                const remaining = line_buffer[byte_idx..];
+                if (unicode.nextGraphemeCluster(remaining)) |cluster| {
+                    if (col >= self.top_col) {
+                        if (cluster.byte_len == 3 and
+                            remaining[0] == config.UTF8.FULLWIDTH_SPACE[0] and
+                            remaining[1] == config.UTF8.FULLWIDTH_SPACE[1] and
+                            remaining[2] == config.UTF8.FULLWIDTH_SPACE[2])
+                        {
+                            try self.expanded_line.appendSlice(self.allocator, FULLWIDTH_SPACE_VISUAL);
+                        } else {
+                            try self.expanded_line.appendSlice(self.allocator, line_buffer[byte_idx .. byte_idx + cluster.byte_len]);
+                        }
+                    }
+                    byte_idx += cluster.byte_len;
+                    col += cluster.display_width;
+                } else {
+                    byte_idx += 1;
+                }
+            }
+        }
+
+        // ハイライトのクリーンアップ
+        if (in_selection) {
+            try self.expanded_line.appendSlice(self.allocator, ANSI.RESET);
+        }
+        if (has_spans and in_comment) {
+            try self.expanded_line.appendSlice(self.allocator, ANSI.RESET);
+        }
+
+        return col;
+    }
+
+    /// カーソル位置の展開後位置を計算（キャッシュ対応）
+    fn calculateCursorExpandedPos(self: *View, line_buffer: []const u8, screen_row: usize, tab_width: usize) ?usize {
+        if (screen_row != self.cursor_y) return null;
+
+        const cursor_pos = self.getCursorBufferPos();
+        if (self.cached_cursor_byte_pos) |cached_pos| {
+            if (cached_pos == cursor_pos) {
+                return self.cached_cursor_expanded_pos;
+            }
+        }
+
+        const line_start = self.buffer.getLineStart(self.top_line + self.cursor_y) orelse 0;
+        if (cursor_pos < line_start) {
+            self.cached_cursor_byte_pos = cursor_pos;
+            self.cached_cursor_expanded_pos = 0;
+            return 0;
+        }
+
+        var expanded_pos: usize = 0;
+        var byte_offset: usize = 0;
+        const cursor_offset = cursor_pos - line_start;
+        while (byte_offset < cursor_offset and byte_offset < line_buffer.len) {
+            const byte = line_buffer[byte_offset];
+            if (byte == '\t') {
+                expanded_pos = nextTabStop(expanded_pos, tab_width);
+                byte_offset += 1;
+            } else if (unicode.isAsciiByte(byte)) {
+                expanded_pos += 1;
+                byte_offset += 1;
+            } else {
+                const remaining = line_buffer[byte_offset..];
+                if (unicode.nextGraphemeCluster(remaining)) |cluster| {
+                    expanded_pos += cluster.display_width;
+                    byte_offset += cluster.byte_len;
+                } else {
+                    expanded_pos += 1;
+                    byte_offset += 1;
+                }
+            }
+        }
+        self.cached_cursor_byte_pos = cursor_pos;
+        self.cached_cursor_expanded_pos = expanded_pos;
+        return expanded_pos;
+    }
+
     /// 1行をレンダリング（メインのレンダリング関数）
     ///
     /// 【処理パイプライン】
@@ -1263,265 +1490,39 @@ pub const View = struct {
     /// 次の行がブロックコメント内で開始するかどうか（キャッシュ用）
     fn renderLineWithIterOffset(self: *View, term: *Terminal, viewport_x: usize, viewport_y: usize, viewport_width: usize, screen_row: usize, file_line: usize, iter: *PieceIterator, line_buffer: *std.ArrayList(u8), in_block: bool) !bool {
         const abs_row = viewport_y + screen_row;
-        // 再利用バッファをクリア
-        line_buffer.clearRetainingCapacity();
 
-        // 行のバッファ開始位置を記録（選択範囲ハイライト用）
-        const line_start_pos = iter.global_pos;
+        // 1. 行データを読み取る
+        const positions = try readLineData(iter, line_buffer, self.allocator);
 
-        // 行末まで読み取る
-        while (iter.next()) |ch| {
-            if (ch == '\n') break;
-            try line_buffer.append(self.allocator, ch);
-        }
-
-        // 行のバッファ終了位置（改行の直前）
-        const line_end_pos = line_start_pos + line_buffer.items.len;
-
-        // コメント範囲を解析（ブロックコメント対応）
-        // コメントがない言語では解析をスキップ（最適化）
+        // 2. コメント解析
         const analysis = if (self.language.hasComments() or in_block)
             self.language.analyzeLine(line_buffer.items, in_block)
         else
             syntax.LanguageDef.LineAnalysis.init();
 
-        // Tab展開用スクラッチバッファをクリアして再利用
+        // 3. expanded_lineをクリアして行番号を追加
         self.expanded_line.clearRetainingCapacity();
+        const content_start_byte = try self.renderLineNumber(file_line);
 
-        // 行番号を先に追加（グレー表示 + スペース2個）
+        // 4. 選択範囲の境界を計算
+        const selection = self.calculateSelectionBounds(positions.start_pos, positions.end_pos, line_buffer.items.len);
+
+        // 5. タブ展開とハイライト適用
         const line_num_width = self.getLineNumberWidth();
-        if (line_num_width > 0) {
-            var num_buf: [64]u8 = undefined;
-            // グレー(\x1b[90m) + 右詰め行番号 + リセット(\x1b[m) + スペース2個
-            // 注: getLineNumberWidthは最小5を返すが、防御的にサチュレート減算
-            const num_width = if (line_num_width >= 2) line_num_width - 2 else 1;
-            const line_num_str = std.fmt.bufPrint(&num_buf, "\x1b[90m{d: >[1]}\x1b[m  ", .{ file_line + 1, num_width }) catch "";
-            try self.expanded_line.appendSlice(self.allocator, line_num_str);
-        }
-        // 行番号のバイト長を記録（検索ハイライトで行番号をスキップするため）
-        const content_start_byte = self.expanded_line.items.len;
+        const col = try self.expandLineWithHighlights(line_buffer.items, analysis, selection, viewport_width, line_num_width);
 
-        // grapheme-aware rendering with tab expansion and horizontal scrolling
-        var byte_idx: usize = 0;
-        var col: usize = 0; // 論理カラム位置（行全体での位置）
-        const visible_width = if (viewport_width > line_num_width) viewport_width - line_num_width else 1;
-        const visible_end = self.top_col + visible_width; // 表示範囲の終端（行番号幅を除く）
-        const tab_width = self.getTabWidth(); // ループ前にホイスト（最適化）
-
-        // コメントスパンがある場合のみ追跡（最適化：span_count==0なら完全スキップ）
-        const has_spans = analysis.span_count > 0;
-        var in_comment = false; // 現在コメント内かどうか
-        var current_span_idx: usize = 0; // 現在のコメントスパンインデックス
-        var current_span: ?syntax.LanguageDef.CommentSpan = if (has_spans) analysis.spans[0] else null;
-
-        // 選択範囲ハイライト用（バッファ位置で比較）
-        const has_selection = self.selection_start != null and self.selection_end != null;
-        var in_selection = false; // 現在選択範囲内かどうか
-        // この行での選択開始・終了バイト位置を計算
-        const sel_start_in_line: ?usize = if (has_selection) blk: {
-            const sel_start = self.selection_start.?;
-            if (sel_start >= line_end_pos) break :blk null; // 選択がこの行より後
-            if (sel_start <= line_start_pos) break :blk 0; // 選択がこの行より前から開始
-            break :blk sel_start - line_start_pos;
-        } else null;
-        const sel_end_in_line: ?usize = if (has_selection) blk: {
-            const sel_end = self.selection_end.?;
-            if (sel_end <= line_start_pos) break :blk null; // 選択がこの行より前で終了
-            if (sel_end >= line_end_pos) break :blk line_buffer.items.len; // 選択がこの行より後まで続く
-            break :blk sel_end - line_start_pos;
-        } else null;
-
-        while (byte_idx < line_buffer.items.len and col < visible_end) {
-            // 選択範囲の開始・終了をチェック
-            if (has_selection and sel_start_in_line != null and sel_end_in_line != null) {
-                if (!in_selection and byte_idx >= sel_start_in_line.? and byte_idx < sel_end_in_line.?) {
-                    // 選択開始（反転表示）
-                    try self.expanded_line.appendSlice(self.allocator, ANSI.INVERT);
-                    in_selection = true;
-                }
-                if (in_selection and byte_idx >= sel_end_in_line.?) {
-                    // 選択終了（リセット）
-                    try self.expanded_line.appendSlice(self.allocator, ANSI.RESET);
-                    in_selection = false;
-                }
-            }
-
-            // コメントスパンの開始・終了をチェック（スパンがある場合のみ）
-            if (has_spans) {
-                if (current_span) |span| {
-                    if (!in_comment and byte_idx == span.start) {
-                        // コメント開始
-                        try self.expanded_line.appendSlice(self.allocator, ANSI.GRAY);
-                        in_comment = true;
-                    }
-                    if (in_comment) {
-                        if (span.end) |end| {
-                            if (byte_idx == end) {
-                                // コメント終了
-                                try self.expanded_line.appendSlice(self.allocator, ANSI.RESET);
-                                in_comment = false;
-                                // 次のスパンへ
-                                current_span_idx += 1;
-                                current_span = if (current_span_idx < analysis.span_count) analysis.spans[current_span_idx] else null;
-                            }
-                        }
-                    }
-                }
-            }
-
-            const ch = line_buffer.items[byte_idx];
-            if (ch < config.UTF8.CONTINUATION_MASK) {
-                // ASCII
-                if (ch == '\t') {
-                    // Tabを空白に展開（バッチ処理で高速化）
-                    const next_tab_stop = nextTabStop(col, tab_width);
-
-                    // 水平スクロール範囲内の空白数を計算
-                    const tab_start = col;
-                    const tab_end = next_tab_stop;
-                    if (tab_end > self.top_col and tab_start < visible_end) {
-                        // 範囲内の空白数を計算
-                        const visible_start = if (tab_start >= self.top_col) tab_start else self.top_col;
-                        const visible_stop = if (tab_end <= visible_end) tab_end else visible_end;
-                        const visible_spaces = visible_stop - visible_start;
-
-                        // 8スペースのバッチで追加（事前定義の定数を使用）
-                        const spaces8: []const u8 = "        "; // 8 spaces
-                        var remaining = visible_spaces;
-                        while (remaining >= 8) {
-                            try self.expanded_line.appendSlice(self.allocator, spaces8);
-                            remaining -= 8;
-                        }
-                        if (remaining > 0) {
-                            try self.expanded_line.appendSlice(self.allocator, spaces8[0..remaining]);
-                        }
-                    }
-                    col = next_tab_stop;
-                    byte_idx += 1;
-                } else if (ch < ASCII.PRINTABLE_MIN or ch == ASCII.DEL) {
-                    // 制御文字（0x00-0x1F, 0x7F）を ^X 形式で表示
-                    if (col >= self.top_col and col + 1 < visible_end) {
-                        // グレー表示で制御文字を強調
-                        try self.expanded_line.appendSlice(self.allocator, ANSI.GRAY);
-                        const ctrl = if (ch == ASCII.DEL) [2]u8{ '^', '?' } else renderControlChar(ch);
-                        try self.expanded_line.appendSlice(self.allocator, &ctrl);
-                        try self.expanded_line.appendSlice(self.allocator, ANSI.RESET);
-                    }
-                    byte_idx += 1;
-                    col += 2; // ^X は幅2
-                } else {
-                    // 通常のASCII文字（0x20-0x7E）
-                    if (col >= self.top_col) {
-                        try self.expanded_line.append(self.allocator, ch);
-                    }
-                    byte_idx += 1;
-                    col += 1;
-                }
-            } else {
-                // UTF-8: グラフェムクラスタ単位で処理（ZWJ絵文字等を正しく扱う）
-                const remaining = line_buffer.items[byte_idx..];
-                if (unicode.nextGraphemeCluster(remaining)) |cluster| {
-                    // 水平スクロール範囲内なら追加
-                    if (col >= self.top_col) {
-                        // 全角空白（U+3000）を視覚的に表示
-                        if (cluster.byte_len == 3 and
-                            remaining[0] == config.UTF8.FULLWIDTH_SPACE[0] and
-                            remaining[1] == config.UTF8.FULLWIDTH_SPACE[1] and
-                            remaining[2] == config.UTF8.FULLWIDTH_SPACE[2])
-                        {
-                            // 全角空白 → 薄い「□」に置換（幅2）
-                            try self.expanded_line.appendSlice(self.allocator, FULLWIDTH_SPACE_VISUAL);
-                        } else {
-                            // グラフェムクラスタ全体をコピー（appendSliceでバイトごとの境界チェックを削減）
-                            try self.expanded_line.appendSlice(self.allocator, line_buffer.items[byte_idx .. byte_idx + cluster.byte_len]);
-                        }
-                    }
-                    byte_idx += cluster.byte_len;
-                    col += cluster.display_width;
-                } else {
-                    // フォールバック: 1バイト進める
-                    byte_idx += 1;
-                }
-            }
-        }
-
-        // 選択範囲内だった場合はリセット
-        if (in_selection) {
-            try self.expanded_line.appendSlice(self.allocator, ANSI.RESET);
-        }
-
-        // コメント内だった場合はリセット（スパンがある場合のみチェック）
-        if (has_spans and in_comment) {
-            try self.expanded_line.appendSlice(self.allocator, ANSI.RESET);
-        }
-
-        // 検索ハイライトを適用（カーソル位置のマッチはマゼンタで強調）
-        // content_start_byte以降のみを検索対象とする（行番号をスキップ）
-        const is_cursor_line = (screen_row == self.cursor_y);
-        // カーソル行の場合、タブ展開後の行内位置を計算
-        // （expanded_lineはタブを8スペースに展開しているため、RAW位置ではなく展開後位置が必要）
-        const cursor_in_content: ?usize = if (is_cursor_line) blk: {
-            const cursor_pos = self.getCursorBufferPos();
-
-            // キャッシュヒット: カーソル位置が変わっていなければ計算をスキップ
-            if (self.cached_cursor_byte_pos) |cached_pos| {
-                if (cached_pos == cursor_pos) {
-                    break :blk self.cached_cursor_expanded_pos;
-                }
-            }
-
-            const line_start = self.buffer.getLineStart(self.top_line + self.cursor_y) orelse 0;
-            if (cursor_pos < line_start) {
-                self.cached_cursor_byte_pos = cursor_pos;
-                self.cached_cursor_expanded_pos = 0;
-                break :blk 0;
-            }
-
-            // 行頭からカーソルまでタブ展開と全角文字幅を考慮した位置を計算
-            // 外側のスコープで定義された tab_width を使用
-            // line_buffer.items には現在行の内容が入っている
-            var expanded_pos: usize = 0;
-            var byte_offset: usize = 0;
-            const cursor_offset = cursor_pos - line_start;
-            while (byte_offset < cursor_offset and byte_offset < line_buffer.items.len) {
-                const byte = line_buffer.items[byte_offset];
-                if (byte == '\t') {
-                    // タブは次のタブストップまで展開（設定されたタブ幅を使用）
-                    expanded_pos = nextTabStop(expanded_pos, tab_width);
-                    byte_offset += 1;
-                } else if (unicode.isAsciiByte(byte)) {
-                    // ASCII文字: 幅1
-                    expanded_pos += 1;
-                    byte_offset += 1;
-                } else {
-                    // UTF-8文字: グラフェムクラスタの表示幅を使用
-                    const remaining = line_buffer.items[byte_offset..];
-                    if (unicode.nextGraphemeCluster(remaining)) |cluster| {
-                        expanded_pos += cluster.display_width;
-                        byte_offset += cluster.byte_len;
-                    } else {
-                        // フォールバック
-                        expanded_pos += 1;
-                        byte_offset += 1;
-                    }
-                }
-            }
-            // キャッシュを更新
-            self.cached_cursor_byte_pos = cursor_pos;
-            self.cached_cursor_expanded_pos = expanded_pos;
-            break :blk expanded_pos;
-        } else null;
+        // 6. カーソル位置計算と検索ハイライト
+        const tab_width = self.getTabWidth();
+        const cursor_in_content = self.calculateCursorExpandedPos(line_buffer.items, screen_row, tab_width);
         const new_line = try self.applySearchHighlight(self.expanded_line.items, cursor_in_content, content_start_byte);
 
-        // 表示幅を計算（renderLineDiff内でのpadToWidth再計算を回避）
-        // col = 行末までの論理カラム位置、visible_end = 表示範囲終端
+        // 7. 表示幅計算と差分描画
+        const visible_width = if (viewport_width > line_num_width) viewport_width - line_num_width else 1;
+        const visible_end = self.top_col + visible_width;
         const content_visible = if (col > self.top_col) @min(col, visible_end) - self.top_col else 0;
         const final_display_width = line_num_width + content_visible;
-
-        // 差分描画と前フレームバッファ更新
         try self.renderLineDiff(term, new_line, screen_row, abs_row, viewport_x, viewport_width, final_display_width);
 
-        // 次の行がブロックコメント内で開始するかを返す
         return analysis.ends_in_block;
     }
 
