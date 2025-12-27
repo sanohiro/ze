@@ -513,8 +513,14 @@ pub const Buffer = struct {
 
     // Piece統合のための追跡情報
     // 連続した文字入力で新しいPieceを作らず、既存Pieceを延長する
+    // ただし一定時間（300ms）経過で統合を打ち切り、Undo粒度を確保
     last_insert_end: ?usize, // 直前の挿入終了位置（null = 統合不可）
     last_insert_piece_idx: usize, // 直前の挿入で使用/作成したPieceのインデックス
+    last_insert_time: i128, // 直前の挿入時刻（ナノ秒）
+
+    /// Undoグループのタイムアウト（ナノ秒）
+    /// この時間以上経過すると、連続入力でも新しいPieceを作成
+    const UNDO_GROUP_TIMEOUT_NS: i128 = 300 * std.time.ns_per_ms;
 
     pub fn init(allocator: std.mem.Allocator) !Buffer {
         // 空のArrayListで初期化（遅延アロケーション）
@@ -534,6 +540,7 @@ pub const Buffer = struct {
             .loaded_mtime = 0,
             .last_insert_end = null,
             .last_insert_piece_idx = 0,
+            .last_insert_time = 0,
         };
     }
 
@@ -633,6 +640,7 @@ pub const Buffer = struct {
                     .loaded_mtime = stat.mtime,
                     .last_insert_end = null,
                     .last_insert_piece_idx = 0,
+                    .last_insert_time = 0,
                 };
 
                 // 初期状態：originalファイル全体を指す1つのpiece
@@ -688,6 +696,7 @@ pub const Buffer = struct {
             .loaded_mtime = 0, // 空ファイルはmtimeなし
             .last_insert_end = null,
             .last_insert_piece_idx = 0,
+            .last_insert_time = 0,
         };
     }
 
@@ -723,6 +732,7 @@ pub const Buffer = struct {
             .loaded_mtime = file_mtime,
             .last_insert_end = null,
             .last_insert_piece_idx = 0,
+            .last_insert_time = 0,
         };
 
         if (normalized.len > 0) {
@@ -1125,10 +1135,16 @@ pub const Buffer = struct {
     pub fn insertSlice(self: *Buffer, pos: usize, text: []const u8) !void {
         if (text.len == 0) return;
 
+        const now = std.time.nanoTimestamp();
+
         // 【Piece統合チェック】
-        // 直前の挿入位置に連続して挿入する場合、既存Pieceを延長
+        // 直前の挿入位置に連続して挿入し、かつ一定時間以内なら既存Pieceを延長
         if (self.last_insert_end) |last_end| {
-            if (pos == last_end and self.last_insert_piece_idx < self.pieces.items.len) {
+            const time_elapsed = now - self.last_insert_time;
+            if (pos == last_end and
+                time_elapsed < UNDO_GROUP_TIMEOUT_NS and
+                self.last_insert_piece_idx < self.pieces.items.len)
+            {
                 const last_piece = &self.pieces.items[self.last_insert_piece_idx];
                 // add_bufferの末尾に連続しているか確認
                 if (last_piece.source == .add and
@@ -1139,6 +1155,7 @@ pub const Buffer = struct {
                     last_piece.length += text.len;
                     self.total_len += text.len;
                     self.last_insert_end = pos + text.len;
+                    self.last_insert_time = now;
                     self.line_index.invalidateFrom(pos);
                     return;
                 }
@@ -1164,6 +1181,7 @@ pub const Buffer = struct {
             self.total_len += text.len;
             self.last_insert_end = pos + text.len;
             self.last_insert_piece_idx = 0;
+            self.last_insert_time = now;
             self.line_index.invalidateFrom(pos);
             return;
         }
@@ -1175,6 +1193,7 @@ pub const Buffer = struct {
             self.total_len += text.len;
             self.last_insert_end = pos + text.len;
             self.last_insert_piece_idx = self.pieces.items.len - 1;
+            self.last_insert_time = now;
             self.line_index.invalidateFrom(pos);
             return;
         }
@@ -1190,6 +1209,7 @@ pub const Buffer = struct {
             self.total_len += text.len;
             self.last_insert_end = pos + text.len;
             self.last_insert_piece_idx = self.pieces.items.len - 1;
+            self.last_insert_time = now;
             self.line_index.invalidateFrom(pos);
             return;
         };
@@ -1202,6 +1222,7 @@ pub const Buffer = struct {
             self.total_len += text.len;
             self.last_insert_end = pos + text.len;
             self.last_insert_piece_idx = location.piece_idx;
+            self.last_insert_time = now;
             self.line_index.invalidateFrom(pos);
             return;
         }
@@ -1211,6 +1232,7 @@ pub const Buffer = struct {
             self.total_len += text.len;
             self.last_insert_end = pos + text.len;
             self.last_insert_piece_idx = location.piece_idx + 1;
+            self.last_insert_time = now;
             self.line_index.invalidateFrom(pos);
             return;
         }
@@ -1241,6 +1263,7 @@ pub const Buffer = struct {
         self.total_len += text.len;
         self.last_insert_end = pos + text.len;
         self.last_insert_piece_idx = location.piece_idx + 1; // new_pieceの位置
+        self.last_insert_time = now;
         self.line_index.invalidateFrom(pos);
     }
 
