@@ -58,6 +58,7 @@ pub const CommandState = struct {
     exit_status: ?u32,
     stdout_truncated: bool, // 出力が10MB制限で切り詰められた
     stderr_truncated: bool,
+    nonblock_configured: bool, // NONBLOCKフラグ設定済み（遅延設定用）
 };
 
 /// シェルコマンド実行結果
@@ -456,23 +457,9 @@ pub const ShellService = struct {
         state.exit_status = null;
         state.stdout_truncated = false;
         state.stderr_truncated = false;
+        state.nonblock_configured = false; // NONBLOCKは初回poll()で遅延設定
 
         try state.child.spawn();
-
-        // ノンブロッキングに設定
-        const nonblock_flag: usize = @as(u32, @bitCast(std.posix.O{ .NONBLOCK = true }));
-        if (state.child.stdout) |stdout_file| {
-            const flags = std.posix.fcntl(stdout_file.handle, std.posix.F.GETFL, 0) catch 0;
-            _ = std.posix.fcntl(stdout_file.handle, std.posix.F.SETFL, flags | nonblock_flag) catch {};
-        }
-        if (state.child.stderr) |stderr_file| {
-            const flags = std.posix.fcntl(stderr_file.handle, std.posix.F.GETFL, 0) catch 0;
-            _ = std.posix.fcntl(stderr_file.handle, std.posix.F.SETFL, flags | nonblock_flag) catch {};
-        }
-        if (state.child.stdin) |stdin_file| {
-            const flags = std.posix.fcntl(stdin_file.handle, std.posix.F.GETFL, 0) catch 0;
-            _ = std.posix.fcntl(stdin_file.handle, std.posix.F.SETFL, flags | nonblock_flag) catch {};
-        }
 
         // stdinデータがない場合のみここで閉じる
         if (stdin_data == null) {
@@ -489,6 +476,24 @@ pub const ShellService = struct {
     /// 戻り値: 完了した場合は結果、まだ実行中の場合はnull
     pub fn poll(self: *Self) !?CommandResult {
         var state = self.state orelse return null;
+
+        // 初回のみNONBLOCKを設定（遅延初期化でspawn時のシステムコールを削減）
+        if (!state.nonblock_configured) {
+            state.nonblock_configured = true;
+            const nonblock_flag: usize = @as(u32, @bitCast(std.posix.O{ .NONBLOCK = true }));
+            if (state.child.stdout) |stdout_file| {
+                const flags = std.posix.fcntl(stdout_file.handle, std.posix.F.GETFL, 0) catch 0;
+                _ = std.posix.fcntl(stdout_file.handle, std.posix.F.SETFL, flags | nonblock_flag) catch {};
+            }
+            if (state.child.stderr) |stderr_file| {
+                const flags = std.posix.fcntl(stderr_file.handle, std.posix.F.GETFL, 0) catch 0;
+                _ = std.posix.fcntl(stderr_file.handle, std.posix.F.SETFL, flags | nonblock_flag) catch {};
+            }
+            if (state.child.stdin) |stdin_file| {
+                const flags = std.posix.fcntl(stdin_file.handle, std.posix.F.GETFL, 0) catch 0;
+                _ = std.posix.fcntl(stdin_file.handle, std.posix.F.SETFL, flags | nonblock_flag) catch {};
+            }
+        }
 
         var read_buf: [READ_BUFFER_SIZE]u8 = undefined;
 

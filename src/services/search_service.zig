@@ -41,10 +41,17 @@ pub const ReplaceState = struct {
     match_count: usize, // 置換回数
 };
 
+/// 正規表現キャッシュエントリ（LRU用）
+const RegexCacheEntry = struct {
+    pattern: []const u8,
+    compiled: regex.Regex,
+    use_count: u32, // LRU用カウンタ
+};
+
 /// 検索サービス: 検索・置換機能を提供
 ///
 /// 【最適化】
-/// - 正規表現のコンパイル結果をキャッシュ（同パターンで再コンパイル不要）
+/// - 正規表現のコンパイル結果をLRUキャッシュ（最大3パターン、再コンパイル不要）
 /// - リテラル検索はBuffer直接検索（コピーなし、SIMD最適化）
 /// - 正規表現検索のみ範囲制限（1MB）で体感速度を維持
 /// - 履歴は遅延ロード（起動高速化）
@@ -55,19 +62,20 @@ pub const ReplaceState = struct {
 pub const SearchService = struct {
     allocator: std.mem.Allocator,
     history: History, // 検索履歴（永続化対応、遅延ロード）
-    compiled_regex: ?regex.Regex, // コンパイル済み正規表現（キャッシュ）
-    cached_pattern: ?[]const u8, // キャッシュ中のパターン文字列
+    regex_cache: [REGEX_CACHE_SIZE]?RegexCacheEntry, // LRUキャッシュ（最大3パターン）
+    cache_counter: u32, // LRU用グローバルカウンタ
     history_loaded: bool, // 履歴がロード済みか
 
     const Self = @This();
+    const REGEX_CACHE_SIZE = 3; // LRUキャッシュサイズ
 
     pub fn init(allocator: std.mem.Allocator) Self {
         // 履歴は遅延ロード（起動高速化）
         return .{
             .allocator = allocator,
             .history = History.init(allocator),
-            .compiled_regex = null,
-            .cached_pattern = null,
+            .regex_cache = [_]?RegexCacheEntry{null} ** REGEX_CACHE_SIZE,
+            .cache_counter = 0,
             .history_loaded = false,
         };
     }
@@ -82,45 +90,69 @@ pub const SearchService = struct {
     pub fn deinit(self: *Self) void {
         self.history.save(.search) catch {};
         self.history.deinit();
-        if (self.compiled_regex) |*r| {
-            r.deinit();
-        }
-        if (self.cached_pattern) |p| {
-            self.allocator.free(p);
+        // LRUキャッシュを解放
+        for (&self.regex_cache) |*entry_opt| {
+            if (entry_opt.*) |*entry| {
+                entry.compiled.deinit();
+                self.allocator.free(entry.pattern);
+                entry_opt.* = null;
+            }
         }
     }
 
-    /// キャッシュされた正規表現を取得（必要に応じてコンパイル）
+    /// LRUキャッシュから正規表現を取得（必要に応じてコンパイル）
     fn getCompiledRegex(self: *Self, pattern: []const u8) ?*regex.Regex {
+        self.cache_counter +%= 1;
+
         // キャッシュヒット判定
-        if (self.cached_pattern) |cached| {
-            if (std.mem.eql(u8, cached, pattern)) {
-                // 同じパターン - キャッシュを再利用
-                if (self.compiled_regex) |*r| {
-                    return r;
+        for (&self.regex_cache) |*entry_opt| {
+            if (entry_opt.*) |*entry| {
+                if (std.mem.eql(u8, entry.pattern, pattern)) {
+                    // キャッシュヒット - use_countを更新して再利用
+                    entry.use_count = self.cache_counter;
+                    return &entry.compiled;
                 }
             }
         }
 
-        // キャッシュミス - 再コンパイル
-        if (self.compiled_regex) |*r| {
+        // キャッシュミス - 新規コンパイル
+        const compiled = regex.Regex.compile(self.allocator, pattern) catch return null;
+        const pattern_copy = self.allocator.dupe(u8, pattern) catch {
+            var r = compiled;
             r.deinit();
-            self.compiled_regex = null;
-        }
-        if (self.cached_pattern) |p| {
-            self.allocator.free(p);
-            self.cached_pattern = null;
-        }
-
-        self.compiled_regex = regex.Regex.compile(self.allocator, pattern) catch return null;
-        self.cached_pattern = self.allocator.dupe(u8, pattern) catch {
-            if (self.compiled_regex) |*r| {
-                r.deinit();
-                self.compiled_regex = null;
-            }
             return null;
         };
-        return &self.compiled_regex.?;
+
+        // 空きスロットを探すか、LRUエントリを置換
+        var target_idx: usize = 0;
+        var min_use_count: u32 = std.math.maxInt(u32);
+        for (self.regex_cache, 0..) |entry_opt, i| {
+            if (entry_opt == null) {
+                // 空きスロット発見
+                target_idx = i;
+                min_use_count = 0;
+                break;
+            }
+            if (entry_opt.?.use_count < min_use_count) {
+                min_use_count = entry_opt.?.use_count;
+                target_idx = i;
+            }
+        }
+
+        // 古いエントリを解放（存在すれば）
+        if (self.regex_cache[target_idx]) |*old_entry| {
+            old_entry.compiled.deinit();
+            self.allocator.free(old_entry.pattern);
+        }
+
+        // 新しいエントリを設定
+        self.regex_cache[target_idx] = .{
+            .pattern = pattern_copy,
+            .compiled = compiled,
+            .use_count = self.cache_counter,
+        };
+
+        return &self.regex_cache[target_idx].?.compiled;
     }
 
     /// リテラル検索（前方）

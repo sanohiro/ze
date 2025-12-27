@@ -265,8 +265,8 @@ pub const Editor = struct {
         var window_manager = WindowManager.init(allocator, terminal.width, terminal.height);
         const first_window = try window_manager.createWindow(first_buffer.id, 0, 0, terminal.width, terminal.height);
         first_window.view = try View.init(allocator, first_buffer.editing_ctx.buffer);
-        // 言語検出（新規バッファなのでデフォルト、ファイルオープン時にmain.zigで再検出される）
-        first_window.view.detectLanguage(null, null);
+        // 空バッファは言語検出スキップ（View.initでデフォルト言語が設定済み）
+        // ファイルオープン時にmain.zigで再検出される
         // ビューポートサイズを設定（カーソル移動の境界判定に使用）
         first_window.view.setViewport(terminal.width, terminal.height);
 
@@ -1567,19 +1567,8 @@ pub const Editor = struct {
         const content_preview = buffer_state.editing_ctx.buffer.getContentPreview(512);
         view.detectLanguage(path, content_preview);
 
-        // ファイルの最終更新時刻を記録（外部変更検知用）
-        const file = std.fs.cwd().openFile(path, .{}) catch {
-            buffer_state.file_mtime = null;
-            view.clearError();
-            return;
-        };
-        defer file.close();
-        const stat = file.stat() catch {
-            buffer_state.file_mtime = null;
-            view.clearError();
-            return;
-        };
-        buffer_state.file_mtime = stat.mtime;
+        // ファイルの最終更新時刻を記録（Buffer.loadFromFileで既に取得済みなので再オープン不要）
+        buffer_state.file_mtime = buffer_state.editing_ctx.buffer.loaded_mtime;
 
         // Loadingメッセージをクリア
         view.clearError();
@@ -3697,21 +3686,9 @@ pub const Editor = struct {
         // 結果を処理
         switch (output_dest) {
             .command_buffer => {
-                // *Command* バッファに出力を表示（stdout + stderrを結合）
-                var output_list: std.ArrayList(u8) = .{};
-                defer output_list.deinit(self.allocator);
-
-                if (stdout.len > 0) {
-                    try output_list.appendSlice(self.allocator, stdout);
-                }
-                if (stderr.len > 0) {
-                    if (stdout.len > 0 and stdout[stdout.len - 1] != '\n') {
-                        try output_list.append(self.allocator, '\n');
-                    }
-                    try output_list.appendSlice(self.allocator, stderr);
-                }
-                const output = output_list.items;
-                if (output.len == 0) {
+                // *Command* バッファに出力を表示（直接挿入で連結コピーを回避）
+                const total_output_len = stdout.len + stderr.len + @as(usize, if (stdout.len > 0 and stderr.len > 0 and stdout[stdout.len - 1] != '\n') 1 else 0);
+                if (total_output_len == 0) {
                     if (exit_status) |status| {
                         if (status != 0) {
                             var msg_buf: [128]u8 = undefined;
@@ -3738,8 +3715,19 @@ pub const Editor = struct {
                     cmd_buffer.editing_ctx.buffer.delete(0, cmd_buffer.editing_ctx.buffer.total_len) catch {};
                 }
 
-                // 出力を挿入
-                cmd_buffer.editing_ctx.buffer.insertSlice(0, output) catch {};
+                // 出力を直接挿入（連結コピーを回避）
+                var insert_pos: usize = 0;
+                if (stdout.len > 0) {
+                    cmd_buffer.editing_ctx.buffer.insertSlice(0, stdout) catch {};
+                    insert_pos = stdout.len;
+                }
+                if (stderr.len > 0) {
+                    if (stdout.len > 0 and stdout[stdout.len - 1] != '\n') {
+                        cmd_buffer.editing_ctx.buffer.insertSlice(insert_pos, "\n") catch {};
+                        insert_pos += 1;
+                    }
+                    cmd_buffer.editing_ctx.buffer.insertSlice(insert_pos, stderr) catch {};
+                }
 
                 // コマンド出力は再生成可能なのでmodifiedをクリア
                 cmd_buffer.editing_ctx.modified = false;

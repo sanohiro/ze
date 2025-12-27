@@ -69,9 +69,17 @@ test "SearchService - regex cache" {
     try testing.expectEqual(@as(usize, 4), result1.?.start);
     try testing.expectEqual(@as(usize, 3), result1.?.len);
 
-    // キャッシュがあることを確認
-    try testing.expect(service.cached_pattern != null);
-    try testing.expectEqualStrings("\\d+", service.cached_pattern.?);
+    // LRUキャッシュにエントリがあることを確認
+    var cache_has_pattern1 = false;
+    for (service.regex_cache) |entry_opt| {
+        if (entry_opt) |entry| {
+            if (std.mem.eql(u8, entry.pattern, "\\d+")) {
+                cache_has_pattern1 = true;
+                break;
+            }
+        }
+    }
+    try testing.expect(cache_has_pattern1);
 
     // 同じパターンで2番目のマッチを検索（キャッシュを使用）
     // 位置7（スペース）から検索 → 456は位置11から始まる
@@ -79,10 +87,19 @@ test "SearchService - regex cache" {
     try testing.expect(result2 != null);
     try testing.expectEqual(@as(usize, 11), result2.?.start);
 
-    // パターンが変わるとキャッシュが更新される
+    // パターンが変わるとキャッシュに新しいエントリが追加される
     const result3 = service.searchRegexForward(content, "[a-z]+", 0);
     try testing.expect(result3 != null);
-    try testing.expectEqualStrings("[a-z]+", service.cached_pattern.?);
+    var cache_has_pattern2 = false;
+    for (service.regex_cache) |entry_opt| {
+        if (entry_opt) |entry| {
+            if (std.mem.eql(u8, entry.pattern, "[a-z]+")) {
+                cache_has_pattern2 = true;
+                break;
+            }
+        }
+    }
+    try testing.expect(cache_has_pattern2);
 }
 
 test "SearchService - regex backward search" {
