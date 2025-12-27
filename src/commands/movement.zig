@@ -62,34 +62,59 @@ pub fn forwardWord(e: *Editor) !void {
     const start_pos = e.getCurrentView().getCursorBufferPos();
     if (start_pos >= buffer.len()) return;
 
-    var iter = PieceIterator.init(buffer);
-    iter.seek(start_pos);
-
+    var pos = start_pos;
     var prev_type: ?unicode.CharType = null;
-    var pos_before_cp: usize = start_pos;
+    var prev_pos: usize = pos;
 
-    while (iter.nextCodepoint() catch null) |cp| {
-        const current_type = unicode.getCharType(cp);
+    // ASCII高速パス: バイト単位で処理、非ASCIIでフォールバック
+    while (pos < buffer.len()) {
+        const byte = buffer.getByteAt(pos) orelse break;
+
+        // 非ASCIIバイトならコードポイント処理にフォールバック
+        if (byte >= 0x80) {
+            // PieceIteratorでコードポイント単位処理
+            var iter = PieceIterator.init(buffer);
+            iter.seek(pos);
+            while (iter.nextCodepoint() catch null) |cp| {
+                const current_type = unicode.getCharType(cp);
+                if (prev_type) |pt| {
+                    if (current_type != .space and pt != .space and current_type != pt) {
+                        e.setCursorToPos(prev_pos);
+                        return;
+                    }
+                    if (pt == .space and current_type != .space) {
+                        e.setCursorToPos(prev_pos);
+                        return;
+                    }
+                }
+                prev_type = current_type;
+                prev_pos = iter.global_pos;
+            }
+            e.setCursorToPos(iter.global_pos);
+            return;
+        }
+
+        // ASCIIバイト: 直接文字種判定（u8→u21変換はコスト0）
+        const current_type = unicode.getCharType(@intCast(byte));
 
         if (prev_type) |pt| {
-            // 文字種が変わったら停止（ただし空白は飛ばす）
             if (current_type != .space and pt != .space and current_type != pt) {
-                e.setCursorToPos(pos_before_cp);
+                e.setCursorToPos(prev_pos);
                 return;
             }
-            // 空白から非空白に変わる場合、その位置で停止
             if (pt == .space and current_type != .space) {
-                e.setCursorToPos(pos_before_cp);
+                e.setCursorToPos(prev_pos);
                 return;
             }
         }
 
         prev_type = current_type;
-        pos_before_cp = iter.global_pos;
+        prev_pos = pos + 1;
+        pos += 1;
     }
 
     // EOFに到達
-    e.setCursorToPos(iter.global_pos);
+    e.setCursorToPos(pos);
 }
 
 /// M-b: 前の単語へ移動
@@ -102,32 +127,44 @@ pub fn backwardWord(e: *Editor) !void {
     var prev_type: ?unicode.CharType = null;
     var found_non_space = false;
 
+    // ASCII高速パス: バイト単位で処理、非ASCIIでフォールバック
     while (pos > 0) {
-        // 1文字戻る（UTF-8先頭バイトを探す）
-        const char_start = buffer.findUtf8CharStart(pos);
+        const prev_byte = buffer.getByteAt(pos - 1) orelse break;
 
-        // getByteAtでUTF-8バイト列を読み取り、コードポイントをデコード
-        const cp = buffer.decodeCodepointAt(char_start) orelse break;
+        // 非ASCIIバイトならUTF-8デコード処理
+        if (prev_byte >= 0x80) {
+            const char_start = buffer.findUtf8CharStart(pos);
+            const cp = buffer.decodeCodepointAt(char_start) orelse break;
+            const current_type = unicode.getCharType(cp);
 
-        const current_type = unicode.getCharType(cp);
+            if (!found_non_space and current_type == .space) {
+                pos = char_start;
+                continue;
+            }
+            found_non_space = true;
 
-        // 空白をスキップ
-        if (!found_non_space and current_type == .space) {
+            if (prev_type) |pt| {
+                if (current_type != pt) break;
+            }
+            prev_type = current_type;
             pos = char_start;
             continue;
         }
 
+        // ASCIIバイト: 直接文字種判定
+        const current_type = unicode.getCharType(@intCast(prev_byte));
+
+        if (!found_non_space and current_type == .space) {
+            pos -= 1;
+            continue;
+        }
         found_non_space = true;
 
         if (prev_type) |pt| {
-            // 文字種が変わったら停止
-            if (current_type != pt) {
-                break;
-            }
+            if (current_type != pt) break;
         }
-
         prev_type = current_type;
-        pos = char_start;
+        pos -= 1;
     }
 
     // カーソル位置を更新
