@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.5] - 2025-12-27
+
+### Refactored
+- view.zig: Split `renderLineWithIterOffset()` into 5 smaller functions
+- input.zig: Extract CSI sequence parser into separate functions
+- buffer.zig: Consolidate `loadFromContent()`, split `searchBackward()`
+- editor.zig: Unify file input modes into `handleFileInputKey()`
+- config.zig: Centralize error messages in `Messages` struct
+- rectangle.zig: Define `RectangleInfo` struct
+- encoding.zig: Consolidate UTF-16 surrogate pair handling
+- window_manager.zig: Remove unused fields (`split_type`, etc.)
+
+### Performance
+- Regex: Add LRU cache for compiled patterns (avoids recompilation)
+- Terminal: Delay fcntl settings until needed
+- View: Optimize rendering pipeline
+
+### Added
+- tests/commands/edit_test.zig: 20 tests for editing operations
+- tests/commands/rectangle_test.zig: 16 tests for rectangle operations
+- Expanded edge case tests for buffer, input, search, and window_manager
+
 ## [1.1.4] - 2025-12-27
 
 ### Fixed
