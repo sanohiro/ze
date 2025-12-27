@@ -308,7 +308,7 @@ pub fn build(b: *std.Build) void {
     });
     editor_mod.addImport("keymap", keymap_mod);
 
-    // main <- editor, view
+    // main <- editor, view, encoding
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
@@ -320,6 +320,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "buffer", .module = buffer_mod },
             .{ .name = "unicode", .module = unicode_mod },
             .{ .name = "input", .module = input_mod },
+            .{ .name = "encoding", .module = encoding_mod },
         },
     });
     exe_mod.addOptions("build_options", options);

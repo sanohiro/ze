@@ -2,6 +2,7 @@ const std = @import("std");
 const build_options = @import("build_options");
 const Editor = @import("editor").Editor;
 const View = @import("view").View;
+const encoding = @import("encoding");
 
 const version = build_options.version;
 
@@ -36,6 +37,27 @@ fn printVersion() void {
 const EXIT_SUCCESS: u8 = 0;
 const EXIT_IO_ERROR: u8 = 1;
 const EXIT_USAGE_ERROR: u8 = 2;
+
+/// ファイルがバイナリかどうかを事前チェック（Editor.init前に呼び出し）
+/// ターミナルを代替スクリーンに入れる前にエラーを表示するため
+fn checkBinaryFile(path: []const u8) error{BinaryFile}!void {
+    const file = std.fs.cwd().openFile(path, .{}) catch {
+        // ファイルが開けない場合は新規ファイルとして扱う（バイナリではない）
+        return;
+    };
+    defer file.close();
+
+    // 最初の8KBを読み取ってバイナリ判定
+    var buf: [8192]u8 = undefined;
+    const bytes_read = file.read(&buf) catch return;
+    if (bytes_read == 0) return; // 空ファイル
+
+    const content = buf[0..bytes_read];
+    const result = encoding.detectEncoding(content);
+    if (result.encoding == .Unknown) {
+        return error.BinaryFile;
+    }
+}
 
 pub fn main() u8 {
     return mainImpl() catch |err| {
@@ -88,20 +110,32 @@ fn mainImpl() !u8 {
             printHelp();
             return EXIT_USAGE_ERROR;
         } else {
-            // ファイル名として扱う（バイナリチェックはloadFile内で行う）
+            // ファイル名として扱う
             checked_filename = arg;
             break; // 最初のファイル名のみ処理
         }
+    }
+
+    // バイナリファイルチェック（Editor.init前に実行）
+    // ターミナルを代替スクリーンに入れる前にエラーを表示するため
+    if (checked_filename) |filename| {
+        checkBinaryFile(filename) catch {
+            const stderr_file: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
+            var buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Error: cannot open binary file: {s}\n", .{filename}) catch return EXIT_IO_ERROR;
+            stderr_file.writeAll(msg) catch {};
+            return EXIT_IO_ERROR;
+        };
     }
 
     var editor = try Editor.init(allocator);
     defer editor.deinit();
 
     if (checked_filename) |filename| {
-        // ファイルを開く（バイナリチェックはloadFile内で行う）
+        // ファイルを開く
         editor.loadFile(filename) catch |err| {
             if (err == error.BinaryFile) {
-                // バイナリファイルはエラー終了
+                // 事前チェックをすり抜けた場合（通常は起きない）
                 const stderr_file: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
                 var buf: [256]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "Error: cannot open binary file: {s}\n", .{filename}) catch return EXIT_IO_ERROR;
