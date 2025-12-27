@@ -57,24 +57,26 @@ pub fn bufferEnd(e: *Editor) !void {
 // ========================================
 
 /// M-f: 次の単語へ移動
+/// PieceIteratorを使用してO(1)で順次読み取り（getByteAtのO(pieces)を回避）
 pub fn forwardWord(e: *Editor) !void {
     const buffer = e.getCurrentBufferContent();
     const start_pos = e.getCurrentView().getCursorBufferPos();
     if (start_pos >= buffer.len()) return;
 
-    var pos = start_pos;
-    var prev_type: ?unicode.CharType = null;
-    var prev_pos: usize = pos;
+    var iter = PieceIterator.init(buffer);
+    iter.seek(start_pos);
 
-    // ASCII高速パス: バイト単位で処理、非ASCIIでフォールバック
-    while (pos < buffer.len()) {
-        const byte = buffer.getByteAt(pos) orelse break;
+    var prev_type: ?unicode.CharType = null;
+    var prev_pos: usize = start_pos;
+
+    while (true) {
+        const current_pos = iter.global_pos;
+        const byte = iter.next() orelse break;
 
         // 非ASCIIバイトならコードポイント処理にフォールバック
         if (byte >= 0x80) {
-            // PieceIteratorでコードポイント単位処理
-            var iter = PieceIterator.init(buffer);
-            iter.seek(pos);
+            // 現在位置に戻してコードポイント単位で処理
+            iter.seek(current_pos);
             while (iter.nextCodepoint() catch null) |cp| {
                 const current_type = unicode.getCharType(cp);
                 if (prev_type) |pt| {
@@ -109,36 +111,61 @@ pub fn forwardWord(e: *Editor) !void {
         }
 
         prev_type = current_type;
-        prev_pos = pos + 1;
-        pos += 1;
+        prev_pos = iter.global_pos;
     }
 
     // EOFに到達
-    e.setCursorToPos(pos);
+    e.setCursorToPos(iter.global_pos);
 }
 
 /// M-b: 前の単語へ移動
+/// PieceIteratorでチャンク読み込み→後方処理（getByteAtのO(pieces)を回避）
 pub fn backwardWord(e: *Editor) !void {
     const buffer = e.getCurrentBufferContent();
     const start_pos = e.getCurrentView().getCursorBufferPos();
     if (start_pos == 0) return;
 
+    // 最大256バイトを前方に読み込んで後方処理
+    const look_back = @min(start_pos, 256);
+    const scan_start = start_pos - look_back;
+
+    // PieceIteratorでチャンクを読み込み（1回のseek + 順次読み）
+    var iter = PieceIterator.init(buffer);
+    iter.seek(scan_start);
+
+    var chunk: [256]u8 = undefined;
+    var chunk_len: usize = 0;
+    while (chunk_len < look_back) {
+        if (iter.next()) |byte| {
+            chunk[chunk_len] = byte;
+            chunk_len += 1;
+        } else break;
+    }
+
+    // チャンクを後方から処理
     var pos = start_pos;
     var prev_type: ?unicode.CharType = null;
     var found_non_space = false;
+    var i = chunk_len;
 
-    // ASCII高速パス: バイト単位で処理、非ASCIIでフォールバック
-    while (pos > 0) {
-        const prev_byte = buffer.getByteAt(pos - 1) orelse break;
+    while (i > 0) {
+        const byte = chunk[i - 1];
 
-        // 非ASCIIバイトならUTF-8デコード処理
-        if (prev_byte >= 0x80) {
-            const char_start = buffer.findUtf8CharStart(pos);
-            const cp = buffer.decodeCodepointAt(char_start) orelse break;
+        // 非ASCII: UTF-8の先頭バイトを探す
+        if (byte >= 0x80) {
+            // continuation byte (10xxxxxx) をスキップして先頭を探す
+            var char_start_idx = i - 1;
+            while (char_start_idx > 0 and (chunk[char_start_idx] & 0xC0) == 0x80) {
+                char_start_idx -= 1;
+            }
+
+            // コードポイントをデコード
+            const cp = decodeUtf8FromChunk(chunk[char_start_idx..i]) orelse break;
             const current_type = unicode.getCharType(cp);
 
             if (!found_non_space and current_type == .space) {
-                pos = char_start;
+                i = char_start_idx;
+                pos = scan_start + char_start_idx;
                 continue;
             }
             found_non_space = true;
@@ -147,14 +174,16 @@ pub fn backwardWord(e: *Editor) !void {
                 if (current_type != pt) break;
             }
             prev_type = current_type;
-            pos = char_start;
+            i = char_start_idx;
+            pos = scan_start + char_start_idx;
             continue;
         }
 
-        // ASCIIバイト: 直接文字種判定
-        const current_type = unicode.getCharType(@intCast(prev_byte));
+        // ASCIIバイト
+        const current_type = unicode.getCharType(@intCast(byte));
 
         if (!found_non_space and current_type == .space) {
+            i -= 1;
             pos -= 1;
             continue;
         }
@@ -164,13 +193,70 @@ pub fn backwardWord(e: *Editor) !void {
             if (current_type != pt) break;
         }
         prev_type = current_type;
+        i -= 1;
         pos -= 1;
     }
 
-    // カーソル位置を更新
+    // チャンク先頭に到達した場合、さらに後方を処理
+    // （256バイト以上の単語は稀なので、フォールバック）
+    if (i == 0 and pos > 0 and found_non_space) {
+        // 残りは元のgetByteAtを使用（稀なケース）
+        while (pos > 0) {
+            const prev_byte = buffer.getByteAt(pos - 1) orelse break;
+            if (prev_byte >= 0x80) {
+                const char_start = buffer.findUtf8CharStart(pos);
+                const cp = buffer.decodeCodepointAt(char_start) orelse break;
+                const current_type = unicode.getCharType(cp);
+                if (prev_type) |pt| {
+                    if (current_type != pt) break;
+                }
+                prev_type = current_type;
+                pos = char_start;
+            } else {
+                const current_type = unicode.getCharType(@intCast(prev_byte));
+                if (prev_type) |pt| {
+                    if (current_type != pt) break;
+                }
+                prev_type = current_type;
+                pos -= 1;
+            }
+        }
+    }
+
     if (pos < start_pos) {
         e.setCursorToPos(pos);
     }
+}
+
+/// チャンクからUTF-8コードポイントをデコード
+fn decodeUtf8FromChunk(bytes: []const u8) ?u21 {
+    if (bytes.len == 0) return null;
+    const first = bytes[0];
+
+    if (first < 0x80) return first;
+    if (bytes.len < 2) return null;
+
+    if ((first & 0xE0) == 0xC0) {
+        // 2-byte sequence
+        if (bytes.len < 2) return null;
+        return (@as(u21, first & 0x1F) << 6) | (bytes[1] & 0x3F);
+    }
+    if ((first & 0xF0) == 0xE0) {
+        // 3-byte sequence
+        if (bytes.len < 3) return null;
+        return (@as(u21, first & 0x0F) << 12) |
+            (@as(u21, bytes[1] & 0x3F) << 6) |
+            (bytes[2] & 0x3F);
+    }
+    if ((first & 0xF8) == 0xF0) {
+        // 4-byte sequence
+        if (bytes.len < 4) return null;
+        return (@as(u21, first & 0x07) << 18) |
+            (@as(u21, bytes[1] & 0x3F) << 12) |
+            (@as(u21, bytes[2] & 0x3F) << 6) |
+            (bytes[3] & 0x3F);
+    }
+    return null;
 }
 
 // ========================================
