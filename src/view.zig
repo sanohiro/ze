@@ -2305,12 +2305,34 @@ pub const View = struct {
         }
         self.cursor_x = 0;
         self.top_col = 0;
+
+        // カーソルバイト位置キャッシュを更新（行頭 = line_start）
+        const line = self.top_line + self.cursor_y;
+        if (self.buffer.getLineStart(line)) |line_start| {
+            self.cursor_byte_pos_cache = line_start;
+            self.cursor_byte_pos_cache_x = 0;
+            self.cursor_byte_pos_cache_y = self.cursor_y;
+            self.cursor_byte_pos_cache_top_line = self.top_line;
+        }
     }
 
     pub fn moveToLineEnd(self: *View) void {
         // 行幅キャッシュを使用（キャッシュヒットならO(1)）
         const line_width = self.getCurrentLineWidth();
         self.cursor_x = line_width;
+
+        // カーソルバイト位置キャッシュを更新（行末 = 改行位置 or EOF）
+        const line = self.top_line + self.cursor_y;
+        if (self.buffer.getLineStart(line + 1)) |next_line_start| {
+            // 次の行がある場合、改行文字の位置
+            self.cursor_byte_pos_cache = if (next_line_start > 0) next_line_start - 1 else 0;
+        } else {
+            // 最終行の場合、バッファ末尾
+            self.cursor_byte_pos_cache = self.buffer.len();
+        }
+        self.cursor_byte_pos_cache_x = self.cursor_x;
+        self.cursor_byte_pos_cache_y = self.cursor_y;
+        self.cursor_byte_pos_cache_top_line = self.top_line;
 
         // 水平スクロール: カーソルが可視領域外なら調整
         const line_num_width = self.getLineNumberWidth();

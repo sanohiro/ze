@@ -319,17 +319,74 @@ pub fn pageUp(e: *Editor) !void {
     pageScroll(e, .up);
 }
 
-/// ページスクロールの共通実装
+/// ページスクロールの共通実装（最適化版）
+/// ループで1行ずつ移動する代わりに、一括でtop_line/cursor_yを更新
 fn pageScroll(e: *Editor, direction: enum { up, down }) void {
     const view = e.getCurrentView();
+    const buffer = e.getCurrentBufferContent();
+    const total_lines = buffer.lineCount();
+    if (total_lines == 0) return;
+
     const page_size = if (view.viewport_height >= 3) view.viewport_height - 2 else 1;
-    var i: usize = 0;
-    while (i < page_size) : (i += 1) {
-        switch (direction) {
-            .up => view.moveCursorUp(),
-            .down => view.moveCursorDown(),
-        }
+    const max_cursor_y = if (view.viewport_height >= 2) view.viewport_height - 2 else 0;
+    const max_line = if (total_lines > 0) total_lines - 1 else 0;
+
+    const current_line = view.top_line + view.cursor_y;
+
+    switch (direction) {
+        .down => {
+            // 下スクロール：page_size行下に移動
+            const target_line = @min(current_line + page_size, max_line);
+            if (target_line == current_line) return; // 移動なし
+
+            // top_lineとcursor_yを計算
+            if (target_line <= max_cursor_y) {
+                // 画面上部に収まる
+                view.top_line = 0;
+                view.cursor_y = target_line;
+            } else {
+                // スクロールが必要
+                view.top_line = target_line - view.cursor_y;
+                // top_lineが最大を超えないように
+                if (view.top_line + max_cursor_y > max_line) {
+                    view.top_line = if (max_line >= max_cursor_y) max_line - max_cursor_y else 0;
+                    view.cursor_y = target_line - view.top_line;
+                }
+            }
+        },
+        .up => {
+            // 上スクロール：page_size行上に移動
+            const target_line = if (current_line >= page_size) current_line - page_size else 0;
+            if (target_line == current_line) return; // 移動なし
+
+            // top_lineとcursor_yを計算
+            if (target_line < view.top_line) {
+                // 上にスクロールが必要
+                view.top_line = target_line;
+                view.cursor_y = 0;
+            } else {
+                // 画面内で移動
+                view.cursor_y = target_line - view.top_line;
+            }
+        },
     }
+
+    // カーソル位置が行の幅を超えている場合は行末に移動
+    const line_width = view.getCurrentLineWidth();
+    if (view.cursor_x > line_width) {
+        view.cursor_x = line_width;
+    }
+
+    // 水平スクロール位置もクランプ
+    if (view.top_col > view.cursor_x) {
+        view.top_col = view.cursor_x;
+    }
+
+    // キャッシュを無効化（行が変わったため）
+    view.invalidateCursorPosCache();
+
+    // 全画面再描画（1回だけ）
+    view.markFullRedraw();
 }
 
 // ========================================
