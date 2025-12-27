@@ -832,6 +832,16 @@ pub const Buffer = struct {
             // ファイルが存在しない場合は新規作成なので、デフォルト
         }
 
+        // 親ディレクトリが存在しない場合は作成
+        if (std.fs.path.dirname(real_path)) |dir| {
+            std.fs.cwd().makePath(dir) catch |err| {
+                // 既に存在する場合は無視、それ以外はエラー
+                if (err != error.PathAlreadyExists) {
+                    return err;
+                }
+            };
+        }
+
         // 一時ファイルに書き込み
         {
             var file = try std.fs.cwd().createFile(tmp_path, .{});
