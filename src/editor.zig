@@ -2760,6 +2760,7 @@ pub const Editor = struct {
                         self.mode = .normal;
                         self.clearInputBuffer();
                         self.shell_service.resetHistoryNavigation();
+                        self.completion_shown = false;
                         self.getCurrentView().clearError();
                         return true;
                     },
@@ -2782,14 +2783,25 @@ pub const Editor = struct {
                 try self.navigateShellHistory(false);
                 return true;
             },
+            .tab => {
+                try self.handleShellCompletion();
+                return true;
+            },
             .escape => {
                 self.mode = .normal;
                 self.clearInputBuffer();
                 self.shell_service.resetHistoryNavigation();
+                self.completion_shown = false;
                 self.getCurrentView().clearError();
                 return true;
             },
             .enter => {
+                // 補完候補表示中はEnterで候補をクリアするのみ
+                if (self.completion_shown) {
+                    self.completion_shown = false;
+                    self.updateMinibufferPrompt("| ");
+                    return true;
+                }
                 if (self.minibuffer.getContent().len > 0) {
                     try self.shell_service.addToHistory(self.minibuffer.getContent());
                     self.shell_service.resetHistoryNavigation();
@@ -2804,9 +2816,97 @@ pub const Editor = struct {
             },
             else => {},
         }
+        // 補完候補表示中は、Tab以外のキーで候補をクリア
+        if (self.completion_shown) {
+            self.completion_shown = false;
+            self.updateMinibufferPrompt("| ");
+        }
         _ = try self.handleMinibufferKey(key);
         self.updateMinibufferPrompt("| ");
         return true;
+    }
+
+    /// シェルコマンドのTab補完
+    fn handleShellCompletion(self: *Editor) !void {
+        const current = self.minibuffer.getContent();
+        if (current.len == 0) return;
+
+        var result = try self.shell_service.getCompletions(current) orelse {
+            self.getCurrentView().setError("No completions");
+            self.completion_shown = true;
+            return;
+        };
+        defer result.deinit();
+
+        if (result.matches.len == 1) {
+            // ユニーク一致: 完全補完
+            // 元の入力から補完対象トークンを置き換え
+            const token = getLastToken(current);
+            const prefix_len = current.len - token.len;
+            var buf: [1024]u8 = undefined;
+            if (prefix_len + result.matches[0].len < buf.len) {
+                @memcpy(buf[0..prefix_len], current[0..prefix_len]);
+                @memcpy(buf[prefix_len .. prefix_len + result.matches[0].len], result.matches[0]);
+                // ディレクトリなら/を追加、それ以外はスペース
+                const completed_len = prefix_len + result.matches[0].len;
+                const completed = buf[0..completed_len];
+                try self.minibuffer.setContent(completed);
+            }
+            self.completion_shown = false;
+        } else {
+            // 複数一致: 共通プレフィックス補完 + 候補表示
+            const token = getLastToken(current);
+            const prefix_len = current.len - token.len;
+
+            // 共通プレフィックスで補完
+            if (result.common_prefix.len > token.len) {
+                var buf: [1024]u8 = undefined;
+                if (prefix_len + result.common_prefix.len < buf.len) {
+                    @memcpy(buf[0..prefix_len], current[0..prefix_len]);
+                    @memcpy(buf[prefix_len .. prefix_len + result.common_prefix.len], result.common_prefix);
+                    const completed = buf[0 .. prefix_len + result.common_prefix.len];
+                    try self.minibuffer.setContent(completed);
+                }
+            }
+
+            // 候補を表示（最大10個）
+            var display_buf: [256]u8 = undefined;
+            var len: usize = 0;
+            const max_show = @min(result.matches.len, 10);
+            for (result.matches[0..max_show]) |m| {
+                // ファイル名部分のみ表示
+                const basename = std.fs.path.basename(m);
+                if (len + basename.len + 1 < display_buf.len) {
+                    if (len > 0) {
+                        display_buf[len] = ' ';
+                        len += 1;
+                    }
+                    @memcpy(display_buf[len .. len + basename.len], basename);
+                    len += basename.len;
+                }
+            }
+            if (result.matches.len > max_show) {
+                const suffix = " ...";
+                if (len + suffix.len < display_buf.len) {
+                    @memcpy(display_buf[len .. len + suffix.len], suffix);
+                    len += suffix.len;
+                }
+            }
+            self.getCurrentView().setError(display_buf[0..len]);
+            self.completion_shown = true;
+        }
+    }
+
+    /// 入力から最後のトークン（補完対象）を取得
+    fn getLastToken(s: []const u8) []const u8 {
+        var i = s.len;
+        while (i > 0) {
+            i -= 1;
+            if (s[i] == ' ' or s[i] == '\t' or s[i] == '|' or s[i] == ';') {
+                return s[i + 1 ..];
+            }
+        }
+        return s;
     }
 
     /// M-xコマンド入力モード

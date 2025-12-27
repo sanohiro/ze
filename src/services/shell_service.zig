@@ -736,4 +736,140 @@ pub const ShellService = struct {
         self.allocator.destroy(state);
         self.state = null;
     }
+
+    /// 補完結果
+    pub const CompletionResult = struct {
+        matches: [][]const u8, // マッチした補完候補
+        common_prefix: []const u8, // 共通プレフィックス
+        allocator: std.mem.Allocator,
+
+        pub fn deinit(self: *CompletionResult) void {
+            for (self.matches) |m| {
+                self.allocator.free(m);
+            }
+            self.allocator.free(self.matches);
+            self.allocator.free(self.common_prefix);
+        }
+    };
+
+    /// bashのcompgenを使って補完候補を取得
+    /// input: シェルコマンド入力全体
+    /// 戻り値: 補完結果（呼び出し側でdeinit()する必要あり）
+    pub fn getCompletions(self: *Self, input: []const u8) !?CompletionResult {
+        // 入力から最後のトークンを取得
+        const token = getLastToken(input);
+        if (token.len == 0) return null;
+
+        // パス文字を含むかでコマンド補完かファイル補完かを判断
+        const is_path = std.mem.indexOfScalar(u8, token, '/') != null or
+            std.mem.startsWith(u8, token, "~") or
+            std.mem.startsWith(u8, token, ".");
+
+        const flag = if (is_path) "-f" else "-c";
+
+        // compgenコマンドを構築
+        // シングルクォートをエスケープ
+        var escaped_buf: [512]u8 = undefined;
+        const escaped_token = escapeForShell(token, &escaped_buf) orelse return null;
+
+        var cmd_buf: [1024]u8 = undefined;
+        const cmd = std.fmt.bufPrint(&cmd_buf, "compgen {s} -- '{s}' 2>/dev/null", .{ flag, escaped_token }) catch return null;
+
+        // bashを探す
+        const bash_path = findBashPath(self.allocator) orelse return null;
+        defer self.allocator.free(bash_path);
+
+        // compgenを実行
+        const result = std.process.Child.run(.{
+            .allocator = self.allocator,
+            .argv = &.{ bash_path, "-c", cmd },
+            .max_output_bytes = 64 * 1024, // 64KB上限
+        }) catch return null;
+        defer self.allocator.free(result.stdout);
+        defer self.allocator.free(result.stderr);
+
+        if (result.stdout.len == 0) return null;
+
+        // 結果を行に分割
+        var lines: std.ArrayListUnmanaged([]const u8) = .{};
+        errdefer {
+            for (lines.items) |line| self.allocator.free(line);
+            lines.deinit(self.allocator);
+        }
+
+        var iter = std.mem.splitScalar(u8, result.stdout, '\n');
+        while (iter.next()) |line| {
+            if (line.len > 0) {
+                const duped = try self.allocator.dupe(u8, line);
+                try lines.append(self.allocator, duped);
+            }
+        }
+
+        if (lines.items.len == 0) {
+            lines.deinit(self.allocator);
+            return null;
+        }
+
+        // 共通プレフィックスを計算
+        const common = findCommonPrefix(lines.items);
+        const common_prefix = try self.allocator.dupe(u8, common);
+
+        return CompletionResult{
+            .matches = try lines.toOwnedSlice(self.allocator),
+            .common_prefix = common_prefix,
+            .allocator = self.allocator,
+        };
+    }
+
+    /// 入力から最後のトークン（補完対象）を取得
+    fn getLastToken(input: []const u8) []const u8 {
+        // 後ろから空白を探す
+        var i = input.len;
+        while (i > 0) {
+            i -= 1;
+            if (input[i] == ' ' or input[i] == '\t' or input[i] == '|' or input[i] == ';') {
+                return input[i + 1 ..];
+            }
+        }
+        return input;
+    }
+
+    /// シェル用にエスケープ（シングルクォート内で使用）
+    fn escapeForShell(s: []const u8, buf: []u8) ?[]const u8 {
+        var pos: usize = 0;
+        for (s) |c| {
+            if (c == '\'') {
+                // シングルクォートは '\'' に置換
+                if (pos + 4 > buf.len) return null;
+                buf[pos] = '\'';
+                buf[pos + 1] = '\\';
+                buf[pos + 2] = '\'';
+                buf[pos + 3] = '\'';
+                pos += 4;
+            } else {
+                if (pos >= buf.len) return null;
+                buf[pos] = c;
+                pos += 1;
+            }
+        }
+        return buf[0..pos];
+    }
+
+    /// 文字列配列の共通プレフィックスを見つける
+    fn findCommonPrefix(strings: []const []const u8) []const u8 {
+        if (strings.len == 0) return "";
+        if (strings.len == 1) return strings[0];
+
+        const first = strings[0];
+        var prefix_len: usize = first.len;
+
+        for (strings[1..]) |s| {
+            var i: usize = 0;
+            while (i < prefix_len and i < s.len and first[i] == s[i]) : (i += 1) {}
+            prefix_len = i;
+            if (prefix_len == 0) break;
+        }
+
+        return first[0..prefix_len];
+    }
 };

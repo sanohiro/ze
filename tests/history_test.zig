@@ -23,8 +23,8 @@ test "history basic operations" {
     try history.add("cat bar");
     try testing.expectEqual(@as(usize, 3), history.entries.items.len);
 
-    // ナビゲーション
-    try history.startNavigation("current");
+    // ナビゲーション（空文字列で全履歴を表示）
+    try history.startNavigation("");
 
     // prev: 最新から順に
     const e1 = history.prev();
@@ -49,7 +49,43 @@ test "history basic operations" {
 
     // 最新を超えると元の入力
     const e7 = history.next();
-    try testing.expectEqualStrings("current", e7.?);
+    try testing.expectEqualStrings("", e7.?);
+}
+
+test "history prefix filter" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var history = History.init(allocator);
+    defer history.deinit();
+
+    try history.add("ls -la");
+    try history.add("grep foo");
+    try history.add("git status");
+    try history.add("git commit");
+    try history.add("cat bar");
+
+    // "git"で始まる履歴のみ
+    try history.startNavigation("git");
+
+    const e1 = history.prev();
+    try testing.expectEqualStrings("git commit", e1.?);
+
+    const e2 = history.prev();
+    try testing.expectEqualStrings("git status", e2.?);
+
+    // これ以上古いgitエントリはないので同じ
+    const e3 = history.prev();
+    try testing.expectEqualStrings("git status", e3.?);
+
+    // 戻る
+    const e4 = history.next();
+    try testing.expectEqualStrings("git commit", e4.?);
+
+    // 最新を超えると元の入力（プレフィックス）
+    const e5 = history.next();
+    try testing.expectEqualStrings("git", e5.?);
 }
 
 test "empty history navigation" {
@@ -120,7 +156,7 @@ test "reset navigation" {
     try history.add("cmd1");
     try history.add("cmd2");
 
-    try history.startNavigation("current");
+    try history.startNavigation("");
     _ = history.prev(); // cmd2
     _ = history.prev(); // cmd1
 
@@ -128,9 +164,10 @@ test "reset navigation" {
     history.resetNavigation();
     try testing.expect(history.current_index == null);
     try testing.expect(history.temp_input == null);
+    try testing.expect(history.filter_prefix == null);
 
     // リセット後のナビゲーション
-    try history.startNavigation("new");
+    try history.startNavigation("");
     const e = history.prev();
     try testing.expectEqualStrings("cmd2", e.?);
 }
@@ -183,14 +220,14 @@ test "navigation preserves temp input on multiple calls" {
     try history.add("old1");
     try history.add("old2");
 
-    // startNavigationを複数回呼んでも問題ない
+    // startNavigationを複数回呼んでも問題ない（空文字でフィルタなし）
     try history.startNavigation("first");
-    try history.startNavigation("second"); // 上書き
+    try history.startNavigation(""); // 上書き（空でフィルタなし）
 
     _ = history.prev();
     _ = history.prev();
     const back = history.next();
     try testing.expectEqualStrings("old2", back.?);
     const back2 = history.next();
-    try testing.expectEqualStrings("second", back2.?);
+    try testing.expectEqualStrings("", back2.?);
 }

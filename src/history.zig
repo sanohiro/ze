@@ -29,6 +29,7 @@ pub const History = struct {
     entries: std.ArrayList([]const u8),
     current_index: ?usize, // ナビゲーション中のインデックス（nullは履歴モード外）
     temp_input: ?[]const u8, // ナビゲーション開始前の入力を保持
+    filter_prefix: ?[]const u8, // プレフィックスフィルタ（入力中の文字列にマッチする履歴のみ表示）
 
     pub fn init(allocator: std.mem.Allocator) History {
         return .{
@@ -37,6 +38,7 @@ pub const History = struct {
             .entries = .{},
             .current_index = null,
             .temp_input = null,
+            .filter_prefix = null,
         };
     }
 
@@ -47,6 +49,9 @@ pub const History = struct {
         self.entries.deinit(self.allocator);
         if (self.temp_input) |temp| {
             self.allocator.free(temp);
+        }
+        if (self.filter_prefix) |prefix| {
+            self.allocator.free(prefix);
         }
     }
 
@@ -75,7 +80,7 @@ pub const History = struct {
         self.resetNavigation();
     }
 
-    /// ナビゲーション開始（現在の入力を保存）
+    /// ナビゲーション開始（現在の入力を保存、プレフィックスフィルタとして使用）
     pub fn startNavigation(self: *History, current_input: []const u8) !void {
         // 先にdupeしてからfreeする（dupe失敗時のダングリングポインタ防止）
         const new_temp = try self.allocator.dupe(u8, current_input);
@@ -83,41 +88,89 @@ pub const History = struct {
             self.allocator.free(old);
         }
         self.temp_input = new_temp;
+
+        // プレフィックスフィルタを設定（空でなければ）
+        if (current_input.len > 0) {
+            const new_prefix = try self.allocator.dupe(u8, current_input);
+            if (self.filter_prefix) |old| {
+                self.allocator.free(old);
+            }
+            self.filter_prefix = new_prefix;
+        } else {
+            if (self.filter_prefix) |old| {
+                self.allocator.free(old);
+            }
+            self.filter_prefix = null;
+        }
+
         self.current_index = null;
     }
 
-    /// 前の履歴（C-p / Up）
+    /// エントリがプレフィックスにマッチするかチェック
+    fn matchesPrefix(self: *const History, entry: []const u8) bool {
+        if (self.filter_prefix) |prefix| {
+            return std.mem.startsWith(u8, entry, prefix);
+        }
+        return true; // フィルタなしなら全てマッチ
+    }
+
+    /// 前の履歴（C-p / Up）- プレフィックスフィルタ対応
     pub fn prev(self: *History) ?[]const u8 {
         if (self.entries.items.len == 0) return null;
 
+        // 開始位置を決定
+        var start_idx: usize = undefined;
         if (self.current_index) |idx| {
-            // 既に履歴モード中
-            if (idx > 0) {
-                self.current_index = idx - 1;
-                return self.entries.items[idx - 1];
+            if (idx == 0) {
+                // 最古のエントリにいる場合、そのエントリがマッチするなら返す
+                if (self.matchesPrefix(self.entries.items[0])) {
+                    return self.entries.items[0];
+                }
+                return null;
             }
-            // 最古のエントリに到達
-            return self.entries.items[0];
+            start_idx = idx - 1;
         } else {
-            // 履歴モード開始：最新のエントリを返す
-            self.current_index = self.entries.items.len - 1;
-            return self.entries.items[self.entries.items.len - 1];
+            // 履歴モード開始：最新から検索
+            start_idx = self.entries.items.len - 1;
         }
+
+        // マッチするエントリを後方検索
+        var i: usize = start_idx;
+        while (true) {
+            if (self.matchesPrefix(self.entries.items[i])) {
+                self.current_index = i;
+                return self.entries.items[i];
+            }
+            if (i == 0) break;
+            i -= 1;
+        }
+
+        // マッチするエントリがない場合、現在のエントリがマッチするなら返す
+        if (self.current_index) |idx| {
+            if (self.matchesPrefix(self.entries.items[idx])) {
+                return self.entries.items[idx];
+            }
+        }
+
+        return null;
     }
 
-    /// 次の履歴（C-n / Down）
+    /// 次の履歴（C-n / Down）- プレフィックスフィルタ対応
     pub fn next(self: *History) ?[]const u8 {
-        if (self.current_index) |idx| {
-            if (idx + 1 < self.entries.items.len) {
-                self.current_index = idx + 1;
-                return self.entries.items[idx + 1];
-            } else {
-                // 最新を超えたら元の入力に戻る
-                self.current_index = null;
-                return self.temp_input;
+        const idx = self.current_index orelse return null;
+
+        // マッチするエントリを前方検索
+        var i = idx + 1;
+        while (i < self.entries.items.len) : (i += 1) {
+            if (self.matchesPrefix(self.entries.items[i])) {
+                self.current_index = i;
+                return self.entries.items[i];
             }
         }
-        return null;
+
+        // 最新を超えたら元の入力に戻る
+        self.current_index = null;
+        return self.temp_input;
     }
 
     /// ナビゲーション状態をリセット
@@ -126,6 +179,10 @@ pub const History = struct {
         if (self.temp_input) |temp| {
             self.allocator.free(temp);
             self.temp_input = null;
+        }
+        if (self.filter_prefix) |prefix| {
+            self.allocator.free(prefix);
+            self.filter_prefix = null;
         }
     }
 
