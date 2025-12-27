@@ -178,22 +178,43 @@ fn calculateScreenColumn(line: []const u8, start_byte: usize, end_byte: usize, i
     return screen_col;
 }
 
-/// 行の本文部分（行番号の後）にANSIグレーコードが含まれているかチェック
-/// コメントハイライトの有無を判定するために使用
-fn hasAnsiGray(line: []const u8, content_start: usize) bool {
-    // 行番号の後ろの部分のみチェック
-    if (content_start >= line.len) return false;
+/// ANSIエスケープシーケンスの有無を一括チェック（グレーと反転を同時に検出）
+/// 1回の走査で両方をチェックすることで効率化
+const AnsiFlags = struct {
+    has_gray: bool,
+    has_invert: bool,
+};
+
+fn detectAnsiCodes(line: []const u8, content_start: usize) AnsiFlags {
+    if (content_start >= line.len) return .{ .has_gray = false, .has_invert = false };
     const content = line[content_start..];
-    return std.mem.indexOf(u8, content, ANSI.GRAY) != null;
+
+    // ESC文字（0x1b）を探して、その後の文字列をチェック
+    var has_gray = false;
+    var has_invert = false;
+    var i: usize = 0;
+    while (i < content.len) : (i += 1) {
+        if (content[i] == '\x1b' and i + 1 < content.len and content[i + 1] == '[') {
+            // GRAY = "\x1b[90m" (len=5), INVERT = "\x1b[7m" (len=4)
+            if (i + 4 < content.len and content[i + 2] == '9' and content[i + 3] == '0' and content[i + 4] == 'm') {
+                has_gray = true;
+            } else if (i + 3 < content.len and content[i + 2] == '7' and content[i + 3] == 'm') {
+                has_invert = true;
+            }
+            // 両方見つかったら早期終了
+            if (has_gray and has_invert) break;
+        }
+    }
+    return .{ .has_gray = has_gray, .has_invert = has_invert };
 }
 
-/// 行の本文部分（行番号の後）にANSI反転コードが含まれているかチェック
-/// 選択範囲ハイライトの有無を判定するために使用
+/// 後方互換性のためのラッパー関数
+fn hasAnsiGray(line: []const u8, content_start: usize) bool {
+    return detectAnsiCodes(line, content_start).has_gray;
+}
+
 fn hasAnsiInvert(line: []const u8, content_start: usize) bool {
-    // 行番号の後ろの部分のみチェック
-    if (content_start >= line.len) return false;
-    const content = line[content_start..];
-    return std.mem.indexOf(u8, content, ANSI.INVERT) != null;
+    return detectAnsiCodes(line, content_start).has_invert;
 }
 
 /// View: バッファの表示状態を管理する構造体
@@ -997,9 +1018,12 @@ pub const View = struct {
         visible_pos = match_end_vis;
         last_raw_pos = match_end_raw;
 
-        // 残りのマッチを処理
-        while (visible_pos < self.regex_visible_text.items.len) {
+        // 残りのマッチを処理（上限付きで過剰なマッチによる遅延を防止）
+        const MAX_MATCHES_PER_LINE = 100;
+        var match_count: usize = 1; // 最初のマッチをカウント
+        while (visible_pos < self.regex_visible_text.items.len and match_count < MAX_MATCHES_PER_LINE) {
             if (re.search(self.regex_visible_text.items, visible_pos)) |match_result| {
+                match_count += 1;
                 if (match_result.end == match_result.start) {
                     visible_pos += 1;
                     continue;
@@ -1092,13 +1116,11 @@ pub const View = struct {
 
             // シンタックスハイライト（ANSIエスケープ）の変化をチェック
             // コメント色のANSIコードがある場合は行全体を再描画（差分描画ではカラーが正しく適用されない）
-            const old_has_gray = hasAnsiGray(old_line, line_num_byte_end);
-            const new_has_gray = hasAnsiGray(new_line, line_num_byte_end);
-            // 選択範囲の反転表示があるかチェック
-            const old_has_invert = hasAnsiInvert(old_line, line_num_byte_end);
-            const new_has_invert = hasAnsiInvert(new_line, line_num_byte_end);
+            // 1回の走査でグレーと反転を同時検出（4回→2回に削減）
+            const old_flags = detectAnsiCodes(old_line, line_num_byte_end);
+            const new_flags = detectAnsiCodes(new_line, line_num_byte_end);
             // グレーまたは反転がある場合は行全体を再描画（差分描画だとカラーが途切れる問題を回避）
-            if (old_has_gray or new_has_gray or old_has_invert or new_has_invert) {
+            if (old_flags.has_gray or new_flags.has_gray or old_flags.has_invert or new_flags.has_invert) {
                 // 内容が異なる場合のみ再描画
                 if (!std.mem.eql(u8, old_line, new_line)) {
                     try term.moveCursor(abs_row, viewport_x);
@@ -1106,22 +1128,36 @@ pub const View = struct {
                     try self.padToWidth(term, new_line, viewport_width);
                 }
             } else {
-                // 差分を検出
+                // 差分を検出（双方向走査で高速化）
                 const min_len = @min(old_line.len, new_line.len);
                 var diff_start: ?usize = null;
                 var diff_end: usize = 0;
 
-                // 前方から差分を探す
+                // 前方から最初の差分位置を探す（見つかったらbreak）
                 for (0..min_len) |i| {
                     if (old_line[i] != new_line[i]) {
-                        if (diff_start == null) diff_start = i;
-                        diff_end = i + 1;
+                        diff_start = i;
+                        break;
                     }
                 }
 
-                // 長さが違う場合は後ろも差分
-                if (old_line.len != new_line.len) {
-                    if (diff_start == null) diff_start = min_len;
+                if (diff_start) |start| {
+                    // 後方から最後の差分位置を探す
+                    var i = min_len;
+                    while (i > start) {
+                        i -= 1;
+                        if (old_line[i] != new_line[i]) {
+                            diff_end = i + 1;
+                            break;
+                        }
+                    }
+                    // 長さが違う場合は末尾まで差分
+                    if (old_line.len != new_line.len) {
+                        diff_end = @max(old_line.len, new_line.len);
+                    }
+                } else if (old_line.len != new_line.len) {
+                    // 共通部分は同じだが長さが違う
+                    diff_start = min_len;
                     diff_end = @max(old_line.len, new_line.len);
                 }
 

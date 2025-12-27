@@ -18,8 +18,8 @@ const history_mod = @import("history");
 const History = history_mod.History;
 const HistoryType = history_mod.HistoryType;
 
-/// I/O読み取りバッファサイズ
-const READ_BUFFER_SIZE: usize = 8192;
+/// I/O読み取りバッファサイズ（16KB = システムコール削減）
+const READ_BUFFER_SIZE: usize = 16 * 1024;
 
 /// シェルコマンド出力先
 pub const OutputDest = enum {
@@ -525,7 +525,12 @@ pub const ShellService = struct {
                 else
                     0;
                 if (remaining > 0) {
-                    const chunk_size = @min(remaining, READ_BUFFER_SIZE);
+                    // 大きなデータでは64KBチャンク、通常は16KBチャンク（システムコール削減）
+                    const large_chunk_size: usize = 64 * 1024;
+                    const chunk_size = if (data.len > 1024 * 1024)
+                        @min(remaining, large_chunk_size)
+                    else
+                        @min(remaining, READ_BUFFER_SIZE);
                     const chunk = data[state.stdin_write_pos .. state.stdin_write_pos + chunk_size];
                     const bytes_written = stdin_file.write(chunk) catch |err| switch (err) {
                         error.WouldBlock => 0,

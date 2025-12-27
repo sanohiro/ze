@@ -196,6 +196,7 @@ pub const Messages = struct {
     // === エラーメッセージ ===
     pub const BUFFER_READONLY = "Buffer is read-only";
     pub const NO_MARK_SET = "No mark set";
+    pub const NO_ACTIVE_REGION = "No active region";
     pub const UNKNOWN_COMMAND = "Unknown command";
     pub const FILE_NOT_FOUND = "File not found";
     pub const BINARY_FILE = "Binary file detected";

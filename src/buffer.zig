@@ -296,18 +296,26 @@ pub const LineIndex = struct {
     /// 指定位置以降を無効化（インクリメンタル更新用）
     /// 編集位置を含む行の開始位置から再スキャンが必要
     pub fn invalidateFrom(self: *LineIndex, pos: usize) void {
-        // posを含む行の開始位置を見つける
-        // この行の開始位置より前の行は保持される
-        var line_start_pos: usize = 0;
-        for (self.line_starts.items) |start| {
-            if (start > pos) break;
-            line_start_pos = start;
-        }
+        // posを含む行の開始位置をバイナリサーチで見つける（O(log n)）
+        const line_start_pos = blk: {
+            if (self.line_starts.items.len == 0) break :blk 0;
+
+            var left: usize = 0;
+            var right: usize = self.line_starts.items.len;
+            while (left < right) {
+                const mid = left + (right - left) / 2;
+                if (self.line_starts.items[mid] <= pos) {
+                    left = mid + 1;
+                } else {
+                    right = mid;
+                }
+            }
+            // leftはpos以下の最大のインデックス+1を指す
+            break :blk if (left > 0) self.line_starts.items[left - 1] else 0;
+        };
 
         // valid_until_posを「posを含む行の開始位置」に設定
         // これより前の行のみ保持される
-        // 既に無効化されている場合も、より早い位置があれば更新する
-        // （複数回の編集で最も早い位置から再構築するため）
         if (!self.valid) {
             // 既に無効: より早い位置なら更新
             if (self.valid_until_pos == 0 or line_start_pos < self.valid_until_pos) {

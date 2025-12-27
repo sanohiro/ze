@@ -380,13 +380,11 @@ pub const Regex = struct {
         while (pos <= text.len) {
             if (has_start_anchor) {
                 if (pos > 0 and text[pos - 1] != '\n') {
-                    while (pos < text.len and text[pos] != '\n') {
-                        pos += 1;
-                    }
-                    if (pos < text.len) {
-                        pos += 1;
+                    // std.mem.indexOfScalarでSIMD最適化された改行検索
+                    if (std.mem.indexOfScalar(u8, text[pos..], '\n')) |nl_offset| {
+                        pos = pos + nl_offset + 1;
                     } else {
-                        break; // テキスト終端に達したので終了（無限ループ防止）
+                        break; // テキスト終端に達したので終了
                     }
                     continue;
                 }
@@ -397,11 +395,9 @@ pub const Regex = struct {
             }
 
             if (has_start_anchor) {
-                while (pos < text.len and text[pos] != '\n') {
-                    pos += 1;
-                }
-                if (pos < text.len) {
-                    pos += 1;
+                // std.mem.indexOfScalarでSIMD最適化された改行検索
+                if (std.mem.indexOfScalar(u8, text[pos..], '\n')) |nl_offset| {
+                    pos = pos + nl_offset + 1;
                 } else {
                     break;
                 }
@@ -602,7 +598,11 @@ pub const Regex = struct {
     }
 
     /// 繰り返しマッチのバッファ管理（スタック優先、必要時ヒープ移行）
+    /// 病的パターン（.*.*.*等）での指数時間を防ぐため、最大位置数を制限
     const PositionCollector = struct {
+        // 最大バックトラック位置数（これを超えるとマッチ失敗扱い）
+        const MAX_POSITIONS: usize = 10000;
+
         stack_buf: [256]usize,
         heap_buf: ?std.ArrayList(usize),
         positions: []usize,
@@ -627,6 +627,9 @@ pub const Regex = struct {
         }
 
         fn append(self: *PositionCollector, pos: usize) bool {
+            // 最大位置数制限（病的パターンでの指数時間防止）
+            if (self.len >= MAX_POSITIONS) return false;
+
             if (self.heap_buf) |*h| {
                 h.append(self.allocator, pos) catch return false;
                 self.positions = h.items;

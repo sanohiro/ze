@@ -219,7 +219,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "macro_service", .module = macro_service_mod },
     };
 
-    // commands/edit <- buffer, unicode (editorは循環参照になるので後で追加)
+    // commands/edit <- buffer, unicode, config (editorは循環参照になるので後で追加)
     const edit_cmd_mod = b.addModule("commands_edit", .{
         .root_source_file = b.path("src/commands/edit.zig"),
         .target = target,
@@ -227,6 +227,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "buffer", .module = buffer_mod },
             .{ .name = "unicode", .module = unicode_mod },
+            .{ .name = "config", .module = config_mod },
         },
     });
 

@@ -265,7 +265,8 @@ pub fn readKeyFromReader(reader: *InputReader) !?Key {
                 'M' => {
                     // マウスイベント（X10形式）: ESC [ M <button> <x> <y>
                     // マウスモード無効のため通常は届かないが、念のため読み捨て
-                    _ = try reader.readBytes(buf[3..6]);
+                    // エラーは無視して続行（読み捨て失敗しても問題ない）
+                    _ = reader.readBytes(buf[3..6]) catch {};
                     return null;
                 },
                 '<' => {

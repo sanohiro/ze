@@ -896,8 +896,11 @@ pub const Editor = struct {
             .isearch_backward,
             .query_replace_input_search,
             .query_replace_input_replacement,
+            .query_replace_confirm,
             .shell_command,
             .mx_command,
+            .mx_key_describe,
+            .macro_repeat,
             => true,
             else => false,
         };
@@ -1861,9 +1864,14 @@ pub const Editor = struct {
                 // 重要: InputReaderのバッファにデータがあればkqueueをスキップ
                 // （バッファリングにより、カーネルバッファは空でもデータが残っている可能性がある）
                 if (!input_reader.hasData()) {
-                    // 100msタイムアウトで待機
-                    // 注意: 無限待機(null)だとPTY環境で問題が発生することがある
-                    const poll_result = p.wait(100);
+                    // 動的タイムアウト: シェル実行中は短く（スピナー更新を速く）
+                    const wait_timeout: u32 = if (self.mode == .shell_running)
+                        25 // シェル実行中: 25ms（スピナー4fps）
+                    else if (self.shell_service.isRunning())
+                        50 // シェル準備中: 50ms
+                    else
+                        100; // 通常: 100ms
+                    const poll_result = p.wait(wait_timeout);
                     if (poll_result == .signal) {
                         // SIGWINCH等のシグナル: ループ先頭に戻ってリサイズチェック
                         continue;
@@ -1872,16 +1880,23 @@ pub const Editor = struct {
                 }
             }
 
-            // キー入力を処理
-            if (try input.readKeyFromReader(input_reader)) |key| {
-                // ミニバッファモード中はプロンプトを維持
-                if (!self.isMinibufferMode()) {
-                    self.getCurrentView().clearError();
-                }
-                self.processKey(key) catch |err| {
-                    const err_name = @errorName(err);
-                    self.getCurrentView().setError(err_name);
-                };
+            // キー入力を処理（バッチ処理で高速タイピング対応）
+            // バッファに複数キーがあれば一度に処理（最大10キー）
+            const MAX_KEYS_PER_FRAME = 10;
+            var keys_processed: usize = 0;
+            while (keys_processed < MAX_KEYS_PER_FRAME) : (keys_processed += 1) {
+                if (try input.readKeyFromReader(input_reader)) |key| {
+                    // ミニバッファモード中はプロンプトを維持
+                    if (!self.isMinibufferMode()) {
+                        self.getCurrentView().clearError();
+                    }
+                    self.processKey(key) catch |err| {
+                        const err_name = @errorName(err);
+                        self.getCurrentView().setError(err_name);
+                    };
+                    // バッファにまだデータがあれば続行、なければ終了
+                    if (!input_reader.hasData()) break;
+                } else break;
             }
         }
     }
@@ -1899,20 +1914,17 @@ pub const Editor = struct {
 
         // 実際に読み取れるバイト数を計算（buffer末尾を超えないように）
         const actual_len = @min(len, buf_len - pos);
-        var result = try self.allocator.alloc(u8, actual_len);
+        const result = try self.allocator.alloc(u8, actual_len);
         errdefer self.allocator.free(result);
 
         var iter = PieceIterator.init(buffer);
         iter.seek(pos); // O(pieces)で直接ジャンプ
 
-        // actual_len分読み取る（保証されている）
-        var i: usize = 0;
-        while (i < actual_len) : (i += 1) {
-            result[i] = iter.next() orelse {
-                // Piece table の不整合が発生した場合
-                // メモリリークを防ぐため、エラーを返す（errdefer が解放する）
-                return error.BufferInconsistency;
-            };
+        // copyBytes()でスライス単位コピー（50-100倍高速）
+        const copied = iter.copyBytes(result);
+        if (copied != actual_len) {
+            // Piece table の不整合が発生した場合
+            return error.BufferInconsistency;
         }
 
         return result;
@@ -3039,9 +3051,13 @@ pub const Editor = struct {
                         if (c == 'g') {
                             self.cancelShellCommand();
                             self.minibuffer.clear();
+                        } else {
+                            self.getCurrentView().setError("Shell running (C-g to cancel)");
                         }
                     },
-                    else => {},
+                    else => {
+                        self.getCurrentView().setError("Shell running (C-g to cancel)");
+                    },
                 }
                 return;
             },

@@ -3,6 +3,7 @@
 // joinLine, toggleComment, moveLineUp, moveLineDown, deleteWord, setMark, clearError
 
 const std = @import("std");
+const config = @import("config");
 const Editor = @import("editor").Editor;
 const buffer_mod = @import("buffer");
 const Buffer = buffer_mod.Buffer;
@@ -117,8 +118,12 @@ pub fn deleteChar(e: *Editor) !void {
 /// Backspace: カーソル前の文字を削除
 pub fn backspace(e: *Editor) !void {
     const buffer = e.getCurrentBufferContent();
-    const pos = e.getCurrentView().getCursorBufferPos();
-    if (pos == 0) return;
+    const view = e.getCurrentView();
+    const pos = view.getCursorBufferPos();
+    if (pos == 0) {
+        view.setError("Beginning of buffer");
+        return;
+    }
 
     // 削除するgrapheme clusterのバイト数と幅を取得
     const char_start = buffer.findUtf8CharStart(pos);
@@ -145,7 +150,6 @@ pub fn backspace(e: *Editor) !void {
     if (is_tab or is_newline) {
         e.setCursorToPos(char_start);
     } else {
-        const view = e.getCurrentView();
         const char_width = unicode.displayWidth(char_base);
         if (view.cursor_x >= char_width) {
             view.cursor_x -= char_width;
@@ -266,7 +270,7 @@ pub fn yank(e: *Editor) !void {
 pub fn killRegion(e: *Editor) !void {
     const window = e.getCurrentWindow();
     const region = e.getRegion() orelse {
-        e.getCurrentView().setError("No active region");
+        e.getCurrentView().setError(config.Messages.NO_ACTIVE_REGION);
         return;
     };
 
@@ -287,7 +291,7 @@ pub fn killRegion(e: *Editor) !void {
 pub fn copyRegion(e: *Editor) !void {
     const window = e.getCurrentWindow();
     const region = e.getRegion() orelse {
-        e.getCurrentView().setError("No active region");
+        e.getCurrentView().setError(config.Messages.NO_ACTIVE_REGION);
         return;
     };
 
@@ -328,6 +332,11 @@ pub fn joinLine(e: *Editor) !void {
     iter.seek(line_start);
     var first_non_space = line_start;
     while (iter.next()) |ch| {
+        // 改行に達した場合は、行全体が空白（first_non_spaceは行頭のまま）
+        if (ch == '\n') {
+            first_non_space = iter.global_pos - 1;
+            break;
+        }
         if (ch != ' ' and ch != '\t') {
             first_non_space = iter.global_pos - 1;
             break;
@@ -460,7 +469,10 @@ pub fn moveLineUp(e: *Editor) !void {
     const view = e.getCurrentView();
     const current_line = e.getCurrentLine();
 
-    if (current_line == 0) return;
+    if (current_line == 0) {
+        view.setError("Beginning of buffer");
+        return;
+    }
 
     const line_start = buffer.getLineStart(current_line) orelse return;
     const line_end = buffer.findNextLineFromPos(line_start);
@@ -498,7 +510,10 @@ pub fn moveLineDown(e: *Editor) !void {
     const current_line = e.getCurrentLine();
     const total_lines = buffer.lineCount();
 
-    if (current_line + 1 >= total_lines) return;
+    if (current_line + 1 >= total_lines) {
+        view.setError("End of buffer");
+        return;
+    }
 
     const line_start = buffer.getLineStart(current_line) orelse return;
     const line_end = buffer.findNextLineFromPos(line_start);
@@ -741,8 +756,16 @@ pub fn unindentRegion(e: *Editor) !void {
         }
 
         if (spaces_to_remove > 0) {
-            const deleted = try e.extractText(line_start, spaces_to_remove);
-            defer e.allocator.free(deleted);
+            // スタックバッファを使用（タブ幅は最大でも16程度なのでヒープアロケーション不要）
+            var stack_buf: [16]u8 = undefined;
+            const deleted = blk: {
+                var temp_iter = PieceIterator.init(buffer);
+                temp_iter.seek(line_start);
+                for (0..spaces_to_remove) |i| {
+                    stack_buf[i] = temp_iter.next() orelse break;
+                }
+                break :blk stack_buf[0..spaces_to_remove];
+            };
 
             try buffer.delete(line_start, spaces_to_remove);
             // 削除後のロールバック用errdefer（recordDeleteが失敗した場合）
