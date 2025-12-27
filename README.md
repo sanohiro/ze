@@ -114,6 +114,23 @@ Advanced text processing is delegated to existing tools like `sort`, `jq`, `awk`
 
 **C-g** cancels at any time. Long-running processes (LLM calls, etc.) are fine.
 
+### History & Completion
+
+**Prefix history matching**: Type part of a command, then press `↑`/`↓` to cycle through matching history only.
+
+```
+| git       # Press ↑
+| git push origin main   # Only "git" commands shown
+| git commit -m "fix"    # Press ↑ again
+```
+
+**Tab completion**: Press `Tab` to complete commands and file paths (uses bash's `compgen`).
+
+```
+| gi<Tab>        → git
+| cat /tmp/<Tab> → shows files in /tmp/
+```
+
 ### Aliases
 
 Create `~/.ze/aliases` to define shortcuts for common operations:
