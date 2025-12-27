@@ -65,6 +65,10 @@ pub const PieceIterator = struct {
     piece_idx: usize, // 現在のpiece番号
     piece_offset: usize, // 現在のpiece内でのオフセット
     global_pos: usize, // バッファ全体での位置
+    // seek()キャッシュ: 前回seekした位置からの探索を高速化
+    last_sought_pos: usize,
+    last_sought_piece_idx: usize,
+    last_sought_piece_start: usize, // pieceの開始位置も保存
 
     pub fn init(buffer: *const Buffer) PieceIterator {
         return .{
@@ -72,6 +76,9 @@ pub const PieceIterator = struct {
             .piece_idx = 0,
             .piece_offset = 0,
             .global_pos = 0,
+            .last_sought_pos = 0,
+            .last_sought_piece_idx = 0,
+            .last_sought_piece_start = 0,
         };
     }
 
@@ -124,22 +131,36 @@ pub const PieceIterator = struct {
         return std.unicode.utf8Decode(bytes[0..len]) catch return error.InvalidUtf8;
     }
 
-    // 指定位置にシーク（O(pieces)で効率的）
+    // 指定位置にシーク（キャッシュにより連続seekを高速化）
     pub fn seek(self: *PieceIterator, target_pos: usize) void {
         if (target_pos == 0) {
             self.piece_idx = 0;
             self.piece_offset = 0;
             self.global_pos = 0;
+            self.last_sought_pos = 0;
+            self.last_sought_piece_idx = 0;
+            self.last_sought_piece_start = 0;
             return;
         }
 
+        // キャッシュから開始（target_pos >= last_sought_posなら高速）
+        var start_idx: usize = 0;
         var pos: usize = 0;
-        for (self.buffer.pieces.items, 0..) |piece, idx| {
+        if (target_pos >= self.last_sought_pos and self.last_sought_piece_idx < self.buffer.pieces.items.len) {
+            start_idx = self.last_sought_piece_idx;
+            pos = self.last_sought_piece_start;
+        }
+
+        for (self.buffer.pieces.items[start_idx..], start_idx..) |piece, idx| {
             if (pos + piece.length > target_pos) {
                 // この piece 内に target_pos がある
                 self.piece_idx = idx;
                 self.piece_offset = target_pos - pos;
                 self.global_pos = target_pos;
+                // キャッシュを更新
+                self.last_sought_pos = target_pos;
+                self.last_sought_piece_idx = idx;
+                self.last_sought_piece_start = pos;
                 return;
             }
             pos += piece.length;
@@ -158,6 +179,9 @@ pub const PieceIterator = struct {
             .piece_idx = self.piece_idx,
             .piece_offset = self.piece_offset,
             .global_pos = self.global_pos,
+            .last_sought_pos = self.last_sought_pos,
+            .last_sought_piece_idx = self.last_sought_piece_idx,
+            .last_sought_piece_start = self.last_sought_piece_start,
         };
     }
 
@@ -166,6 +190,9 @@ pub const PieceIterator = struct {
         self.piece_idx = saved.piece_idx;
         self.piece_offset = saved.piece_offset;
         self.global_pos = saved.global_pos;
+        self.last_sought_pos = saved.last_sought_pos;
+        self.last_sought_piece_idx = saved.last_sought_piece_idx;
+        self.last_sought_piece_start = saved.last_sought_piece_start;
     }
 
     /// 現在位置から指定バイト数を効率的にコピー（スライス単位でmemcpy）
@@ -482,6 +509,7 @@ pub const Buffer = struct {
     line_index: LineIndex, // 行番号→オフセットのキャッシュ
     detected_line_ending: encoding.LineEnding, // 検出した改行コード（保存時に復元）
     detected_encoding: encoding.Encoding, // 検出したエンコーディング（保存時に復元）
+    loaded_mtime: i128, // ファイル読み込み時のmtime（二重I/O削減）
 
     pub fn init(allocator: std.mem.Allocator) !Buffer {
         // 空のArrayListで初期化（遅延アロケーション）
@@ -498,6 +526,7 @@ pub const Buffer = struct {
             .line_index = LineIndex.init(allocator),
             .detected_line_ending = .LF, // デフォルトはLF
             .detected_encoding = .UTF8, // デフォルトはUTF-8
+            .loaded_mtime = 0,
         };
     }
 
@@ -594,6 +623,7 @@ pub const Buffer = struct {
                     .line_index = line_index,
                     .detected_line_ending = .LF,
                     .detected_encoding = .UTF8,
+                    .loaded_mtime = stat.mtime,
                 };
 
                 // 初期状態：originalファイル全体を指す1つのpiece
@@ -617,7 +647,7 @@ pub const Buffer = struct {
             }
 
             // mmapデータから直接変換（I/O削減）
-            const result = loadFromMappedContent(allocator, mapped, detected);
+            const result = try loadFromMappedContent(allocator, mapped, detected, stat.mtime);
             std.posix.munmap(mapped_ptr[0..file_size]);
             return result;
         } else |_| {
@@ -646,11 +676,12 @@ pub const Buffer = struct {
             .line_index = LineIndex.init(allocator),
             .detected_line_ending = .LF,
             .detected_encoding = .UTF8,
+            .loaded_mtime = 0, // 空ファイルはmtimeなし
         };
     }
 
     /// mmapデータから直接変換（I/O削減版）
-    fn loadFromMappedContent(allocator: std.mem.Allocator, raw_content: []const u8, detected: encoding.DetectionResult) !Buffer {
+    fn loadFromMappedContent(allocator: std.mem.Allocator, raw_content: []const u8, detected: encoding.DetectionResult, file_mtime: i128) !Buffer {
         // UTF-8に変換（BOM削除、UTF-16デコード等）
         const utf8_content = try encoding.convertToUtf8(allocator, raw_content, detected.encoding);
         defer allocator.free(utf8_content);
@@ -686,6 +717,7 @@ pub const Buffer = struct {
             .line_index = line_index,
             .detected_line_ending = actual_line_ending,
             .detected_encoding = detected.encoding,
+            .loaded_mtime = file_mtime,
         };
 
         if (normalized.len > 0) {
@@ -701,7 +733,7 @@ pub const Buffer = struct {
     }
 
     /// フォールバックパス: UTF-8+LF以外のファイルを変換して読み込む（mmapが使えない場合）
-    fn loadFromFileFallback(allocator: std.mem.Allocator, path: []const u8, detected: encoding.DetectionResult) !Buffer {
+    fn loadFromFileFallback(allocator: std.mem.Allocator, path: []const u8, detected: encoding.DetectionResult, file_mtime: i128) !Buffer {
         var file = try std.fs.cwd().openFile(path, .{});
         defer file.close();
 
@@ -709,7 +741,7 @@ pub const Buffer = struct {
         const raw_content = try file.readToEndAlloc(allocator, stat.size);
         defer allocator.free(raw_content);
 
-        return loadFromMappedContent(allocator, raw_content, detected);
+        return loadFromMappedContent(allocator, raw_content, detected, file_mtime);
     }
 
     /// mmapが失敗した場合のフォールバック（検出も含む）
@@ -764,6 +796,7 @@ pub const Buffer = struct {
             .line_index = line_index,
             .detected_line_ending = actual_line_ending,
             .detected_encoding = detected.encoding,
+            .loaded_mtime = stat.mtime,
         };
 
         if (normalized.len > 0) {

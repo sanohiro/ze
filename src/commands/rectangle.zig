@@ -60,15 +60,20 @@ fn advanceToColumn(iter: anytype, line_end: usize, start_col: usize, target_col:
     return .{ .byte_pos = iter.global_pos, .reached_col = current_col };
 }
 
-fn getColumnByteRange(buffer: anytype, line_bounds: LineBounds, left_col: usize, right_col: usize, tab_width: usize) ByteRange {
-    var iter = PieceIterator.init(buffer);
+/// イテレータを再利用するバージョン（矩形操作の高速化用）
+fn getColumnByteRangeReusing(iter: *PieceIterator, line_bounds: LineBounds, left_col: usize, right_col: usize, tab_width: usize) ByteRange {
     iter.seek(line_bounds.start);
 
     // left_col → right_col を連続して探索
-    const left_result = advanceToColumn(&iter, line_bounds.end, 0, left_col, tab_width);
-    const right_result = advanceToColumn(&iter, line_bounds.end, left_result.reached_col, right_col, tab_width);
+    const left_result = advanceToColumn(iter, line_bounds.end, 0, left_col, tab_width);
+    const right_result = advanceToColumn(iter, line_bounds.end, left_result.reached_col, right_col, tab_width);
 
     return .{ .start = left_result.byte_pos, .end = right_result.byte_pos };
+}
+
+fn getColumnByteRange(buffer: anytype, line_bounds: LineBounds, left_col: usize, right_col: usize, tab_width: usize) ByteRange {
+    var iter = PieceIterator.init(buffer);
+    return getColumnByteRangeReusing(&iter, line_bounds, left_col, right_col, tab_width);
 }
 
 fn seekToColumn(buffer: anytype, line_bounds: LineBounds, target_col: usize, tab_width: usize) ColumnSeekResult {
@@ -77,23 +82,29 @@ fn seekToColumn(buffer: anytype, line_bounds: LineBounds, target_col: usize, tab
     return advanceToColumn(&iter, line_bounds.end, 0, target_col, tab_width);
 }
 
-/// バッファからバイト範囲のテキストを抽出
-fn extractBytes(allocator: std.mem.Allocator, buffer: anytype, start: usize, end: usize) ![]const u8 {
+/// イテレータを再利用するバージョン（矩形操作の高速化用）
+fn extractBytesReusing(allocator: std.mem.Allocator, iter: *PieceIterator, start: usize, end: usize) ![]const u8 {
     if (end <= start) return allocator.dupe(u8, "");
+
+    iter.seek(start);
 
     // 事前に容量を確保してアロケーションを最小化
     const capacity = end - start;
     var line_buf = try std.ArrayList(u8).initCapacity(allocator, capacity);
     errdefer line_buf.deinit(allocator);
 
-    var iter = PieceIterator.init(buffer);
-    iter.seek(start);
     while (iter.global_pos < end) {
         const byte = iter.next() orelse break;
         line_buf.appendAssumeCapacity(byte);
     }
 
     return try line_buf.toOwnedSlice(allocator);
+}
+
+/// バッファからバイト範囲のテキストを抽出
+fn extractBytes(allocator: std.mem.Allocator, buffer: anytype, start: usize, end: usize) ![]const u8 {
+    var iter = PieceIterator.init(buffer);
+    return extractBytesReusing(allocator, &iter, start, end);
 }
 
 /// 古い rectangle_ring をクリーンアップ
@@ -158,6 +169,9 @@ pub fn copyRectangle(e: *Editor) !void {
         rect_ring.deinit(e.allocator);
     }
 
+    // イテレータを1つ作成して全行で再利用（seek()キャッシュにより高速化）
+    var iter = PieceIterator.init(buffer);
+
     // 各行から矩形領域を抽出
     // 短い行も空文字列で保持（行数を維持してyank時のズレを防止）
     var line_num = info.start_line;
@@ -167,10 +181,10 @@ pub fn copyRectangle(e: *Editor) !void {
             try rect_ring.append(e.allocator, try e.allocator.dupe(u8, ""));
             continue;
         };
-        const byte_range = getColumnByteRange(buffer, bounds, info.left_col, info.right_col, tab_width);
+        const byte_range = getColumnByteRangeReusing(&iter, bounds, info.left_col, info.right_col, tab_width);
 
         if (byte_range.end > byte_range.start) {
-            const line_text = try extractBytes(e.allocator, buffer, byte_range.start, byte_range.end);
+            const line_text = try extractBytesReusing(e.allocator, &iter, byte_range.start, byte_range.end);
             try rect_ring.append(e.allocator, line_text);
         } else {
             // 短い行は空文字列を追加（行数を維持）
@@ -218,6 +232,9 @@ pub fn killRectangle(e: *Editor) !void {
         delete_infos.deinit(e.allocator);
     }
 
+    // イテレータを1つ作成して全行で再利用（seek()キャッシュにより高速化）
+    var iter = PieceIterator.init(buffer);
+
     // 各行から矩形領域を抽出（まだ削除しない）
     // 短い行も空文字列で保持（行数を維持してyank時のズレを防止）
     var line_num = info.start_line;
@@ -227,11 +244,11 @@ pub fn killRectangle(e: *Editor) !void {
             try rect_ring.append(e.allocator, try e.allocator.dupe(u8, ""));
             continue;
         };
-        const byte_range = getColumnByteRange(buffer, bounds, info.left_col, info.right_col, tab_width);
+        const byte_range = getColumnByteRangeReusing(&iter, bounds, info.left_col, info.right_col, tab_width);
 
         if (byte_range.end > byte_range.start) {
             // テキストを抽出してrect_ringに追加
-            const line_text = try extractBytes(e.allocator, buffer, byte_range.start, byte_range.end);
+            const line_text = try extractBytesReusing(e.allocator, &iter, byte_range.start, byte_range.end);
             errdefer e.allocator.free(line_text);
             try rect_ring.append(e.allocator, line_text);
 

@@ -492,28 +492,60 @@ pub const ShellService = struct {
 
         var read_buf: [READ_BUFFER_SIZE]u8 = undefined;
 
-        // stdout から読み取り（上限チェック付き、ノンブロッキング）
-        if (state.child.stdout) |stdout_file| {
-            if (try readWithLimit(self.allocator, stdout_file, &state.stdout_buffer, &read_buf, true)) {
-                state.stdout_truncated = true;
-            }
-            // 上限に達したらパイプを閉じる（子プロセスのブロックを防ぐ）
-            if (state.stdout_buffer.items.len >= MAX_OUTPUT_SIZE) {
-                stdout_file.close();
-                state.child.stdout = null;
-            }
-        }
+        // stdout と stderr を交互に読取（デッドロック防止）
+        // 一方のパイプが詰まってもう一方を先に処理する必要がある場合に対応
+        const max_iterations = 16; // 十分な回数を確保
+        var iter_count: usize = 0;
+        while (iter_count < max_iterations) : (iter_count += 1) {
+            var any_read = false;
 
-        // stderr から読み取り（上限チェック付き、ノンブロッキング）
-        if (state.child.stderr) |stderr_file| {
-            if (try readWithLimit(self.allocator, stderr_file, &state.stderr_buffer, &read_buf, true)) {
-                state.stderr_truncated = true;
+            // stdout から1チャンク読み取り
+            if (state.child.stdout) |stdout_file| {
+                if (state.stdout_buffer.items.len < MAX_OUTPUT_SIZE) {
+                    const bytes_read: usize = stdout_file.read(&read_buf) catch 0;
+                    if (bytes_read > 0) {
+                        any_read = true;
+                        const available = MAX_OUTPUT_SIZE - state.stdout_buffer.items.len;
+                        const to_append = @min(bytes_read, available);
+                        if (to_append > 0) {
+                            try state.stdout_buffer.appendSlice(self.allocator, read_buf[0..to_append]);
+                        }
+                        if (to_append < bytes_read) {
+                            state.stdout_truncated = true;
+                        }
+                    }
+                }
+                // 上限に達したらパイプを閉じる（子プロセスのブロックを防ぐ）
+                if (state.stdout_buffer.items.len >= MAX_OUTPUT_SIZE) {
+                    stdout_file.close();
+                    state.child.stdout = null;
+                }
             }
-            // 上限に達したらパイプを閉じる（子プロセスのブロックを防ぐ）
-            if (state.stderr_buffer.items.len >= MAX_OUTPUT_SIZE) {
-                stderr_file.close();
-                state.child.stderr = null;
+
+            // stderr から1チャンク読み取り
+            if (state.child.stderr) |stderr_file| {
+                if (state.stderr_buffer.items.len < MAX_OUTPUT_SIZE) {
+                    const bytes_read: usize = stderr_file.read(&read_buf) catch 0;
+                    if (bytes_read > 0) {
+                        any_read = true;
+                        const available = MAX_OUTPUT_SIZE - state.stderr_buffer.items.len;
+                        const to_append = @min(bytes_read, available);
+                        if (to_append > 0) {
+                            try state.stderr_buffer.appendSlice(self.allocator, read_buf[0..to_append]);
+                        }
+                        if (to_append < bytes_read) {
+                            state.stderr_truncated = true;
+                        }
+                    }
+                }
+                // 上限に達したらパイプを閉じる（子プロセスのブロックを防ぐ）
+                if (state.stderr_buffer.items.len >= MAX_OUTPUT_SIZE) {
+                    stderr_file.close();
+                    state.child.stderr = null;
+                }
             }
+
+            if (!any_read) break;
         }
 
         // stdin へのストリーミング書き込み

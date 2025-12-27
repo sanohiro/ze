@@ -751,10 +751,10 @@ pub fn unindentRegion(e: *Editor) !void {
             // スタックバッファを使用（タブ幅は最大でも16程度なのでヒープアロケーション不要）
             var stack_buf: [16]u8 = undefined;
             const deleted = blk: {
-                var temp_iter = PieceIterator.init(buffer);
-                temp_iter.seek(line_start);
+                // イテレータを再利用（seek()キャッシュにより高速）
+                iter.seek(line_start);
                 for (0..spaces_to_remove) |i| {
-                    stack_buf[i] = temp_iter.next() orelse break;
+                    stack_buf[i] = iter.next() orelse break;
                 }
                 break :blk stack_buf[0..spaces_to_remove];
             };
