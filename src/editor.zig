@@ -3312,6 +3312,8 @@ pub const Editor = struct {
             self.markAllViewsFullRedrawForBuffer(buffer_state.id);
             view.cursor_x = 0;
             view.top_col = 0; // 水平スクロールもリセット
+            // 改行後のカーソル位置キャッシュを更新
+            view.updateCursorPosCacheAfterInsert(pos, len);
         } else {
             // 通常文字
             const view = self.getCurrentView();
@@ -3319,21 +3321,31 @@ pub const Editor = struct {
             self.markAllViewsDirtyForBuffer(buffer_state.id, current_line, current_line);
 
             // カーソル移動（タブは特別扱い）
-            if (codepoint == '\t') {
+            const char_width: usize = if (codepoint == '\t') blk: {
                 const tab_width = view.getTabWidth();
                 const next_tab_stop = (view.cursor_x / tab_width + 1) * tab_width;
+                const width = next_tab_stop - view.cursor_x;
                 view.cursor_x = next_tab_stop;
-            } else {
-                view.cursor_x += unicode.displayWidth(codepoint);
-            }
+                break :blk width;
+            } else blk: {
+                const width = unicode.displayWidth(codepoint);
+                view.cursor_x += width;
+                break :blk width;
+            };
+
+            // 行幅キャッシュを差分更新（再計算を回避）
+            view.updateLineWidthCacheAfterInsert(char_width);
 
             // 水平スクロール: カーソルが右端を超えた場合
             const line_num_width = view.getLineNumberWidth();
             const visible_width = if (view.viewport_width > line_num_width) view.viewport_width - line_num_width else 1;
             if (view.cursor_x >= view.top_col + visible_width) {
                 view.top_col = view.cursor_x - visible_width + 1;
-                view.markFullRedraw();
+                view.markHorizontalScroll();
             }
+
+            // カーソル位置キャッシュを更新（次回getCursorBufferPos()を高速化）
+            view.updateCursorPosCacheAfterInsert(pos, len);
         }
     }
 
@@ -3358,6 +3370,9 @@ pub const Editor = struct {
         // Undo用に記録（1回の操作として記録）
         try self.recordInsert(pos, content, pos);
         buffer_state.editing_ctx.modified = true;
+
+        // キャッシュを無効化（setCursorToPosで再計算される）
+        self.getCurrentView().invalidateCursorPosCache();
 
         // カーソル位置を挿入後の位置に移動（yank と同様）
         self.setCursorToPos(pos + content.len);
@@ -3608,6 +3623,10 @@ pub const Editor = struct {
                 new_pos = @min(new_pos + 1, buffer.total_len);
             }
         }
+
+        // キャッシュを無効化（バッファが変更されたため）
+        self.getCurrentView().invalidateCursorPosCache();
+
         self.setCursorToPos(new_pos);
 
         // 置換した行から再描画

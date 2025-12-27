@@ -287,6 +287,13 @@ pub const View = struct {
     line_width_cache: [128]?u16, // 最大128行分（null=未計算）
     line_width_cache_top_line: usize, // キャッシュの基準top_line
 
+    // === カーソルバイト位置キャッシュ（文字入力高速化）===
+    // getCursorBufferPos()の結果をキャッシュ。文字入力後に差分更新
+    cursor_byte_pos_cache: ?usize, // キャッシュされたバイト位置（nullなら無効）
+    cursor_byte_pos_cache_x: usize, // キャッシュ時のcursor_x
+    cursor_byte_pos_cache_y: usize, // キャッシュ時のcursor_y
+    cursor_byte_pos_cache_top_line: usize, // キャッシュ時のtop_line
+
     // === 言語・設定 ===
     language: *const syntax.LanguageDef,
     tab_width: ?u8, // nullなら言語デフォルト
@@ -329,6 +336,10 @@ pub const View = struct {
             .block_comment_temp_buf = .{}, // 遅延初期化
             .line_width_cache = .{null} ** 128, // 全てnull（未計算）
             .line_width_cache_top_line = 0,
+            .cursor_byte_pos_cache = null, // キャッシュ無効
+            .cursor_byte_pos_cache_x = 0,
+            .cursor_byte_pos_cache_y = 0,
+            .cursor_byte_pos_cache_top_line = 0,
             .expanded_line = .{},
             .highlighted_line = .{},
             .regex_visible_text = .{},
@@ -1821,6 +1832,16 @@ pub const View = struct {
     /// 絵文字やZWJシーケンスの途中でカーソルが止まらないよう、
     /// グラフェムクラスタ単位で走査する。
     pub fn getCursorBufferPos(self: *View) usize {
+        // キャッシュが有効かチェック（cursor位置が変わっていなければ再利用）
+        if (self.cursor_byte_pos_cache) |cached_pos| {
+            if (self.cursor_byte_pos_cache_x == self.cursor_x and
+                self.cursor_byte_pos_cache_y == self.cursor_y and
+                self.cursor_byte_pos_cache_top_line == self.top_line)
+            {
+                return cached_pos;
+            }
+        }
+
         const target_line = self.top_line + self.cursor_y;
 
         // LineIndexでO(1)行開始位置取得
@@ -1861,7 +1882,30 @@ pub const View = struct {
             }
         }
 
-        return @min(iter.global_pos, self.buffer.len());
+        const result = @min(iter.global_pos, self.buffer.len());
+
+        // キャッシュを更新
+        self.cursor_byte_pos_cache = result;
+        self.cursor_byte_pos_cache_x = self.cursor_x;
+        self.cursor_byte_pos_cache_y = self.cursor_y;
+        self.cursor_byte_pos_cache_top_line = self.top_line;
+
+        return result;
+    }
+
+    /// カーソルバイト位置キャッシュを無効化
+    /// バッファが編集された場合（削除、ペースト等）に呼び出す
+    pub fn invalidateCursorPosCache(self: *View) void {
+        self.cursor_byte_pos_cache = null;
+    }
+
+    /// 文字入力後にカーソルバイト位置キャッシュを直接更新
+    /// getCursorBufferPos()の再計算を回避
+    pub fn updateCursorPosCacheAfterInsert(self: *View, old_pos: usize, inserted_len: usize) void {
+        self.cursor_byte_pos_cache = old_pos + inserted_len;
+        self.cursor_byte_pos_cache_x = self.cursor_x;
+        self.cursor_byte_pos_cache_y = self.cursor_y;
+        self.cursor_byte_pos_cache_top_line = self.top_line;
     }
 
     /// カーソル位置のバイトオフセットと直前の文字幅を同時に取得
@@ -2001,6 +2045,33 @@ pub const View = struct {
                 self.line_width_cache[cache_idx] = null;
             }
         }
+    }
+
+    /// 文字入力後に行幅キャッシュを差分更新
+    /// 再計算せずに直接幅を加算（高速化）
+    pub fn updateLineWidthCacheAfterInsert(self: *View, char_width: usize) void {
+        if (self.line_width_cache_top_line != self.top_line) {
+            // top_lineが変わったらキャッシュ全体を無効化（差分更新不可）
+            self.line_width_cache = .{null} ** 128;
+            self.line_width_cache_top_line = self.top_line;
+            return;
+        }
+
+        const file_line = self.top_line + self.cursor_y;
+        if (file_line < self.top_line) return;
+        const cache_idx = file_line - self.top_line;
+        if (cache_idx >= 128) return;
+
+        if (self.line_width_cache[cache_idx]) |cached| {
+            // キャッシュに幅を加算（u16オーバーフロー時は無効化）
+            const new_width = @as(usize, cached) + char_width;
+            if (new_width <= std.math.maxInt(u16)) {
+                self.line_width_cache[cache_idx] = @intCast(new_width);
+            } else {
+                self.line_width_cache[cache_idx] = null;
+            }
+        }
+        // キャッシュがnull（未計算）の場合はそのまま（次回アクセス時に計算）
     }
 
     /// 行幅を取得（キャッシュ使用）

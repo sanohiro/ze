@@ -48,6 +48,9 @@ fn deleteRangeCommon(e: *Editor, start: usize, len: usize, cursor_pos_for_undo: 
     buffer_state.editing_ctx.modified = true;
     markDirtyForText(e, current_line, deleted);
 
+    // カーソル位置キャッシュを無効化（削除後はposが変わる）
+    e.getCurrentView().invalidateCursorPosCache();
+
     return deleted;
 }
 
@@ -216,6 +219,9 @@ pub fn undo(e: *Editor) !void {
     const result = try buffer_state.editing_ctx.undoWithCursor();
     if (result == null) return;
 
+    // キャッシュを無効化（バッファ内容が変更される）
+    e.getCurrentView().invalidateCursorPosCache();
+
     markFullRedrawAll(e);
     e.restoreCursorPos(result.?.cursor_pos);
 }
@@ -229,6 +235,9 @@ pub fn redo(e: *Editor) !void {
 
     const result = try buffer_state.editing_ctx.redoWithCursor();
     if (result == null) return;
+
+    // キャッシュを無効化（バッファ内容が変更される）
+    e.getCurrentView().invalidateCursorPosCache();
 
     markFullRedrawAll(e);
     e.restoreCursorPos(result.?.cursor_pos);
@@ -256,6 +265,9 @@ pub fn yank(e: *Editor) !void {
     try e.recordInsert(pos, text, pos);
 
     buffer_state.editing_ctx.modified = true;
+
+    // キャッシュを無効化（setCursorToPosで再計算される）
+    e.getCurrentView().invalidateCursorPosCache();
 
     e.setCursorToPos(pos + text.len);
 

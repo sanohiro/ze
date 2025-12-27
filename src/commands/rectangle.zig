@@ -288,6 +288,9 @@ pub fn killRectangle(e: *Editor) !void {
     buffer_state.editing_ctx.modified = true;
     e.markAllViewsDirtyForBuffer(buffer_state.id, info.start_line, null);
 
+    // カーソル位置キャッシュを無効化
+    e.getCurrentView().invalidateCursorPosCache();
+
     e.getCurrentWindow().mark_pos = null;
     e.getCurrentView().setError(config.Messages.RECTANGLE_KILLED);
 }
@@ -376,6 +379,9 @@ pub fn yankRectangle(e: *Editor) !void {
     // modified と dirty を設定
     buffer_state.editing_ctx.modified = true;
     e.markAllViewsDirtyForBuffer(buffer_state.id, cursor_line, null);
+
+    // カーソル位置キャッシュを無効化
+    e.getCurrentView().invalidateCursorPosCache();
 
     e.getCurrentView().setError(config.Messages.RECTANGLE_YANKED);
 }
