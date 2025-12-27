@@ -196,11 +196,9 @@ pub fn killLine(e: *Editor) !void {
     if (delete_len == 0) return;
 
     if (try deleteRangeCommon(e, pos, delete_len, pos)) |deleted| {
-        // kill ringに保存（freeせずに所有権移転）
-        if (e.kill_ring) |old_text| {
-            e.allocator.free(old_text);
-        }
-        e.kill_ring = deleted;
+        // kill ringに保存（KillRingの再利用バッファにコピー）
+        defer e.allocator.free(deleted);
+        try e.kill_ring.store(deleted);
     }
 }
 
@@ -246,7 +244,7 @@ pub fn yank(e: *Editor) !void {
     const buffer_state = e.getCurrentBuffer();
     const buffer = e.getCurrentBufferContent();
     const current_line = e.getCurrentLine();
-    const text = e.kill_ring orelse {
+    const text = e.kill_ring.get() orelse {
         e.getCurrentView().setError("Kill ring is empty");
         return;
     };
@@ -276,11 +274,9 @@ pub fn killRegion(e: *Editor) !void {
 
     const deleted = try deleteRangeCommon(e, region.start, region.len, e.getCurrentView().getCursorBufferPos()) orelse return;
 
-    // kill ringに保存（freeせずに所有権移転）
-    if (e.kill_ring) |old_text| {
-        e.allocator.free(old_text);
-    }
-    e.kill_ring = deleted;
+    // kill ringに保存（KillRingの再利用バッファにコピー）
+    defer e.allocator.free(deleted);
+    try e.kill_ring.store(deleted);
 
     e.setCursorToPos(region.start);
     window.mark_pos = null;
@@ -295,14 +291,10 @@ pub fn copyRegion(e: *Editor) !void {
         return;
     };
 
-    // 新しいテキストを先に取得（失敗時はkill_ringを壊さない）
+    // 新しいテキストを先に取得してkill ringに保存
     const new_text = try e.extractText(region.start, region.len);
-
-    // 新規取得成功後に古いテキストを解放
-    if (e.kill_ring) |old_text| {
-        e.allocator.free(old_text);
-    }
-    e.kill_ring = new_text;
+    defer e.allocator.free(new_text);
+    try e.kill_ring.store(new_text);
 
     window.mark_pos = null;
 

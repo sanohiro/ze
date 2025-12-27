@@ -278,6 +278,9 @@ pub const View = struct {
     cached_line_num_width: usize, // 行番号の表示幅
     cached_block_state: ?bool, // ブロックコメント状態
     cached_block_top_line: usize, // キャッシュが有効な行
+    cached_cursor_byte_pos: ?usize, // カーソル展開位置キャッシュ：バイト位置
+    cached_cursor_expanded_pos: usize, // カーソル展開位置キャッシュ：展開後位置
+    block_comment_temp_buf: std.ArrayList(u8), // ブロックコメント解析用一時バッファ（再利用）
 
     // === 言語・設定 ===
     language: *const syntax.LanguageDef,
@@ -316,6 +319,9 @@ pub const View = struct {
             .show_line_numbers = config.Editor.SHOW_LINE_NUMBERS, // デフォルト設定
             .cached_block_state = null, // キャッシュ無効
             .cached_block_top_line = 0,
+            .cached_cursor_byte_pos = null, // キャッシュ無効
+            .cached_cursor_expanded_pos = 0,
+            .block_comment_temp_buf = .{}, // 遅延初期化
             .expanded_line = .{},
             .highlighted_line = .{},
             .regex_visible_text = .{},
@@ -451,6 +457,7 @@ pub const View = struct {
         self.highlighted_line.deinit(allocator);
         self.regex_visible_text.deinit(allocator);
         self.regex_visible_to_raw.deinit(allocator);
+        self.block_comment_temp_buf.deinit(allocator);
         // 正規表現キャッシュのクリーンアップ
         if (self.compiled_highlight_regex) |*r| {
             r.deinit();
@@ -731,9 +738,6 @@ pub const View = struct {
 
         // start_lineからtarget_lineまでスキャン
         var iter = PieceIterator.init(self.buffer);
-        // 行バッファを事前に確保（再アロケーション削減）
-        var line_buf = std.ArrayList(u8).initCapacity(self.allocator, 256) catch return false;
-        defer line_buf.deinit(self.allocator);
 
         // start_lineまでスキップ
         var current_line: usize = 0;
@@ -743,17 +747,17 @@ pub const View = struct {
             }
         }
 
-        // start_lineからtarget_lineまでスキャン
+        // start_lineからtarget_lineまでスキャン（再利用バッファを使用）
         while (current_line < target_line) : (current_line += 1) {
-            // 行を読み取る
-            line_buf.clearRetainingCapacity();
+            // 行を読み取る（View構造体の再利用バッファを使用）
+            self.block_comment_temp_buf.clearRetainingCapacity();
             while (iter.next()) |ch| {
                 if (ch == '\n') break;
-                line_buf.append(self.allocator, ch) catch break;
+                self.block_comment_temp_buf.append(self.allocator, ch) catch break;
             }
 
             // 行を解析
-            const analysis = self.language.analyzeLine(line_buf.items, in_block);
+            const analysis = self.language.analyzeLine(self.block_comment_temp_buf.items, in_block);
             in_block = analysis.ends_in_block;
         }
 
@@ -1077,7 +1081,10 @@ pub const View = struct {
     ///
     /// 【効果】
     /// 通常の編集操作で write() バイト数が 40-90% 削減される。
-    fn renderLineDiff(self: *View, term: *Terminal, new_line: []const u8, screen_row: usize, abs_row: usize, viewport_x: usize, viewport_width: usize) !void {
+    ///
+    /// 【display_width最適化】
+    /// 事前計算されたdisplay_widthを受け取ることで、padToWidth()での重複計算を回避。
+    fn renderLineDiff(self: *View, term: *Terminal, new_line: []const u8, screen_row: usize, abs_row: usize, viewport_x: usize, viewport_width: usize, display_width: usize) !void {
         if (screen_row < self.prev_screen.items.len) {
             const old_line = self.prev_screen.items[screen_row].items;
 
@@ -1125,7 +1132,10 @@ pub const View = struct {
                 if (!std.mem.eql(u8, old_line, new_line)) {
                     try term.moveCursor(abs_row, viewport_x);
                     try term.write(new_line);
-                    try self.padToWidth(term, new_line, viewport_width);
+                    // 残りをスペースで埋める（事前計算のdisplay_widthを使用、再計算なし）
+                    if (display_width < viewport_width) {
+                        try writeSpaces(term, viewport_width - display_width);
+                    }
                 }
             } else {
                 // 差分を検出（双方向走査で高速化）
@@ -1167,8 +1177,10 @@ pub const View = struct {
                         // 行頭から全体を再描画
                         try term.moveCursor(abs_row, viewport_x);
                         try term.write(new_line);
-                        // 残りをスペースで埋める（CLEAR_LINEの代わり）
-                        try self.padToWidth(term, new_line, viewport_width);
+                        // 残りをスペースで埋める（事前計算のdisplay_widthを使用）
+                        if (display_width < viewport_width) {
+                            try writeSpaces(term, viewport_width - display_width);
+                        }
                     } else if (line_num_display_width > 0) {
                         // 行番号があるが本文部分のみの差分
                         // UTF-8文字境界に調整
@@ -1186,7 +1198,9 @@ pub const View = struct {
 
                         // 古い行の方が長い場合は残りをスペースで埋める
                         if (old_line.len > new_line.len) {
-                            try self.padToWidth(term, new_line, viewport_width);
+                            if (display_width < viewport_width) {
+                                try writeSpaces(term, viewport_width - display_width);
+                            }
                         }
                     } else {
                         // UTF-8文字境界に調整（継続バイトの途中から始まらないように）
@@ -1204,7 +1218,9 @@ pub const View = struct {
 
                         // 古い行の方が長い場合は残りをスペースで埋める
                         if (old_line.len > new_line.len) {
-                            try self.padToWidth(term, new_line, viewport_width);
+                            if (display_width < viewport_width) {
+                                try writeSpaces(term, viewport_width - display_width);
+                            }
                         }
                     }
                 }
@@ -1213,8 +1229,10 @@ pub const View = struct {
             // 新しい行：全体を描画
             try term.moveCursor(abs_row, viewport_x);
             try term.write(new_line);
-            // 残りをスペースで埋める
-            try self.padToWidth(term, new_line, viewport_width);
+            // 残りをスペースで埋める（事前計算のdisplay_widthを使用）
+            if (display_width < viewport_width) {
+                try writeSpaces(term, viewport_width - display_width);
+            }
         }
 
         // 前フレームバッファを更新
@@ -1444,8 +1462,20 @@ pub const View = struct {
         // （expanded_lineはタブを8スペースに展開しているため、RAW位置ではなく展開後位置が必要）
         const cursor_in_content: ?usize = if (is_cursor_line) blk: {
             const cursor_pos = self.getCursorBufferPos();
+
+            // キャッシュヒット: カーソル位置が変わっていなければ計算をスキップ
+            if (self.cached_cursor_byte_pos) |cached_pos| {
+                if (cached_pos == cursor_pos) {
+                    break :blk self.cached_cursor_expanded_pos;
+                }
+            }
+
             const line_start = self.buffer.getLineStart(self.top_line + self.cursor_y) orelse 0;
-            if (cursor_pos < line_start) break :blk 0;
+            if (cursor_pos < line_start) {
+                self.cached_cursor_byte_pos = cursor_pos;
+                self.cached_cursor_expanded_pos = 0;
+                break :blk 0;
+            }
 
             // 行頭からカーソルまでタブ展開と全角文字幅を考慮した位置を計算
             // 外側のスコープで定義された tab_width を使用
@@ -1476,12 +1506,20 @@ pub const View = struct {
                     }
                 }
             }
+            // キャッシュを更新
+            self.cached_cursor_byte_pos = cursor_pos;
+            self.cached_cursor_expanded_pos = expanded_pos;
             break :blk expanded_pos;
         } else null;
         const new_line = try self.applySearchHighlight(self.expanded_line.items, cursor_in_content, content_start_byte);
 
+        // 表示幅を計算（renderLineDiff内でのpadToWidth再計算を回避）
+        // col = 行末までの論理カラム位置、visible_end = 表示範囲終端
+        const content_visible = if (col > self.top_col) @min(col, visible_end) - self.top_col else 0;
+        const final_display_width = line_num_width + content_visible;
+
         // 差分描画と前フレームバッファ更新
-        try self.renderLineDiff(term, new_line, screen_row, abs_row, viewport_x, viewport_width);
+        try self.renderLineDiff(term, new_line, screen_row, abs_row, viewport_x, viewport_width, final_display_width);
 
         // 次の行がブロックコメント内で開始するかを返す
         return analysis.ends_in_block;
@@ -1508,7 +1546,10 @@ pub const View = struct {
         // 描画
         try term.moveCursor(abs_row, viewport_x);
         try term.write(empty_line);
-        try self.padToWidth(term, empty_line, viewport_width);
+        // "~" は表示幅1なので、残りをスペースで埋める
+        if (viewport_width > 1) {
+            try writeSpaces(term, viewport_width - 1);
+        }
 
         // 前フレームバッファを更新
         try self.updatePrevScreenBuffer(screen_row, empty_line);

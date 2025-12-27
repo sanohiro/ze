@@ -68,6 +68,71 @@ const movement = @import("commands_movement");
 const rectangle = @import("commands_rectangle");
 const mx = @import("commands_mx");
 
+/// キルリング - 連続kill操作でのメモリ再利用を実現
+/// 毎回alloc/freeする代わりに、容量を確保して再利用する。
+pub const KillRing = struct {
+    data: ?[]u8,
+    capacity: usize,
+    len: usize,
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator) KillRing {
+        return .{
+            .data = null,
+            .capacity = 0,
+            .len = 0,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *KillRing) void {
+        if (self.data) |d| {
+            self.allocator.free(d);
+        }
+    }
+
+    /// テキストを保存（容量が足りなければ拡大、足りていれば再利用）
+    pub fn store(self: *KillRing, text: []const u8) !void {
+        if (self.capacity < text.len) {
+            // サイズ拡大時のみrealloc（+50%予備で再アロケーション頻度を削減）
+            const new_capacity = text.len + (text.len / 2) + 64; // 最低64バイトは余裕を持つ
+            if (self.data) |old| {
+                // reallocで効率的にサイズ変更
+                if (self.allocator.resize(old, new_capacity)) {
+                    // resizeが成功した場合（インプレース拡張）
+                    self.capacity = new_capacity;
+                } else {
+                    // resizeが失敗した場合は新規アロケーション
+                    const new_data = try self.allocator.alloc(u8, new_capacity);
+                    self.allocator.free(old);
+                    self.data = new_data;
+                    self.capacity = new_capacity;
+                }
+            } else {
+                self.data = try self.allocator.alloc(u8, new_capacity);
+                self.capacity = new_capacity;
+            }
+        }
+        @memcpy(self.data.?[0..text.len], text);
+        self.len = text.len;
+    }
+
+    /// 保存されたテキストを取得
+    pub fn get(self: *const KillRing) ?[]const u8 {
+        if (self.data) |d| {
+            if (self.len > 0) {
+                return d[0..self.len];
+            }
+        }
+        return null;
+    }
+
+    /// 内容をクリア（メモリは保持）
+    pub fn clear(self: *KillRing) void {
+        self.len = 0;
+    }
+};
+
 /// エディタの状態遷移を管理するモード
 ///
 /// zeは基本的にモードレス（Vimと違いモード切り替え不要）だが、
@@ -153,7 +218,7 @@ pub const Editor = struct {
     cached_prompt_prefix: ?[]const u8, // プレフィックスキャッシュ（再計算回避）
 
     // グローバルバッファ（全バッファで共有）
-    kill_ring: ?[]const u8,
+    kill_ring: KillRing,
     rectangle_ring: ?std.ArrayList([]const u8),
 
     // 検索状態（グローバル）
@@ -216,7 +281,7 @@ pub const Editor = struct {
             .quit_after_save = false,
             .prompt_prefix_len = 0,
             .cached_prompt_prefix = null,
-            .kill_ring = null,
+            .kill_ring = KillRing.init(allocator),
             .rectangle_ring = null,
             .search_start_pos = null,
             .last_search = null,
@@ -256,9 +321,7 @@ pub const Editor = struct {
         self.keymap.deinit();
 
         // グローバルバッファの解放
-        if (self.kill_ring) |text| {
-            self.allocator.free(text);
-        }
+        self.kill_ring.deinit();
         if (self.rectangle_ring) |*rect| {
             for (rect.items) |line| {
                 self.allocator.free(line);
@@ -948,7 +1011,7 @@ pub const Editor = struct {
                     },
                     'y' => {
                         // kill ringからペースト
-                        if (self.kill_ring) |text| {
+                        if (self.kill_ring.get()) |text| {
                             try self.minibuffer.insertAtCursor(text);
                         }
                         return true;
@@ -1898,7 +1961,23 @@ pub const Editor = struct {
                     if (!input_reader.hasData()) break;
                 } else break;
             }
+
+            // 【投機的即時レンダリング】キー処理後に変更があれば即座に再描画
+            // 従来: render → wait → process → (次フレームで) render (16ms遅延)
+            // 改善: render → wait → process → render (即座、0ms遅延)
+            if (keys_processed > 0 and self.anyWindowNeedsRedraw()) {
+                self.clampCursorPosition();
+                try self.renderAllWindows();
+            }
         }
+    }
+
+    /// いずれかのウィンドウが再描画を必要としているかチェック
+    fn anyWindowNeedsRedraw(self: *Editor) bool {
+        for (self.window_manager.iterator()) |*window| {
+            if (window.view.needsRedraw()) return true;
+        }
+        return false;
     }
 
     // バッファから指定範囲のテキストを取得（削除前に使用）
