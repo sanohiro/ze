@@ -511,3 +511,85 @@ test "search in fragmented buffer" {
     try testing.expect(pos != null);
     try testing.expectEqual(@as(usize, 0), pos.?);
 }
+
+test "Piece consolidation: consecutive inserts create single piece" {
+    const allocator = testing.allocator;
+
+    var buffer = try Buffer.init(allocator);
+    defer buffer.deinit();
+
+    // 1文字ずつ連続して挿入（従来は10個のPieceになっていた）
+    try buffer.insertSlice(0, "H");
+    try buffer.insertSlice(1, "e");
+    try buffer.insertSlice(2, "l");
+    try buffer.insertSlice(3, "l");
+    try buffer.insertSlice(4, "o");
+    try buffer.insertSlice(5, " ");
+    try buffer.insertSlice(6, "W");
+    try buffer.insertSlice(7, "o");
+    try buffer.insertSlice(8, "r");
+    try buffer.insertSlice(9, "l");
+    try buffer.insertSlice(10, "d");
+
+    // 内容が正しいことを確認
+    const content = try buffer.getRange(allocator, 0, buffer.len());
+    defer allocator.free(content);
+    try testing.expectEqualStrings("Hello World", content);
+
+    // Piece統合により、11回の挿入でも1つのPieceになる
+    try testing.expectEqual(@as(usize, 1), buffer.pieces.items.len);
+}
+
+test "Piece consolidation: non-consecutive insert breaks consolidation" {
+    const allocator = testing.allocator;
+
+    var buffer = try Buffer.init(allocator);
+    defer buffer.deinit();
+
+    // 最初の挿入
+    try buffer.insertSlice(0, "Hello");
+
+    // 末尾に連続挿入（統合される）
+    try buffer.insertSlice(5, " ");
+    try buffer.insertSlice(6, "World");
+
+    // これで1つのPiece
+    try testing.expectEqual(@as(usize, 1), buffer.pieces.items.len);
+
+    // 途中に挿入（統合されない - 位置が違う）
+    try buffer.insertSlice(5, "XXX");
+
+    // 分割されて3つのPieceになる
+    try testing.expectEqual(@as(usize, 3), buffer.pieces.items.len);
+
+    // 内容が正しいことを確認
+    const content = try buffer.getRange(allocator, 0, buffer.len());
+    defer allocator.free(content);
+    try testing.expectEqualStrings("HelloXXX World", content);
+}
+
+test "Piece consolidation: delete resets consolidation state" {
+    const allocator = testing.allocator;
+
+    var buffer = try Buffer.init(allocator);
+    defer buffer.deinit();
+
+    // 連続挿入
+    try buffer.insertSlice(0, "ABC");
+    try buffer.insertSlice(3, "DEF");
+    try testing.expectEqual(@as(usize, 1), buffer.pieces.items.len);
+
+    // 削除で統合状態がリセット
+    try buffer.delete(3, 1); // "D"を削除
+
+    // 同じ位置に挿入しても新しいPieceになる
+    try buffer.insertSlice(3, "X");
+
+    // 2つのPiece（"ABC" + "XEF"ではなく、削除後の構造による）
+    try testing.expect(buffer.pieces.items.len >= 2);
+
+    // 内容が正しいことを確認
+    const content = try buffer.getRange(allocator, 0, buffer.len());
+    defer allocator.free(content);
+    try testing.expectEqualStrings("ABCXEF", content);
+}

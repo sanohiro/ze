@@ -511,6 +511,11 @@ pub const Buffer = struct {
     detected_encoding: encoding.Encoding, // 検出したエンコーディング（保存時に復元）
     loaded_mtime: i128, // ファイル読み込み時のmtime（二重I/O削減）
 
+    // Piece統合のための追跡情報
+    // 連続した文字入力で新しいPieceを作らず、既存Pieceを延長する
+    last_insert_end: ?usize, // 直前の挿入終了位置（null = 統合不可）
+    last_insert_piece_idx: usize, // 直前の挿入で使用/作成したPieceのインデックス
+
     pub fn init(allocator: std.mem.Allocator) !Buffer {
         // 空のArrayListで初期化（遅延アロケーション）
         // 初回編集時に自動的に拡張される
@@ -527,6 +532,8 @@ pub const Buffer = struct {
             .detected_line_ending = .LF, // デフォルトはLF
             .detected_encoding = .UTF8, // デフォルトはUTF-8
             .loaded_mtime = 0,
+            .last_insert_end = null,
+            .last_insert_piece_idx = 0,
         };
     }
 
@@ -624,6 +631,8 @@ pub const Buffer = struct {
                     .detected_line_ending = .LF,
                     .detected_encoding = .UTF8,
                     .loaded_mtime = stat.mtime,
+                    .last_insert_end = null,
+                    .last_insert_piece_idx = 0,
                 };
 
                 // 初期状態：originalファイル全体を指す1つのpiece
@@ -677,6 +686,8 @@ pub const Buffer = struct {
             .detected_line_ending = .LF,
             .detected_encoding = .UTF8,
             .loaded_mtime = 0, // 空ファイルはmtimeなし
+            .last_insert_end = null,
+            .last_insert_piece_idx = 0,
         };
     }
 
@@ -710,6 +721,8 @@ pub const Buffer = struct {
             .detected_line_ending = line_ending,
             .detected_encoding = detected_encoding,
             .loaded_mtime = file_mtime,
+            .last_insert_end = null,
+            .last_insert_piece_idx = 0,
         };
 
         if (normalized.len > 0) {
@@ -1099,6 +1112,9 @@ pub const Buffer = struct {
     /// 2. 挿入位置でpieceを分割（必要な場合）
     /// 3. 新しいpieceを作成して配列に追加
     ///
+    /// 【Piece統合】連続した文字入力（同じ位置への追記）では、
+    /// 新しいPieceを作成せず既存Pieceを延長することで、Piece数の増加を抑制。
+    ///
     /// 例: "Hello World" の位置5に ", Beautiful" を挿入
     ///   Before: [{ original, 0, 11 }]  → "Hello World"
     ///   After:  [{ original, 0, 5 },   → "Hello"
@@ -1108,6 +1124,28 @@ pub const Buffer = struct {
     /// 元のテキストは変更されず、pieceの構成だけが変わる。
     pub fn insertSlice(self: *Buffer, pos: usize, text: []const u8) !void {
         if (text.len == 0) return;
+
+        // 【Piece統合チェック】
+        // 直前の挿入位置に連続して挿入する場合、既存Pieceを延長
+        if (self.last_insert_end) |last_end| {
+            if (pos == last_end and self.last_insert_piece_idx < self.pieces.items.len) {
+                const last_piece = &self.pieces.items[self.last_insert_piece_idx];
+                // add_bufferの末尾に連続しているか確認
+                if (last_piece.source == .add and
+                    last_piece.start + last_piece.length == self.add_buffer.items.len)
+                {
+                    // 統合可能：add_bufferに追記してPieceを延長
+                    try self.add_buffer.appendSlice(self.allocator, text);
+                    last_piece.length += text.len;
+                    self.total_len += text.len;
+                    self.last_insert_end = pos + text.len;
+                    self.line_index.invalidateFrom(pos);
+                    return;
+                }
+            }
+        }
+
+        // 統合できない場合は通常の挿入処理
 
         // add_bufferに追加（失敗時のロールバック用に長さを記録）
         const add_start = self.add_buffer.items.len;
@@ -1124,6 +1162,8 @@ pub const Buffer = struct {
         if (pos == 0) {
             try self.pieces.insert(self.allocator, 0, new_piece);
             self.total_len += text.len;
+            self.last_insert_end = pos + text.len;
+            self.last_insert_piece_idx = 0;
             self.line_index.invalidateFrom(pos);
             return;
         }
@@ -1133,6 +1173,8 @@ pub const Buffer = struct {
         if (pos == self.total_len) {
             try self.pieces.append(self.allocator, new_piece);
             self.total_len += text.len;
+            self.last_insert_end = pos + text.len;
+            self.last_insert_piece_idx = self.pieces.items.len - 1;
             self.line_index.invalidateFrom(pos);
             return;
         }
@@ -1146,6 +1188,8 @@ pub const Buffer = struct {
         const location = self.findPieceAt(pos) orelse {
             try self.pieces.append(self.allocator, new_piece);
             self.total_len += text.len;
+            self.last_insert_end = pos + text.len;
+            self.last_insert_piece_idx = self.pieces.items.len - 1;
             self.line_index.invalidateFrom(pos);
             return;
         };
@@ -1156,6 +1200,8 @@ pub const Buffer = struct {
         if (location.offset == 0) {
             try self.pieces.insert(self.allocator, location.piece_idx, new_piece);
             self.total_len += text.len;
+            self.last_insert_end = pos + text.len;
+            self.last_insert_piece_idx = location.piece_idx;
             self.line_index.invalidateFrom(pos);
             return;
         }
@@ -1163,6 +1209,8 @@ pub const Buffer = struct {
         if (location.offset == piece.length) {
             try self.pieces.insert(self.allocator, location.piece_idx + 1, new_piece);
             self.total_len += text.len;
+            self.last_insert_end = pos + text.len;
+            self.last_insert_piece_idx = location.piece_idx + 1;
             self.line_index.invalidateFrom(pos);
             return;
         }
@@ -1191,6 +1239,8 @@ pub const Buffer = struct {
         self.pieces.insertAssumeCapacity(location.piece_idx, new_piece);
         self.pieces.insertAssumeCapacity(location.piece_idx, left_piece);
         self.total_len += text.len;
+        self.last_insert_end = pos + text.len;
+        self.last_insert_piece_idx = location.piece_idx + 1; // new_pieceの位置
         self.line_index.invalidateFrom(pos);
     }
 
@@ -1210,6 +1260,9 @@ pub const Buffer = struct {
     /// 長時間の編集後はバッファの再構築（コンパクション）が有効。
     pub fn delete(self: *Buffer, pos: usize, count: usize) !void {
         if (count == 0) return;
+
+        // 削除操作ではPiece統合状態をリセット
+        self.last_insert_end = null;
 
         // pos が範囲外の場合は何もしない
         if (pos >= self.total_len) return;
