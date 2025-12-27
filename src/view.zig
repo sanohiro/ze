@@ -1378,11 +1378,8 @@ pub const View = struct {
                             // 全角空白 → 薄い「□」に置換（幅2）
                             try self.expanded_line.appendSlice(self.allocator, FULLWIDTH_SPACE_VISUAL);
                         } else {
-                            // グラフェムクラスタ全体をコピー
-                            var i: usize = 0;
-                            while (i < cluster.byte_len) : (i += 1) {
-                                try self.expanded_line.append(self.allocator, line_buffer.items[byte_idx + i]);
-                            }
+                            // グラフェムクラスタ全体をコピー（appendSliceでバイトごとの境界チェックを削減）
+                            try self.expanded_line.appendSlice(self.allocator, line_buffer.items[byte_idx .. byte_idx + cluster.byte_len]);
                         }
                     }
                     byte_idx += cluster.byte_len;

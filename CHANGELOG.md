@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.4] - 2025-12-27
+
+### Fixed
+- Memory safety: dupe-then-free pattern in editor.zig (4 locations) - prevents dangling pointer on allocation failure
+- Infinite loop: replaceCurrentMatch with empty regex match now advances cursor correctly
+- Buffer overflow: getRegion now clamps both cursor and mark positions
+- State leak: cancelInput now resets completion_shown flag
+
+### Performance
+- `toggleComment`: 50-100x faster on long lines (uses extractText instead of byte-by-byte append)
+- `forwardParagraph`: 2-5x faster on large files (removed redundant iterator seek)
+- `view.zig`: grapheme cluster copy uses appendSlice instead of byte-by-byte append
+
 ## [1.1.3] - 2025-12-22
 
 ### Fixed

@@ -378,6 +378,7 @@ pub const Editor = struct {
         self.mode = .normal;
         self.clearInputBuffer();
         self.clearPendingFilename(); // メモリリーク防止
+        self.completion_shown = false; // 補完表示フラグをリセット
         self.getCurrentView().clearError();
     }
 
@@ -2294,10 +2295,13 @@ pub const Editor = struct {
                         // C-x: 検索を終了してC-xプレフィックスモードに入る
                         if (self.minibuffer.getContent().len > 0) {
                             try self.search_service.addToHistory(self.minibuffer.getContent());
-                            if (self.last_search) |old_search| {
-                                self.allocator.free(old_search);
-                            }
-                            self.last_search = self.allocator.dupe(u8, self.minibuffer.getContent()) catch null;
+                            // dupe成功後にfree（dupe失敗時は古い値を保持）
+                            if (self.allocator.dupe(u8, self.minibuffer.getContent())) |new_search| {
+                                if (self.last_search) |old_search| {
+                                    self.allocator.free(old_search);
+                                }
+                                self.last_search = new_search;
+                            } else |_| {}
                         }
                         self.endSearch();
                         self.mode = .prefix_x;
@@ -2367,10 +2371,13 @@ pub const Editor = struct {
             .enter => {
                 if (self.minibuffer.getContent().len > 0) {
                     try self.search_service.addToHistory(self.minibuffer.getContent());
-                    if (self.last_search) |old_search| {
-                        self.allocator.free(old_search);
-                    }
-                    self.last_search = self.allocator.dupe(u8, self.minibuffer.getContent()) catch null;
+                    // dupe成功後にfree（dupe失敗時は古い値を保持）
+                    if (self.allocator.dupe(u8, self.minibuffer.getContent())) |new_search| {
+                        if (self.last_search) |old_search| {
+                            self.allocator.free(old_search);
+                        }
+                        self.last_search = new_search;
+                    } else |_| {}
                 }
                 self.endSearch();
             },
@@ -2546,10 +2553,12 @@ pub const Editor = struct {
                 return true;
             }
             if (content.len > 0) {
+                // dupe成功後にfree（dupe失敗時は古い値を保持）
+                const new_search = try self.allocator.dupe(u8, content);
                 if (self.replace_search) |old| {
                     self.allocator.free(old);
                 }
-                self.replace_search = try self.allocator.dupe(u8, content);
+                self.replace_search = new_search;
                 self.clearInputBuffer();
                 self.mode = .query_replace_input_replacement;
                 self.enterReplacementMode();
@@ -2595,10 +2604,12 @@ pub const Editor = struct {
             if (content.len == 0 and self.replace_replacement != null) {
                 // 前回の値を再利用（何もしない）
             } else {
+                // dupe成功後にfree（dupe失敗時は古い値を保持）
+                const new_replacement = try self.allocator.dupe(u8, content);
                 if (self.replace_replacement) |old| {
                     self.allocator.free(old);
                 }
-                self.replace_replacement = try self.allocator.dupe(u8, content);
+                self.replace_replacement = new_replacement;
             }
             self.minibuffer.clear();
 
@@ -3174,10 +3185,11 @@ pub const Editor = struct {
         const window = self.getCurrentWindow();
         const raw_mark = window.mark_pos orelse return null;
         const buffer = self.getCurrentBufferContent();
-        const cursor = self.getCurrentView().getCursorBufferPos();
+        const raw_cursor = self.getCurrentView().getCursorBufferPos();
 
-        // マーク位置がバッファ範囲を超えている場合はクランプ（バッファ編集後の安全対策）
+        // マーク位置・カーソル位置がバッファ範囲を超えている場合はクランプ（バッファ編集後の安全対策）
         const mark = @min(raw_mark, buffer.len());
+        const cursor = @min(raw_cursor, buffer.len());
 
         if (mark < cursor) {
             return .{ .start = mark, .len = cursor - mark };
@@ -3405,8 +3417,10 @@ pub const Editor = struct {
                 // UTF-8リードバイトからシーケンス長を計算
                 const byte_len = std.unicode.utf8ByteSequenceLength(lead_byte) catch 1;
                 new_pos = @min(new_pos + byte_len, buffer.total_len);
+            } else {
+                // イテレータが終端に達している場合でも最低1バイト進める（無限ループ防止）
+                new_pos = @min(new_pos + 1, buffer.total_len);
             }
-            // else: イテレータが終端に達している場合は進めない（new_posは既に有効な位置）
         }
         self.setCursorToPos(new_pos);
 
