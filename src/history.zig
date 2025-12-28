@@ -30,6 +30,8 @@ pub const History = struct {
     current_index: ?usize, // ナビゲーション中のインデックス（nullは履歴モード外）
     temp_input: ?[]const u8, // ナビゲーション開始前の入力を保持
     filter_prefix: ?[]const u8, // プレフィックスフィルタ（入力中の文字列にマッチする履歴のみ表示）
+    loaded: bool, // ファイルから読み込み済みか（未読み込みで空の場合は保存しない）
+    modified: bool, // 変更があったか（追加・削除があった場合のみ保存）
 
     pub fn init(allocator: std.mem.Allocator) History {
         return .{
@@ -39,6 +41,8 @@ pub const History = struct {
             .current_index = null,
             .temp_input = null,
             .filter_prefix = null,
+            .loaded = false,
+            .modified = false,
         };
     }
 
@@ -75,6 +79,9 @@ pub const History = struct {
         // エントリを複製して追加
         const duped = try self.allocator.dupe(u8, entry);
         try self.entries.append(self.allocator, duped);
+
+        // 変更フラグを設定
+        self.modified = true;
 
         // ナビゲーション状態をリセット
         self.resetNavigation();
@@ -210,6 +217,9 @@ pub const History = struct {
         const path = getHistoryPath(self.allocator, history_type) orelse return;
         defer self.allocator.free(path);
 
+        // 読み込み試行したことをマーク（ファイルが存在しなくてもtrue）
+        self.loaded = true;
+
         const file = std.fs.cwd().openFile(path, .{}) catch |err| {
             if (err == error.FileNotFound) return; // ファイルがなければ空のまま
             return err;
@@ -257,7 +267,11 @@ pub const History = struct {
 
     /// 履歴をファイルに保存（アトミック: temp+rename方式）
     /// HOME未設定時は何もせずに正常終了（履歴は保存されない）
+    /// 未読み込み・未変更の場合は既存ファイルを上書きしない
     pub fn save(self: *History, history_type: HistoryType) !void {
+        // 未読み込みかつ未変更なら保存しない（既存ファイルを誤って空にしない）
+        if (!self.loaded and !self.modified) return;
+
         // ~/.ze ディレクトリを作成（存在しなければ）
         // HOME未設定時はnullが返るので何もせず終了
         const ze_dir = getZeDir(self.allocator) orelse return;

@@ -775,9 +775,9 @@ pub const ShellService = struct {
         var cmd_buf: [1024]u8 = undefined;
         const cmd = std.fmt.bufPrint(&cmd_buf, "compgen {s} -- '{s}' 2>/dev/null", .{ flag, escaped_token }) catch return null;
 
-        // bashを探す
-        const bash_path = findBashPath(self.allocator) orelse return null;
-        defer self.allocator.free(bash_path);
+        // キャッシュされたbashパスを使用（未初期化なら初期化）
+        self.ensurePathsInitialized();
+        const bash_path = self.bash_path orelse return null;
 
         // compgenを実行
         const result = std.process.Child.run(.{
