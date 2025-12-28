@@ -1624,22 +1624,17 @@ pub const Buffer = struct {
     }
 
     pub fn restorePieces(self: *Buffer, pieces: []const Piece) !void {
-        // 現在の状態を保存（エラー時のロールバック用）
-        const old_len = self.pieces.items.len;
-        errdefer {
-            // appendSliceが失敗した場合、元のピースは既にクリアされている
-            // total_lenも更新されているため、0に設定して整合性を保つ
-            if (self.pieces.items.len == 0 and old_len > 0) {
-                self.total_len = 0;
-            }
-        }
+        // 事前にキャパシティを確保（これが失敗しても現在の状態は変わらない）
+        // 既存のキャパシティで足りる場合は何もしない
+        try self.pieces.ensureTotalCapacity(self.allocator, pieces.len);
 
+        // ここからは失敗しない（キャパシティは確保済み）
         // findPieceAtキャッシュを無効化（Piece配列が完全に置換されるため）
         self.last_access_piece_idx = 0;
         self.last_access_piece_start = 0;
 
         self.pieces.clearRetainingCapacity();
-        try self.pieces.appendSlice(self.allocator, pieces);
+        self.pieces.appendSliceAssumeCapacity(pieces);
 
         // total_lenを再計算（Undo/Redo後の整合性確保）
         self.total_len = 0;

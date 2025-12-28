@@ -458,6 +458,7 @@ pub const View = struct {
         } else {
             const line_capacity = @max(line_content.len, self.viewport_width * 4);
             var new_prev_line = try std.ArrayList(u8).initCapacity(self.allocator, line_capacity);
+            errdefer new_prev_line.deinit(self.allocator);
             try new_prev_line.appendSlice(self.allocator, line_content);
             try self.prev_screen.append(self.allocator, new_prev_line);
         }
@@ -2010,13 +2011,14 @@ pub const View = struct {
     const CursorPosWithPrevWidth = struct {
         pos: usize,
         prev_width: usize,
+        prev_byte_pos: usize, // 直前の文字のバイト位置（キャッシュ更新用）
     };
 
     fn getCursorPosWithPrevWidth(self: *View) CursorPosWithPrevWidth {
         const target_line = self.top_line + self.cursor_y;
 
         const line_start = self.buffer.getLineStart(target_line) orelse {
-            return .{ .pos = self.buffer.len(), .prev_width = 1 };
+            return .{ .pos = self.buffer.len(), .prev_width = 1, .prev_byte_pos = 0 };
         };
 
         var iter = PieceIterator.init(self.buffer);
@@ -2024,6 +2026,7 @@ pub const View = struct {
 
         var display_col: usize = 0;
         var prev_width: usize = 1; // 前の文字の幅（デフォルト1）
+        var prev_byte_pos: usize = line_start; // 直前の文字のバイト位置
 
         while (display_col < self.cursor_x) {
             const start_pos = iter.global_pos;
@@ -2038,8 +2041,9 @@ pub const View = struct {
             else
                 gc.width;
 
-            // 現在の文字の幅を記録（次のループで「直前の幅」として使う）
+            // 現在の文字の幅と位置を記録
             prev_width = char_width;
+            prev_byte_pos = start_pos;
             display_col += char_width;
 
             // 目標カーソル位置を超えた場合は手前で止まる
@@ -2052,13 +2056,15 @@ pub const View = struct {
         return .{
             .pos = @min(iter.global_pos, self.buffer.len()),
             .prev_width = prev_width,
+            .prev_byte_pos = prev_byte_pos,
         };
     }
 
     /// カーソル位置のバイトオフセットと次の文字情報を同時に取得
     /// moveCursorRightで2回走査を回避するための最適化版
     const CursorPosWithNextInfo = struct {
-        pos: usize,
+        pos: usize, // 現在のカーソルバイト位置
+        next_byte_pos: usize, // 次の文字のバイト位置（キャッシュ更新用）
         next_width: usize, // 次の文字の幅（タブ考慮）
         is_newline: bool, // 次の文字が改行か
         is_eof: bool, // EOFに到達したか
@@ -2068,7 +2074,7 @@ pub const View = struct {
         const target_line = self.top_line + self.cursor_y;
 
         const line_start = self.buffer.getLineStart(target_line) orelse {
-            return .{ .pos = self.buffer.len(), .next_width = 0, .is_newline = false, .is_eof = true };
+            return .{ .pos = self.buffer.len(), .next_byte_pos = self.buffer.len(), .next_width = 0, .is_newline = false, .is_eof = true };
         };
 
         var iter = PieceIterator.init(self.buffer);
@@ -2101,25 +2107,27 @@ pub const View = struct {
 
         // 次の文字を取得
         if (cursor_pos >= self.buffer.len()) {
-            return .{ .pos = cursor_pos, .next_width = 0, .is_newline = false, .is_eof = true };
+            return .{ .pos = cursor_pos, .next_byte_pos = cursor_pos, .next_width = 0, .is_newline = false, .is_eof = true };
         }
 
         const next_cluster = iter.nextGraphemeCluster() catch {
-            return .{ .pos = cursor_pos, .next_width = 0, .is_newline = false, .is_eof = true };
+            return .{ .pos = cursor_pos, .next_byte_pos = cursor_pos, .next_width = 0, .is_newline = false, .is_eof = true };
         };
+
+        const next_byte_pos = iter.global_pos; // 次の文字を読んだ後の位置
 
         if (next_cluster) |gc| {
             if (gc.base == '\n') {
-                return .{ .pos = cursor_pos, .next_width = 0, .is_newline = true, .is_eof = false };
+                return .{ .pos = cursor_pos, .next_byte_pos = next_byte_pos, .next_width = 0, .is_newline = true, .is_eof = false };
             }
             const next_width = if (gc.base == '\t')
                 nextTabStop(display_col, self.getTabWidth()) - display_col
             else
                 gc.width;
-            return .{ .pos = cursor_pos, .next_width = next_width, .is_newline = false, .is_eof = false };
+            return .{ .pos = cursor_pos, .next_byte_pos = next_byte_pos, .next_width = next_width, .is_newline = false, .is_eof = false };
         }
 
-        return .{ .pos = cursor_pos, .next_width = 0, .is_newline = false, .is_eof = true };
+        return .{ .pos = cursor_pos, .next_byte_pos = cursor_pos, .next_width = 0, .is_newline = false, .is_eof = true };
     }
 
     // 現在行の表示幅を取得（grapheme cluster単位）
@@ -2266,51 +2274,81 @@ pub const View = struct {
         return self.getLineWidthCached(self.top_line + self.cursor_y);
     }
 
+    /// 行幅を取得し、指定カラムまでのバイト位置も返す
+    /// cursor_x が行幅を超える場合は行末のバイト位置を返す
+    pub const LineWidthWithBytePos = struct {
+        width: usize, // 行の総表示幅
+        byte_pos: usize, // 指定カラム（またはクランプ後）のバイト位置
+        clamped_x: usize, // クランプ後のcursor_x
+    };
+
+    pub fn getLineWidthWithBytePos(self: *View, file_line: usize, target_x: usize) LineWidthWithBytePos {
+        const line_start = self.buffer.getLineStart(file_line) orelse {
+            return .{ .width = 0, .byte_pos = self.buffer.len(), .clamped_x = 0 };
+        };
+
+        var iter = PieceIterator.init(self.buffer);
+        iter.seek(line_start);
+
+        var line_width: usize = 0;
+        var target_byte_pos: usize = line_start; // target_xに到達した時のバイト位置
+        var found_target = false;
+
+        while (true) {
+            const current_pos = iter.global_pos;
+            const cluster = iter.nextGraphemeCluster() catch break;
+            if (cluster) |gc| {
+                if (gc.base == '\n') break;
+
+                // target_xにまだ到達していなければ位置を更新
+                if (!found_target and line_width >= target_x) {
+                    target_byte_pos = current_pos;
+                    found_target = true;
+                }
+
+                const char_width = if (gc.base == '\t')
+                    nextTabStop(line_width, self.getTabWidth()) - line_width
+                else
+                    gc.width;
+                line_width += char_width;
+
+                // target_xを超えたら位置を記録
+                if (!found_target and line_width > target_x) {
+                    target_byte_pos = current_pos;
+                    found_target = true;
+                }
+            } else {
+                break;
+            }
+        }
+
+        // target_xに到達しなかった場合は行末
+        if (!found_target) {
+            target_byte_pos = iter.global_pos;
+        }
+
+        const clamped_x = if (target_x > line_width) line_width else target_x;
+        return .{ .width = line_width, .byte_pos = target_byte_pos, .clamped_x = clamped_x };
+    }
+
     pub fn moveCursorLeft(self: *View) void {
         if (self.cursor_x > 0) {
-            // キャッシュを活用してカーソルバイト位置を取得
-            const current_byte_pos = self.getCursorBufferPos();
-            if (current_byte_pos == 0) {
+            // ヘルパーで1回の走査でバイト位置と直前の文字幅を同時取得
+            const info = self.getCursorPosWithPrevWidth();
+            if (info.pos == 0) {
                 self.cursor_x = 0;
                 return;
             }
 
-            // 行頭から現在位置まで走査して、直前の文字を特定
-            const target_line = self.top_line + self.cursor_y;
-            const line_start = self.buffer.getLineStart(target_line) orelse return;
-
-            var iter = PieceIterator.init(self.buffer);
-            iter.seek(line_start);
-
-            var prev_width: usize = 1;
-            var prev_byte_pos: usize = line_start;
-            var display_col: usize = 0; // タブ幅計算に必要
-
-            // キャッシュされたバイト位置まで走査
-            while (iter.global_pos < current_byte_pos) {
-                prev_byte_pos = iter.global_pos;
-                const cluster = iter.nextGraphemeCluster() catch break;
-                if (cluster == null) break;
-                const gc = cluster.?;
-                if (gc.base == '\n') break;
-
-                // タブ文字の場合は文脈依存の幅を計算
-                prev_width = if (gc.base == '\t')
-                    nextTabStop(display_col, self.getTabWidth()) - display_col
-                else
-                    gc.width;
-                display_col += prev_width;
-            }
-
             // 直前の文字幅だけカーソルを戻す
-            if (self.cursor_x >= prev_width) {
-                self.cursor_x -= prev_width;
+            if (self.cursor_x >= info.prev_width) {
+                self.cursor_x -= info.prev_width;
             } else {
                 self.cursor_x = 0;
             }
 
             // キャッシュを更新（直前の文字位置へ）
-            self.cursor_byte_pos_cache = prev_byte_pos;
+            self.cursor_byte_pos_cache = info.prev_byte_pos;
             self.cursor_byte_pos_cache_x = self.cursor_x;
             self.cursor_byte_pos_cache_y = self.cursor_y;
             self.cursor_byte_pos_cache_top_line = self.top_line;
@@ -2324,60 +2362,54 @@ pub const View = struct {
             // cursor_x == 0、前の行に移動
             if (self.cursor_y > 0) {
                 self.cursor_y -= 1;
+                self.invalidateCursorPosCache();
                 self.moveToLineEnd(); // 行末に移動（水平スクロールも設定される）
             } else if (self.top_line > 0) {
                 // 画面最上部で、さらに上にスクロール可能
                 self.top_line -= 1;
+                self.invalidateCursorPosCache();
                 self.moveToLineEnd(); // 行末に移動（水平スクロールも設定される）
-                self.markFullRedraw(); // スクロールで全画面再描画
+                self.markScroll(-1); // スクロール最適化（markFullRedrawの代わり）
             }
             // 注: moveToLineEnd()が水平スクロールを適切に設定するので、ここでtop_colをリセットしない
         }
     }
 
     pub fn moveCursorRight(self: *View) void {
-        // キャッシュを活用してO(1)でカーソルバイト位置を取得
-        const byte_pos = self.getCursorBufferPos();
-        if (byte_pos >= self.buffer.len()) return;
-
-        // 現在位置から次の文字を読む
-        var iter = PieceIterator.init(self.buffer);
-        iter.seek(byte_pos);
-
-        const next_cluster = iter.nextGraphemeCluster() catch return;
-        if (next_cluster == null) return;
-        const gc = next_cluster.?;
+        // ヘルパーで1回の走査でバイト位置と次の文字情報を同時取得
+        const info = self.getCursorPosWithNextInfo();
+        if (info.is_eof) return;
 
         // ステータスバー分を除いた最大行
         const max_cursor_y = if (self.viewport_height >= 2) self.viewport_height - 2 else 0;
 
-        if (gc.base == '\n') {
+        if (info.is_newline) {
             // 改行の場合は次の行の先頭へ
+            var scrolled = false;
             if (self.cursor_y < max_cursor_y and self.top_line + self.cursor_y + 1 < self.buffer.lineCount()) {
                 self.cursor_y += 1;
                 self.cursor_x = 0;
             } else if (self.top_line + self.cursor_y + 1 < self.buffer.lineCount()) {
                 self.top_line += 1;
                 self.cursor_x = 0;
-                self.markFullRedraw(); // スクロールで全画面再描画
+                self.markScroll(1); // スクロール最適化（markFullRedrawの代わり）
+                scrolled = true;
             }
-            // 行移動時は水平スクロールをリセット（再描画が必要）
+            // 行移動時は水平スクロールをリセット
             if (self.top_col != 0) {
                 self.top_col = 0;
-                self.markFullRedraw();
+                if (!scrolled) {
+                    self.markHorizontalScroll();
+                }
             }
             // 行が変わったのでキャッシュを無効化
-            self.cursor_byte_pos_cache = null;
+            self.invalidateCursorPosCache();
         } else {
-            // 次の文字の幅分進める（タブ幅を考慮）
-            const next_width = if (gc.base == '\t')
-                nextTabStop(self.cursor_x, self.getTabWidth()) - self.cursor_x
-            else
-                gc.width;
-            self.cursor_x += next_width;
+            // 次の文字の幅分進める
+            self.cursor_x += info.next_width;
 
             // キャッシュを更新（次回はO(1)で取得可能）
-            self.cursor_byte_pos_cache = iter.global_pos;
+            self.cursor_byte_pos_cache = info.next_byte_pos;
             self.cursor_byte_pos_cache_x = self.cursor_x;
             self.cursor_byte_pos_cache_y = self.cursor_y;
             self.cursor_byte_pos_cache_top_line = self.top_line;
@@ -2404,11 +2436,16 @@ pub const View = struct {
             return;
         }
 
-        // カーソル位置が行の幅を超えている場合は行末に移動
-        const line_width = self.getCurrentLineWidth();
-        if (self.cursor_x > line_width) {
-            self.cursor_x = line_width;
-        }
+        // 行幅とバイト位置を同時に取得（1回の走査で完了）
+        const target_line = self.top_line + self.cursor_y;
+        const info = self.getLineWidthWithBytePos(target_line, self.cursor_x);
+
+        // カーソル位置をクランプし、キャッシュを更新
+        self.cursor_x = info.clamped_x;
+        self.cursor_byte_pos_cache = info.byte_pos;
+        self.cursor_byte_pos_cache_x = self.cursor_x;
+        self.cursor_byte_pos_cache_y = self.cursor_y;
+        self.cursor_byte_pos_cache_top_line = self.top_line;
 
         // 水平スクロール位置もクランプ（短い行に移動した時の空白表示を防ぐ）
         if (self.top_col > self.cursor_x) {
@@ -2428,11 +2465,16 @@ pub const View = struct {
             return;
         }
 
-        // カーソル位置が行の幅を超えている場合は行末に移動
-        const line_width = self.getCurrentLineWidth();
-        if (self.cursor_x > line_width) {
-            self.cursor_x = line_width;
-        }
+        // 行幅とバイト位置を同時に取得（1回の走査で完了）
+        const target_line = self.top_line + self.cursor_y;
+        const info = self.getLineWidthWithBytePos(target_line, self.cursor_x);
+
+        // カーソル位置をクランプし、キャッシュを更新
+        self.cursor_x = info.clamped_x;
+        self.cursor_byte_pos_cache = info.byte_pos;
+        self.cursor_byte_pos_cache_x = self.cursor_x;
+        self.cursor_byte_pos_cache_y = self.cursor_y;
+        self.cursor_byte_pos_cache_top_line = self.top_line;
 
         // 水平スクロール位置もクランプ（短い行に移動した時の空白表示を防ぐ）
         if (self.top_col > self.cursor_x) {
@@ -2543,6 +2585,13 @@ pub const View = struct {
         self.cursor_y = 0;
         self.top_line = 0;
         self.top_col = 0;
+
+        // カーソルバイト位置キャッシュを更新（バッファ先頭 = 0）
+        self.cursor_byte_pos_cache = 0;
+        self.cursor_byte_pos_cache_x = 0;
+        self.cursor_byte_pos_cache_y = 0;
+        self.cursor_byte_pos_cache_top_line = 0;
+
         self.markFullRedraw();
     }
 
@@ -2554,6 +2603,13 @@ pub const View = struct {
             self.cursor_y = 0;
             self.top_line = 0;
             self.top_col = 0;
+
+            // 空ファイルの場合もキャッシュを更新（バッファ先頭 = 0）
+            self.cursor_byte_pos_cache = 0;
+            self.cursor_byte_pos_cache_x = 0;
+            self.cursor_byte_pos_cache_y = 0;
+            self.cursor_byte_pos_cache_top_line = 0;
+
             self.markFullRedraw();
             return;
         }

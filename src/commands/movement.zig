@@ -440,7 +440,7 @@ pub fn pageUp(e: *Editor) !void {
 }
 
 /// ページスクロールの共通実装（最適化版）
-/// ループで1行ずつ移動する代わりに、一括でtop_line/cursor_yを更新
+/// scrollViewportとキャッシュシフトを活用してmarkFullRedrawを回避
 fn pageScroll(e: *Editor, direction: enum { up, down }) void {
     const view = e.getCurrentView();
     const buffer = e.getCurrentBufferContent();
@@ -452,6 +452,7 @@ fn pageScroll(e: *Editor, direction: enum { up, down }) void {
     const max_line = if (total_lines > 0) total_lines - 1 else 0;
 
     const current_line = view.top_line + view.cursor_y;
+    const old_top_line = view.top_line;
 
     switch (direction) {
         .down => {
@@ -491,22 +492,28 @@ fn pageScroll(e: *Editor, direction: enum { up, down }) void {
         },
     }
 
-    // カーソル位置が行の幅を超えている場合は行末に移動
-    const line_width = view.getCurrentLineWidth();
-    if (view.cursor_x > line_width) {
-        view.cursor_x = line_width;
+    // スクロール量を計算してmarkScroll（ターミナルスクロール最適化）
+    const scroll_delta: i32 = @intCast(@as(i64, @intCast(view.top_line)) - @as(i64, @intCast(old_top_line)));
+    if (scroll_delta != 0) {
+        view.markScroll(scroll_delta);
     }
+
+    // 行幅とバイト位置を同時に取得（1回の走査で完了）
+    const target_line = view.top_line + view.cursor_y;
+    const info = view.getLineWidthWithBytePos(target_line, view.cursor_x);
+
+    // カーソル位置をクランプし、キャッシュを更新
+    view.cursor_x = info.clamped_x;
+    view.cursor_byte_pos_cache = info.byte_pos;
+    view.cursor_byte_pos_cache_x = view.cursor_x;
+    view.cursor_byte_pos_cache_y = view.cursor_y;
+    view.cursor_byte_pos_cache_top_line = view.top_line;
 
     // 水平スクロール位置もクランプ
     if (view.top_col > view.cursor_x) {
         view.top_col = view.cursor_x;
+        view.markHorizontalScroll();
     }
-
-    // キャッシュを無効化（行が変わったため）
-    view.invalidateCursorPosCache();
-
-    // 全画面再描画（1回だけ）
-    view.markFullRedraw();
 }
 
 // ========================================

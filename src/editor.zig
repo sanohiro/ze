@@ -411,6 +411,32 @@ pub const Editor = struct {
         }
     }
 
+    /// 指定バッファを表示している全ウィンドウをdirtyにマーク（現在のビューを除く）
+    /// 文字入力時に現在のビューのキャッシュを保持したまま他のビューを更新するために使用
+    pub fn markAllViewsDirtyForBufferExceptCurrent(self: *Editor, buffer_id: usize, start_line: usize, end_line: ?usize) void {
+        const current_view = self.getCurrentView();
+        for (self.window_manager.iterator()) |*window| {
+            if (window.buffer_id == buffer_id and &window.view != current_view) {
+                window.view.markDirty(start_line, end_line);
+            }
+        }
+        // 現在のビューはdirty範囲だけ設定（キャッシュは無効化しない）
+        if (current_view.dirty_start) |ds| {
+            current_view.dirty_start = @min(ds, start_line);
+        } else {
+            current_view.dirty_start = start_line;
+        }
+        if (end_line) |e| {
+            if (current_view.dirty_end) |de| {
+                current_view.dirty_end = @max(de, e);
+            } else {
+                current_view.dirty_end = e;
+            }
+        } else {
+            current_view.dirty_end = null;
+        }
+    }
+
     /// 読み取り専用チェック（編集前に呼ぶ）
     /// 読み取り専用ならエラー表示してtrueを返す
     pub fn isReadOnly(self: *Editor) bool {
@@ -3345,8 +3371,6 @@ pub const Editor = struct {
         } else {
             // 通常文字
             const view = self.getCurrentView();
-            // 同一バッファを表示している全ウィンドウを更新
-            self.markAllViewsDirtyForBuffer(buffer_state.id, current_line, current_line);
 
             // カーソル移動（タブは特別扱い）
             const char_width: usize = if (codepoint == '\t') blk: {
@@ -3361,8 +3385,12 @@ pub const Editor = struct {
                 break :blk width;
             };
 
-            // 行幅キャッシュを差分更新（再計算を回避）
+            // 行幅キャッシュを差分更新（markDirtyの前に呼び出してキャッシュが有効なうちに更新）
             view.updateLineWidthCacheAfterInsert(char_width);
+
+            // 同一バッファを表示している全ウィンドウを更新
+            // 注: 現在のviewのキャッシュは上で更新済みなので、他のviewの分だけ無効化される
+            self.markAllViewsDirtyForBufferExceptCurrent(buffer_state.id, current_line, current_line);
 
             // 水平スクロール: カーソルが右端を超えた場合
             const line_num_width = view.getLineNumberWidth();
