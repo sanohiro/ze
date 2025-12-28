@@ -122,6 +122,11 @@ pub fn deleteChar(e: *Editor) !void {
 
 /// Backspace: カーソル前の文字を削除
 pub fn backspace(e: *Editor) !void {
+    if (e.isReadOnly()) {
+        e.getCurrentView().setError(config.Messages.BUFFER_READONLY);
+        return;
+    }
+
     const buffer = e.getCurrentBufferContent();
     const view = e.getCurrentView();
     const pos = view.getCursorBufferPos();
@@ -712,7 +717,8 @@ pub fn indentRegion(e: *Editor) !void {
     buffer_state.editing_ctx.modified = true;
     markDirtyAll(e, start_line, end_line);
 
-    // 選択範囲は維持（連続操作のため）
+    // インデント後は選択範囲をクリア（バイト位置がずれるため）
+    e.getCurrentWindow().mark_pos = null;
 }
 
 /// 選択範囲または現在行をアンインデント
@@ -789,7 +795,8 @@ pub fn unindentRegion(e: *Editor) !void {
         markDirtyAll(e, start_line, end_line);
     }
 
-    // 選択範囲は維持（連続操作のため）
+    // アンインデント後は選択範囲をクリア（バイト位置がずれるため）
+    e.getCurrentWindow().mark_pos = null;
 }
 
 /// 全選択（C-x h）：バッファの先頭にマークを設定し、終端にカーソルを移動

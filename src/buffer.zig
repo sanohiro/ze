@@ -779,18 +779,6 @@ pub const Buffer = struct {
         return createBufferFromContent(allocator, normalized, actual_line_ending, detected.encoding, file_mtime);
     }
 
-    /// フォールバックパス: UTF-8+LF以外のファイルを変換して読み込む（mmapが使えない場合）
-    fn loadFromFileFallback(allocator: std.mem.Allocator, path: []const u8, detected: encoding.DetectionResult, file_mtime: i128) !Buffer {
-        var file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
-
-        const stat = try file.stat();
-        const raw_content = try file.readToEndAlloc(allocator, stat.size);
-        defer allocator.free(raw_content);
-
-        return loadFromMappedContent(allocator, raw_content, detected, file_mtime);
-    }
-
     /// mmapが失敗した場合のフォールバック（検出も含む）
     fn loadFromFileFallbackWithDetection(allocator: std.mem.Allocator, path: []const u8) !Buffer {
         var file = try std.fs.cwd().openFile(path, .{});

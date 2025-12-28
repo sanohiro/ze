@@ -135,8 +135,7 @@ const default_ctrl_bindings = [_]CtrlBinding{
     // その他
     .{ .key = 'g', .handler = edit.keyboardQuit },
     .{ .key = 'u', .handler = edit.undo },
-    .{ .key = CtrlCode.SLASH, .handler = edit.redo },
-    .{ .key = '/', .handler = edit.redo },
+    .{ .key = CtrlCode.SLASH, .handler = edit.redo }, // C-/ (31 = 0x1F)
     // ページスクロール
     .{ .key = 'v', .handler = movement.pageDown },
     // 画面中央化

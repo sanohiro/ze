@@ -972,197 +972,114 @@ fn lookupKanji(ku: u8, ten: u8) ?u21 {
 // 変換できない文字は '?' に置換される。
 // ============================================================================
 
-/// UTF-8 → UTF-16LE (BOM付き) 変換
-/// Little Endian: 下位バイトが先（Windows標準）
-fn convertUtf8ToUtf16le(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
+/// UTF-8からコードポイントをデコード（共通ヘルパー）
+/// 戻り値: コードポイントと消費バイト数
+const DecodeResult = struct { codepoint: u21, bytes: usize };
+
+fn decodeUtf8Codepoint(content: []const u8, pos: usize) !DecodeResult {
+    if (pos >= content.len) return error.InvalidUtf8;
+    const byte = content[pos];
+
+    // ASCII
+    if (byte < 0x80) {
+        return .{ .codepoint = @as(u21, byte), .bytes = 1 };
+    }
+
+    // 2バイト
+    if (byte >= 0xC0 and byte <= 0xDF) {
+        if (pos + 1 >= content.len) return error.InvalidUtf8;
+        const second = content[pos + 1];
+        if (!unicode.isUtf8Continuation(second)) return error.InvalidUtf8;
+        const cp = (@as(u21, byte & 0x1F) << 6) | @as(u21, second & 0x3F);
+        return .{ .codepoint = cp, .bytes = 2 };
+    }
+
+    // 3バイト
+    if (byte >= 0xE0 and byte <= 0xEF) {
+        if (pos + 2 >= content.len) return error.InvalidUtf8;
+        const second = content[pos + 1];
+        const third = content[pos + 2];
+        if (!unicode.isUtf8Continuation(second)) return error.InvalidUtf8;
+        if (!unicode.isUtf8Continuation(third)) return error.InvalidUtf8;
+        const cp = (@as(u21, byte & 0x0F) << 12) |
+            (@as(u21, second & 0x3F) << 6) |
+            @as(u21, third & 0x3F);
+        return .{ .codepoint = cp, .bytes = 3 };
+    }
+
+    // 4バイト
+    if (byte >= 0xF0 and byte <= 0xF7) {
+        if (pos + 3 >= content.len) return error.InvalidUtf8;
+        const second = content[pos + 1];
+        const third = content[pos + 2];
+        const fourth = content[pos + 3];
+        if (!unicode.isUtf8Continuation(second)) return error.InvalidUtf8;
+        if (!unicode.isUtf8Continuation(third)) return error.InvalidUtf8;
+        if (!unicode.isUtf8Continuation(fourth)) return error.InvalidUtf8;
+        const cp = (@as(u21, byte & 0x07) << 18) |
+            (@as(u21, second & 0x3F) << 12) |
+            (@as(u21, third & 0x3F) << 6) |
+            @as(u21, fourth & 0x3F);
+        return .{ .codepoint = cp, .bytes = 4 };
+    }
+
+    return error.InvalidUtf8;
+}
+
+/// u16をエンディアンに従ってバイト列に追加
+fn appendU16(result: *std.ArrayList(u8), allocator: std.mem.Allocator, val: u16, comptime big_endian: bool) !void {
+    if (big_endian) {
+        try result.append(allocator, @intCast(val >> 8));
+        try result.append(allocator, @intCast(val & 0xFF));
+    } else {
+        try result.append(allocator, @intCast(val & 0xFF));
+        try result.append(allocator, @intCast(val >> 8));
+    }
+}
+
+/// UTF-8 → UTF-16 変換（共通実装）
+fn convertUtf8ToUtf16(allocator: std.mem.Allocator, content: []const u8, comptime big_endian: bool) ![]u8 {
     var result = try std.ArrayList(u8).initCapacity(allocator, content.len * 2 + 2);
     errdefer result.deinit(allocator);
 
-    // BOMを追加（LE: 0xFF 0xFE）
-    try result.appendSlice(allocator, &config.BOM.UTF16LE);
+    // BOMを追加
+    const bom = if (big_endian) config.BOM.UTF16BE else config.BOM.UTF16LE;
+    try result.appendSlice(allocator, &bom);
 
-    // UTF-8をデコードしてUTF-16LEにエンコード
+    // UTF-8をデコードしてUTF-16にエンコード
     var i: usize = 0;
     while (i < content.len) {
-        const codepoint = blk: {
-            const byte = content[i];
-
-            // ASCII
-            if (byte < 0x80) {
-                i += 1;
-                break :blk @as(u21, byte);
-            }
-
-            // 2バイト
-            if (byte >= 0xC0 and byte <= 0xDF) {
-                if (i + 1 >= content.len) return error.InvalidUtf8;
-                const second = content[i + 1];
-                // continuation byteチェック（0x80-0xBF）
-                if (!unicode.isUtf8Continuation(second)) return error.InvalidUtf8;
-                const cp = (@as(u21, byte & 0x1F) << 6) |
-                    @as(u21, second & 0x3F);
-                i += 2;
-                break :blk cp;
-            }
-
-            // 3バイト
-            if (byte >= 0xE0 and byte <= 0xEF) {
-                if (i + 2 >= content.len) return error.InvalidUtf8;
-                const second = content[i + 1];
-                const third = content[i + 2];
-                // continuation byteチェック
-                if (!unicode.isUtf8Continuation(second)) return error.InvalidUtf8;
-                if (!unicode.isUtf8Continuation(third)) return error.InvalidUtf8;
-                const cp = (@as(u21, byte & 0x0F) << 12) |
-                    (@as(u21, second & 0x3F) << 6) |
-                    @as(u21, third & 0x3F);
-                i += 3;
-                break :blk cp;
-            }
-
-            // 4バイト
-            if (byte >= 0xF0 and byte <= 0xF7) {
-                if (i + 3 >= content.len) return error.InvalidUtf8;
-                const second = content[i + 1];
-                const third = content[i + 2];
-                const fourth = content[i + 3];
-                // continuation byteチェック
-                if (!unicode.isUtf8Continuation(second)) return error.InvalidUtf8;
-                if (!unicode.isUtf8Continuation(third)) return error.InvalidUtf8;
-                if (!unicode.isUtf8Continuation(fourth)) return error.InvalidUtf8;
-                const cp = (@as(u21, byte & 0x07) << 18) |
-                    (@as(u21, second & 0x3F) << 12) |
-                    (@as(u21, third & 0x3F) << 6) |
-                    @as(u21, fourth & 0x3F);
-                // 範囲チェック: U+10FFFFを超えるコードポイントは不正
-                if (cp > 0x10FFFF) return error.InvalidUtf8;
-                i += 4;
-                break :blk cp;
-            }
-
-            return error.InvalidUtf8;
-        };
+        const decoded = try decodeUtf8Codepoint(content, i);
+        const codepoint = decoded.codepoint;
+        i += decoded.bytes;
 
         // サロゲート範囲のチェック（UTF-8では不正なコードポイント）
         if (codepoint >= 0xD800 and codepoint <= 0xDFFF) return error.InvalidUtf8;
 
         // UTF-16にエンコード
         if (codepoint < 0x10000) {
-            // BMPの文字: 1つのu16
-            const u16_val: u16 = @intCast(codepoint);
-            try result.append(allocator, @intCast(u16_val & 0xFF)); // 下位バイト
-            try result.append(allocator, @intCast(u16_val >> 8)); // 上位バイト
+            try appendU16(&result, allocator, @intCast(codepoint), big_endian);
         } else {
             // サロゲートペア（U+10000以上）
             const adjusted = codepoint - 0x10000;
             const high: u16 = @intCast(0xD800 + (adjusted >> 10));
             const low: u16 = @intCast(0xDC00 + (adjusted & 0x3FF));
-            // High surrogate (LE)
-            try result.append(allocator, @intCast(high & 0xFF));
-            try result.append(allocator, @intCast(high >> 8));
-            // Low surrogate (LE)
-            try result.append(allocator, @intCast(low & 0xFF));
-            try result.append(allocator, @intCast(low >> 8));
+            try appendU16(&result, allocator, high, big_endian);
+            try appendU16(&result, allocator, low, big_endian);
         }
     }
 
     return try result.toOwnedSlice(allocator);
 }
 
+/// UTF-8 → UTF-16LE (BOM付き) 変換
+fn convertUtf8ToUtf16le(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
+    return convertUtf8ToUtf16(allocator, content, false);
+}
+
 /// UTF-8 → UTF-16BE (BOM付き) 変換
 fn convertUtf8ToUtf16be(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
-    var result = try std.ArrayList(u8).initCapacity(allocator, content.len * 2 + 2);
-    errdefer result.deinit(allocator);
-
-    // BOMを追加（BE: 0xFE 0xFF）
-    try result.appendSlice(allocator, &config.BOM.UTF16BE);
-
-    // UTF-8をデコードしてUTF-16BEにエンコード
-    var i: usize = 0;
-    while (i < content.len) {
-        const codepoint = blk: {
-            const byte = content[i];
-
-            // ASCII
-            if (byte < 0x80) {
-                i += 1;
-                break :blk @as(u21, byte);
-            }
-
-            // 2バイト
-            if (byte >= 0xC0 and byte <= 0xDF) {
-                if (i + 1 >= content.len) return error.InvalidUtf8;
-                const second = content[i + 1];
-                // continuation byteチェック（0x80-0xBF）
-                if (!unicode.isUtf8Continuation(second)) return error.InvalidUtf8;
-                const cp = (@as(u21, byte & 0x1F) << 6) |
-                    @as(u21, second & 0x3F);
-                i += 2;
-                break :blk cp;
-            }
-
-            // 3バイト
-            if (byte >= 0xE0 and byte <= 0xEF) {
-                if (i + 2 >= content.len) return error.InvalidUtf8;
-                const second = content[i + 1];
-                const third = content[i + 2];
-                // continuation byteチェック
-                if (!unicode.isUtf8Continuation(second)) return error.InvalidUtf8;
-                if (!unicode.isUtf8Continuation(third)) return error.InvalidUtf8;
-                const cp = (@as(u21, byte & 0x0F) << 12) |
-                    (@as(u21, second & 0x3F) << 6) |
-                    @as(u21, third & 0x3F);
-                i += 3;
-                break :blk cp;
-            }
-
-            // 4バイト
-            if (byte >= 0xF0 and byte <= 0xF7) {
-                if (i + 3 >= content.len) return error.InvalidUtf8;
-                const second = content[i + 1];
-                const third = content[i + 2];
-                const fourth = content[i + 3];
-                // continuation byteチェック
-                if (!unicode.isUtf8Continuation(second)) return error.InvalidUtf8;
-                if (!unicode.isUtf8Continuation(third)) return error.InvalidUtf8;
-                if (!unicode.isUtf8Continuation(fourth)) return error.InvalidUtf8;
-                const cp = (@as(u21, byte & 0x07) << 18) |
-                    (@as(u21, second & 0x3F) << 12) |
-                    (@as(u21, third & 0x3F) << 6) |
-                    @as(u21, fourth & 0x3F);
-                // 範囲チェック: U+10FFFFを超えるコードポイントは不正
-                if (cp > 0x10FFFF) return error.InvalidUtf8;
-                i += 4;
-                break :blk cp;
-            }
-
-            return error.InvalidUtf8;
-        };
-
-        // サロゲート範囲のチェック（UTF-8では不正なコードポイント）
-        if (codepoint >= 0xD800 and codepoint <= 0xDFFF) return error.InvalidUtf8;
-
-        // UTF-16にエンコード（Big Endian）
-        if (codepoint < 0x10000) {
-            // BMPの文字: 1つのu16
-            const u16_val: u16 = @intCast(codepoint);
-            try result.append(allocator, @intCast(u16_val >> 8)); // 上位バイト
-            try result.append(allocator, @intCast(u16_val & 0xFF)); // 下位バイト
-        } else {
-            // サロゲートペア（U+10000以上）
-            const adjusted = codepoint - 0x10000;
-            const high: u16 = @intCast(0xD800 + (adjusted >> 10));
-            const low: u16 = @intCast(0xDC00 + (adjusted & 0x3FF));
-            // High surrogate (BE)
-            try result.append(allocator, @intCast(high >> 8));
-            try result.append(allocator, @intCast(high & 0xFF));
-            // Low surrogate (BE)
-            try result.append(allocator, @intCast(low >> 8));
-            try result.append(allocator, @intCast(low & 0xFF));
-        }
-    }
-
-    return try result.toOwnedSlice(allocator);
+    return convertUtf8ToUtf16(allocator, content, true);
 }
 
 /// UTF-8 → Shift_JIS 変換
@@ -1172,62 +1089,9 @@ fn convertUtf8ToShiftJis(allocator: std.mem.Allocator, content: []const u8) ![]u
 
     var i: usize = 0;
     while (i < content.len) {
-        const codepoint = blk: {
-            const byte = content[i];
-
-            // ASCII
-            if (byte < 0x80) {
-                i += 1;
-                break :blk @as(u21, byte);
-            }
-
-            // 2バイト
-            if (byte >= 0xC0 and byte <= 0xDF) {
-                if (i + 1 >= content.len) return error.InvalidUtf8;
-                const second = content[i + 1];
-                // continuation byteチェック（0x80-0xBF）
-                if (!unicode.isUtf8Continuation(second)) return error.InvalidUtf8;
-                const cp = (@as(u21, byte & 0x1F) << 6) |
-                    @as(u21, second & 0x3F);
-                i += 2;
-                break :blk cp;
-            }
-
-            // 3バイト
-            if (byte >= 0xE0 and byte <= 0xEF) {
-                if (i + 2 >= content.len) return error.InvalidUtf8;
-                const second = content[i + 1];
-                const third = content[i + 2];
-                // continuation byteチェック
-                if (!unicode.isUtf8Continuation(second)) return error.InvalidUtf8;
-                if (!unicode.isUtf8Continuation(third)) return error.InvalidUtf8;
-                const cp = (@as(u21, byte & 0x0F) << 12) |
-                    (@as(u21, second & 0x3F) << 6) |
-                    @as(u21, third & 0x3F);
-                i += 3;
-                break :blk cp;
-            }
-
-            // 4バイト
-            if (byte >= 0xF0 and byte <= 0xF7) {
-                if (i + 3 >= content.len) return error.InvalidUtf8;
-                const second = content[i + 1];
-                const third = content[i + 2];
-                const fourth = content[i + 3];
-                // continuation byteチェック
-                if (!unicode.isUtf8Continuation(second)) return error.InvalidUtf8;
-                if (!unicode.isUtf8Continuation(third)) return error.InvalidUtf8;
-                if (!unicode.isUtf8Continuation(fourth)) return error.InvalidUtf8;
-                const cp = (@as(u21, byte & 0x07) << 18) |
-                    (@as(u21, second & 0x3F) << 12) |
-                    (@as(u21, third & 0x3F) << 6) |
-                    @as(u21, fourth & 0x3F);
-                i += 4;
-                break :blk cp;
-            }
-
-            return error.InvalidUtf8;
-        };
+        const decoded = try decodeUtf8Codepoint(content, i);
+        const codepoint = decoded.codepoint;
+        i += decoded.bytes;
 
         // ASCII
         if (codepoint < 0x80) {
@@ -1263,62 +1127,9 @@ fn convertUtf8ToEucJp(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
 
     var i: usize = 0;
     while (i < content.len) {
-        const codepoint = blk: {
-            const byte = content[i];
-
-            // ASCII
-            if (byte < 0x80) {
-                i += 1;
-                break :blk @as(u21, byte);
-            }
-
-            // 2バイト
-            if (byte >= 0xC0 and byte <= 0xDF) {
-                if (i + 1 >= content.len) return error.InvalidUtf8;
-                const second = content[i + 1];
-                // continuation byteチェック（0x80-0xBF）
-                if (!unicode.isUtf8Continuation(second)) return error.InvalidUtf8;
-                const cp = (@as(u21, byte & 0x1F) << 6) |
-                    @as(u21, second & 0x3F);
-                i += 2;
-                break :blk cp;
-            }
-
-            // 3バイト
-            if (byte >= 0xE0 and byte <= 0xEF) {
-                if (i + 2 >= content.len) return error.InvalidUtf8;
-                const second = content[i + 1];
-                const third = content[i + 2];
-                // continuation byteチェック
-                if (!unicode.isUtf8Continuation(second)) return error.InvalidUtf8;
-                if (!unicode.isUtf8Continuation(third)) return error.InvalidUtf8;
-                const cp = (@as(u21, byte & 0x0F) << 12) |
-                    (@as(u21, second & 0x3F) << 6) |
-                    @as(u21, third & 0x3F);
-                i += 3;
-                break :blk cp;
-            }
-
-            // 4バイト
-            if (byte >= 0xF0 and byte <= 0xF7) {
-                if (i + 3 >= content.len) return error.InvalidUtf8;
-                const second = content[i + 1];
-                const third = content[i + 2];
-                const fourth = content[i + 3];
-                // continuation byteチェック
-                if (!unicode.isUtf8Continuation(second)) return error.InvalidUtf8;
-                if (!unicode.isUtf8Continuation(third)) return error.InvalidUtf8;
-                if (!unicode.isUtf8Continuation(fourth)) return error.InvalidUtf8;
-                const cp = (@as(u21, byte & 0x07) << 18) |
-                    (@as(u21, second & 0x3F) << 12) |
-                    (@as(u21, third & 0x3F) << 6) |
-                    @as(u21, fourth & 0x3F);
-                i += 4;
-                break :blk cp;
-            }
-
-            return error.InvalidUtf8;
-        };
+        const decoded = try decodeUtf8Codepoint(content, i);
+        const codepoint = decoded.codepoint;
+        i += decoded.bytes;
 
         // ASCII
         if (codepoint < 0x80) {

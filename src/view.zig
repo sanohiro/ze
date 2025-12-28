@@ -673,20 +673,15 @@ pub const View = struct {
             self.dirty_end = null;
         }
 
-        // ブロックコメントキャッシュの無効化（改善版）
+        // ブロックコメントキャッシュの無効化
         // ブロックコメントがない言語ではキャッシュ不要、無効化もスキップ
         if (self.language.block_comment != null) {
             if (self.cached_block_state != null) {
-                if (start_line < self.cached_block_top_line) {
-                    // 変更がキャッシュ行より前：cached_block_stateは無効
-                    // ただし、start_lineの直前までの状態は再利用可能
-                    // （computeBlockCommentStateで0からではなくstart_line付近から再計算）
-                    // 今回は単純にnullにして次回計算時に再構築
+                if (start_line <= self.cached_block_top_line) {
+                    // 変更がキャッシュ行以前：cached_block_stateは無効
+                    // 同じ行の編集でも /* や */ が追加/削除された可能性があるため
                     self.cached_block_state = null;
                 }
-                // start_line == cached_block_top_line の場合：
-                //   同じ行の編集では行頭時点の状態は変わらない（前の行で決まる）
-                //   したがってキャッシュは有効のまま維持
                 // start_line > cached_block_top_line の場合：
                 //   キャッシュ行より後の編集は、キャッシュ自体に影響しない
             }
@@ -740,6 +735,7 @@ pub const View = struct {
         self.needs_full_redraw = true;
         self.dirty_start = null;
         self.dirty_end = null;
+        self.scroll_delta = 0; // 水平スクロール時は垂直スクロール最適化を無効化
         // 注意: prev_screenはクリアしない（セル比較を維持）
         // 行幅キャッシュも維持（水平位置が変わっても行幅は不変）
     }
@@ -1069,8 +1065,8 @@ pub const View = struct {
         // マッチ前の部分をコピー
         try self.highlighted_line.appendSlice(self.allocator, line[0..match_start_raw]);
         // カーソル位置を含むマッチかどうかで色を変える（可視位置で比較）
-        // リテラル検索と一貫性を保つため < を使用（マッチ終端位置はマッチ外）
-        const is_current = if (cursor_in_content) |cursor| cursor >= match_start_vis and cursor < match_end_vis else false;
+        // カーソルはマッチ終端に置かれる: (start, end] の範囲で判定（開始を除外、終端を含む）
+        const is_current = if (cursor_in_content) |cursor| cursor > match_start_vis and cursor <= match_end_vis else false;
         const hl = getHighlightColors(is_current);
         try self.highlighted_line.appendSlice(self.allocator, hl.start);
         try self.highlighted_line.appendSlice(self.allocator, line[match_start_raw..match_end_raw]);
@@ -1102,8 +1098,8 @@ pub const View = struct {
                 // マッチ前の部分をコピー
                 try self.highlighted_line.appendSlice(self.allocator, line[last_raw_pos..match_start_raw]);
                 // カーソル位置を含むマッチかどうかで色を変える（可視位置で比較）
-                // リテラル検索と一貫性を保つため < を使用（マッチ終端位置はマッチ外）
-                const is_cur = if (cursor_in_content) |cursor| cursor >= match_start_vis and cursor < match_end_vis else false;
+                // カーソルはマッチ終端に置かれる: (start, end] の範囲で判定（開始を除外、終端を含む）
+                const is_cur = if (cursor_in_content) |cursor| cursor > match_start_vis and cursor <= match_end_vis else false;
                 const hl_cur = getHighlightColors(is_cur);
                 try self.highlighted_line.appendSlice(self.allocator, hl_cur.start);
                 try self.highlighted_line.appendSlice(self.allocator, line[match_start_raw..match_end_raw]);
@@ -1384,7 +1380,11 @@ pub const View = struct {
                     in_selection = true;
                 }
                 if (in_selection and byte_idx >= selection.end.?) {
-                    try self.expanded_line.appendSlice(self.allocator, ANSI.RESET);
+                    try self.expanded_line.appendSlice(self.allocator, ANSI.INVERT_OFF);
+                    // コメント内の場合はグレーを再適用
+                    if (in_comment) {
+                        try self.expanded_line.appendSlice(self.allocator, ANSI.GRAY);
+                    }
                     in_selection = false;
                 }
             }
@@ -1399,7 +1399,11 @@ pub const View = struct {
                     if (in_comment) {
                         if (span.end) |end| {
                             if (byte_idx == end) {
-                                try self.expanded_line.appendSlice(self.allocator, ANSI.RESET);
+                                try self.expanded_line.appendSlice(self.allocator, ANSI.FG_RESET);
+                                // 選択範囲内の場合は反転を維持
+                                if (in_selection) {
+                                    try self.expanded_line.appendSlice(self.allocator, ANSI.INVERT);
+                                }
                                 in_comment = false;
                                 current_span_idx += 1;
                                 current_span = if (current_span_idx < analysis.span_count) analysis.spans[current_span_idx] else null;
@@ -1434,11 +1438,16 @@ pub const View = struct {
                     col = next_tab_stop;
                     byte_idx += 1;
                 } else if (ch < ASCII.PRINTABLE_MIN or ch == ASCII.DEL) {
-                    if (col >= self.top_col and col + 1 < visible_end) {
+                    // 制御文字は2文字幅（^X形式）なので、両方収まるか確認
+                    if (col >= self.top_col and col + 2 <= visible_end) {
                         try self.expanded_line.appendSlice(self.allocator, ANSI.GRAY);
                         const ctrl = if (ch == ASCII.DEL) [2]u8{ '^', '?' } else renderControlChar(ch);
                         try self.expanded_line.appendSlice(self.allocator, &ctrl);
-                        try self.expanded_line.appendSlice(self.allocator, ANSI.RESET);
+                        try self.expanded_line.appendSlice(self.allocator, ANSI.FG_RESET);
+                        // 選択範囲内の場合は反転を再適用
+                        if (in_selection) {
+                            try self.expanded_line.appendSlice(self.allocator, ANSI.INVERT);
+                        }
                     }
                     byte_idx += 1;
                     col += 2;
@@ -1735,6 +1744,9 @@ pub const View = struct {
                 try term.resetScrollRegion();
 
                 self.scroll_delta = 0;
+            } else {
+                // prev_screenのサイズが合わない場合は全画面再描画
+                self.markFullRedraw();
             }
         }
 
@@ -1981,13 +1993,7 @@ pub const View = struct {
         }
 
         const result = @min(iter.global_pos, self.buffer.len());
-
-        // キャッシュを更新
-        self.cursor_byte_pos_cache = result;
-        self.cursor_byte_pos_cache_x = self.cursor_x;
-        self.cursor_byte_pos_cache_y = self.cursor_y;
-        self.cursor_byte_pos_cache_top_line = self.top_line;
-
+        self.setCursorPosCache(result);
         return result;
     }
 
@@ -1997,13 +2003,18 @@ pub const View = struct {
         self.cursor_byte_pos_cache = null;
     }
 
-    /// 文字入力後にカーソルバイト位置キャッシュを直接更新
-    /// getCursorBufferPos()の再計算を回避
-    pub fn updateCursorPosCacheAfterInsert(self: *View, old_pos: usize, inserted_len: usize) void {
-        self.cursor_byte_pos_cache = old_pos + inserted_len;
+    /// カーソルバイト位置キャッシュを設定（4行セットの共通化）
+    fn setCursorPosCache(self: *View, byte_pos: usize) void {
+        self.cursor_byte_pos_cache = byte_pos;
         self.cursor_byte_pos_cache_x = self.cursor_x;
         self.cursor_byte_pos_cache_y = self.cursor_y;
         self.cursor_byte_pos_cache_top_line = self.top_line;
+    }
+
+    /// 文字入力後にカーソルバイト位置キャッシュを直接更新
+    /// getCursorBufferPos()の再計算を回避
+    pub fn updateCursorPosCacheAfterInsert(self: *View, old_pos: usize, inserted_len: usize) void {
+        self.setCursorPosCache(old_pos + inserted_len);
     }
 
     /// カーソル位置のバイトオフセットと直前の文字幅を同時に取得
@@ -2202,9 +2213,8 @@ pub const View = struct {
             return;
         }
 
-        const file_line = self.top_line + self.cursor_y;
-        if (file_line < self.top_line) return;
-        const cache_idx = file_line - self.top_line;
+        // cache_idx = (top_line + cursor_y) - top_line = cursor_y
+        const cache_idx = self.cursor_y;
         if (cache_idx >= 128) return;
 
         if (self.line_width_cache[cache_idx]) |cached| {
@@ -2347,11 +2357,7 @@ pub const View = struct {
                 self.cursor_x = 0;
             }
 
-            // キャッシュを更新（直前の文字位置へ）
-            self.cursor_byte_pos_cache = info.prev_byte_pos;
-            self.cursor_byte_pos_cache_x = self.cursor_x;
-            self.cursor_byte_pos_cache_y = self.cursor_y;
-            self.cursor_byte_pos_cache_top_line = self.top_line;
+            self.setCursorPosCache(info.prev_byte_pos);
 
             // 水平スクロール: カーソルが左端より左に行った場合
             if (self.cursor_x < self.top_col) {
@@ -2407,12 +2413,7 @@ pub const View = struct {
         } else {
             // 次の文字の幅分進める
             self.cursor_x += info.next_width;
-
-            // キャッシュを更新（次回はO(1)で取得可能）
-            self.cursor_byte_pos_cache = info.next_byte_pos;
-            self.cursor_byte_pos_cache_x = self.cursor_x;
-            self.cursor_byte_pos_cache_y = self.cursor_y;
-            self.cursor_byte_pos_cache_top_line = self.top_line;
+            self.setCursorPosCache(info.next_byte_pos);
 
             // 水平スクロール: カーソルが右端を超えた場合（行番号幅を除く）
             const visible_width = if (self.viewport_width > self.getLineNumberWidth())
@@ -2442,10 +2443,7 @@ pub const View = struct {
 
         // カーソル位置をクランプし、キャッシュを更新
         self.cursor_x = info.clamped_x;
-        self.cursor_byte_pos_cache = info.byte_pos;
-        self.cursor_byte_pos_cache_x = self.cursor_x;
-        self.cursor_byte_pos_cache_y = self.cursor_y;
-        self.cursor_byte_pos_cache_top_line = self.top_line;
+        self.setCursorPosCache(info.byte_pos);
 
         // 水平スクロール位置もクランプ（短い行に移動した時の空白表示を防ぐ）
         if (self.top_col > self.cursor_x) {
@@ -2471,10 +2469,7 @@ pub const View = struct {
 
         // カーソル位置をクランプし、キャッシュを更新
         self.cursor_x = info.clamped_x;
-        self.cursor_byte_pos_cache = info.byte_pos;
-        self.cursor_byte_pos_cache_x = self.cursor_x;
-        self.cursor_byte_pos_cache_y = self.cursor_y;
-        self.cursor_byte_pos_cache_top_line = self.top_line;
+        self.setCursorPosCache(info.byte_pos);
 
         // 水平スクロール位置もクランプ（短い行に移動した時の空白表示を防ぐ）
         if (self.top_col > self.cursor_x) {
@@ -2489,6 +2484,8 @@ pub const View = struct {
         const total_lines = self.buffer.lineCount();
         if (total_lines == 0) return;
 
+        const old_top = self.top_line;
+
         if (lines > 0) {
             // 下スクロール
             const delta: usize = @intCast(lines);
@@ -2498,7 +2495,6 @@ pub const View = struct {
             } else {
                 self.top_line = max_top;
             }
-            self.markScroll(@intCast(delta));
         } else if (lines < 0) {
             // 上スクロール
             // i64経由でキャストすることでi32.minでもオーバーフローしない
@@ -2508,7 +2504,12 @@ pub const View = struct {
             } else {
                 self.top_line = 0;
             }
-            self.markScroll(-@as(i32, @intCast(delta)));
+        }
+
+        // 実際のスクロール量でマーク（クランプされた場合を考慮）
+        const actual_delta = @as(i32, @intCast(self.top_line)) - @as(i32, @intCast(old_top));
+        if (actual_delta != 0) {
+            self.markScroll(actual_delta);
         }
 
         // カーソルがファイル末尾を超えないように調整
@@ -2540,10 +2541,7 @@ pub const View = struct {
         // カーソルバイト位置キャッシュを更新（行頭 = line_start）
         const line = self.top_line + self.cursor_y;
         if (self.buffer.getLineStart(line)) |line_start| {
-            self.cursor_byte_pos_cache = line_start;
-            self.cursor_byte_pos_cache_x = 0;
-            self.cursor_byte_pos_cache_y = self.cursor_y;
-            self.cursor_byte_pos_cache_top_line = self.top_line;
+            self.setCursorPosCache(line_start);
         }
     }
 
@@ -2554,16 +2552,13 @@ pub const View = struct {
 
         // カーソルバイト位置キャッシュを更新（行末 = 改行位置 or EOF）
         const line = self.top_line + self.cursor_y;
-        if (self.buffer.getLineStart(line + 1)) |next_line_start| {
+        const byte_pos = if (self.buffer.getLineStart(line + 1)) |next_line_start|
             // 次の行がある場合、改行文字の位置
-            self.cursor_byte_pos_cache = if (next_line_start > 0) next_line_start - 1 else 0;
-        } else {
+            if (next_line_start > 0) next_line_start - 1 else 0
+        else
             // 最終行の場合、バッファ末尾
-            self.cursor_byte_pos_cache = self.buffer.len();
-        }
-        self.cursor_byte_pos_cache_x = self.cursor_x;
-        self.cursor_byte_pos_cache_y = self.cursor_y;
-        self.cursor_byte_pos_cache_top_line = self.top_line;
+            self.buffer.len();
+        self.setCursorPosCache(byte_pos);
 
         // 水平スクロール: カーソルが可視領域外なら調整
         const line_num_width = self.getLineNumberWidth();
@@ -2585,13 +2580,7 @@ pub const View = struct {
         self.cursor_y = 0;
         self.top_line = 0;
         self.top_col = 0;
-
-        // カーソルバイト位置キャッシュを更新（バッファ先頭 = 0）
-        self.cursor_byte_pos_cache = 0;
-        self.cursor_byte_pos_cache_x = 0;
-        self.cursor_byte_pos_cache_y = 0;
-        self.cursor_byte_pos_cache_top_line = 0;
-
+        self.setCursorPosCache(0);
         self.markFullRedraw();
     }
 
@@ -2603,13 +2592,7 @@ pub const View = struct {
             self.cursor_y = 0;
             self.top_line = 0;
             self.top_col = 0;
-
-            // 空ファイルの場合もキャッシュを更新（バッファ先頭 = 0）
-            self.cursor_byte_pos_cache = 0;
-            self.cursor_byte_pos_cache_x = 0;
-            self.cursor_byte_pos_cache_y = 0;
-            self.cursor_byte_pos_cache_top_line = 0;
-
+            self.setCursorPosCache(0);
             self.markFullRedraw();
             return;
         }

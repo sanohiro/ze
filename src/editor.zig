@@ -251,6 +251,10 @@ pub const Editor = struct {
     paste_mode: bool, // ペースト中フラグ（ESC[200~とESC[201~の間）
     paste_buffer: std.ArrayList(u8), // ペースト内容を蓄積するバッファ
 
+    // 検索チャンクバッファ（正規表現検索で再利用、alloc/free削減）
+    search_chunk_buffer: ?[]u8,
+    search_chunk_capacity: usize,
+
     // キーマップ
     keymap: Keymap, // キーバインド設定（ランタイム変更可能）
 
@@ -303,6 +307,8 @@ pub const Editor = struct {
             .pending_filename = null,
             .paste_mode = false,
             .paste_buffer = std.ArrayList(u8){},
+            .search_chunk_buffer = null,
+            .search_chunk_capacity = 0,
             .keymap = try Keymap.init(allocator),
         };
 
@@ -351,6 +357,11 @@ pub const Editor = struct {
 
         // ペーストバッファのクリーンアップ
         self.paste_buffer.deinit(self.allocator);
+
+        // 検索チャンクバッファのクリーンアップ
+        if (self.search_chunk_buffer) |buf| {
+            self.allocator.free(buf);
+        }
 
         // ミニバッファのクリーンアップ
         self.minibuffer.deinit();
@@ -596,9 +607,14 @@ pub const Editor = struct {
 
         if (self.last_search) |search_str| {
             // 前回の検索パターンがあれば、それで検索を実行
-            self.minibuffer.setContent(search_str) catch {};
+            self.minibuffer.setContent(search_str) catch |err| {
+                self.showError(err);
+                return;
+            };
             self.getCurrentView().setSearchHighlightEx(search_str, self.is_regex_search);
-            self.performSearch(forward, true) catch {};
+            self.performSearch(forward, true) catch |err| {
+                self.showError(err);
+            };
             self.prompt_prefix_len = prefix_len;
             self.setPrompt("{s}{s}", .{ prefix, search_str });
         } else {
@@ -712,7 +728,7 @@ pub const Editor = struct {
                     const buffer_state = self.getCurrentBuffer();
                     // 先にdupeしてからfreeする（dupe失敗時のダングリングポインタ防止）
                     const new_name = self.allocator.dupe(u8, pending) catch {
-                        self.getCurrentView().setError("Memory allocation failed");
+                        self.getCurrentView().setError(config.Messages.MEMORY_ALLOCATION_FAILED);
                         self.clearPendingFilename();
                         self.mode = .normal;
                         return;
@@ -780,7 +796,7 @@ pub const Editor = struct {
         const c = unicode.toAsciiChar(cp);
         const search = self.replace_search orelse {
             self.mode = .normal;
-            self.getCurrentView().setError("Error: no search string");
+            self.getCurrentView().setError(config.Messages.NO_SEARCH_STRING);
             return;
         };
 
@@ -991,7 +1007,7 @@ pub const Editor = struct {
             .shell_command,
             .mx_command,
             .mx_key_describe,
-            .macro_repeat,
+            // macro_repeat はミニバッファ入力モードではない（eキー待機のみ）
             => true,
             else => false,
         };
@@ -1698,7 +1714,7 @@ pub const Editor = struct {
         }
 
         if (matches.items.len == 0) {
-            self.getCurrentView().setError("No match");
+            self.getCurrentView().setError(config.Messages.NO_MATCH);
             self.completion_shown = true; // No matchもカーソル非表示
             return false;
         }
@@ -2020,6 +2036,43 @@ pub const Editor = struct {
         const copied = iter.copyBytes(result);
         if (copied != actual_len) {
             // Piece table の不整合が発生した場合
+            return error.BufferInconsistency;
+        }
+
+        return result;
+    }
+
+    /// 再利用可能バッファを使ってテキストを抽出（正規表現検索用）
+    /// ループ内での alloc/free を削減してパフォーマンス向上
+    fn extractTextReusable(self: *Editor, pos: usize, len: usize) ![]const u8 {
+        const buffer = self.getCurrentBufferContent();
+        const buf_len = buffer.len();
+
+        if (pos >= buf_len) {
+            return &[_]u8{};
+        }
+
+        const actual_len = @min(len, buf_len - pos);
+        if (actual_len == 0) {
+            return &[_]u8{};
+        }
+
+        // 必要に応じてバッファを拡大（1MB + 余裕）
+        if (self.search_chunk_capacity < actual_len) {
+            const new_capacity = actual_len + (actual_len / 4) + 4096;
+            if (self.search_chunk_buffer) |old| {
+                self.allocator.free(old);
+            }
+            self.search_chunk_buffer = try self.allocator.alloc(u8, new_capacity);
+            self.search_chunk_capacity = new_capacity;
+        }
+
+        var iter = PieceIterator.init(buffer);
+        iter.seek(pos);
+
+        const result = self.search_chunk_buffer.?[0..actual_len];
+        const copied = iter.copyBytes(result);
+        if (copied != actual_len) {
             return error.BufferInconsistency;
         }
 
@@ -2600,7 +2653,7 @@ pub const Editor = struct {
             },
             .char => |c| {
                 switch (c) {
-                    'h' => edit.selectAll(self) catch {},
+                    'h' => edit.selectAll(self) catch |err| self.showError(err),
                     'r' => {
                         self.mode = .prefix_r;
                         return true;
@@ -2627,6 +2680,10 @@ pub const Editor = struct {
                     '3' => self.splitWindowVertically() catch |err| self.showError(err),
                     'o' => {
                         self.window_manager.nextWindow();
+                        // アクティブウィンドウが変わったので全ウィンドウを再描画
+                        for (self.window_manager.windows.items) |*win| {
+                            win.view.markFullRedraw();
+                        }
                     },
                     '0' => self.closeCurrentWindow() catch |err| self.showError(err),
                     '1' => self.deleteOtherWindows() catch |err| self.showError(err),
@@ -2980,7 +3037,7 @@ pub const Editor = struct {
             }
             const result = mx.completeCommand(current);
             if (result.matches.len == 0) {
-                self.getCurrentView().setError("No match");
+                self.getCurrentView().setError(config.Messages.NO_MATCH);
                 self.completion_shown = true; // No matchもカーソル非表示
             } else if (result.matches.len == 1) {
                 // ユニーク一致: 完全補完 + スペース
@@ -3276,11 +3333,11 @@ pub const Editor = struct {
                             self.cancelShellCommand();
                             self.minibuffer.clear();
                         } else {
-                            self.getCurrentView().setError("Shell running (C-g to cancel)");
+                            self.getCurrentView().setError(config.Messages.SHELL_RUNNING);
                         }
                     },
                     else => {
-                        self.getCurrentView().setError("Shell running (C-g to cancel)");
+                        self.getCurrentView().setError(config.Messages.SHELL_RUNNING);
                     },
                 }
                 return;
@@ -3305,7 +3362,10 @@ pub const Editor = struct {
         // マクロ記録中ならキーを記録（マクロ制御キーは除外）
         if (self.macro_service.isRecording() and !self.macro_service.isPlaying()) {
             if (!self.isMacroControlKey(key)) {
-                self.macro_service.recordKey(key) catch {};
+                self.macro_service.recordKey(key) catch |err| {
+                    self.showError(err);
+                    self.macro_service.stopRecording(); // 記録を中断
+                };
             }
         }
 
@@ -3496,8 +3556,8 @@ pub const Editor = struct {
                 const chunk_len = chunk_end - chunk_start;
                 if (chunk_len == 0) break;
 
-                const content = try self.extractText(chunk_start, chunk_len);
-                defer self.allocator.free(content);
+                // 再利用バッファで抽出（alloc/free削減）
+                const content = try self.extractTextReusable(chunk_start, chunk_len);
 
                 // チャンク内での検索開始位置
                 // 前方: オーバーラップ分をスキップ（既に検索済み）
@@ -3590,8 +3650,8 @@ pub const Editor = struct {
                 const chunk_len = chunk_end - chunk_start;
                 if (chunk_len == 0) break;
 
-                const content = try self.extractText(chunk_start, chunk_len);
-                defer self.allocator.free(content);
+                // 再利用バッファで抽出（alloc/free削減）
+                const content = try self.extractTextReusable(chunk_start, chunk_len);
 
                 const adjusted_start: usize = if (first_chunk)
                     0
@@ -3618,8 +3678,8 @@ pub const Editor = struct {
                 } else {
                     search_pos = chunk_end;
                 }
-                // ラップ後に開始位置を超えたら終了
-                if (wrapped and search_pos >= start_pos) break;
+                // ラップ後に開始位置を超えたら終了（actual_startを使用）
+                if (wrapped and search_pos >= actual_start) break;
             }
         } else {
             // リテラル置換（M-%）- コピーなしのBuffer直接検索
@@ -3752,7 +3812,7 @@ pub const Editor = struct {
         const parsed = ShellService.parseCommand(cmd_input);
 
         if (parsed.command.len == 0) {
-            self.getCurrentView().setError("No command specified");
+            self.getCurrentView().setError(config.Messages.NO_COMMAND_SPECIFIED);
             return;
         }
 
@@ -3811,17 +3871,17 @@ pub const Editor = struct {
             }
             switch (err) {
                 error.EmptyCommand, error.NoCommand => {
-                    self.getCurrentView().setError("No command specified");
+                    self.getCurrentView().setError(config.Messages.NO_COMMAND_SPECIFIED);
                 },
                 else => {
-                    self.getCurrentView().setError("Failed to start command");
+                    self.getCurrentView().setError(config.Messages.COMMAND_START_FAILED);
                 },
             }
             return;
         };
 
         self.mode = .shell_running;
-        self.getCurrentView().setError("Running... (C-g to cancel)");
+        self.getCurrentView().setError(config.Messages.SHELL_RUNNING);
     }
 
     /// シェルコマンドの完了をポーリング
@@ -3850,7 +3910,7 @@ pub const Editor = struct {
     fn cancelShellCommand(self: *Editor) void {
         self.shell_service.cancel();
         self.mode = .normal;
-        self.getCurrentView().setError("Cancelled");
+        self.getCurrentView().setError(config.Messages.CANCELLED);
     }
 
     /// シェル実行結果を処理

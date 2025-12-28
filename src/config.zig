@@ -78,7 +78,9 @@ pub const ANSI = struct {
     /// ハイライト解除（背景・前景リセット）
     pub const HIGHLIGHT_OFF = "\x1b[49m\x1b[39m";
 
-    // === 背景色 ===
+    // === 前景色/背景色 ===
+    /// 前景色リセット
+    pub const FG_RESET = "\x1b[39m";
     /// 暗いグレー背景（全角スペース表示用）
     pub const BG_DARK_GRAY = "\x1b[48;5;236m";
     /// 背景色リセット
@@ -200,6 +202,15 @@ pub const Messages = struct {
     pub const UNKNOWN_COMMAND = "Unknown command";
     pub const FILE_NOT_FOUND = "File not found";
     pub const BINARY_FILE = "Binary file detected";
+    pub const MEMORY_ALLOCATION_FAILED = "Memory allocation failed";
+    pub const NO_SEARCH_STRING = "Error: no search string";
+    pub const COMMAND_START_FAILED = "Failed to start command";
+    pub const COMMAND_FAILED = "Command failed";
+    pub const NO_MATCH = "No match";
+    pub const NO_MATCH_FOUND = "No match found";
+    pub const NO_COMMAND_SPECIFIED = "No command specified";
+    pub const SHELL_RUNNING = "Running... (C-g to cancel)";
+    pub const CANCELLED = "Cancelled";
 
     // === 確認メッセージ ===
     pub const CONFIRM_YES_NO = "Please answer: (y)es or (n)o";
