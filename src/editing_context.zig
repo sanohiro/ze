@@ -109,6 +109,14 @@ pub const EditingContext = struct {
     current_group_id: ?u32 = null, // 現在アクティブなグループID
     next_group_id: u32 = 1, // 次に使うグループID
 
+    // Undoグループ分け（ハイブリッド方式）
+    // 1. 単語境界（スペース、記号）で新しいグループを開始
+    // 2. 一定時間（300ms）経過後も新しいグループを開始
+    last_record_time: i128 = 0, // 直前のUndo記録時刻（ナノ秒）
+
+    /// Undoグループ分けのタイムアウト（300ms）
+    const UNDO_GROUP_TIMEOUT_NS: i128 = 300 * std.time.ns_per_ms;
+
     const ListenerEntry = struct {
         callback: ChangeListener,
         context: ?*anyopaque,
@@ -831,46 +839,108 @@ pub const EditingContext = struct {
     }
 
     // ========================================
-    // Undo記録（外部から呼び出し可能）
+    // Undoグループ分けルール
     // ========================================
     //
-    // 【グループ化の仕組み】
-    // 連続した入力/削除を1つのUndo操作にまとめる:
-    // - 挿入: "abc"と入力 → 1回のUndoで"abc"を削除
-    // - 削除: Backspace連打 → 1回のUndoで復元
+    // 【設計思想】
+    // - 単語移動（M-f, M-b）と同じ境界定義を使用（unicode.isWordCharByte）
+    // - VSCode風に空白は次の単語に属する
+    // - 連続した入力/削除を1つのUndo操作にまとめる
     //
-    // 【グループ化条件】
-    // - 同じ操作タイプ（insert or delete）
-    // - 位置が連続している（直前の操作の直後）
-    // - 改行を含まない（改行でグループを分割）
+    // 【マージ条件】（同じUndoグループに統合）
+    // 1. 両方とも単語文字（a-z, A-Z, 0-9, _）
+    // 2. 両方とも非単語文字（記号の連続）
+    // 3. 前が空白で新が単語文字（空白は次の単語に属す）
+    //
+    // 【新グループ開始】
+    // - 前が非空白記号で新が単語文字 → "#" と "include"
+    // - 前が単語文字で新が記号 → "hello" と ","
+    // - ASCII↔非ASCII境界 → "hello" と "日本語"
+    // - 300ms以上経過（タイムアウト）
+    // - カーソル位置が不連続
+    // - 改行を含む
+    //
+    // 【例】
+    // "hello world" → ["hello", " world"]
+    // "hello, world" → ["hello", ", world"]
+    // "#include" → ["#", "include"]
+    // "x = 1" → ["x", " = 1"]
+    // "hello日本語" → ["hello", "日本語"]
     //
     // 【cursor_before/cursor_after】
     // Undo/Redo時のカーソル復元に使用:
     // - cursor_before: 操作前の位置（Undoで復元）
     // - cursor_after: 操作後の位置（Redoで復元）
 
+    /// 空白文字かどうか
+    fn isWhitespace(byte: u8) bool {
+        return byte == ' ' or byte == '\t';
+    }
+
+    /// ASCII/非ASCII境界をまたぐかどうか（例: "hello"→"日本語"）
+    fn crossesAsciiBoundary(last_byte: u8, new_byte: u8) bool {
+        const last_ascii = last_byte < 0x80;
+        const new_ascii = new_byte < 0x80;
+        return last_ascii != new_ascii;
+    }
+
     /// 挿入操作をUndo履歴に記録
     pub fn recordInsertOp(self: *EditingContext, pos: usize, text: []const u8, cursor_pos_before: usize) !void {
+        const now = std.time.nanoTimestamp();
+        const time_elapsed = now - self.last_record_time;
+
         // 連続した挿入操作をグループ化
-        // 条件: 直前の操作も挿入で、位置が連続している場合
-        if (self.undo_stack.items.len > 0) {
+        // 条件: 直前の操作も挿入で、位置が連続していて、
+        //       タイムアウト内かつ単語境界をまたがない
+        if (self.undo_stack.items.len > 0 and time_elapsed < UNDO_GROUP_TIMEOUT_NS) {
             const last = &self.undo_stack.items[self.undo_stack.items.len - 1];
             if (last.op == .insert and last.groupable and
                 last.position + last.data.len == pos and
                 !containsNewline(text) and !containsNewline(last.data))
             {
-                // 既存のエントリにデータを追加
-                const new_len = last.data.len + text.len;
-                const new_data = try self.allocator.alloc(u8, new_len);
-                @memcpy(new_data[0..last.data.len], last.data);
-                @memcpy(new_data[last.data.len..], text);
-                self.allocator.free(last.data);
-                last.data = new_data;
-                last.cursor_after = pos + text.len;
-                // cursor_beforeは最初の文字入力時のまま保持
-                return;
+                // グループ分けルール（VSCode方式 + 単語移動と統一）：
+                //
+                // 例: "hello world" → ["hello", " world"]
+                //     "hello, world" → ["hello", ", world"]
+                //     "#include" → ["#", "include"]
+                //     "x = 1" → ["x", " = 1"]
+                const last_byte = last.data[last.data.len - 1];
+                const new_byte = text[0];
+
+                // ASCII/非ASCII境界は常に分割
+                if (crossesAsciiBoundary(last_byte, new_byte)) {
+                    // 新グループ開始（下のコードへフォールスルー）
+                } else {
+                    const new_is_word = unicode.isWordCharByte(new_byte);
+                    const last_is_word = unicode.isWordCharByte(last_byte);
+                    const last_is_whitespace = isWhitespace(last_byte);
+
+                    // マージ条件:
+                    // 1. 両方とも単語文字 → マージ（"hello"）
+                    // 2. 両方とも非単語文字 → マージ（", " や " = "）
+                    // 3. 前が空白で新が単語文字 → マージ（" world"）
+                    const should_merge = (new_is_word and last_is_word) or
+                        (!new_is_word and !last_is_word) or
+                        (last_is_whitespace and new_is_word);
+
+                    if (should_merge) {
+                        // 既存のエントリにデータを追加
+                        const new_len = last.data.len + text.len;
+                        const new_data = try self.allocator.alloc(u8, new_len);
+                        @memcpy(new_data[0..last.data.len], last.data);
+                        @memcpy(new_data[last.data.len..], text);
+                        self.allocator.free(last.data);
+                        last.data = new_data;
+                        last.cursor_after = pos + text.len;
+                        self.last_record_time = now;
+                        return;
+                    }
+                    // マージしない → 新グループ（下へフォールスルー）
+                }
             }
         }
+
+        self.last_record_time = now;
 
         self.clearRedoStack();
         const data_copy = try self.allocator.dupe(u8, text);
@@ -890,7 +960,7 @@ pub const EditingContext = struct {
     /// 連続した削除はグループ化される
     pub fn recordDeleteOp(self: *EditingContext, pos: usize, text: []const u8, cursor_pos_before: usize) !void {
         // 連続した削除操作をグループ化
-        // 条件: 直前の操作も削除で、位置が連続している場合（Backspace）
+        // 条件: 直前の操作も削除で、位置が連続している場合
         if (self.undo_stack.items.len > 0) {
             const last = &self.undo_stack.items[self.undo_stack.items.len - 1];
             if (last.op == .delete and last.groupable and
