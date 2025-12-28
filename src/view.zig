@@ -2131,19 +2131,52 @@ pub const View = struct {
 
     pub fn moveCursorLeft(self: *View) void {
         if (self.cursor_x > 0) {
-            // 1回の走査でバイト位置と直前の文字幅を取得（最適化）
-            const result = self.getCursorPosWithPrevWidth();
-            if (result.pos == 0) {
+            // キャッシュを活用してカーソルバイト位置を取得
+            const current_byte_pos = self.getCursorBufferPos();
+            if (current_byte_pos == 0) {
                 self.cursor_x = 0;
                 return;
             }
 
+            // 行頭から現在位置まで走査して、直前の文字を特定
+            const target_line = self.top_line + self.cursor_y;
+            const line_start = self.buffer.getLineStart(target_line) orelse return;
+
+            var iter = PieceIterator.init(self.buffer);
+            iter.seek(line_start);
+
+            var prev_width: usize = 1;
+            var prev_byte_pos: usize = line_start;
+            var display_col: usize = 0; // タブ幅計算に必要
+
+            // キャッシュされたバイト位置まで走査
+            while (iter.global_pos < current_byte_pos) {
+                prev_byte_pos = iter.global_pos;
+                const cluster = iter.nextGraphemeCluster() catch break;
+                if (cluster == null) break;
+                const gc = cluster.?;
+                if (gc.base == '\n') break;
+
+                // タブ文字の場合は文脈依存の幅を計算
+                prev_width = if (gc.base == '\t')
+                    nextTabStop(display_col, self.getTabWidth()) - display_col
+                else
+                    gc.width;
+                display_col += prev_width;
+            }
+
             // 直前の文字幅だけカーソルを戻す
-            if (self.cursor_x >= result.prev_width) {
-                self.cursor_x -= result.prev_width;
+            if (self.cursor_x >= prev_width) {
+                self.cursor_x -= prev_width;
             } else {
                 self.cursor_x = 0;
             }
+
+            // キャッシュを更新（直前の文字位置へ）
+            self.cursor_byte_pos_cache = prev_byte_pos;
+            self.cursor_byte_pos_cache_x = self.cursor_x;
+            self.cursor_byte_pos_cache_y = self.cursor_y;
+            self.cursor_byte_pos_cache_top_line = self.top_line;
 
             // 水平スクロール: カーソルが左端より左に行った場合
             if (self.cursor_x < self.top_col) {
@@ -2166,15 +2199,22 @@ pub const View = struct {
     }
 
     pub fn moveCursorRight(self: *View) void {
-        // 1回の走査でバイト位置と次の文字情報を取得（最適化）
-        const info = self.getCursorPosWithNextInfo();
+        // キャッシュを活用してO(1)でカーソルバイト位置を取得
+        const byte_pos = self.getCursorBufferPos();
+        if (byte_pos >= self.buffer.len()) return;
 
-        if (info.is_eof) return;
+        // 現在位置から次の文字を読む
+        var iter = PieceIterator.init(self.buffer);
+        iter.seek(byte_pos);
+
+        const next_cluster = iter.nextGraphemeCluster() catch return;
+        if (next_cluster == null) return;
+        const gc = next_cluster.?;
 
         // ステータスバー分を除いた最大行
         const max_cursor_y = if (self.viewport_height >= 2) self.viewport_height - 2 else 0;
 
-        if (info.is_newline) {
+        if (gc.base == '\n') {
             // 改行の場合は次の行の先頭へ
             if (self.cursor_y < max_cursor_y and self.top_line + self.cursor_y + 1 < self.buffer.lineCount()) {
                 self.cursor_y += 1;
@@ -2189,9 +2229,21 @@ pub const View = struct {
                 self.top_col = 0;
                 self.markFullRedraw();
             }
+            // 行が変わったのでキャッシュを無効化
+            self.cursor_byte_pos_cache = null;
         } else {
-            // 次の文字の幅分進める（タブ幅は既に計算済み）
-            self.cursor_x += info.next_width;
+            // 次の文字の幅分進める（タブ幅を考慮）
+            const next_width = if (gc.base == '\t')
+                nextTabStop(self.cursor_x, self.getTabWidth()) - self.cursor_x
+            else
+                gc.width;
+            self.cursor_x += next_width;
+
+            // キャッシュを更新（次回はO(1)で取得可能）
+            self.cursor_byte_pos_cache = iter.global_pos;
+            self.cursor_byte_pos_cache_x = self.cursor_x;
+            self.cursor_byte_pos_cache_y = self.cursor_y;
+            self.cursor_byte_pos_cache_top_line = self.top_line;
 
             // 水平スクロール: カーソルが右端を超えた場合（行番号幅を除く）
             const visible_width = if (self.viewport_width > self.getLineNumberWidth())
