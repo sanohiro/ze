@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2025-12-28
+
+### Changed
+- Undo grouping now uses VSCode-style word boundaries
+  - Unified with word movement (M-f, M-b) boundary definition
+  - Spaces belong to the following word: "hello world" → ["hello", " world"]
+  - Symbol prefixes are separate: "#include" → ["#", "include"]
+  - ASCII/non-ASCII boundaries split groups: "hello日本語" → ["hello", "日本語"]
+  - 300ms timeout also starts new group
+
+### Performance
+- Piece consolidation: consecutive inserts merge into single Piece (reduces memory)
+- Word movement (M-f, M-b): uses PieceIterator for O(1) sequential reads
+- PageUp/Down: direct cursor calculation instead of loop
+- Line start/end: cache updates on C-a/C-e
+
+### Fixed
+- Binary file error now shown before entering alternate screen
+- Support saving to non-existent directories (creates parent dirs)
+
 ## [1.1.5] - 2025-12-27
 
 ### Refactored
