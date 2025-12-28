@@ -957,11 +957,14 @@ pub const EditingContext = struct {
 
     /// 削除操作をUndo履歴に記録（外部から呼び出し用）
     /// textはコピーされるので、呼び出し元でfreeしても問題ない
-    /// 連続した削除はグループ化される
+    /// 連続した削除はグループ化される（タイムアウト内のみ）
     pub fn recordDeleteOp(self: *EditingContext, pos: usize, text: []const u8, cursor_pos_before: usize) !void {
+        const now = std.time.nanoTimestamp();
+        const time_elapsed = now - self.last_record_time;
+
         // 連続した削除操作をグループ化
-        // 条件: 直前の操作も削除で、位置が連続している場合
-        if (self.undo_stack.items.len > 0) {
+        // 条件: 直前の操作も削除で、位置が連続していて、タイムアウト内
+        if (self.undo_stack.items.len > 0 and time_elapsed < UNDO_GROUP_TIMEOUT_NS) {
             const last = &self.undo_stack.items[self.undo_stack.items.len - 1];
             if (last.op == .delete and last.groupable and
                 !containsNewline(text) and !containsNewline(last.data))
@@ -978,6 +981,7 @@ pub const EditingContext = struct {
                     last.position = pos;
                     last.cursor_after = pos;
                     // cursor_beforeは最初の削除時のまま保持
+                    self.last_record_time = now;
                     return;
                 }
                 // Delete (C-d)の場合: 削除位置が同じ
@@ -990,6 +994,7 @@ pub const EditingContext = struct {
                     self.allocator.free(last.data);
                     last.data = new_data;
                     // cursor_before/afterは変わらない
+                    self.last_record_time = now;
                     return;
                 }
             }
@@ -1005,6 +1010,7 @@ pub const EditingContext = struct {
             .cursor_after = pos,
             .group_id = self.current_group_id,
         });
+        self.last_record_time = now;
         self.modified = true;
     }
 

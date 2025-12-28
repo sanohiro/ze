@@ -100,6 +100,8 @@ pub const KillRing = struct {
                 // reallocで効率的にサイズ変更
                 if (self.allocator.resize(old, new_capacity)) {
                     // resizeが成功した場合（インプレース拡張）
+                    // 重要: スライスの長さも更新する必要がある
+                    self.data = old.ptr[0..new_capacity];
                     self.capacity = new_capacity;
                 } else {
                     // resizeが失敗した場合は新規アロケーション
