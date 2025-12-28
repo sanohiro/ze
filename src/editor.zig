@@ -2074,6 +2074,11 @@ pub const Editor = struct {
         const line = buffer.findLineByPos(clamped_pos);
         const line_start = buffer.getLineStart(line) orelse 0;
 
+        // 前の状態を保存（スクロール検出用）
+        const old_top_line = view.top_line;
+        const old_top_col = view.top_col;
+        var needs_vertical_scroll = false;
+
         // 画面内の行位置を計算（ビューポート高さを使用）
         // 現在のtop_lineをなるべく維持し、カーソルが画面外に出た場合のみスクロール
         const max_screen_lines = if (view.viewport_height >= 1) view.viewport_height - 1 else 0;
@@ -2084,10 +2089,12 @@ pub const Editor = struct {
             // カーソルが画面より上 → スクロールして見えるようにする
             view.top_line = line;
             view.cursor_y = 0;
+            needs_vertical_scroll = true;
         } else if (line >= view.top_line + max_screen_lines) {
             // カーソルが画面より下 → スクロールして見えるようにする
             view.top_line = line - max_screen_lines + 1;
             view.cursor_y = max_screen_lines - 1;
+            needs_vertical_scroll = true;
         } else {
             // カーソルは画面内 → top_lineはそのまま
             view.cursor_y = line - view.top_line;
@@ -2124,14 +2131,33 @@ pub const Editor = struct {
         // 水平スクロールを調整
         const line_num_width = view.getLineNumberWidth();
         const visible_width = if (view.viewport_width > line_num_width) view.viewport_width - line_num_width else 1;
+        var needs_horizontal_scroll = false;
         if (view.cursor_x >= view.top_col + visible_width) {
             // カーソルが右端を超えている
             view.top_col = view.cursor_x - visible_width + 1;
+            needs_horizontal_scroll = true;
         } else if (view.cursor_x < view.top_col) {
             // カーソルが左端より左
             view.top_col = view.cursor_x;
+            needs_horizontal_scroll = true;
         }
-        view.markFullRedraw();
+
+        // カーソルバイト位置キャッシュを更新
+        view.cursor_byte_pos_cache = clamped_pos;
+        view.cursor_byte_pos_cache_x = view.cursor_x;
+        view.cursor_byte_pos_cache_y = view.cursor_y;
+        view.cursor_byte_pos_cache_top_line = view.top_line;
+
+        // スクロールが発生した場合のみ再描画をマーク
+        // カーソル移動だけなら再描画不要（カーソルはrenderAllWindowsで別途描画される）
+        if (needs_vertical_scroll) {
+            const scroll_amount: i32 = @intCast(@as(i64, @intCast(view.top_line)) - @as(i64, @intCast(old_top_line)));
+            view.markScroll(scroll_amount);
+        } else if (needs_horizontal_scroll) {
+            view.markHorizontalScroll();
+        }
+        // スクロールなしの場合は再描画不要（カーソル位置の更新のみ）
+        _ = old_top_col;
     }
 
     // エイリアス: restoreCursorPosはsetCursorToPosと同じ

@@ -51,13 +51,21 @@ const EditOp = enum { insert, delete };
 const UndoEntry = struct {
     op: EditOp,
     position: usize,
-    data: []const u8,
+    data: []u8, // 可変にして追記可能に
+    data_capacity: usize, // 確保済み容量（追記最適化用）
     cursor_before: usize,
     cursor_after: usize,
     /// グループ化可能フラグ（連続入力をまとめるため）
     groupable: bool = true,
     /// Undoグループ識別子（nullは非グループ、同じIDは一括undo）
     group_id: ?u32 = null,
+
+    /// データメモリを解放
+    fn freeData(self: *const UndoEntry, allocator: std.mem.Allocator) void {
+        if (self.data_capacity > 0) {
+            allocator.free(self.data.ptr[0..self.data_capacity]);
+        }
+    }
 };
 
 /// 選択範囲
@@ -156,13 +164,13 @@ pub const EditingContext = struct {
 
         // Undoスタック解放
         for (self.undo_stack.items) |entry| {
-            self.allocator.free(entry.data);
+            entry.freeData(self.allocator);
         }
         self.undo_stack.deinit(self.allocator);
 
         // Redoスタック解放
         for (self.redo_stack.items) |entry| {
-            self.allocator.free(entry.data);
+            entry.freeData(self.allocator);
         }
         self.redo_stack.deinit(self.allocator);
 
@@ -693,12 +701,12 @@ pub const EditingContext = struct {
     /// Undo/Redo履歴をクリア
     pub fn clearUndoHistory(self: *EditingContext) void {
         for (self.undo_stack.items) |entry| {
-            self.allocator.free(entry.data);
+            entry.freeData(self.allocator);
         }
         self.undo_stack.clearRetainingCapacity();
 
         for (self.redo_stack.items) |entry| {
-            self.allocator.free(entry.data);
+            entry.freeData(self.allocator);
         }
         self.redo_stack.clearRetainingCapacity();
     }
@@ -924,13 +932,23 @@ pub const EditingContext = struct {
                         (last_is_whitespace and new_is_word);
 
                     if (should_merge) {
-                        // 既存のエントリにデータを追加
+                        // 既存のエントリにデータを追加（償却O(1)）
                         const new_len = last.data.len + text.len;
-                        const new_data = try self.allocator.alloc(u8, new_len);
-                        @memcpy(new_data[0..last.data.len], last.data);
-                        @memcpy(new_data[last.data.len..], text);
-                        self.allocator.free(last.data);
-                        last.data = new_data;
+                        if (new_len <= last.data_capacity) {
+                            // 容量内に収まる場合は追記のみ（再アロケーションなし）
+                            const full_slice = last.data.ptr[0..last.data_capacity];
+                            @memcpy(full_slice[last.data.len..][0..text.len], text);
+                            last.data = full_slice[0..new_len];
+                        } else {
+                            // 容量不足: 2倍に拡張（償却O(1)を実現）
+                            const new_capacity = @max(new_len * 2, 64);
+                            const new_data = try self.allocator.alloc(u8, new_capacity);
+                            @memcpy(new_data[0..last.data.len], last.data);
+                            @memcpy(new_data[last.data.len..][0..text.len], text);
+                            self.allocator.free(last.data.ptr[0..last.data_capacity]);
+                            last.data = new_data[0..new_len];
+                            last.data_capacity = new_capacity;
+                        }
                         last.cursor_after = pos + text.len;
                         self.last_record_time = now;
                         return;
@@ -943,11 +961,13 @@ pub const EditingContext = struct {
         self.last_record_time = now;
 
         self.clearRedoStack();
-        const data_copy = try self.allocator.dupe(u8, text);
+        const data_copy = try self.allocator.alloc(u8, text.len);
+        @memcpy(data_copy, text);
         try self.undo_stack.append(self.allocator, .{
             .op = .insert,
             .position = pos,
             .data = data_copy,
+            .data_capacity = text.len,
             .cursor_before = cursor_pos_before,
             .cursor_after = pos + text.len,
             .group_id = self.current_group_id,
@@ -972,12 +992,15 @@ pub const EditingContext = struct {
                 // Backspaceの場合: 削除位置が直前のエントリの直前
                 if (pos + text.len == last.position) {
                     // 先頭に追加（Backspaceは逆順に文字を削除）
+                    // 先頭追加は容量ベース最適化が困難なため、毎回再アロケーション
                     const new_len = last.data.len + text.len;
-                    const new_data = try self.allocator.alloc(u8, new_len);
+                    const new_capacity = @max(new_len * 2, 64);
+                    const new_data = try self.allocator.alloc(u8, new_capacity);
                     @memcpy(new_data[0..text.len], text);
-                    @memcpy(new_data[text.len..], last.data);
-                    self.allocator.free(last.data);
-                    last.data = new_data;
+                    @memcpy(new_data[text.len..][0..last.data.len], last.data);
+                    last.freeData(self.allocator);
+                    last.data = new_data[0..new_len];
+                    last.data_capacity = new_capacity;
                     last.position = pos;
                     last.cursor_after = pos;
                     // cursor_beforeは最初の削除時のまま保持
@@ -986,13 +1009,23 @@ pub const EditingContext = struct {
                 }
                 // Delete (C-d)の場合: 削除位置が同じ
                 if (pos == last.position) {
-                    // 末尾に追加
+                    // 末尾に追加（償却O(1)）
                     const new_len = last.data.len + text.len;
-                    const new_data = try self.allocator.alloc(u8, new_len);
-                    @memcpy(new_data[0..last.data.len], last.data);
-                    @memcpy(new_data[last.data.len..], text);
-                    self.allocator.free(last.data);
-                    last.data = new_data;
+                    if (new_len <= last.data_capacity) {
+                        // 容量内に収まる場合は追記のみ
+                        const full_slice = last.data.ptr[0..last.data_capacity];
+                        @memcpy(full_slice[last.data.len..][0..text.len], text);
+                        last.data = full_slice[0..new_len];
+                    } else {
+                        // 容量不足: 2倍に拡張
+                        const new_capacity = @max(new_len * 2, 64);
+                        const new_data = try self.allocator.alloc(u8, new_capacity);
+                        @memcpy(new_data[0..last.data.len], last.data);
+                        @memcpy(new_data[last.data.len..][0..text.len], text);
+                        last.freeData(self.allocator);
+                        last.data = new_data[0..new_len];
+                        last.data_capacity = new_capacity;
+                    }
                     // cursor_before/afterは変わらない
                     self.last_record_time = now;
                     return;
@@ -1001,11 +1034,13 @@ pub const EditingContext = struct {
         }
 
         self.clearRedoStack();
-        const data_copy = try self.allocator.dupe(u8, text);
+        const data_copy = try self.allocator.alloc(u8, text.len);
+        @memcpy(data_copy, text);
         try self.undo_stack.append(self.allocator, .{
             .op = .delete,
             .position = pos,
             .data = data_copy,
+            .data_capacity = text.len,
             .cursor_before = cursor_pos_before,
             .cursor_after = pos,
             .group_id = self.current_group_id,
@@ -1036,22 +1071,26 @@ pub const EditingContext = struct {
         // 2. Insert entry（new_text）を後に追加 → undo時は先に実行（new_textを削除）
 
         // 削除分（undo時に挿入される）- 先に追加
-        const old_copy = try self.allocator.dupe(u8, old_text);
+        const old_copy = try self.allocator.alloc(u8, old_text.len);
+        @memcpy(old_copy, old_text);
         try self.undo_stack.append(self.allocator, .{
             .op = .delete,
             .position = pos,
             .data = old_copy,
+            .data_capacity = old_text.len,
             .cursor_before = cursor_pos_before,
             .cursor_after = pos,
             .group_id = replace_group_id,
         });
 
         // 挿入分（undo時に削除される）- 後に追加
-        const new_copy = try self.allocator.dupe(u8, new_text);
+        const new_copy = try self.allocator.alloc(u8, new_text.len);
+        @memcpy(new_copy, new_text);
         try self.undo_stack.append(self.allocator, .{
             .op = .insert,
             .position = pos,
             .data = new_copy,
+            .data_capacity = new_text.len,
             .cursor_before = cursor_pos_before,
             .cursor_after = pos + new_text.len,
             .group_id = replace_group_id,
@@ -1062,7 +1101,7 @@ pub const EditingContext = struct {
 
     fn clearRedoStack(self: *EditingContext) void {
         for (self.redo_stack.items) |entry| {
-            self.allocator.free(entry.data);
+            entry.freeData(self.allocator);
         }
         self.redo_stack.clearRetainingCapacity();
     }

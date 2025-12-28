@@ -518,6 +518,11 @@ pub const Buffer = struct {
     last_insert_piece_idx: usize, // 直前の挿入で使用/作成したPieceのインデックス
     last_insert_time: i128, // 直前の挿入時刻（ナノ秒）
 
+    // findPieceAt高速化用キャッシュ
+    // 直近アクセス位置を記憶し、近い位置へのアクセスを高速化
+    last_access_piece_idx: usize, // 直近アクセスしたPieceのインデックス
+    last_access_piece_start: usize, // そのPieceの開始位置
+
     /// Undoグループのタイムアウト（ナノ秒）
     /// この時間以上経過すると、連続入力でも新しいPieceを作成
     const UNDO_GROUP_TIMEOUT_NS: i128 = 300 * std.time.ns_per_ms;
@@ -541,6 +546,8 @@ pub const Buffer = struct {
             .last_insert_end = null,
             .last_insert_piece_idx = 0,
             .last_insert_time = 0,
+            .last_access_piece_idx = 0,
+            .last_access_piece_start = 0,
         };
     }
 
@@ -641,6 +648,8 @@ pub const Buffer = struct {
                     .last_insert_end = null,
                     .last_insert_piece_idx = 0,
                     .last_insert_time = 0,
+                    .last_access_piece_idx = 0,
+                    .last_access_piece_start = 0,
                 };
 
                 // 初期状態：originalファイル全体を指す1つのpiece
@@ -697,6 +706,8 @@ pub const Buffer = struct {
             .last_insert_end = null,
             .last_insert_piece_idx = 0,
             .last_insert_time = 0,
+            .last_access_piece_idx = 0,
+            .last_access_piece_start = 0,
         };
     }
 
@@ -733,6 +744,8 @@ pub const Buffer = struct {
             .last_insert_end = null,
             .last_insert_piece_idx = 0,
             .last_insert_time = 0,
+            .last_access_piece_idx = 0,
+            .last_access_piece_start = 0,
         };
 
         if (normalized.len > 0) {
@@ -1083,12 +1096,26 @@ pub const Buffer = struct {
         return 0;
     }
 
-    fn findPieceAt(self: *const Buffer, pos: usize) ?struct { piece_idx: usize, offset: usize } {
+    fn findPieceAt(self: *Buffer, pos: usize) ?struct { piece_idx: usize, offset: usize } {
+        if (self.pieces.items.len == 0) return null;
+
+        // キャッシュを活用: 検索位置がキャッシュ位置以降なら、そこから開始
+        var start_idx: usize = 0;
         var current_pos: usize = 0;
 
-        for (self.pieces.items, 0..) |piece, i| {
-            // pos が [current_pos, current_pos + piece.length) の範囲内にあるか
+        if (pos >= self.last_access_piece_start and
+            self.last_access_piece_idx < self.pieces.items.len)
+        {
+            start_idx = self.last_access_piece_idx;
+            current_pos = self.last_access_piece_start;
+        }
+
+        // 指定位置を含むPieceを検索
+        for (self.pieces.items[start_idx..], start_idx..) |piece, i| {
             if (pos < current_pos + piece.length) {
+                // キャッシュを更新
+                self.last_access_piece_idx = i;
+                self.last_access_piece_start = current_pos;
                 return .{
                     .piece_idx = i,
                     .offset = pos - current_pos,
@@ -1098,9 +1125,12 @@ pub const Buffer = struct {
         }
 
         // EOF境界（pos == buffer.len()）の場合は最後のpieceの末尾を返す
-        if (self.pieces.items.len > 0 and pos == current_pos) {
+        if (pos == current_pos) {
             const last_idx = self.pieces.items.len - 1;
             const last_piece = self.pieces.items[last_idx];
+            // キャッシュを更新
+            self.last_access_piece_idx = last_idx;
+            self.last_access_piece_start = current_pos - last_piece.length;
             return .{
                 .piece_idx = last_idx,
                 .offset = last_piece.length,
@@ -1134,6 +1164,10 @@ pub const Buffer = struct {
     /// 元のテキストは変更されず、pieceの構成だけが変わる。
     pub fn insertSlice(self: *Buffer, pos: usize, text: []const u8) !void {
         if (text.len == 0) return;
+
+        // findPieceAtキャッシュを無効化（挿入によりバイトオフセットが変わるため）
+        self.last_access_piece_idx = 0;
+        self.last_access_piece_start = 0;
 
         const now = std.time.nanoTimestamp();
 
@@ -1286,6 +1320,10 @@ pub const Buffer = struct {
 
         // 削除操作ではPiece統合状態をリセット
         self.last_insert_end = null;
+
+        // findPieceAtキャッシュも無効化（Piece配列が変更されるため）
+        self.last_access_piece_idx = 0;
+        self.last_access_piece_start = 0;
 
         // pos が範囲外の場合は何もしない
         if (pos >= self.total_len) return;
@@ -1595,6 +1633,10 @@ pub const Buffer = struct {
                 self.total_len = 0;
             }
         }
+
+        // findPieceAtキャッシュを無効化（Piece配列が完全に置換されるため）
+        self.last_access_piece_idx = 0;
+        self.last_access_piece_start = 0;
 
         self.pieces.clearRetainingCapacity();
         try self.pieces.appendSlice(self.allocator, pieces);

@@ -672,12 +672,22 @@ pub const View = struct {
             self.dirty_end = null;
         }
 
-        // ブロックコメントキャッシュの無効化
+        // ブロックコメントキャッシュの無効化（改善版）
         // ブロックコメントがない言語ではキャッシュ不要、無効化もスキップ
         if (self.language.block_comment != null) {
-            // 変更がキャッシュ対象行と同じか前なら無効化（同じ行の変更もキャッシュに影響）
-            if (self.cached_block_state != null and start_line <= self.cached_block_top_line) {
-                self.cached_block_state = null;
+            if (self.cached_block_state != null) {
+                if (start_line < self.cached_block_top_line) {
+                    // 変更がキャッシュ行より前：cached_block_stateは無効
+                    // ただし、start_lineの直前までの状態は再利用可能
+                    // （computeBlockCommentStateで0からではなくstart_line付近から再計算）
+                    // 今回は単純にnullにして次回計算時に再構築
+                    self.cached_block_state = null;
+                }
+                // start_line == cached_block_top_line の場合：
+                //   同じ行の編集では行頭時点の状態は変わらない（前の行で決まる）
+                //   したがってキャッシュは有効のまま維持
+                // start_line > cached_block_top_line の場合：
+                //   キャッシュ行より後の編集は、キャッシュ自体に影響しない
             }
         }
 
@@ -710,13 +720,16 @@ pub const View = struct {
     }
 
     /// 垂直スクロールをマーク
-    /// 現在の実装では全画面再描画（ターミナルスクロール最適化は未実装）
+    /// ターミナルスクロール（ESC [S / ESC [T）を使って差分描画を最適化
     /// lines: 正=下方向（内容が上へ）、負=上方向（内容が下へ）
     pub fn markScroll(self: *View, lines: i32) void {
-        _ = lines;
-        // TODO: ターミナルスクロール（ESC [S / ESC [T）を使った最適化
-        // 現在は prev_screen との整合性の問題があるため全画面再描画
-        self.markFullRedraw();
+        if (lines == 0) return;
+
+        // スクロール量を累積（複数回のスクロールをまとめる）
+        self.scroll_delta += lines;
+
+        // 新しく表示される行をdirty範囲として設定
+        // prev_screenのシフトとターミナルスクロールは renderInBounds で実行
     }
 
     /// 水平スクロールをマーク（セル差分描画を維持）
@@ -1640,6 +1653,90 @@ pub const View = struct {
             self.markFullRedraw();
         }
 
+        // ターミナルスクロール最適化
+        // scroll_delta が設定されている場合、ターミナルのスクロール機能を使って
+        // prev_screen をシフトし、新しく表示される行のみを描画対象にする
+        if (self.scroll_delta != 0 and !self.needs_full_redraw) {
+            const abs_delta = if (self.scroll_delta > 0)
+                @as(usize, @intCast(self.scroll_delta))
+            else
+                @as(usize, @intCast(-self.scroll_delta));
+
+            // スクロール量が画面の半分を超えたら全画面再描画の方が効率的
+            if (abs_delta >= max_lines / 2) {
+                self.markFullRedraw();
+            } else if (self.prev_screen.items.len == max_lines) {
+                // スクロールリージョンを設定（ステータスバーを除外）
+                try term.setScrollRegion(viewport_y, viewport_y + max_lines - 1);
+
+                if (self.scroll_delta > 0) {
+                    // 下方向スクロール（内容が上へ移動）
+                    // ターミナルに上スクロールを指示
+                    try term.scrollUp(abs_delta);
+
+                    // prev_screen をシフト: 上位行を削除、下位行を追加
+                    // [0..abs_delta] を捨てて [abs_delta..] を [0..] にシフト
+                    for (0..abs_delta) |i| {
+                        // 古い行をクリア
+                        self.prev_screen.items[i].clearRetainingCapacity();
+                    }
+                    // 行をシフト
+                    for (abs_delta..max_lines) |i| {
+                        std.mem.swap(
+                            std.ArrayList(u8),
+                            &self.prev_screen.items[i - abs_delta],
+                            &self.prev_screen.items[i],
+                        );
+                    }
+                    // 新しい行（画面下部）をクリア
+                    for ((max_lines - abs_delta)..max_lines) |i| {
+                        self.prev_screen.items[i].clearRetainingCapacity();
+                    }
+
+                    // line_width_cache をシフト
+                    self.shiftLineWidthCacheUp(abs_delta);
+
+                    // 新しく表示される行をdirty範囲に設定
+                    const new_start = self.top_line + max_lines - abs_delta;
+                    const new_end = self.top_line + max_lines;
+                    self.dirty_start = new_start;
+                    self.dirty_end = new_end;
+                } else {
+                    // 上方向スクロール（内容が下へ移動）
+                    // ターミナルに下スクロールを指示
+                    try term.scrollDown(abs_delta);
+
+                    // prev_screen をシフト: 下位行を削除、上位行を追加
+                    // 末尾から処理して上書きを防ぐ
+                    var i: usize = max_lines;
+                    while (i > abs_delta) {
+                        i -= 1;
+                        std.mem.swap(
+                            std.ArrayList(u8),
+                            &self.prev_screen.items[i],
+                            &self.prev_screen.items[i - abs_delta],
+                        );
+                    }
+                    // 新しい行（画面上部）をクリア
+                    for (0..abs_delta) |j| {
+                        self.prev_screen.items[j].clearRetainingCapacity();
+                    }
+
+                    // line_width_cache をシフト
+                    self.shiftLineWidthCacheDown(abs_delta);
+
+                    // 新しく表示される行をdirty範囲に設定
+                    self.dirty_start = self.top_line;
+                    self.dirty_end = self.top_line + abs_delta;
+                }
+
+                // スクロールリージョンをリセット
+                try term.resetScrollRegion();
+
+                self.scroll_delta = 0;
+            }
+        }
+
         // 全画面再描画が必要な場合
         if (self.needs_full_redraw) {
             // ウィンドウの開始位置に移動
@@ -2045,6 +2142,46 @@ pub const View = struct {
                 self.line_width_cache[cache_idx] = null;
             }
         }
+    }
+
+    /// 行幅キャッシュを上方向にシフト（下スクロール時）
+    /// 上位 n 行分を破棄し、残りを上にシフト、末尾を null で埋める
+    fn shiftLineWidthCacheUp(self: *View, n: usize) void {
+        if (n >= 128) {
+            self.line_width_cache = .{null} ** 128;
+            return;
+        }
+        // シフト: [n..] -> [0..]
+        for (n..128) |i| {
+            self.line_width_cache[i - n] = self.line_width_cache[i];
+        }
+        // 末尾を null で埋める
+        for ((128 - n)..128) |i| {
+            self.line_width_cache[i] = null;
+        }
+        // top_line は呼び出し元で既に更新されている想定
+        self.line_width_cache_top_line = self.top_line;
+    }
+
+    /// 行幅キャッシュを下方向にシフト（上スクロール時）
+    /// 下位 n 行分を破棄し、残りを下にシフト、先頭を null で埋める
+    fn shiftLineWidthCacheDown(self: *View, n: usize) void {
+        if (n >= 128) {
+            self.line_width_cache = .{null} ** 128;
+            return;
+        }
+        // シフト: [0..128-n] -> [n..128]（末尾から処理して上書きを防ぐ）
+        var i: usize = 128;
+        while (i > n) {
+            i -= 1;
+            self.line_width_cache[i] = self.line_width_cache[i - n];
+        }
+        // 先頭を null で埋める
+        for (0..n) |j| {
+            self.line_width_cache[j] = null;
+        }
+        // top_line は呼び出し元で既に更新されている想定
+        self.line_width_cache_top_line = self.top_line;
     }
 
     /// 文字入力後に行幅キャッシュを差分更新

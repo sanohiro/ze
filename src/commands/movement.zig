@@ -198,28 +198,62 @@ pub fn backwardWord(e: *Editor) !void {
     }
 
     // チャンク先頭に到達した場合、さらに後方を処理
-    // （256バイト以上の単語は稀なので、フォールバック）
-    if (i == 0 and pos > 0 and found_non_space) {
-        // 残りは元のgetByteAtを使用（稀なケース）
-        while (pos > 0) {
-            const prev_byte = buffer.getByteAt(pos - 1) orelse break;
-            if (prev_byte >= 0x80) {
-                const char_start = buffer.findUtf8CharStart(pos);
-                const cp = buffer.decodeCodepointAt(char_start) orelse break;
+    // 追加チャンクを読み込んで継続（getByteAtのO(pieces)を回避）
+    while (i == 0 and pos > 0 and found_non_space) {
+        // 次のチャンクを読み込む
+        const next_look_back = @min(pos, 256);
+        const next_scan_start = pos - next_look_back;
+
+        iter.seek(next_scan_start);
+        chunk_len = 0;
+        while (chunk_len < next_look_back) {
+            if (iter.next()) |byte| {
+                chunk[chunk_len] = byte;
+                chunk_len += 1;
+            } else break;
+        }
+
+        // 新しいチャンクを後方から処理
+        i = chunk_len;
+        while (i > 0) {
+            const byte = chunk[i - 1];
+
+            // 非ASCII: UTF-8の先頭バイトを探す
+            if (byte >= 0x80) {
+                var char_start_idx = i - 1;
+                while (char_start_idx > 0 and (chunk[char_start_idx] & 0xC0) == 0x80) {
+                    char_start_idx -= 1;
+                }
+
+                const cp = decodeUtf8FromChunk(chunk[char_start_idx..i]) orelse break;
                 const current_type = unicode.getCharType(cp);
+
                 if (prev_type) |pt| {
-                    if (current_type != pt) break;
+                    if (current_type != pt) {
+                        // 単語境界を見つけた - ループ終了
+                        i = 1; // 外側のwhileを終了させる
+                        break;
+                    }
                 }
                 prev_type = current_type;
-                pos = char_start;
-            } else {
-                const current_type = unicode.getCharType(@intCast(prev_byte));
-                if (prev_type) |pt| {
-                    if (current_type != pt) break;
-                }
-                prev_type = current_type;
-                pos -= 1;
+                i = char_start_idx;
+                pos = next_scan_start + char_start_idx;
+                continue;
             }
+
+            // ASCIIバイト
+            const current_type = unicode.getCharType(@intCast(byte));
+
+            if (prev_type) |pt| {
+                if (current_type != pt) {
+                    // 単語境界を見つけた - ループ終了
+                    i = 1; // 外側のwhileを終了させる
+                    break;
+                }
+            }
+            prev_type = current_type;
+            i -= 1;
+            pos = next_scan_start + i;
         }
     }
 
