@@ -257,6 +257,7 @@ pub fn killRectangle(e: *Editor) !void {
 
             // 削除情報を保存（テキストのコピーを作成）
             const text_copy = try e.allocator.dupe(u8, line_text);
+            errdefer e.allocator.free(text_copy);
             try delete_infos.append(e.allocator, .{
                 .pos = byte_range.start,
                 .len = byte_range.end - byte_range.start,
@@ -357,6 +358,7 @@ pub fn yankRectangle(e: *Editor) !void {
         if (seek_result.reached_col < cursor_col) {
             const padding_needed = cursor_col - seek_result.reached_col;
             const padded_text = createPaddedText(e.allocator, padding_needed, line_text) orelse continue;
+            errdefer e.allocator.free(padded_text);
             try insert_infos.append(e.allocator, .{ .pos = seek_result.byte_pos, .text = padded_text, .owned = true });
         } else {
             try insert_infos.append(e.allocator, .{ .pos = seek_result.byte_pos, .text = line_text, .owned = false });
