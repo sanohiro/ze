@@ -89,12 +89,18 @@ pub const WindowManager = struct {
     }
 
     /// 現在のウィンドウを取得
+    /// 注意: ウィンドウが存在しない場合はパニック（createWindowで最低1つは作成される前提）
     pub fn getCurrentWindow(self: *Self) *Window {
+        std.debug.assert(self.windows.items.len > 0);
+        std.debug.assert(self.current_window_idx < self.windows.items.len);
         return &self.windows.items[self.current_window_idx];
     }
 
     /// 現在のウィンドウを取得（const版）
+    /// 注意: ウィンドウが存在しない場合はパニック（createWindowで最低1つは作成される前提）
     pub fn getCurrentWindowConst(self: *const Self) *const Window {
+        std.debug.assert(self.windows.items.len > 0);
+        std.debug.assert(self.current_window_idx < self.windows.items.len);
         return &self.windows.items[self.current_window_idx];
     }
 

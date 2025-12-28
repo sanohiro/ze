@@ -36,7 +36,8 @@ fn deleteRangeCommon(e: *Editor, start: usize, len: usize, cursor_pos_for_undo: 
 
     const buffer_state = e.getCurrentBuffer();
     const buffer = e.getCurrentBufferContent();
-    const current_line = e.getCurrentLine();
+    // 削除開始位置の行番号を取得（カーソル位置ではなく実際の編集位置から）
+    const start_line = buffer.findLineByPos(start);
 
     const deleted = try e.extractText(start, len);
     errdefer e.allocator.free(deleted);
@@ -46,7 +47,8 @@ fn deleteRangeCommon(e: *Editor, start: usize, len: usize, cursor_pos_for_undo: 
     try e.recordDelete(start, deleted, cursor_pos_for_undo);
 
     buffer_state.editing_ctx.modified = true;
-    markDirtyForText(e, current_line, deleted);
+    // 削除開始行からdirtyマークを設定（カーソル位置ではなく実際の編集位置を使用）
+    markDirtyForText(e, start_line, deleted);
 
     // カーソル位置キャッシュを無効化（削除後はposが変わる）
     e.getCurrentView().invalidateCursorPosCache();
@@ -590,7 +592,10 @@ pub fn deleteWord(e: *Editor) !void {
 
     // deleteRangeCommon内でmarkDirtyForTextが呼ばれる
     if (try deleteRangeCommon(e, start_pos, end_pos - start_pos, start_pos)) |deleted| {
-        e.allocator.free(deleted);
+        // Emacsのkill-wordと同様、削除したテキストをkill ringに保存
+        // deferでfreeし、storeでkill ringにコピー
+        defer e.allocator.free(deleted);
+        try e.kill_ring.store(deleted);
     }
 }
 

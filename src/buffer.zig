@@ -1633,6 +1633,11 @@ pub const Buffer = struct {
         self.last_access_piece_idx = 0;
         self.last_access_piece_start = 0;
 
+        // Piece統合状態をリセット（Undo/Redo後は連続入力とみなさない）
+        self.last_insert_end = null;
+        self.last_insert_piece_idx = 0;
+        self.last_insert_time = 0;
+
         self.pieces.clearRetainingCapacity();
         self.pieces.appendSliceAssumeCapacity(pieces);
 

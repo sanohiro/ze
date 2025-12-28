@@ -319,5 +319,8 @@ pub const History = struct {
             std.posix.fsync(d.fd) catch {};
             d.close();
         } else |_| {}
+
+        // 保存成功後にmodifiedフラグをリセット（次回の無駄な保存を防ぐ）
+        self.modified = false;
     }
 };

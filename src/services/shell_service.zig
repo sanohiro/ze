@@ -522,6 +522,7 @@ pub const ShellService = struct {
                 }
                 // 上限に達したらパイプを閉じる（子プロセスのブロックを防ぐ）
                 if (state.stdout_buffer.items.len >= MAX_OUTPUT_SIZE) {
+                    state.stdout_truncated = true; // 上限到達時も truncated フラグを設定
                     stdout_file.close();
                     state.child.stdout = null;
                 }
@@ -545,6 +546,7 @@ pub const ShellService = struct {
                 }
                 // 上限に達したらパイプを閉じる（子プロセスのブロックを防ぐ）
                 if (state.stderr_buffer.items.len >= MAX_OUTPUT_SIZE) {
+                    state.stderr_truncated = true; // 上限到達時も truncated フラグを設定
                     stderr_file.close();
                     state.child.stderr = null;
                 }

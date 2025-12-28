@@ -4124,15 +4124,15 @@ pub const Editor = struct {
     /// マクロ制御キーかどうか判定（C-x (, C-x ), C-x e）
     fn isMacroControlKey(self: *Editor, key: input.Key) bool {
         // C-xキーはマクロに記録しない（プレフィックスとして処理される）
-        if (key == .ctrl) {
-            if (key.ctrl == 'x') return true;
-        }
-        // C-xプレフィックスモード中の (, ), e もマクロに記録しない
-        if (self.mode == .prefix_x) {
-            if (key == .char) {
-                const ch = key.char;
-                if (ch == '(' or ch == ')' or ch == 'e') return true;
-            }
+        switch (key) {
+            .ctrl => |c| if (c == 'x') return true,
+            .char => |ch| {
+                // C-xプレフィックスモード中の (, ), e もマクロに記録しない
+                if (self.mode == .prefix_x) {
+                    if (ch == '(' or ch == ')' or ch == 'e') return true;
+                }
+            },
+            else => {},
         }
         return false;
     }
