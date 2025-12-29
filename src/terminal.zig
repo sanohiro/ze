@@ -46,8 +46,8 @@ pub const Terminal = struct {
     buf: std.ArrayList(u8),
     allocator: std.mem.Allocator,
 
-    /// 出力バッファの初期容量（典型的なフレームで1-3KB必要）
-    const INITIAL_BUFFER_CAPACITY: usize = 4096;
+    /// 出力バッファの初期容量（複数ウィンドウ+行番号+検索ハイライト時に余裕を持たせる）
+    const INITIAL_BUFFER_CAPACITY: usize = 8192;
 
     pub fn init(allocator: std.mem.Allocator) !Terminal {
         const original = try posix.tcgetattr(posix.STDIN_FILENO);
@@ -215,12 +215,54 @@ pub const Terminal = struct {
         try self.buf.appendSlice(self.allocator, buf[i..]);
     }
 
+    /// カーソル移動（最適化版：スタックバッファで1回のappendSlice）
+    /// ホットパス（60fps）のためシステムコールを最小化
     pub fn moveCursor(self: *Terminal, row: usize, col: usize) !void {
-        try self.buf.appendSlice(self.allocator, "\x1b[");
-        try self.appendUint(row + 1);
-        try self.buf.append(self.allocator, ';');
-        try self.appendUint(col + 1);
-        try self.buf.append(self.allocator, 'H');
+        var buf: [32]u8 = undefined;
+        var pos: usize = 0;
+
+        // ESC [
+        buf[pos] = '\x1b';
+        buf[pos + 1] = '[';
+        pos += 2;
+
+        // row + 1
+        pos += formatUint(buf[pos..], row + 1);
+
+        // ;
+        buf[pos] = ';';
+        pos += 1;
+
+        // col + 1
+        pos += formatUint(buf[pos..], col + 1);
+
+        // H
+        buf[pos] = 'H';
+        pos += 1;
+
+        try self.buf.appendSlice(self.allocator, buf[0..pos]);
+    }
+
+    /// 整数をバッファにフォーマット（戻り値は書き込んだバイト数）
+    fn formatUint(buf: []u8, n: usize) usize {
+        if (n == 0) {
+            buf[0] = '0';
+            return 1;
+        }
+        var val = n;
+        var len: usize = 0;
+        // 桁数を計算
+        var temp = n;
+        while (temp > 0) : (temp /= 10) {
+            len += 1;
+        }
+        // 後ろから詰める
+        var i = len;
+        while (val > 0) : (val /= 10) {
+            i -= 1;
+            buf[i] = @intCast('0' + val % 10);
+        }
+        return len;
     }
 
     pub fn write(self: *Terminal, text: []const u8) !void {

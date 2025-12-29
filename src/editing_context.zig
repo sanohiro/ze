@@ -393,58 +393,109 @@ pub const EditingContext = struct {
     }
 
     /// 次の単語へ移動（M-f）
+    /// 最適化: PieceIteratorを1つ作成してシーケンシャルに読み進める（O(n)）
     pub fn moveForwardWord(self: *EditingContext) void {
         var pos = self.cursor;
         const buf_len = self.buffer.len();
+        if (pos >= buf_len) return;
+
+        // イテレータを1つ作成してシーケンシャルに読み進める
+        var iter = PieceIterator.init(self.buffer);
+        iter.seek(pos);
 
         // 現在の単語をスキップ
         while (pos < buf_len) {
-            var iter = PieceIterator.init(self.buffer);
-            iter.seek(pos);
             const byte = iter.next() orelse break;
-            if (!unicode.isWordCharByte(byte)) break;
+            if (!unicode.isWordCharByte(byte)) {
+                // 非単語文字を見つけた: 第2フェーズへ
+                pos += 1; // この非単語文字の位置を含める
+                break;
+            }
             pos += 1;
         }
 
-        // 非単語文字をスキップ
+        // 非単語文字をスキップして次の単語の先頭へ
         while (pos < buf_len) {
-            var iter = PieceIterator.init(self.buffer);
-            iter.seek(pos);
+            // 次のバイトをpeek（読み込まずに確認）
+            const check_pos = iter.global_pos;
             const byte = iter.next() orelse break;
-            if (unicode.isWordCharByte(byte)) break;
-            pos += 1;
+            if (unicode.isWordCharByte(byte)) {
+                // 単語文字を見つけた: その位置で停止
+                pos = check_pos;
+                break;
+            }
+            pos = iter.global_pos;
         }
 
         self.setCursor(pos);
     }
 
     /// 前の単語へ移動（M-b）
+    /// 最適化: チャンク読み込みで後方スキャン（O(n)に改善）
     pub fn moveBackwardWord(self: *EditingContext) void {
         if (self.cursor == 0) return;
         var pos = self.cursor;
 
-        // 非単語文字をスキップ
-        while (pos > 0) {
-            pos -= 1;
-            var iter = PieceIterator.init(self.buffer);
-            iter.seek(pos);
-            const byte = iter.next() orelse continue;
+        // 後方スキャン用にチャンクを読み込む（最大256バイト）
+        const look_back = @min(pos, 256);
+        const scan_start = pos - look_back;
+
+        var iter = PieceIterator.init(self.buffer);
+        iter.seek(scan_start);
+
+        // チャンクを読み込み
+        var chunk: [256]u8 = undefined;
+        var chunk_len: usize = 0;
+        while (chunk_len < look_back) {
+            chunk[chunk_len] = iter.next() orelse break;
+            chunk_len += 1;
+        }
+
+        // チャンクを後方から処理（非単語文字をスキップ）
+        var i = chunk_len;
+        while (i > 0) {
+            i -= 1;
+            const byte = chunk[i];
             if (unicode.isWordCharByte(byte)) {
-                pos += 1;
+                i += 1;
                 break;
             }
         }
+        pos = scan_start + i;
 
         // 単語の先頭まで戻る
-        while (pos > 0) {
-            pos -= 1;
-            var iter = PieceIterator.init(self.buffer);
-            iter.seek(pos);
-            const byte = iter.next() orelse continue;
+        while (i > 0) {
+            i -= 1;
+            const byte = chunk[i];
             if (!unicode.isWordCharByte(byte)) {
-                pos += 1;
+                i += 1;
                 break;
             }
+        }
+        pos = scan_start + i;
+
+        // チャンク先頭に到達した場合、さらに後方を処理
+        while (i == 0 and pos > 0) {
+            const next_look_back = @min(pos, 256);
+            const next_scan_start = pos - next_look_back;
+
+            iter.seek(next_scan_start);
+            chunk_len = 0;
+            while (chunk_len < next_look_back) {
+                chunk[chunk_len] = iter.next() orelse break;
+                chunk_len += 1;
+            }
+
+            i = chunk_len;
+            while (i > 0) {
+                i -= 1;
+                const byte = chunk[i];
+                if (!unicode.isWordCharByte(byte)) {
+                    i += 1;
+                    break;
+                }
+            }
+            pos = next_scan_start + i;
         }
 
         self.setCursor(pos);
@@ -633,10 +684,12 @@ pub const EditingContext = struct {
         const sel = self.getSelection() orelse return;
         const norm = sel.normalize();
 
+        // 先にallocateしてからfreeする（allocate失敗時のダングリングポインタ防止）
+        const new_text = try self.extractText(norm.start, norm.len());
         if (self.kill_ring) |old| {
             self.allocator.free(old);
         }
-        self.kill_ring = try self.extractText(norm.start, norm.len());
+        self.kill_ring = new_text;
         self.mark = null;
 
         self.notifyChange(.{
@@ -652,10 +705,12 @@ pub const EditingContext = struct {
         const sel = self.getSelection() orelse return;
         const norm = sel.normalize();
 
+        // 先にallocateしてからfreeする（allocate失敗時のダングリングポインタ防止）
+        const new_text = try self.extractText(norm.start, norm.len());
         if (self.kill_ring) |old| {
             self.allocator.free(old);
         }
-        self.kill_ring = try self.extractText(norm.start, norm.len());
+        self.kill_ring = new_text;
 
         self.cursor = norm.start;
         try self.delete(norm.len());

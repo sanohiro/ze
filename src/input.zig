@@ -73,8 +73,8 @@ pub const InputReader = struct {
             // バッファが空なら先頭にリセット
             self.start = 0;
             self.end = 0;
-        } else if (self.start > config.Input.RING_BUF_SIZE / 2) {
-            // 半分以上消費したらデータを先頭に移動
+        } else if (self.start > config.Input.RING_BUF_SIZE * 3 / 4) {
+            // 3/4以上消費したらデータを先頭に移動（compaction頻度削減）
             const len = self.end - self.start;
             std.mem.copyForwards(u8, self.buf[0..len], self.buf[self.start..self.end]);
             self.start = 0;

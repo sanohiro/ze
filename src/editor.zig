@@ -403,6 +403,14 @@ pub const Editor = struct {
         return self.getCurrentBuffer().editing_ctx.buffer;
     }
 
+    /// ウィンドウのViewを指定バッファ用に設定（言語検出とビューポート設定）
+    /// 注意: Viewは呼び出し側で事前にセットしておくこと
+    fn setupWindowView(window: *Window, buffer_state: *BufferState) void {
+        const content_preview = buffer_state.editing_ctx.buffer.getContentPreview(512);
+        window.view.detectLanguage(buffer_state.filename, content_preview);
+        window.view.setViewport(window.width, window.height);
+    }
+
     /// 指定バッファを表示している全ウィンドウをdirtyにマーク
     /// 同一バッファを複数ウィンドウで開いている場合に使用
     pub fn markAllViewsDirtyForBuffer(self: *Editor, buffer_id: usize, start_line: usize, end_line: ?usize) void {
@@ -726,22 +734,12 @@ pub const Editor = struct {
                 // pending_filenameをbuffer_state.filenameに設定
                 if (self.pending_filename) |pending| {
                     const buffer_state = self.getCurrentBuffer();
-                    // 先にdupeしてからfreeする（dupe失敗時のダングリングポインタ防止）
-                    const new_name = self.allocator.dupe(u8, pending) catch {
+                    buffer_state.setFilename(pending) catch {
                         self.getCurrentView().setError(config.Messages.MEMORY_ALLOCATION_FAILED);
                         self.clearPendingFilename();
                         self.mode = .normal;
                         return;
                     };
-                    if (buffer_state.filename) |old| {
-                        self.allocator.free(old);
-                    }
-                    buffer_state.filename = new_name;
-                    // ファイル名が変わったのでnormalized pathをリセット（saveFileで再計算）
-                    if (buffer_state.filename_normalized) |old_norm| {
-                        self.allocator.free(old_norm);
-                        buffer_state.filename_normalized = null;
-                    }
                     self.clearPendingFilename();
                 }
                 self.saveFile() catch |err| {
@@ -1235,11 +1233,8 @@ pub const Editor = struct {
         );
 
         new_window.view = try View.init(self.allocator, cmd_buffer.editing_ctx.buffer);
-        // 言語検出（*Command*バッファはプレーンテキストだが一貫性のため）
-        const content_preview = cmd_buffer.editing_ctx.buffer.getContentPreview(512);
-        new_window.view.detectLanguage(cmd_buffer.filename, content_preview);
-        // ビューポートサイズを設定
-        new_window.view.setViewport(new_window.width, new_window.height);
+        // 言語検出とビューポートを設定
+        setupWindowView(new_window, cmd_buffer);
 
         return self.window_manager.windowCount() - 1;
     }
@@ -1258,11 +1253,8 @@ pub const Editor = struct {
         window.buffer_id = buffer_id;
         window.mark_pos = null; // 前のバッファのマークをクリア
 
-        // 言語検出（新しいViewに言語設定を適用）
-        const content_preview = buffer_state.editing_ctx.buffer.getContentPreview(512);
-        window.view.detectLanguage(buffer_state.filename, content_preview);
-        // ビューポートサイズを設定（ウィンドウサイズは変わらないが新しいViewに必要）
-        window.view.setViewport(window.width, window.height);
+        // 言語検出とビューポートを設定
+        setupWindowView(window, buffer_state);
     }
 
     /// 指定されたバッファを閉じる（削除）
@@ -1296,11 +1288,8 @@ pub const Editor = struct {
                 window.view = new_view;
                 window.buffer_id = next_buffer.id;
                 window.mark_pos = null; // 前のバッファのマークをクリア
-                // 言語検出（コメント強調・タブ幅など）
-                const content_preview = next_buffer.editing_ctx.buffer.getContentPreview(512);
-                window.view.detectLanguage(next_buffer.filename, content_preview);
-                // ビューポートサイズを設定
-                window.view.setViewport(window.width, window.height);
+                // 言語検出とビューポートを設定
+                setupWindowView(window, next_buffer);
             }
         }
 
@@ -1526,15 +1515,9 @@ pub const Editor = struct {
         else
             try self.window_manager.splitVertically();
 
-        // 新しいウィンドウにViewを設定
+        // 新しいウィンドウにViewを設定し、言語検出とビューポートを設定
         result.new_window.view = new_view;
-
-        // 言語検出（新しいViewに言語設定を適用）
-        const content_preview = buffer_state.editing_ctx.buffer.getContentPreview(512);
-        result.new_window.view.detectLanguage(buffer_state.filename, content_preview);
-
-        // ビューポートサイズを設定（カーソル制約も行う）
-        result.new_window.view.setViewport(result.new_window.width, result.new_window.height);
+        setupWindowView(result.new_window, buffer_state);
         // 元のウィンドウもサイズが変わったのでビューポートを更新
         result.original_window.view.setViewport(result.original_window.width, result.original_window.height);
 
@@ -1592,15 +1575,9 @@ pub const Editor = struct {
         view.cursor_x = 0;
         view.cursor_y = 0;
 
-        // 古いファイル名を解放して新しいファイル名を設定
-        if (buffer_state.filename) |old_name| {
-            self.allocator.free(old_name);
-        }
-        buffer_state.filename = new_filename;
+        // 古いファイル名を解放して新しいファイル名を設定（filename_normalizedもリセット）
+        buffer_state.setFilenameOwned(new_filename);
         // 正規化パスをキャッシュ更新
-        if (buffer_state.filename_normalized) |old_norm| {
-            self.allocator.free(old_norm);
-        }
         buffer_state.filename_normalized = std.fs.cwd().realpathAlloc(self.allocator, path) catch null;
 
         // Undo/Redoスタックをクリア
@@ -2335,17 +2312,7 @@ pub const Editor = struct {
             self.getCurrentView().setError("File exists. Overwrite? (y)es (n)o");
         } else {
             // ファイルが存在しないか、同じファイルなら直接保存
-            // 先にdupeしてからfreeする（dupe失敗時のダングリングポインタ防止）
-            const new_name = try self.allocator.dupe(u8, new_filename);
-            if (buffer_state.filename) |old| {
-                self.allocator.free(old);
-            }
-            buffer_state.filename = new_name;
-            // ファイル名が変わったのでnormalized pathをリセット（saveFileで再計算）
-            if (buffer_state.filename_normalized) |old_norm| {
-                self.allocator.free(old_norm);
-                buffer_state.filename_normalized = null;
-            }
+            try buffer_state.setFilename(new_filename);
             self.clearInputBuffer();
             try self.saveFile();
             self.resetToNormal();
@@ -2374,8 +2341,8 @@ pub const Editor = struct {
             const loaded_buffer = Buffer.loadFromFile(self.allocator, filename_copy) catch |err| {
                 self.allocator.free(filename_copy);
                 if (err == error.FileNotFound) {
-                    // dupe失敗時にnew_bufferをクリーンアップ
-                    new_buffer.filename = self.allocator.dupe(u8, filename) catch |e| {
+                    // ファイルが存在しない場合は新規ファイルとして扱う
+                    new_buffer.setFilename(filename) catch |e| {
                         _ = self.closeBuffer(new_buffer.id) catch {};
                         return e;
                     };
@@ -2406,7 +2373,8 @@ pub const Editor = struct {
 
             new_buffer.editing_ctx.buffer.deinit();
             new_buffer.editing_ctx.buffer.* = loaded_buffer;
-            new_buffer.filename = filename_copy;
+            // ファイル名を設定（filename_normalizedもリセット）
+            new_buffer.setFilenameOwned(filename_copy);
             // 正規化パスをキャッシュ
             new_buffer.filename_normalized = std.fs.cwd().realpathAlloc(self.allocator, filename_copy) catch null;
             new_buffer.editing_ctx.modified = false;

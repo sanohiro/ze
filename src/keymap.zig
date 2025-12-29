@@ -210,35 +210,24 @@ const default_special_bindings = [_]SpecialBinding{
     .{ .key = .ctrl_shift_tab, .handler = movement.prevWindow },
 };
 
-/// comptimeでデフォルトテーブルを生成
-fn makeDefaultCtrlTable() [256]?CommandFn {
-    var table = [_]?CommandFn{null} ** 256;
-    for (default_ctrl_bindings) |binding| {
-        table[binding.key] = binding.handler;
-    }
-    return table;
-}
-
-fn makeDefaultAltTable() [256]?CommandFn {
-    var table = [_]?CommandFn{null} ** 256;
-    for (default_alt_bindings) |binding| {
-        table[binding.key] = binding.handler;
-    }
-    return table;
-}
-
-fn makeDefaultSpecialTable() [SPECIAL_KEY_COUNT]?CommandFn {
-    var table = [_]?CommandFn{null} ** SPECIAL_KEY_COUNT;
-    for (default_special_bindings) |binding| {
-        table[@intFromEnum(binding.key)] = binding.handler;
+/// comptimeでデフォルトテーブルを生成（ジェネリック版）
+fn makeDefaultTable(comptime size: usize, comptime bindings: anytype) [size]?CommandFn {
+    var table = [_]?CommandFn{null} ** size;
+    for (bindings) |binding| {
+        const index = switch (@TypeOf(binding.key)) {
+            u8 => binding.key,
+            SpecialKey => @intFromEnum(binding.key),
+            else => @compileError("Unsupported key type"),
+        };
+        table[index] = binding.handler;
     }
     return table;
 }
 
 /// comptime生成されたデフォルトテーブル
-const DEFAULT_CTRL_TABLE: [256]?CommandFn = makeDefaultCtrlTable();
-const DEFAULT_ALT_TABLE: [256]?CommandFn = makeDefaultAltTable();
-const DEFAULT_SPECIAL_TABLE: [SPECIAL_KEY_COUNT]?CommandFn = makeDefaultSpecialTable();
+const DEFAULT_CTRL_TABLE: [256]?CommandFn = makeDefaultTable(256, default_ctrl_bindings);
+const DEFAULT_ALT_TABLE: [256]?CommandFn = makeDefaultTable(256, default_alt_bindings);
+const DEFAULT_SPECIAL_TABLE: [SPECIAL_KEY_COUNT]?CommandFn = makeDefaultTable(SPECIAL_KEY_COUNT, default_special_bindings);
 
 pub const Keymap = struct {
     // 固定長配列: O(1)ルックアップ

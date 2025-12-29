@@ -16,8 +16,7 @@
 const std = @import("std");
 const regex = @import("regex");
 const history_mod = @import("history");
-const History = history_mod.History;
-const HistoryType = history_mod.HistoryType;
+const LazyHistory = history_mod.LazyHistory;
 const Buffer = @import("buffer").Buffer;
 
 /// 検索結果
@@ -61,34 +60,23 @@ const RegexCacheEntry = struct {
 /// - 正規表現: []、()、*、+、?、|、.、^、$、\ を含む場合
 pub const SearchService = struct {
     allocator: std.mem.Allocator,
-    history: History, // 検索履歴（永続化対応、遅延ロード）
+    history: LazyHistory, // 検索履歴（永続化対応、遅延ロード）
     regex_cache: [REGEX_CACHE_SIZE]?RegexCacheEntry, // LRUキャッシュ（最大3パターン）
     cache_counter: u32, // LRU用グローバルカウンタ
-    history_loaded: bool, // 履歴がロード済みか
 
     const Self = @This();
     const REGEX_CACHE_SIZE = 3; // LRUキャッシュサイズ
 
     pub fn init(allocator: std.mem.Allocator) Self {
-        // 履歴は遅延ロード（起動高速化）
         return .{
             .allocator = allocator,
-            .history = History.init(allocator),
+            .history = LazyHistory.init(allocator, .search),
             .regex_cache = [_]?RegexCacheEntry{null} ** REGEX_CACHE_SIZE,
             .cache_counter = 0,
-            .history_loaded = false,
         };
     }
 
-    /// 履歴の遅延ロード（初回アクセス時に呼ばれる）
-    fn ensureHistoryLoaded(self: *Self) void {
-        if (self.history_loaded) return;
-        self.history_loaded = true;
-        self.history.load(.search) catch {};
-    }
-
     pub fn deinit(self: *Self) void {
-        self.history.save(.search) catch {};
         self.history.deinit();
         // LRUキャッシュを解放
         for (&self.regex_cache) |*entry_opt| {
@@ -365,30 +353,26 @@ pub const SearchService = struct {
     }
 
     // ========================================
-    // 履歴管理
+    // 履歴管理（LazyHistoryに委譲）
     // ========================================
 
     /// 履歴にパターンを追加
     pub fn addToHistory(self: *Self, pattern: []const u8) !void {
-        self.ensureHistoryLoaded();
         try self.history.add(pattern);
     }
 
     /// 履歴ナビゲーション開始
     pub fn startHistoryNavigation(self: *Self, current_input: []const u8) !void {
-        self.ensureHistoryLoaded();
         try self.history.startNavigation(current_input);
     }
 
     /// 履歴の前のエントリを取得
     pub fn historyPrev(self: *Self) ?[]const u8 {
-        self.ensureHistoryLoaded();
         return self.history.prev();
     }
 
     /// 履歴の次のエントリを取得
     pub fn historyNext(self: *Self) ?[]const u8 {
-        self.ensureHistoryLoaded();
         return self.history.next();
     }
 
@@ -399,6 +383,6 @@ pub const SearchService = struct {
 
     /// 履歴ナビゲーション中かどうか
     pub fn isNavigating(self: *Self) bool {
-        return self.history.current_index != null;
+        return self.history.isNavigating();
     }
 };

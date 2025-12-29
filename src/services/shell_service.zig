@@ -15,8 +15,7 @@
 
 const std = @import("std");
 const history_mod = @import("history");
-const History = history_mod.History;
-const HistoryType = history_mod.HistoryType;
+const LazyHistory = history_mod.LazyHistory;
 
 /// I/O読み取りバッファサイズ（16KB = システムコール削減）
 const READ_BUFFER_SIZE: usize = 16 * 1024;
@@ -75,12 +74,11 @@ pub const CommandResult = struct {
 pub const ShellService = struct {
     allocator: std.mem.Allocator,
     state: ?*CommandState,
-    history: History,
+    history: LazyHistory,
     bash_path: ?[]const u8, // bashのパス（見つかった場合、遅延初期化）
     sh_path: ?[]const u8, // shのパス（見つかった場合、遅延初期化）
     aliases_path: ?[]const u8, // ~/.ze/aliasesのパス（存在する場合、遅延初期化）
     paths_initialized: bool, // bash_path/aliases_pathが初期化済みか
-    history_loaded: bool, // 履歴がロード済みか
 
     const Self = @This();
 
@@ -126,12 +124,11 @@ pub const ShellService = struct {
         return .{
             .allocator = allocator,
             .state = null,
-            .history = History.init(allocator),
+            .history = LazyHistory.init(allocator, .shell),
             .bash_path = null,
             .sh_path = null,
             .aliases_path = null,
             .paths_initialized = false,
-            .history_loaded = false,
         };
     }
 
@@ -157,13 +154,6 @@ pub const ShellService = struct {
                 }
             }
         }
-    }
-
-    /// 履歴の遅延ロード（初回履歴アクセス時に呼ばれる）
-    fn ensureHistoryLoaded(self: *Self) void {
-        if (self.history_loaded) return;
-        self.history_loaded = true;
-        self.history.load(.shell) catch {};
     }
 
     /// シェル用にパスをクォート（シングルクォート使用）
@@ -269,7 +259,6 @@ pub const ShellService = struct {
         if (self.state) |state| {
             self.cleanupState(state);
         }
-        self.history.save(.shell) catch {};
         self.history.deinit();
         if (self.bash_path) |p| {
             self.allocator.free(p);
@@ -668,38 +657,34 @@ pub const ShellService = struct {
         }
     }
 
-    /// 履歴にコマンドを追加
+    /// 履歴にコマンドを追加（LazyHistoryに委譲）
     pub fn addToHistory(self: *Self, cmd: []const u8) !void {
-        self.ensureHistoryLoaded();
         try self.history.add(cmd);
     }
 
-    /// 履歴ナビゲーション開始
+    /// 履歴ナビゲーション開始（LazyHistoryに委譲）
     pub fn startHistoryNavigation(self: *Self, current_input: []const u8) !void {
-        self.ensureHistoryLoaded();
         try self.history.startNavigation(current_input);
     }
 
-    /// 履歴の前のエントリを取得
+    /// 履歴の前のエントリを取得（LazyHistoryに委譲）
     pub fn historyPrev(self: *Self) ?[]const u8 {
-        self.ensureHistoryLoaded();
         return self.history.prev();
     }
 
-    /// 履歴の次のエントリを取得
+    /// 履歴の次のエントリを取得（LazyHistoryに委譲）
     pub fn historyNext(self: *Self) ?[]const u8 {
-        self.ensureHistoryLoaded();
         return self.history.next();
     }
 
-    /// 履歴ナビゲーションをリセット
+    /// 履歴ナビゲーションをリセット（LazyHistoryに委譲）
     pub fn resetHistoryNavigation(self: *Self) void {
         self.history.resetNavigation();
     }
 
-    /// 履歴ナビゲーション中かどうか
+    /// 履歴ナビゲーション中かどうか（LazyHistoryに委譲）
     pub fn isNavigating(self: *Self) bool {
-        return self.history.current_index != null;
+        return self.history.isNavigating();
     }
 
     /// 実行中かどうか

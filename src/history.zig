@@ -324,3 +324,65 @@ pub const History = struct {
         self.modified = false;
     }
 };
+
+/// 遅延ロード付き履歴ラッパー
+/// 最初のアクセス時に自動的にファイルから履歴を読み込む
+pub const LazyHistory = struct {
+    history: History,
+    history_type: HistoryType,
+    loaded: bool,
+
+    pub fn init(allocator: std.mem.Allocator, history_type: HistoryType) LazyHistory {
+        return .{
+            .history = History.init(allocator),
+            .history_type = history_type,
+            .loaded = false,
+        };
+    }
+
+    /// 履歴がまだロードされていない場合にロードする
+    fn ensureLoaded(self: *LazyHistory) void {
+        if (self.loaded) return;
+        self.loaded = true;
+        self.history.load(self.history_type) catch {};
+    }
+
+    pub fn deinit(self: *LazyHistory) void {
+        self.history.save(self.history_type) catch {};
+        self.history.deinit();
+    }
+
+    /// 履歴にエントリを追加
+    pub fn add(self: *LazyHistory, entry: []const u8) !void {
+        self.ensureLoaded();
+        try self.history.add(entry);
+    }
+
+    /// ナビゲーション開始
+    pub fn startNavigation(self: *LazyHistory, current_input: []const u8) !void {
+        self.ensureLoaded();
+        try self.history.startNavigation(current_input);
+    }
+
+    /// 前の履歴へ
+    pub fn prev(self: *LazyHistory) ?[]const u8 {
+        self.ensureLoaded();
+        return self.history.prev();
+    }
+
+    /// 次の履歴へ
+    pub fn next(self: *LazyHistory) ?[]const u8 {
+        self.ensureLoaded();
+        return self.history.next();
+    }
+
+    /// ナビゲーションをリセット
+    pub fn resetNavigation(self: *LazyHistory) void {
+        self.history.resetNavigation();
+    }
+
+    /// 履歴ナビゲーション中かどうか
+    pub fn isNavigating(self: *const LazyHistory) bool {
+        return self.history.current_index != null;
+    }
+};

@@ -89,6 +89,28 @@ pub const BufferState = struct {
         return self.filename;
     }
 
+    /// ファイル名を安全に設定する
+    /// 新しいファイル名をdupeしてから古い値をfreeする（dupe失敗時のダングリングポインタ防止）
+    /// filename_normalizedもリセットする
+    pub fn setFilename(self: *BufferState, new_filename: []const u8) !void {
+        const new_name = try self.allocator.dupe(u8, new_filename);
+        self.setFilenameOwned(new_name);
+    }
+
+    /// 既にアロケートされたファイル名の所有権を受け取って設定する
+    /// filename_normalizedもリセットする
+    pub fn setFilenameOwned(self: *BufferState, new_filename: []const u8) void {
+        if (self.filename) |old| {
+            self.allocator.free(old);
+        }
+        self.filename = new_filename;
+        // ファイル名が変わったのでnormalized pathをリセット
+        if (self.filename_normalized) |old_norm| {
+            self.allocator.free(old_norm);
+            self.filename_normalized = null;
+        }
+    }
+
     pub fn deinit(self: *BufferState) void {
         self.editing_ctx.deinit();
         if (self.filename) |fname| {
