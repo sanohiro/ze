@@ -144,7 +144,7 @@ fn mainImpl() !u8 {
             } else if (err == error.FileNotFound) {
                 // 新規ファイルの場合、現在のバッファにファイル名を設定
                 const buffer_state = editor.getCurrentBuffer();
-                buffer_state.filename = try allocator.dupe(u8, filename);
+                buffer_state.file.filename = try allocator.dupe(u8, filename);
                 // 新規ファイルでも拡張子から言語検出
                 const view = editor.getCurrentView();
                 view.detectLanguage(filename, null);
@@ -155,7 +155,7 @@ fn mainImpl() !u8 {
 
         // -R オプションで読み取り専用モードを設定
         if (read_only_mode) {
-            editor.getCurrentBuffer().readonly = true;
+            editor.getCurrentBuffer().file.readonly = true;
         }
     }
 

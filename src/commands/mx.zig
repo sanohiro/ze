@@ -199,7 +199,7 @@ fn cmdMode(e: *Editor, arg: ?[]const u8) !void {
 /// revert コマンド: ファイル再読み込み
 fn cmdRevert(e: *Editor) !void {
     const buffer_state = e.getCurrentBuffer();
-    if (buffer_state.filename == null) {
+    if (buffer_state.file.filename == null) {
         e.getCurrentView().setError("No file to revert");
         return;
     }
@@ -208,7 +208,7 @@ fn cmdRevert(e: *Editor) !void {
         return;
     }
 
-    const filename = buffer_state.filename.?;
+    const filename = buffer_state.file.filename.?;
 
     // Buffer.loadFromFileを使用（エンコーディング・改行コード処理を含む）
     const loaded_buffer = Buffer.loadFromFile(e.allocator, filename) catch |err| {
@@ -230,7 +230,7 @@ fn cmdRevert(e: *Editor) !void {
         defer f.close();
         const stat = f.stat() catch null;
         if (stat) |s| {
-            buffer_state.file_mtime = s.mtime;
+            buffer_state.file.mtime = s.mtime;
         }
     }
 
@@ -239,7 +239,7 @@ fn cmdRevert(e: *Editor) !void {
 
     // 言語検出を再実行（ファイル内容が変わった可能性があるため）
     const content_preview = buffer_state.editing_ctx.buffer.getContentPreview(512);
-    e.getCurrentView().detectLanguage(buffer_state.filename, content_preview);
+    e.getCurrentView().detectLanguage(buffer_state.file.filename, content_preview);
 
     // カーソルを先頭に
     e.getCurrentView().moveToBufferStart();
@@ -249,8 +249,8 @@ fn cmdRevert(e: *Editor) !void {
 /// ro コマンド: 読み取り専用切り替え
 fn cmdReadonly(e: *Editor) void {
     const buffer_state = e.getCurrentBuffer();
-    buffer_state.readonly = !buffer_state.readonly;
-    if (buffer_state.readonly) {
+    buffer_state.file.readonly = !buffer_state.file.readonly;
+    if (buffer_state.file.readonly) {
         e.getCurrentView().setError("[RO] Read-only enabled");
     } else {
         e.getCurrentView().setError("Read-only disabled");

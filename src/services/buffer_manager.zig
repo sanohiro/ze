@@ -18,15 +18,74 @@ const std = @import("std");
 const Buffer = @import("buffer").Buffer;
 const EditingContext = @import("editing_context").EditingContext;
 
+/// ファイルメタデータ
+/// ファイル関連の情報を管理（BufferStateから分離）
+pub const FileMetadata = struct {
+    filename: ?[]const u8, // ファイル名（nullなら*scratch*）
+    filename_normalized: ?[]const u8, // 正規化パス（realpath結果、検索高速化用）
+    readonly: bool, // 読み取り専用フラグ
+    mtime: ?i128, // ファイルの最終更新時刻
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator) FileMetadata {
+        return .{
+            .filename = null,
+            .filename_normalized = null,
+            .readonly = false,
+            .mtime = null,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *FileMetadata) void {
+        if (self.filename) |fname| {
+            self.allocator.free(fname);
+        }
+        if (self.filename_normalized) |fname_norm| {
+            self.allocator.free(fname_norm);
+        }
+    }
+
+    /// バッファ名を取得（ファイル名がなければ*scratch*）
+    pub fn getName(self: *const FileMetadata) []const u8 {
+        if (self.filename) |fname| {
+            return std.fs.path.basename(fname);
+        }
+        return "*scratch*";
+    }
+
+    /// フルパスを取得
+    pub fn getPath(self: *const FileMetadata) ?[]const u8 {
+        return self.filename;
+    }
+
+    /// ファイル名を安全に設定する
+    /// 新しいファイル名をdupeしてから古い値をfreeする
+    pub fn setFilename(self: *FileMetadata, new_filename: []const u8) !void {
+        const new_name = try self.allocator.dupe(u8, new_filename);
+        self.setFilenameOwned(new_name);
+    }
+
+    /// 既にアロケートされたファイル名の所有権を受け取って設定する
+    pub fn setFilenameOwned(self: *FileMetadata, new_filename: []const u8) void {
+        if (self.filename) |old| {
+            self.allocator.free(old);
+        }
+        self.filename = new_filename;
+        // ファイル名が変わったのでnormalized pathをリセット
+        if (self.filename_normalized) |old_norm| {
+            self.allocator.free(old_norm);
+            self.filename_normalized = null;
+        }
+    }
+};
+
 /// バッファ状態
 /// EditingContextを内包し、ファイル情報を追加する
 pub const BufferState = struct {
     id: usize, // バッファID（一意）
     editing_ctx: *EditingContext, // 編集コンテキスト（Buffer + cursor + undo + kill_ring）
-    filename: ?[]const u8, // ファイル名（nullなら*scratch*）
-    filename_normalized: ?[]const u8, // 正規化パス（realpath結果、検索高速化用）
-    readonly: bool, // 読み取り専用フラグ
-    file_mtime: ?i128, // ファイルの最終更新時刻
+    file: FileMetadata, // ファイルメタデータ
     allocator: std.mem.Allocator,
 
     // === 後方互換性のためのプロパティアクセサ ===
@@ -66,59 +125,37 @@ pub const BufferState = struct {
         self.* = BufferState{
             .id = id,
             .editing_ctx = editing_ctx,
-            .filename = null,
-            .filename_normalized = null,
-            .readonly = false,
-            .file_mtime = null,
+            .file = FileMetadata.init(allocator),
             .allocator = allocator,
         };
         return self;
     }
 
-    /// バッファ名を取得（ファイル名がなければ*scratch*）
+    // === 後方互換性のためのFileMetadata委譲 ===
+
+    /// バッファ名を取得（FileMetadataに委譲）
     pub fn getName(self: *const BufferState) []const u8 {
-        if (self.filename) |fname| {
-            // パスからファイル名部分のみを抽出（クロスプラットフォーム対応）
-            return std.fs.path.basename(fname);
-        }
-        return "*scratch*";
+        return self.file.getName();
     }
 
-    /// フルパスを取得
+    /// フルパスを取得（FileMetadataに委譲）
     pub fn getPath(self: *const BufferState) ?[]const u8 {
-        return self.filename;
+        return self.file.getPath();
     }
 
-    /// ファイル名を安全に設定する
-    /// 新しいファイル名をdupeしてから古い値をfreeする（dupe失敗時のダングリングポインタ防止）
-    /// filename_normalizedもリセットする
+    /// ファイル名を設定（FileMetadataに委譲）
     pub fn setFilename(self: *BufferState, new_filename: []const u8) !void {
-        const new_name = try self.allocator.dupe(u8, new_filename);
-        self.setFilenameOwned(new_name);
+        try self.file.setFilename(new_filename);
     }
 
-    /// 既にアロケートされたファイル名の所有権を受け取って設定する
-    /// filename_normalizedもリセットする
+    /// ファイル名の所有権を受け取って設定（FileMetadataに委譲）
     pub fn setFilenameOwned(self: *BufferState, new_filename: []const u8) void {
-        if (self.filename) |old| {
-            self.allocator.free(old);
-        }
-        self.filename = new_filename;
-        // ファイル名が変わったのでnormalized pathをリセット
-        if (self.filename_normalized) |old_norm| {
-            self.allocator.free(old_norm);
-            self.filename_normalized = null;
-        }
+        self.file.setFilenameOwned(new_filename);
     }
 
     pub fn deinit(self: *BufferState) void {
         self.editing_ctx.deinit();
-        if (self.filename) |fname| {
-            self.allocator.free(fname);
-        }
-        if (self.filename_normalized) |fname_norm| {
-            self.allocator.free(fname_norm);
-        }
+        self.file.deinit();
         self.allocator.destroy(self);
     }
 };
@@ -183,12 +220,12 @@ pub const BufferManager = struct {
         self.allocator.destroy(old_buffer);
 
         // ファイル名を設定
-        buffer_state.filename = try self.allocator.dupe(u8, path);
+        buffer_state.file.filename = try self.allocator.dupe(u8, path);
         // 正規化パスをキャッシュ（検索高速化用）
-        buffer_state.filename_normalized = std.fs.cwd().realpathAlloc(self.allocator, path) catch null;
+        buffer_state.file.filename_normalized = std.fs.cwd().realpathAlloc(self.allocator, path) catch null;
 
         // ファイルのmtimeを取得（Buffer.loadFromFileで既に取得済みなので再オープン不要）
-        buffer_state.file_mtime = new_buffer.loaded_mtime;
+        buffer_state.file.mtime = new_buffer.loaded_mtime;
 
         try self.buffers.append(self.allocator, buffer_state);
         return buffer_state;
@@ -209,7 +246,7 @@ pub const BufferManager = struct {
     pub fn findByFilename(self: *Self, filename: []const u8) ?*BufferState {
         // 高速パス: まず単純な文字列比較（realpath呼び出しを回避）
         for (self.buffers.items) |buffer| {
-            if (buffer.filename) |buf_filename| {
+            if (buffer.file.filename) |buf_filename| {
                 if (std.mem.eql(u8, buf_filename, filename)) {
                     return buffer;
                 }
@@ -221,7 +258,7 @@ pub const BufferManager = struct {
         defer self.allocator.free(normalized_input);
 
         for (self.buffers.items) |buffer| {
-            if (buffer.filename_normalized) |buf_norm| {
+            if (buffer.file.filename_normalized) |buf_norm| {
                 if (std.mem.eql(u8, normalized_input, buf_norm)) {
                     return buffer;
                 }

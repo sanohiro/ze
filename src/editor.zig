@@ -407,7 +407,7 @@ pub const Editor = struct {
     /// 注意: Viewは呼び出し側で事前にセットしておくこと
     fn setupWindowView(window: *Window, buffer_state: *BufferState) void {
         const content_preview = buffer_state.editing_ctx.buffer.getContentPreview(512);
-        window.view.detectLanguage(buffer_state.filename, content_preview);
+        window.view.detectLanguage(buffer_state.file.filename, content_preview);
         window.view.setViewport(window.width, window.height);
     }
 
@@ -459,7 +459,7 @@ pub const Editor = struct {
     /// 読み取り専用チェック（編集前に呼ぶ）
     /// 読み取り専用ならエラー表示してtrueを返す
     pub fn isReadOnly(self: *Editor) bool {
-        if (self.getCurrentBuffer().readonly) {
+        if (self.getCurrentBuffer().file.readonly) {
             self.getCurrentView().setError(config.Messages.BUFFER_READONLY);
             return true;
         }
@@ -694,7 +694,7 @@ pub const Editor = struct {
         switch (c) {
             'y', 'Y' => {
                 const buffer_state = self.getCurrentBuffer();
-                if (buffer_state.filename == null) {
+                if (buffer_state.file.filename == null) {
                     self.mode = .filename_input;
                     self.quit_after_save = true;
                     self.minibuffer.clear();
@@ -731,7 +731,7 @@ pub const Editor = struct {
         const c = unicode.toAsciiChar(cp);
         switch (c) {
             'y', 'Y' => {
-                // pending_filenameをbuffer_state.filenameに設定
+                // pending_filenameをbuffer_state.file.filenameに設定
                 if (self.pending_filename) |pending| {
                     const buffer_state = self.getCurrentBuffer();
                     buffer_state.setFilename(pending) catch {
@@ -897,7 +897,7 @@ pub const Editor = struct {
     /// C-x bでの補完用：test.txtと入力して/path/to/test.txtにマッチさせる
     fn findBufferByBasename(self: *Editor, basename: []const u8) ?*BufferState {
         for (self.buffer_manager.iterator()) |buf| {
-            if (buf.filename) |filename| {
+            if (buf.file.filename) |filename| {
                 // パスからファイル名部分を抽出（クロスプラットフォーム対応）
                 const buf_basename = std.fs.path.basename(filename);
                 if (std.mem.eql(u8, buf_basename, basename)) {
@@ -912,7 +912,7 @@ pub const Editor = struct {
     /// 特殊バッファの検索処理を共通化
     fn findBufferBySpecialName(self: *Editor, name: []const u8) ?*BufferState {
         for (self.buffer_manager.iterator()) |buf| {
-            if (buf.filename) |fname| {
+            if (buf.file.filename) |fname| {
                 if (std.mem.eql(u8, fname, name)) {
                     return buf;
                 }
@@ -1176,8 +1176,8 @@ pub const Editor = struct {
         }
         // なければ新規作成
         const new_buffer = try self.createNewBuffer();
-        new_buffer.filename = try self.allocator.dupe(u8, "*Command*");
-        new_buffer.readonly = true; // コマンド出力は読み取り専用
+        new_buffer.file.filename = try self.allocator.dupe(u8, "*Command*");
+        new_buffer.file.readonly = true; // コマンド出力は読み取り専用
         return new_buffer;
     }
 
@@ -1186,7 +1186,7 @@ pub const Editor = struct {
         const windows = self.window_manager.iterator();
         for (windows, 0..) |window, idx| {
             if (self.findBufferById(window.buffer_id)) |buf| {
-                if (buf.filename) |name| {
+                if (buf.file.filename) |name| {
                     if (std.mem.eql(u8, name, "*Command*")) return idx;
                 }
             }
@@ -1309,7 +1309,7 @@ pub const Editor = struct {
 
         for (self.buffer_manager.iterator()) |buf| {
             // 特殊バッファは除外
-            if (buf.filename) |fname| {
+            if (buf.file.filename) |fname| {
                 if (std.mem.eql(u8, fname, "*Buffer List*")) continue;
                 if (std.mem.eql(u8, fname, help.help_buffer_name)) continue;
             }
@@ -1317,10 +1317,10 @@ pub const Editor = struct {
             // 変更フラグ
             const mod_char: u8 = if (buf.editing_ctx.modified) '*' else '.';
             // 読み取り専用フラグ
-            const ro_char: u8 = if (buf.readonly) '%' else '.';
+            const ro_char: u8 = if (buf.file.readonly) '%' else '.';
 
             // バッファ名
-            const buf_name = if (buf.filename) |fname| fname else "*scratch*";
+            const buf_name = if (buf.file.filename) |fname| fname else "*scratch*";
 
             // サイズ
             const size = buf.editing_ctx.buffer.total_len;
@@ -1331,7 +1331,7 @@ pub const Editor = struct {
                 ro_char,
                 buf_name,
                 size,
-                if (buf.filename) |fname| fname else "",
+                if (buf.file.filename) |fname| fname else "",
             });
         }
 
@@ -1342,8 +1342,8 @@ pub const Editor = struct {
         if (buffer_list == null) {
             // 新しいバッファを作成
             const new_buffer = try self.createNewBuffer();
-            new_buffer.filename = try self.allocator.dupe(u8, buffer_list_name);
-            new_buffer.readonly = true; // バッファ一覧は読み取り専用
+            new_buffer.file.filename = try self.allocator.dupe(u8, buffer_list_name);
+            new_buffer.file.readonly = true; // バッファ一覧は読み取り専用
             buffer_list = new_buffer;
         }
 
@@ -1368,8 +1368,8 @@ pub const Editor = struct {
         if (help_buffer == null) {
             // 新しいバッファを作成
             const new_buffer = try self.createNewBuffer();
-            new_buffer.filename = try self.allocator.dupe(u8, help.help_buffer_name);
-            new_buffer.readonly = true;
+            new_buffer.file.filename = try self.allocator.dupe(u8, help.help_buffer_name);
+            new_buffer.file.readonly = true;
             help_buffer = new_buffer;
         }
 
@@ -1488,7 +1488,7 @@ pub const Editor = struct {
 
         // バッファを検索
         for (self.buffer_manager.iterator()) |buf| {
-            const name = if (buf.filename) |fname| fname else "*scratch*";
+            const name = if (buf.file.filename) |fname| fname else "*scratch*";
             if (std.mem.eql(u8, name, buf_name)) {
                 try self.switchToBuffer(buf.id);
                 return;
@@ -1578,7 +1578,7 @@ pub const Editor = struct {
         // 古いファイル名を解放して新しいファイル名を設定（filename_normalizedもリセット）
         buffer_state.setFilenameOwned(new_filename);
         // 正規化パスをキャッシュ更新
-        buffer_state.filename_normalized = std.fs.cwd().realpathAlloc(self.allocator, path) catch null;
+        buffer_state.file.filename_normalized = std.fs.cwd().realpathAlloc(self.allocator, path) catch null;
 
         // Undo/Redoスタックをクリア
         buffer_state.editing_ctx.clearUndoHistory();
@@ -1589,7 +1589,7 @@ pub const Editor = struct {
         view.detectLanguage(path, content_preview);
 
         // ファイルの最終更新時刻を記録（Buffer.loadFromFileで既に取得済みなので再オープン不要）
-        buffer_state.file_mtime = buffer_state.editing_ctx.buffer.loaded_mtime;
+        buffer_state.file.mtime = buffer_state.editing_ctx.buffer.loaded_mtime;
 
         // Loadingメッセージをクリア
         view.clearError();
@@ -1599,9 +1599,9 @@ pub const Editor = struct {
         const buffer_state = self.getCurrentBuffer();
         const view = self.getCurrentView();
 
-        if (buffer_state.filename) |path| {
+        if (buffer_state.file.filename) |path| {
             // 外部変更チェック（新規ファイルの場合はスキップ）
-            if (buffer_state.file_mtime) |original_mtime| {
+            if (buffer_state.file.mtime) |original_mtime| {
                 const maybe_file = std.fs.cwd().openFile(path, .{}) catch |err| blk: {
                     // ファイルが存在しない場合は外部で削除された
                     if (err == error.FileNotFound) {
@@ -1630,11 +1630,11 @@ pub const Editor = struct {
             const file = try std.fs.cwd().openFile(path, .{});
             defer file.close();
             const stat = try file.stat();
-            buffer_state.file_mtime = stat.mtime;
+            buffer_state.file.mtime = stat.mtime;
 
             // 保存後にfilename_normalizedを更新（新規ファイル対応）
-            if (buffer_state.filename_normalized == null) {
-                buffer_state.filename_normalized = std.fs.cwd().realpathAlloc(self.allocator, path) catch null;
+            if (buffer_state.file.filename_normalized == null) {
+                buffer_state.file.filename_normalized = std.fs.cwd().realpathAlloc(self.allocator, path) catch null;
             }
 
             // 所有権変更警告がある場合は表示
@@ -1838,11 +1838,11 @@ pub const Editor = struct {
                 window.height,
                 is_active,
                 buffer_state.editing_ctx.modified,
-                buffer_state.readonly,
+                buffer_state.file.readonly,
                 self.overwrite_mode,
                 buffer.detected_line_ending,
                 buffer.detected_encoding,
-                buffer_state.filename,
+                buffer_state.file.filename,
             );
 
             // アクティブウィンドウのカーソル位置を記録
@@ -2285,7 +2285,7 @@ pub const Editor = struct {
         const buffer_state = self.getCurrentBuffer();
 
         // 同じファイル名なら確認不要
-        const is_same_file = if (buffer_state.filename) |old|
+        const is_same_file = if (buffer_state.file.filename) |old|
             std.mem.eql(u8, old, new_filename)
         else
             false;
@@ -2300,7 +2300,7 @@ pub const Editor = struct {
         };
 
         if (file_exists and !is_same_file) {
-            // 確認待ちのファイル名を保存（buffer_state.filenameは確認後に設定）
+            // 確認待ちのファイル名を保存（buffer_state.file.filenameは確認後に設定）
             // 先にdupeしてからfreeする（dupe失敗時のダングリングポインタ防止）
             const new_pending = try self.allocator.dupe(u8, new_filename);
             if (self.pending_filename) |old| {
@@ -2376,7 +2376,7 @@ pub const Editor = struct {
             // ファイル名を設定（filename_normalizedもリセット）
             new_buffer.setFilenameOwned(filename_copy);
             // 正規化パスをキャッシュ
-            new_buffer.filename_normalized = std.fs.cwd().realpathAlloc(self.allocator, filename_copy) catch null;
+            new_buffer.file.filename_normalized = std.fs.cwd().realpathAlloc(self.allocator, filename_copy) catch null;
             new_buffer.editing_ctx.modified = false;
 
             const file = std.fs.cwd().openFile(filename_copy, .{}) catch null;
@@ -2384,7 +2384,7 @@ pub const Editor = struct {
                 defer f.close();
                 const stat = f.stat() catch null;
                 if (stat) |s| {
-                    new_buffer.file_mtime = s.mtime;
+                    new_buffer.file.mtime = s.mtime;
                 }
             }
             try self.switchToBuffer(new_buffer.id);
@@ -2567,7 +2567,7 @@ pub const Editor = struct {
                     },
                     's' => {
                         const buffer_state = self.getCurrentBuffer();
-                        if (buffer_state.filename == null) {
+                        if (buffer_state.file.filename == null) {
                             self.mode = .filename_input;
                             self.quit_after_save = false;
                             self.minibuffer.clear();
@@ -2600,7 +2600,7 @@ pub const Editor = struct {
                             if (buf.editing_ctx.modified) {
                                 modified_count += 1;
                                 if (first_modified_name == null) {
-                                    first_modified_name = buf.filename;
+                                    first_modified_name = buf.file.filename;
                                 }
                             }
                         }
@@ -2636,7 +2636,7 @@ pub const Editor = struct {
                     'k' => {
                         const buffer_state = self.getCurrentBuffer();
                         if (buffer_state.editing_ctx.modified) {
-                            const name = buffer_state.filename orelse "*scratch*";
+                            const name = buffer_state.file.filename orelse "*scratch*";
                             self.setPrompt("Buffer {s} modified; kill anyway? (y/n): ", .{name});
                             self.mode = .kill_buffer_confirm;
                         } else {
@@ -3124,7 +3124,7 @@ pub const Editor = struct {
             },
             .enter => {
                 const buffer_state = self.getCurrentBuffer();
-                if (buffer_state.filename) |fname| {
+                if (buffer_state.file.filename) |fname| {
                     if (std.mem.eql(u8, fname, "*Buffer List*")) {
                         try self.selectBufferFromList();
                         return;

@@ -302,9 +302,9 @@ test "BufferState - readonly flag" {
     const buffer = try bm.createBuffer();
 
     // 初期状態は読み取り専用ではない
-    try testing.expect(!buffer.readonly);
+    try testing.expect(!buffer.file.readonly);
 
     // 読み取り専用に設定
-    buffer.readonly = true;
-    try testing.expect(buffer.readonly);
+    buffer.file.readonly = true;
+    try testing.expect(buffer.file.readonly);
 }
