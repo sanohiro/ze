@@ -1798,7 +1798,7 @@ pub const Buffer = struct {
         const pieces = self.pieces.items;
         if (pieces.len == 0) return null;
 
-        // 各pieceの終了位置を計算
+        // 各pieceの終了位置を計算（1回のみ、後続の検索で再利用）
         var piece_ends: [256]usize = undefined;
         const use_stack_buf = pieces.len <= 256;
 
@@ -1810,10 +1810,20 @@ pub const Buffer = struct {
             }
         }
 
-        // search_endを含むpieceのインデックスを見つける
+        // search_endを含むpieceのインデックスを見つける（piece_endsを再利用）
         var piece_start: usize = 0;
         var start_piece_idx: usize = pieces.len;
-        {
+        if (use_stack_buf) {
+            // piece_endsを使って高速に検索
+            for (piece_ends[0..pieces.len], 0..) |end_pos, i| {
+                if (end_pos >= search_end) {
+                    start_piece_idx = i;
+                    piece_start = if (i > 0) piece_ends[i - 1] else 0;
+                    break;
+                }
+            }
+        } else {
+            // piece数が256を超える場合はフォールバック
             var cumulative: usize = 0;
             for (pieces, 0..) |piece, i| {
                 if (cumulative + piece.length >= search_end) {

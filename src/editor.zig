@@ -3881,6 +3881,20 @@ pub const Editor = struct {
         self.getCurrentView().setError(config.Messages.CANCELLED);
     }
 
+    /// シェルコマンドのエラーをチェックしてメッセージ表示
+    /// exit_status が非0なら true を返す（呼び出し側は return すべき）
+    fn checkShellError(self: *Editor, exit_status: ?u32, extra_msg: []const u8, truncated_suffix: []const u8) bool {
+        if (exit_status) |status| {
+            if (status != 0) {
+                var msg_buf: [128]u8 = undefined;
+                const msg = std.fmt.bufPrint(&msg_buf, "Command failed (exit {d}){s}{s}", .{ status, extra_msg, truncated_suffix }) catch "Command failed";
+                self.getCurrentView().setError(msg);
+                return true;
+            }
+        }
+        return false;
+    }
+
     /// シェル実行結果を処理
     fn processShellResult(self: *Editor, stdout: []const u8, stderr: []const u8, exit_status: ?u32, input_source: ShellInputSource, output_dest: ShellOutputDest, truncated: bool) !void {
         const window = self.window_manager.getCurrentWindow();
@@ -3992,14 +4006,7 @@ pub const Editor = struct {
             },
             .replace => {
                 // コマンドが失敗した場合は置換しない
-                if (exit_status) |status| {
-                    if (status != 0) {
-                        var msg_buf: [128]u8 = undefined;
-                        const msg = std.fmt.bufPrint(&msg_buf, "Command failed (exit {d}), buffer unchanged{s}", .{ status, truncated_suffix }) catch "Command failed";
-                        self.getCurrentView().setError(msg);
-                        return;
-                    }
-                }
+                if (self.checkShellError(exit_status, ", buffer unchanged", truncated_suffix)) return;
                 // 読み取り専用バッファでは置換を禁止
                 if (self.isReadOnly()) {
                     self.getCurrentView().setError(config.Messages.BUFFER_READONLY);
@@ -4092,14 +4099,7 @@ pub const Editor = struct {
             },
             .insert => {
                 // コマンドが失敗した場合は挿入しない
-                if (exit_status) |status| {
-                    if (status != 0) {
-                        var msg_buf: [128]u8 = undefined;
-                        const msg = std.fmt.bufPrint(&msg_buf, "Command failed (exit {d}), buffer unchanged", .{status}) catch "Command failed";
-                        self.getCurrentView().setError(msg);
-                        return;
-                    }
-                }
+                if (self.checkShellError(exit_status, ", buffer unchanged", truncated_suffix)) return;
                 // 読み取り専用バッファでは挿入を禁止
                 if (self.isReadOnly()) {
                     self.getCurrentView().setError(config.Messages.BUFFER_READONLY);
@@ -4119,14 +4119,7 @@ pub const Editor = struct {
             },
             .new_buffer => {
                 // コマンドが失敗した場合は新規バッファを作成しない
-                if (exit_status) |status| {
-                    if (status != 0) {
-                        var msg_buf: [128]u8 = undefined;
-                        const msg = std.fmt.bufPrint(&msg_buf, "Command failed (exit {d}){s}", .{ status, truncated_suffix }) catch "Command failed";
-                        self.getCurrentView().setError(msg);
-                        return;
-                    }
-                }
+                if (self.checkShellError(exit_status, "", truncated_suffix)) return;
                 // 新規バッファに出力（stdoutのみ、stderrはdisplayモードで確認）
                 if (stdout.len > 0) {
                     const new_buffer = try self.createNewBuffer();
