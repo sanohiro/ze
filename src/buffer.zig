@@ -35,6 +35,9 @@ const unicode = @import("unicode");
 const config = @import("config");
 const encoding = @import("encoding");
 
+// macOSではstd.posix.getgid()が存在しないため、libcからextern宣言
+extern fn getgid() std.c.gid_t;
+
 /// ピースのソース（元ファイル or 追加バッファ）
 pub const PieceSource = enum {
     original, // 元のファイル内容
@@ -957,17 +960,16 @@ pub const Buffer = struct {
         }
 
         // 元のファイルの所有権を復元
-        // 現在のプロセスのUIDと異なる場合のみ警告の可能性がある
-        const current_uid = if (@import("builtin").os.tag == .linux)
-            std.os.linux.getuid()
-        else
-            std.c.getuid();
+        // 現在のプロセスのUID/GIDと異なる場合のみ警告の可能性がある
+        const current_uid = std.posix.getuid();
+        const current_gid = getgid();
         var ownership_warning: ?[]const u8 = null;
 
         if (original_uid != null or original_gid != null) {
-            // 元の所有権が現在のユーザーと異なる場合
-            const needs_chown = if (original_uid) |ouid| ouid != current_uid else false;
-            if (needs_chown) {
+            // 元の所有権が現在のユーザーと異なる場合（UIDまたはGIDのどちらかが異なる）
+            const uid_changed = if (original_uid) |ouid| ouid != current_uid else false;
+            const gid_changed = if (original_gid) |ogid| ogid != current_gid else false;
+            if (uid_changed or gid_changed) {
                 // ファイルを再度開いてfchownで所有権を復元
                 if (std.fs.cwd().openFile(real_path, .{ .mode = .read_write })) |file| {
                     defer file.close();

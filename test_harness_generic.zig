@@ -112,11 +112,13 @@ pub fn main() !void {
         const content = try file.readToEndAlloc(allocator, 1024 * 1024); // 最大1MB
         defer allocator.free(content);
 
-        // 改行で分割してキーシーケンスを作成
+        // 改行で分割してキーシーケンスを作成（CRLF対応）
         var it = std.mem.splitScalar(u8, content, '\n');
         while (it.next()) |line| {
-            if (line.len > 0) { // 空行をスキップ
-                const line_copy = try allocator.dupe(u8, line);
+            // CRLFファイル対応: 末尾の\rをトリム
+            const trimmed = std.mem.trimRight(u8, line, "\r");
+            if (trimmed.len > 0) { // 空行をスキップ
+                const line_copy = try allocator.dupe(u8, trimmed);
                 try key_sequences.append(allocator, line_copy);
             }
         }
@@ -350,8 +352,16 @@ pub fn main() !void {
         while (timeout_count < max_timeout) : (timeout_count += 1) {
             const wait_result = posix.waitpid(pid, posix.W.NOHANG);
             if (wait_result.pid != 0) {
-                exit_status = @truncate(wait_result.status);
-                std.debug.print("Child exited with status: {}\n", .{wait_result.status});
+                // 正しくwait statusをデコード
+                if (posix.W.IFEXITED(wait_result.status)) {
+                    exit_status = posix.W.EXITSTATUS(wait_result.status);
+                } else if (posix.W.IFSIGNALED(wait_result.status)) {
+                    // シグナルで終了した場合は128+シグナル番号を返す（shell慣例）
+                    exit_status = 128 + @as(u8, @intCast(posix.W.TERMSIG(wait_result.status)));
+                } else {
+                    exit_status = 255; // 不明な終了
+                }
+                std.debug.print("Child exited with status: {} (decoded: {})\n", .{ wait_result.status, exit_status });
                 break;
             }
             std.Thread.sleep(100 * std.time.ns_per_ms);
@@ -397,9 +407,9 @@ pub fn main() !void {
                 };
                 defer allocator.free(actual);
 
-                // 末尾の改行を正規化して比較
-                const actual_trimmed = std.mem.trimRight(u8, actual, "\n");
-                const expected_trimmed = std.mem.trimRight(u8, expected, "\n");
+                // 末尾の改行を正規化して比較（CRLF/LF両対応）
+                const actual_trimmed = std.mem.trimRight(u8, actual, "\r\n");
+                const expected_trimmed = std.mem.trimRight(u8, expected, "\r\n");
 
                 std.debug.print("Actual:   \"{s}\"\n", .{actual_trimmed});
 
@@ -409,6 +419,10 @@ pub fn main() !void {
                     std.debug.print("FAIL: Content does not match!\n", .{});
                     resetAndExit(1);
                 }
+            } else {
+                // --expectが指定されたがターゲットファイルがない場合はエラー
+                std.debug.print("ERROR: --expect requires --file or --expect-file to specify target\n", .{});
+                resetAndExit(2);
             }
         }
 

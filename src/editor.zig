@@ -1253,6 +1253,12 @@ pub const Editor = struct {
             current_window.width,
             cmd_height,
         );
+        // View.init失敗時にウィンドウを削除して元の高さを復元
+        errdefer {
+            _ = self.window_manager.windows.pop();
+            current_window.height = old_height;
+            current_window.view.setViewport(current_window.width, old_height);
+        }
 
         new_window.view = try View.init(self.allocator, cmd_buffer.editing_ctx.buffer);
         // 言語検出とビューポートを設定
