@@ -2300,6 +2300,8 @@ pub const View = struct {
         clamped_x: usize, // クランプ後のcursor_x
     };
 
+    /// 行幅とバイト位置を取得（早期終了最適化版）
+    /// target_xに到達したら残りのスキャンをスキップ
     pub fn getLineWidthWithBytePos(self: *View, file_line: usize, target_x: usize) LineWidthWithBytePos {
         const line_start = self.buffer.getLineStart(file_line) orelse {
             return .{ .width = 0, .byte_pos = self.buffer.len(), .clamped_x = 0 };
@@ -2309,8 +2311,6 @@ pub const View = struct {
         iter.seek(line_start);
 
         var line_width: usize = 0;
-        var target_byte_pos: usize = line_start; // target_xに到達した時のバイト位置
-        var found_target = false;
 
         while (true) {
             const current_pos = iter.global_pos;
@@ -2318,35 +2318,31 @@ pub const View = struct {
             if (cluster) |gc| {
                 if (gc.base == '\n') break;
 
-                // target_xにまだ到達していなければ位置を更新
-                if (!found_target and line_width >= target_x) {
-                    target_byte_pos = current_pos;
-                    found_target = true;
-                }
-
                 const char_width = if (gc.base == '\t')
                     nextTabStop(line_width, self.getTabWidth()) - line_width
                 else
                     gc.width;
+
+                // target_xに到達したら早期終了（残りのスキャン不要）
+                if (line_width + char_width > target_x) {
+                    // target_xはこの文字の途中なので、この文字の開始位置を返す
+                    return .{ .width = line_width + char_width, .byte_pos = current_pos, .clamped_x = target_x };
+                }
+
                 line_width += char_width;
 
-                // target_xを超えたら位置を記録
-                if (!found_target and line_width > target_x) {
-                    target_byte_pos = current_pos;
-                    found_target = true;
+                // ちょうどtarget_xに到達した場合も早期終了可能
+                if (line_width == target_x) {
+                    return .{ .width = line_width, .byte_pos = iter.global_pos, .clamped_x = target_x };
                 }
             } else {
                 break;
             }
         }
 
-        // target_xに到達しなかった場合は行末
-        if (!found_target) {
-            target_byte_pos = iter.global_pos;
-        }
-
-        const clamped_x = if (target_x > line_width) line_width else target_x;
-        return .{ .width = line_width, .byte_pos = target_byte_pos, .clamped_x = clamped_x };
+        // 行末に到達（target_xが行幅を超えている）
+        // clamped_xは行幅にクランプ
+        return .{ .width = line_width, .byte_pos = iter.global_pos, .clamped_x = line_width };
     }
 
     pub fn moveCursorLeft(self: *View) void {

@@ -143,6 +143,10 @@ pub const EditingContext = struct {
     // 2. 一定時間（300ms）経過後も新しいグループを開始
     last_record_time: i128 = 0, // 直前のUndo記録時刻（ナノ秒）
 
+    // findPrevGraphemeキャッシュ（連続Backspace/C-b最適化）
+    prev_grapheme_cache_cursor: usize = 0, // キャッシュ時のカーソル位置
+    prev_grapheme_cache_start: usize = 0, // 前のグラフェムの開始位置
+    prev_grapheme_cache_len: usize = 0, // 前のグラフェムのバイト長
 
     const ListenerEntry = struct {
         callback: ChangeListener,
@@ -158,11 +162,20 @@ pub const EditingContext = struct {
         }
     }
 
+    /// 前のグラフェムの位置情報
+    const PrevGraphemeInfo = struct { start: usize, len: usize };
+
     /// 前のgrapheme clusterの位置とバイト長を取得
-    /// 最適化: 行頭からスキャン（バッファ先頭からではなくO(行の長さ)）
+    /// 最適化1: 行頭からスキャン（バッファ先頭からではなくO(行の長さ)）
+    /// 最適化2: キャッシュ使用（連続Backspace/C-bで再スキャン回避）
     /// 戻り値: .start = 開始位置, .len = バイト長
-    fn findPrevGrapheme(self: *EditingContext) struct { start: usize, len: usize } {
+    fn findPrevGrapheme(self: *EditingContext) PrevGraphemeInfo {
         if (self.cursor == 0) return .{ .start = 0, .len = 0 };
+
+        // キャッシュヒット: 同じカーソル位置なら即座に返す
+        if (self.prev_grapheme_cache_cursor == self.cursor and self.prev_grapheme_cache_len > 0) {
+            return .{ .start = self.prev_grapheme_cache_start, .len = self.prev_grapheme_cache_len };
+        }
 
         // 行頭を取得（行インデックスはキャッシュされている）
         const current_line = self.buffer.findLineByPos(self.cursor);
@@ -170,6 +183,7 @@ pub const EditingContext = struct {
 
         // 行頭ならさらに前の行末へ（改行1バイト）
         if (self.cursor == line_start) {
+            self.updatePrevGraphemeCache(self.cursor - 1, 1);
             return .{ .start = self.cursor - 1, .len = 1 };
         }
 
@@ -193,7 +207,21 @@ pub const EditingContext = struct {
             }
         }
 
+        // キャッシュを更新
+        self.updatePrevGraphemeCache(char_start, char_len);
         return .{ .start = char_start, .len = char_len };
+    }
+
+    /// findPrevGraphemeキャッシュを更新
+    fn updatePrevGraphemeCache(self: *EditingContext, start: usize, byte_len: usize) void {
+        self.prev_grapheme_cache_cursor = self.cursor;
+        self.prev_grapheme_cache_start = start;
+        self.prev_grapheme_cache_len = byte_len;
+    }
+
+    /// findPrevGraphemeキャッシュを無効化（バッファ変更時に呼び出す）
+    fn invalidatePrevGraphemeCache(self: *EditingContext) void {
+        self.prev_grapheme_cache_len = 0;
     }
 
     /// 新規バッファで初期化
@@ -550,6 +578,7 @@ pub const EditingContext = struct {
 
         // バッファに挿入
         try self.buffer.insertSlice(pos, text);
+        self.invalidatePrevGraphemeCache(); // バッファ変更でキャッシュ無効化
 
         // Undo記録
         try self.recordInsert(pos, text);
@@ -592,21 +621,28 @@ pub const EditingContext = struct {
         const actual_count = @min(count, self.buffer.len() - pos);
         const line = self.buffer.findLineByPos(pos);
 
-        // 削除するテキストを保存
+        // 削除するテキストを保存（所有権はrecordDeleteOwnedに移転）
         const deleted = try self.extractText(pos, actual_count);
-        errdefer self.allocator.free(deleted);
 
-        // 改行を含むかで影響範囲を決定（freeする前に判定）
+        // 改行を含むかで影響範囲を決定
         const has_newline = std.mem.indexOf(u8, deleted, "\n") != null;
 
         // バッファから削除
-        try self.buffer.delete(pos, actual_count);
+        self.buffer.delete(pos, actual_count) catch |err| {
+            // 失敗時はextractTextの結果を解放
+            self.allocator.free(deleted);
+            return err;
+        };
+        self.invalidatePrevGraphemeCache(); // バッファ変更でキャッシュ無効化
 
-        // Undo記録（recordDeleteOp内でコピーされる）
-        try self.recordDelete(pos, deleted);
-
-        // recordDeleteが成功したらextractTextの結果を解放
-        self.allocator.free(deleted);
+        // Undo記録（所有権移転版：コピーを回避）
+        // extractTextは新規アロケートなのでcapacity = len
+        self.recordDeleteOwned(pos, @constCast(deleted), deleted.len) catch |err| {
+            // 失敗時はextractTextの結果を解放
+            self.allocator.free(deleted);
+            return err;
+        };
+        // recordDeleteOwnedが成功したら所有権は移転済み（freeしない）
 
         self.modified = true;
         self.notifyChange(.{
@@ -826,6 +862,7 @@ pub const EditingContext = struct {
                 .insert => try self.buffer.delete(entry.position, entry.data.len),
                 .delete => try self.buffer.insertSlice(entry.position, entry.data),
             }
+            self.invalidatePrevGraphemeCache(); // バッファ変更でキャッシュ無効化
 
             try self.redo_stack.append(self.allocator, entry);
             processed = true;
@@ -887,6 +924,7 @@ pub const EditingContext = struct {
                 .insert => try self.buffer.insertSlice(entry.position, entry.data),
                 .delete => try self.buffer.delete(entry.position, entry.data.len),
             }
+            self.invalidatePrevGraphemeCache(); // バッファ変更でキャッシュ無効化
 
             try self.undo_stack.append(self.allocator, entry);
             processed = true;
@@ -1081,6 +1119,61 @@ pub const EditingContext = struct {
         self.modified = true;
     }
 
+    /// 削除操作をUndo履歴に記録（所有権移転版）
+    /// textの所有権を受け取り、コピーを回避。不要になったらfreeする
+    pub fn recordDeleteOpOwned(self: *EditingContext, pos: usize, text: []u8, capacity: usize, cursor_pos_before: usize) !void {
+        const now = std.time.nanoTimestamp();
+        const time_elapsed = now - self.last_record_time;
+
+        // 連続した削除操作をグループ化（recordDeleteOpと同じロジック）
+        if (self.undo_stack.items.len > 0 and time_elapsed < config.Editor.UNDO_GROUP_TIMEOUT_NS) {
+            const last = &self.undo_stack.items[self.undo_stack.items.len - 1];
+            if (last.op == .delete and last.groupable and
+                !containsNewline(text) and !containsNewline(last.data))
+            {
+                // Backspaceの場合: 削除位置が直前のエントリの直前
+                if (pos + text.len == last.position) {
+                    const new_len = last.data.len + text.len;
+                    const new_capacity = @max(new_len * 2, 64);
+                    const new_data = try self.allocator.alloc(u8, new_capacity);
+                    @memcpy(new_data[0..text.len], text);
+                    @memcpy(new_data[text.len..][0..last.data.len], last.data);
+                    last.freeData(self.allocator);
+                    last.data = new_data[0..new_len];
+                    last.data_capacity = new_capacity;
+                    last.position = pos;
+                    last.cursor_after = pos;
+                    self.last_record_time = now;
+                    // 渡されたメモリを解放
+                    self.allocator.free(text.ptr[0..capacity]);
+                    return;
+                }
+                // Delete (C-d)の場合: 削除位置が同じ
+                if (pos == last.position) {
+                    try last.appendData(self.allocator, text);
+                    self.last_record_time = now;
+                    // 渡されたメモリを解放
+                    self.allocator.free(text.ptr[0..capacity]);
+                    return;
+                }
+            }
+        }
+
+        self.clearRedoStack();
+        // 所有権移転: コピーせずに直接使用
+        try self.undo_stack.append(self.allocator, .{
+            .op = .delete,
+            .position = pos,
+            .data = text,
+            .data_capacity = capacity,
+            .cursor_before = cursor_pos_before,
+            .cursor_after = pos,
+            .group_id = self.current_group_id,
+        });
+        self.last_record_time = now;
+        self.modified = true;
+    }
+
     /// 置換操作をUndo履歴に記録（delete + insertを1つの操作として）
     /// 両テキストはコピーされるので、呼び出し元でfreeしても問題ない
     pub fn recordReplaceOp(self: *EditingContext, pos: usize, old_text: []const u8, new_text: []const u8, cursor_pos_before: usize) !void {
@@ -1154,6 +1247,12 @@ pub const EditingContext = struct {
     /// 内部用：現在のカーソル位置でDeleteを記録
     fn recordDelete(self: *EditingContext, pos: usize, text: []const u8) !void {
         try self.recordDeleteOp(pos, text, self.cursor);
+    }
+
+    /// 内部用：現在のカーソル位置でDeleteを記録（所有権移転版）
+    /// textの所有権を受け取り、不要になったらfreeする
+    fn recordDeleteOwned(self: *EditingContext, pos: usize, text: []u8, capacity: usize) !void {
+        try self.recordDeleteOpOwned(pos, text, capacity, self.cursor);
     }
 
     fn extractText(self: *EditingContext, start: usize, length: usize) ![]const u8 {
