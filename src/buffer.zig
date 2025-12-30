@@ -108,7 +108,7 @@ pub const PieceIterator = struct {
         const first_byte = self.next() orelse return null;
 
         // ASCIIの場合は1バイト
-        if (first_byte < config.UTF8.CONTINUATION_MASK) {
+        if (unicode.isAsciiByte(first_byte)) {
             return first_byte; // u8→u21 自動昇格
         }
 

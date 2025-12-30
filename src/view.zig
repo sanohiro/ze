@@ -59,11 +59,11 @@ inline fn getHighlightColors(is_current: bool) HighlightColors {
         .{ .start = ANSI.INVERT, .end = ANSI.INVERT_OFF };
 }
 
-/// 全角空白（U+3000）のUTF-8バイト列
-const FULLWIDTH_SPACE: []const u8 = "\u{3000}"; // 0xE3 0x80 0x80
+/// 全角空白（U+3000）のUTF-8バイト列 - config.UTF8から参照
+const FULLWIDTH_SPACE: []const u8 = &config.UTF8.FULLWIDTH_SPACE;
 /// 全角空白の視覚表示用（薄い背景色 + 全角空白自体で幅2を維持）
 /// 注: RESETを含めないことで選択範囲の反転表示を壊さない
-const FULLWIDTH_SPACE_VISUAL: []const u8 = ANSI.BG_DARK_GRAY ++ "\u{3000}" ++ ANSI.BG_RESET;
+const FULLWIDTH_SPACE_VISUAL: []const u8 = ANSI.BG_DARK_GRAY ++ &config.UTF8.FULLWIDTH_SPACE ++ ANSI.BG_RESET;
 
 /// 制御文字の表示用テーブル（0x00-0x1F → ^@ 〜 ^_）
 /// 表示幅は2（^ + 文字）

@@ -262,35 +262,10 @@ pub fn backwardWord(e: *Editor) !void {
     }
 }
 
-/// チャンクからUTF-8コードポイントをデコード
+/// チャンクからUTF-8コードポイントをデコード（標準ライブラリを使用）
 fn decodeUtf8FromChunk(bytes: []const u8) ?u21 {
     if (bytes.len == 0) return null;
-    const first = bytes[0];
-
-    if (unicode.isAsciiByte(first)) return first;
-    if (bytes.len < 2) return null;
-
-    if ((first & 0xE0) == 0xC0) {
-        // 2-byte sequence
-        if (bytes.len < 2) return null;
-        return (@as(u21, first & 0x1F) << 6) | (bytes[1] & 0x3F);
-    }
-    if ((first & 0xF0) == 0xE0) {
-        // 3-byte sequence
-        if (bytes.len < 3) return null;
-        return (@as(u21, first & 0x0F) << 12) |
-            (@as(u21, bytes[1] & 0x3F) << 6) |
-            (bytes[2] & 0x3F);
-    }
-    if ((first & 0xF8) == 0xF0) {
-        // 4-byte sequence
-        if (bytes.len < 4) return null;
-        return (@as(u21, first & 0x07) << 18) |
-            (@as(u21, bytes[1] & 0x3F) << 12) |
-            (@as(u21, bytes[2] & 0x3F) << 6) |
-            (bytes[3] & 0x3F);
-    }
-    return null;
+    return std.unicode.utf8Decode(bytes) catch null;
 }
 
 // ========================================

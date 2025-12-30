@@ -2174,7 +2174,6 @@ pub const Editor = struct {
 
         // 前の状態を保存（スクロール検出用）
         const old_top_line = view.top_line;
-        const old_top_col = view.top_col;
         var needs_vertical_scroll = false;
 
         // 画面内の行位置を計算（ビューポート高さを使用）
@@ -2255,7 +2254,6 @@ pub const Editor = struct {
             view.markHorizontalScroll();
         }
         // スクロールなしの場合は再描画不要（カーソル位置の更新のみ）
-        _ = old_top_col;
     }
 
     // エイリアス: restoreCursorPosはsetCursorToPosと同じ
