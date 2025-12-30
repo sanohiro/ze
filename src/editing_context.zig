@@ -158,6 +158,44 @@ pub const EditingContext = struct {
         }
     }
 
+    /// 前のgrapheme clusterの位置とバイト長を取得
+    /// 最適化: 行頭からスキャン（バッファ先頭からではなくO(行の長さ)）
+    /// 戻り値: .start = 開始位置, .len = バイト長
+    fn findPrevGrapheme(self: *EditingContext) struct { start: usize, len: usize } {
+        if (self.cursor == 0) return .{ .start = 0, .len = 0 };
+
+        // 行頭を取得（行インデックスはキャッシュされている）
+        const current_line = self.buffer.findLineByPos(self.cursor);
+        const line_start = self.buffer.getLineStart(current_line) orelse 0;
+
+        // 行頭ならさらに前の行末へ（改行1バイト）
+        if (self.cursor == line_start) {
+            return .{ .start = self.cursor - 1, .len = 1 };
+        }
+
+        // 行頭からカーソル位置までスキャン
+        var iter = PieceIterator.init(self.buffer);
+        iter.seek(line_start);
+        var char_start: usize = line_start;
+        var char_len: usize = 1;
+
+        while (iter.global_pos < self.cursor) {
+            char_start = iter.global_pos;
+            const cluster = iter.nextGraphemeCluster() catch {
+                _ = iter.next();
+                char_len = 1;
+                continue;
+            };
+            if (cluster) |gc| {
+                char_len = gc.byte_len;
+            } else {
+                break;
+            }
+        }
+
+        return .{ .start = char_start, .len = char_len };
+    }
+
     /// 新規バッファで初期化
     pub fn init(allocator: std.mem.Allocator) !*EditingContext {
         const buffer = try allocator.create(Buffer);
@@ -314,35 +352,11 @@ pub const EditingContext = struct {
     }
 
     /// 前のgrapheme clusterへ移動（C-b）
-    /// 最適化: 行頭からスキャン（バッファ先頭からではなく）
     pub fn moveBackward(self: *EditingContext) void {
-        if (self.cursor == 0) return;
-
-        // 行頭を取得（行インデックスはキャッシュされている）
-        const current_line = self.buffer.findLineByPos(self.cursor);
-        const line_start = self.buffer.getLineStart(current_line) orelse 0;
-
-        // 行頭ならさらに前の行末へ
-        if (self.cursor == line_start) {
-            self.setCursor(self.cursor - 1);
-            return;
+        const prev = self.findPrevGrapheme();
+        if (prev.len > 0) {
+            self.setCursor(prev.start);
         }
-
-        // 行頭からカーソル位置までスキャン
-        var iter = PieceIterator.init(self.buffer);
-        iter.seek(line_start);
-        var char_start: usize = line_start;
-
-        while (iter.global_pos < self.cursor) {
-            char_start = iter.global_pos;
-            const cluster = iter.nextGraphemeCluster() catch {
-                _ = iter.next();
-                continue;
-            };
-            if (cluster == null) break;
-        }
-
-        self.setCursor(char_start);
     }
 
     /// 次の行へ移動（C-n）
@@ -604,31 +618,13 @@ pub const EditingContext = struct {
         });
     }
 
+    /// バックスペース: 前のgrapheme clusterを削除
     pub fn backspace(self: *EditingContext) !void {
-        if (self.cursor == 0) return;
-
-        // 前のgrapheme clusterを見つける
-        var iter = PieceIterator.init(self.buffer);
-        var char_start: usize = 0;
-        var char_len: usize = 1;
-
-        while (iter.global_pos < self.cursor) {
-            char_start = iter.global_pos;
-            const cluster = iter.nextGraphemeCluster() catch {
-                _ = iter.next();
-                char_len = 1;
-                continue;
-            };
-            if (cluster) |gc| {
-                char_len = gc.byte_len;
-            } else {
-                break;
-            }
+        const prev = self.findPrevGrapheme();
+        if (prev.len > 0) {
+            self.cursor = prev.start;
+            try self.delete(prev.len);
         }
-
-        // カーソルを移動してから削除
-        self.cursor = char_start;
-        try self.delete(char_len);
     }
 
     pub fn deleteChar(self: *EditingContext) !void {
