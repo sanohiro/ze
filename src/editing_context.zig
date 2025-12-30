@@ -306,11 +306,24 @@ pub const EditingContext = struct {
     }
 
     /// 前のgrapheme clusterへ移動（C-b）
+    /// 最適化: 行頭からスキャン（バッファ先頭からではなく）
     pub fn moveBackward(self: *EditingContext) void {
         if (self.cursor == 0) return;
 
+        // 行頭を取得（行インデックスはキャッシュされている）
+        const current_line = self.buffer.findLineByPos(self.cursor);
+        const line_start = self.buffer.getLineStart(current_line) orelse 0;
+
+        // 行頭ならさらに前の行末へ
+        if (self.cursor == line_start) {
+            self.setCursor(self.cursor - 1);
+            return;
+        }
+
+        // 行頭からカーソル位置までスキャン
         var iter = PieceIterator.init(self.buffer);
-        var char_start: usize = 0;
+        iter.seek(line_start);
+        var char_start: usize = line_start;
 
         while (iter.global_pos < self.cursor) {
             char_start = iter.global_pos;

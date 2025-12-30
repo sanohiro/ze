@@ -1,4 +1,5 @@
 const std = @import("std");
+const config = @import("config");
 const Editor = @import("editor").Editor;
 const Buffer = @import("buffer").Buffer;
 const syntax = @import("syntax");
@@ -67,7 +68,7 @@ pub fn execute(e: *Editor) !void {
 
 /// help コマンド: コマンド一覧を表示
 fn cmdHelp(e: *Editor) void {
-    e.getCurrentView().setError("Commands: line ln tab indent mode revert key ro exit ?");
+    e.getCurrentView().setError(config.Messages.MX_COMMANDS_HELP);
 }
 
 /// ln コマンド: 行番号表示のトグル
@@ -75,27 +76,27 @@ fn cmdLineNumbers(e: *Editor) void {
     const view = e.getCurrentView();
     view.toggleLineNumbers();
     if (view.show_line_numbers) {
-        view.setError("Line numbers: on");
+        view.setError(config.Messages.MX_LINE_NUMBERS_ON);
     } else {
-        view.setError("Line numbers: off");
+        view.setError(config.Messages.MX_LINE_NUMBERS_OFF);
     }
 }
 
 /// key コマンド: キー説明モードに入る
 fn cmdKeyDescribe(e: *Editor) void {
     e.mode = .mx_key_describe;
-    e.getCurrentView().setError("Press key: ");
+    e.getCurrentView().setError(config.Messages.MX_KEY_DESCRIBE_PROMPT);
 }
 
 /// line コマンド: 指定行へ移動
 fn cmdLine(e: *Editor, arg: ?[]const u8) !void {
     if (arg) |line_str| {
         const line_num = std.fmt.parseInt(usize, line_str, 10) catch {
-            e.getCurrentView().setError("Invalid line number");
+            e.getCurrentView().setError(config.Messages.MX_INVALID_LINE_NUMBER);
             return;
         };
         if (line_num == 0) {
-            e.getCurrentView().setError("Line number must be >= 1");
+            e.getCurrentView().setError(config.Messages.MX_LINE_MUST_BE_GE1);
             return;
         }
         // 0-indexedに変換
@@ -124,11 +125,11 @@ fn cmdLine(e: *Editor, arg: ?[]const u8) !void {
 fn cmdTab(e: *Editor, arg: ?[]const u8) !void {
     if (arg) |width_str| {
         const width = std.fmt.parseInt(u8, width_str, 10) catch {
-            e.getCurrentView().setError("Invalid tab width");
+            e.getCurrentView().setError(config.Messages.MX_INVALID_TAB_WIDTH);
             return;
         };
         if (width == 0 or width > 16) {
-            e.getCurrentView().setError("Tab width must be 1-16");
+            e.getCurrentView().setError(config.Messages.MX_TAB_WIDTH_RANGE);
             return;
         }
         e.getCurrentView().setTabWidth(width);
@@ -145,12 +146,12 @@ fn cmdIndent(e: *Editor, arg: ?[]const u8) !void {
     if (arg) |style_str| {
         if (std.mem.eql(u8, style_str, "space") or std.mem.eql(u8, style_str, "spaces")) {
             e.getCurrentView().setIndentStyle(.space);
-            e.getCurrentView().setError("indent: space");
+            e.getCurrentView().setError(config.Messages.MX_INDENT_SPACE);
         } else if (std.mem.eql(u8, style_str, "tab") or std.mem.eql(u8, style_str, "tabs")) {
             e.getCurrentView().setIndentStyle(.tab);
-            e.getCurrentView().setError("indent: tab");
+            e.getCurrentView().setError(config.Messages.MX_INDENT_TAB);
         } else {
-            e.getCurrentView().setError("Usage: indent space|tab");
+            e.getCurrentView().setError(config.Messages.MX_INDENT_USAGE);
         }
     } else {
         // 引数なし: 現在のインデントスタイルを表示
@@ -200,11 +201,11 @@ fn cmdMode(e: *Editor, arg: ?[]const u8) !void {
 fn cmdRevert(e: *Editor) !void {
     const buffer_state = e.getCurrentBuffer();
     if (buffer_state.file.filename == null) {
-        e.getCurrentView().setError("No file to revert");
+        e.getCurrentView().setError(config.Messages.MX_NO_FILE_TO_REVERT);
         return;
     }
     if (buffer_state.editing_ctx.modified) {
-        e.getCurrentView().setError("Buffer modified. Save first or use C-x k");
+        e.getCurrentView().setError(config.Messages.MX_BUFFER_MODIFIED);
         return;
     }
 
@@ -243,7 +244,7 @@ fn cmdRevert(e: *Editor) !void {
 
     // カーソルを先頭に
     e.getCurrentView().moveToBufferStart();
-    e.getCurrentView().setError("Reverted");
+    e.getCurrentView().setError(config.Messages.MX_REVERTED);
 }
 
 /// ro コマンド: 読み取り専用切り替え
@@ -251,16 +252,16 @@ fn cmdReadonly(e: *Editor) void {
     const buffer_state = e.getCurrentBuffer();
     buffer_state.file.readonly = !buffer_state.file.readonly;
     if (buffer_state.file.readonly) {
-        e.getCurrentView().setError("[RO] Read-only enabled");
+        e.getCurrentView().setError(config.Messages.MX_READONLY_ENABLED);
     } else {
-        e.getCurrentView().setError("Read-only disabled");
+        e.getCurrentView().setError(config.Messages.MX_READONLY_DISABLED);
     }
 }
 
 /// exit コマンド: 確認付きで終了
 fn cmdExit(e: *Editor) void {
     e.mode = .exit_confirm;
-    e.getCurrentView().setError("Exit? (y)es (n)o");
+    e.getCurrentView().setError(config.Messages.MX_EXIT_CONFIRM);
 }
 
 /// コマンド名補完

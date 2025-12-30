@@ -14,19 +14,6 @@ const unicode = @import("unicode");
 // 共通ヘルパー関数
 // ========================================
 
-/// テキスト変更後のdirtyマークを適切に設定
-/// 改行を含む場合は現在行以降全体、そうでなければ現在行のみ
-/// 同一バッファを表示している全ウィンドウを更新
-/// 挿入・削除どちらにも使用可能
-fn markDirtyForText(e: *Editor, current_line: usize, text: []const u8) void {
-    const buffer_id = e.getCurrentBuffer().id;
-    if (std.mem.indexOf(u8, text, "\n") != null) {
-        e.markAllViewsDirtyForBuffer(buffer_id, current_line, null);
-    } else {
-        e.markAllViewsDirtyForBuffer(buffer_id, current_line, current_line);
-    }
-}
-
 /// 範囲削除の共通処理
 /// readonly check、extract、delete、record、modified、dirty markを一括処理
 /// 戻り値: 削除したテキスト（呼び出し側でfree必要）、またはnull（削除なし/readonly）
@@ -48,24 +35,12 @@ fn deleteRangeCommon(e: *Editor, start: usize, len: usize, cursor_pos_for_undo: 
 
     buffer_state.editing_ctx.modified = true;
     // 削除開始行からdirtyマークを設定（カーソル位置ではなく実際の編集位置を使用）
-    markDirtyForText(e, start_line, deleted);
+    e.markCurrentBufferDirtyForText(start_line, deleted);
 
     // カーソル位置キャッシュを無効化（削除後はposが変わる）
     e.getCurrentView().invalidateCursorPosCache();
 
     return deleted;
-}
-
-/// 編集後のdirtyマーク（同一バッファを表示している全ウィンドウを更新）
-fn markDirtyAll(e: *Editor, start_line: usize, end_line: ?usize) void {
-    const buffer_id = e.getCurrentBuffer().id;
-    e.markAllViewsDirtyForBuffer(buffer_id, start_line, end_line);
-}
-
-/// 全画面再描画（同一バッファを表示している全ウィンドウを更新）
-fn markFullRedrawAll(e: *Editor) void {
-    const buffer_id = e.getCurrentBuffer().id;
-    e.markAllViewsFullRedrawForBuffer(buffer_id);
 }
 
 /// 選択範囲から行範囲を計算（indentRegion/unindentRegion共通）
@@ -229,7 +204,7 @@ pub fn undo(e: *Editor) !void {
     // キャッシュを無効化（バッファ内容が変更される）
     e.getCurrentView().invalidateCursorPosCache();
 
-    markFullRedrawAll(e);
+    e.markCurrentBufferFullRedraw();
     e.restoreCursorPos(result.?.cursor_pos);
 }
 
@@ -246,7 +221,7 @@ pub fn redo(e: *Editor) !void {
     // キャッシュを無効化（バッファ内容が変更される）
     e.getCurrentView().invalidateCursorPosCache();
 
-    markFullRedrawAll(e);
+    e.markCurrentBufferFullRedraw();
     e.restoreCursorPos(result.?.cursor_pos);
 }
 
@@ -278,7 +253,7 @@ pub fn yank(e: *Editor) !void {
 
     e.setCursorToPos(pos + text.len);
 
-    markDirtyForText(e, current_line, text);
+    e.markCurrentBufferDirtyForText(current_line, text);
 
     e.getCurrentView().setError(config.Messages.YANKED_TEXT);
 }
@@ -387,7 +362,7 @@ pub fn joinLine(e: *Editor) !void {
 
         buffer_state.editing_ctx.modified = true;
         // joinLineは行数が減るため全画面再描画が必要
-        markFullRedrawAll(e);
+        e.markCurrentBufferFullRedraw();
 
         e.setCursorToPos(delete_start);
 
@@ -467,7 +442,7 @@ pub fn toggleComment(e: *Editor) !void {
     }
 
     buffer_state.editing_ctx.modified = true;
-    markDirtyAll(e, current_line, current_line);
+    e.markCurrentBufferDirty(current_line, current_line);
 
     // 選択範囲は維持（連続操作のため）
 }
@@ -507,7 +482,7 @@ pub fn moveLineUp(e: *Editor) !void {
 
     buffer_state.editing_ctx.modified = true;
     // moveLineUpは行の入れ替えのため全画面再描画が必要
-    markFullRedrawAll(e);
+    e.markCurrentBufferFullRedraw();
 
     view.moveCursorUp();
 }
@@ -549,7 +524,7 @@ pub fn moveLineDown(e: *Editor) !void {
 
     buffer_state.editing_ctx.modified = true;
     // moveLineDownは行の入れ替えのため全画面再描画が必要
-    markFullRedrawAll(e);
+    e.markCurrentBufferFullRedraw();
 
     view.moveCursorDown();
 }
@@ -679,7 +654,7 @@ pub fn duplicateLine(e: *Editor) !void {
 
     buffer_state.editing_ctx.modified = true;
     // duplicateLineは行数が増えるため全画面再描画が必要
-    markFullRedrawAll(e);
+    e.markCurrentBufferFullRedraw();
 
     // カーソルを複製した行に移動
     view.moveCursorDown();
@@ -715,7 +690,7 @@ pub fn indentRegion(e: *Editor) !void {
     }
 
     buffer_state.editing_ctx.modified = true;
-    markDirtyAll(e, start_line, end_line);
+    e.markCurrentBufferDirty(start_line, end_line);
 
     // インデント後は選択範囲をクリア（バイト位置がずれるため）
     e.getCurrentWindow().mark_pos = null;
@@ -792,7 +767,7 @@ pub fn unindentRegion(e: *Editor) !void {
 
     if (any_modified) {
         buffer_state.editing_ctx.modified = true;
-        markDirtyAll(e, start_line, end_line);
+        e.markCurrentBufferDirty(start_line, end_line);
     }
 
     // アンインデント後は選択範囲をクリア（バイト位置がずれるため）

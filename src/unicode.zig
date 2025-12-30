@@ -569,3 +569,41 @@ pub fn stringDisplayWidth(str: []const u8) usize {
     }
     return width;
 }
+
+/// 前のグラフェムクラスタの開始位置を見つける
+/// ZWJ絵文字やスキントーン修飾子を含む複合文字を正しく扱う
+/// 用途: バックスペース、左カーソル移動
+pub fn findPrevGraphemeStart(text: []const u8, pos: usize) usize {
+    if (pos == 0) return 0;
+    const target = @min(pos, text.len);
+
+    // 先頭から順にグラフェムクラスタを列挙し、
+    // target直前の境界を見つける
+    var last_boundary: usize = 0;
+    var current_pos: usize = 0;
+
+    while (current_pos < target) {
+        const cluster = nextGraphemeCluster(text[current_pos..]) orelse break;
+        // 防御的チェック: byte_len == 0 の場合は無限ループを防ぐ
+        if (cluster.byte_len == 0) break;
+        const next_pos = current_pos + cluster.byte_len;
+
+        if (next_pos >= target) {
+            // このクラスタがtargetを含むか超える
+            return current_pos;
+        }
+
+        last_boundary = next_pos;
+        current_pos = next_pos;
+    }
+
+    return last_boundary;
+}
+
+/// 次のグラフェムクラスタの終端位置を見つける
+/// 用途: デリート、右カーソル移動
+pub fn findNextGraphemeEnd(text: []const u8, pos: usize) usize {
+    if (pos >= text.len) return text.len;
+    const cluster = nextGraphemeCluster(text[pos..]) orelse return text.len;
+    return @min(pos + cluster.byte_len, text.len);
+}

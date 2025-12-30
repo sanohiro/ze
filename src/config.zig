@@ -246,4 +246,23 @@ pub const Messages = struct {
     // === キープレフィックス ===
     pub const KEY_PREFIX_CX = "C-x-";
     pub const KEY_PREFIX_CXR = "C-x r ";
+
+    // === M-xコマンドメッセージ ===
+    pub const MX_COMMANDS_HELP = "Commands: line ln tab indent mode revert key ro exit ?";
+    pub const MX_LINE_NUMBERS_ON = "Line numbers: on";
+    pub const MX_LINE_NUMBERS_OFF = "Line numbers: off";
+    pub const MX_INVALID_LINE_NUMBER = "Invalid line number";
+    pub const MX_LINE_MUST_BE_GE1 = "Line number must be >= 1";
+    pub const MX_INVALID_TAB_WIDTH = "Invalid tab width";
+    pub const MX_TAB_WIDTH_RANGE = "Tab width must be 1-16";
+    pub const MX_INDENT_SPACE = "indent: space";
+    pub const MX_INDENT_TAB = "indent: tab";
+    pub const MX_INDENT_USAGE = "Usage: indent space|tab";
+    pub const MX_NO_FILE_TO_REVERT = "No file to revert";
+    pub const MX_BUFFER_MODIFIED = "Buffer modified. Save first or use C-x k";
+    pub const MX_REVERTED = "Reverted";
+    pub const MX_READONLY_ENABLED = "[RO] Read-only enabled";
+    pub const MX_READONLY_DISABLED = "Read-only disabled";
+    pub const MX_KEY_DESCRIBE_PROMPT = "Press key: ";
+    pub const MX_EXIT_CONFIRM = "Exit? (y)es (n)o";
 };

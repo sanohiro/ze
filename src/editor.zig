@@ -430,6 +430,29 @@ pub const Editor = struct {
         }
     }
 
+    /// 現在のバッファの指定範囲をdirtyにマーク（現在のバッファIDを自動取得）
+    pub fn markCurrentBufferDirty(self: *Editor, start_line: usize, end_line: ?usize) void {
+        const buffer_id = self.getCurrentBuffer().id;
+        self.markAllViewsDirtyForBuffer(buffer_id, start_line, end_line);
+    }
+
+    /// テキスト変更後のdirtyマークを適切に設定
+    /// 改行を含む場合は現在行以降全体、そうでなければ現在行のみ
+    pub fn markCurrentBufferDirtyForText(self: *Editor, current_line: usize, text: []const u8) void {
+        const buffer_id = self.getCurrentBuffer().id;
+        if (std.mem.indexOf(u8, text, "\n") != null) {
+            self.markAllViewsDirtyForBuffer(buffer_id, current_line, null);
+        } else {
+            self.markAllViewsDirtyForBuffer(buffer_id, current_line, current_line);
+        }
+    }
+
+    /// 現在のバッファの全画面再描画をマーク
+    pub fn markCurrentBufferFullRedraw(self: *Editor) void {
+        const buffer_id = self.getCurrentBuffer().id;
+        self.markAllViewsFullRedrawForBuffer(buffer_id);
+    }
+
     /// 指定バッファを表示している全ウィンドウをdirtyにマーク（現在のビューを除く）
     /// 文字入力時に現在のビューのキャッシュを保持したまま他のビューを更新するために使用
     pub fn markAllViewsDirtyForBufferExceptCurrent(self: *Editor, buffer_id: usize, start_line: usize, end_line: ?usize) void {

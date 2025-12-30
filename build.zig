@@ -254,7 +254,7 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    // commands/mx <- buffer, syntax
+    // commands/mx <- buffer, syntax, config
     const mx_cmd_mod = b.addModule("commands_mx", .{
         .root_source_file = b.path("src/commands/mx.zig"),
         .target = target,
@@ -262,6 +262,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "buffer", .module = buffer_mod },
             .{ .name = "syntax", .module = syntax_mod },
+            .{ .name = "config", .module = config_mod },
         },
     });
 

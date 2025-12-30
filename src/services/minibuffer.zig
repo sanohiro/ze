@@ -99,7 +99,7 @@ pub const Minibuffer = struct {
         self.normalizeCursor();
         if (self.cursor == 0) return; // 調整後の再チェック
 
-        const prev_pos = findPrevGraphemeStart(self.buffer.items, self.cursor);
+        const prev_pos = unicode.findPrevGraphemeStart(self.buffer.items, self.cursor);
         const delete_len = self.cursor - prev_pos;
 
         const items = self.buffer.items;
@@ -112,7 +112,7 @@ pub const Minibuffer = struct {
     pub fn delete(self: *Self) void {
         if (self.cursor >= self.buffer.items.len) return;
 
-        const next_pos = findNextGraphemeEnd(self.buffer.items, self.cursor);
+        const next_pos = unicode.findNextGraphemeEnd(self.buffer.items, self.cursor);
         const delete_len = next_pos - self.cursor;
 
         const items = self.buffer.items;
@@ -128,13 +128,13 @@ pub const Minibuffer = struct {
             self.cursor = self.buffer.items.len;
             return;
         }
-        self.cursor = findPrevGraphemeStart(self.buffer.items, self.cursor);
+        self.cursor = unicode.findPrevGraphemeStart(self.buffer.items, self.cursor);
     }
 
     /// カーソルを1文字右に移動
     pub fn moveRight(self: *Self) void {
         if (self.cursor >= self.buffer.items.len) return;
-        self.cursor = findNextGraphemeEnd(self.buffer.items, self.cursor);
+        self.cursor = unicode.findNextGraphemeEnd(self.buffer.items, self.cursor);
     }
 
     /// カーソルを先頭に移動
@@ -157,13 +157,13 @@ pub const Minibuffer = struct {
 
         // 空白をスキップ
         while (pos > 0) {
-            const prev = findPrevGraphemeStart(items, pos);
+            const prev = unicode.findPrevGraphemeStart(items, pos);
             if (!isWhitespaceAt(items, prev)) break;
             pos = prev;
         }
         // 単語文字をスキップ
         while (pos > 0) {
-            const prev = findPrevGraphemeStart(items, pos);
+            const prev = unicode.findPrevGraphemeStart(items, pos);
             if (isWhitespaceAt(items, prev)) break;
             pos = prev;
         }
@@ -179,12 +179,12 @@ pub const Minibuffer = struct {
         // 単語文字をスキップ
         while (pos < items.len) {
             if (isWhitespaceAt(items, pos)) break;
-            pos = findNextGraphemeEnd(items, pos);
+            pos = unicode.findNextGraphemeEnd(items, pos);
         }
         // 空白をスキップ
         while (pos < items.len) {
             if (!isWhitespaceAt(items, pos)) break;
-            pos = findNextGraphemeEnd(items, pos);
+            pos = unicode.findNextGraphemeEnd(items, pos);
         }
         self.cursor = pos;
     }
@@ -214,12 +214,12 @@ pub const Minibuffer = struct {
         // 単語文字をスキップ
         while (end_pos < items.len) {
             if (isWhitespaceAt(items, end_pos)) break;
-            end_pos = findNextGraphemeEnd(items, end_pos);
+            end_pos = unicode.findNextGraphemeEnd(items, end_pos);
         }
         // 空白をスキップ
         while (end_pos < items.len) {
             if (!isWhitespaceAt(items, end_pos)) break;
-            end_pos = findNextGraphemeEnd(items, end_pos);
+            end_pos = unicode.findNextGraphemeEnd(items, end_pos);
         }
 
         const delete_len = end_pos - start_pos;
@@ -252,42 +252,6 @@ pub const Minibuffer = struct {
     // ========================================
     // ヘルパー関数
     // ========================================
-
-    /// 前のグラフェムクラスタの開始位置を見つける
-    /// ZWJ絵文字やスキントーン修飾子を含む複合文字を正しく扱う
-    fn findPrevGraphemeStart(text: []const u8, pos: usize) usize {
-        if (pos == 0) return 0;
-        const target = @min(pos, text.len);
-
-        // 先頭から順にグラフェムクラスタを列挙し、
-        // target直前の境界を見つける
-        var last_boundary: usize = 0;
-        var current_pos: usize = 0;
-
-        while (current_pos < target) {
-            const cluster = unicode.nextGraphemeCluster(text[current_pos..]) orelse break;
-            // 防御的チェック: byte_len == 0 の場合は無限ループを防ぐ
-            if (cluster.byte_len == 0) break;
-            const next_pos = current_pos + cluster.byte_len;
-
-            if (next_pos >= target) {
-                // このクラスタがtargetを含むか超える
-                return current_pos;
-            }
-
-            last_boundary = next_pos;
-            current_pos = next_pos;
-        }
-
-        return last_boundary;
-    }
-
-    /// 次のグラフェムクラスタの終端位置を見つける
-    fn findNextGraphemeEnd(text: []const u8, pos: usize) usize {
-        if (pos >= text.len) return text.len;
-        const cluster = unicode.nextGraphemeCluster(text[pos..]) orelse return text.len;
-        return @min(pos + cluster.byte_len, text.len);
-    }
 
     fn isWhitespaceAt(text: []const u8, pos: usize) bool {
         if (pos >= text.len) return false;
