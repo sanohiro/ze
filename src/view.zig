@@ -697,6 +697,13 @@ pub const View = struct {
             // 改行を含む変更の場合は全キャッシュを無効化
             self.invalidateLineWidthCache();
         }
+
+        // カーソル位置キャッシュの無効化
+        // バッファ内容が変わったら、カーソルのバイトオフセットも変わる可能性がある
+        // 変更がカーソル行以前なら確実に無効、以降でも保守的に無効化する
+        if (start_line <= self.top_line + self.cursor_y) {
+            self.invalidateCursorPosCache();
+        }
     }
 
     pub fn markFullRedraw(self: *View) void {
@@ -711,7 +718,8 @@ pub const View = struct {
         }
         self.prev_screen.clearRetainingCapacity();
 
-        // 行幅キャッシュも無効化
+        // 全キャッシュを無効化（バッファ内容が大きく変わった可能性）
+        self.invalidateCursorPosCache();
         self.invalidateLineWidthCache();
     }
 
