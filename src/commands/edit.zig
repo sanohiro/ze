@@ -201,9 +201,8 @@ pub fn undo(e: *Editor) !void {
     const result = try buffer_state.editing_ctx.undoWithCursor();
     if (result == null) return;
 
-    // キャッシュを無効化（バッファ内容が変更される）
-    e.getCurrentView().invalidateCursorPosCache();
-
+    // markCurrentBufferFullRedraw → markFullRedraw でキャッシュ無効化
+    // restoreCursorPos → setCursorToPos でキャッシュ再設定
     e.markCurrentBufferFullRedraw();
     e.restoreCursorPos(result.?.cursor_pos);
 }
@@ -218,9 +217,8 @@ pub fn redo(e: *Editor) !void {
     const result = try buffer_state.editing_ctx.redoWithCursor();
     if (result == null) return;
 
-    // キャッシュを無効化（バッファ内容が変更される）
-    e.getCurrentView().invalidateCursorPosCache();
-
+    // markCurrentBufferFullRedraw → markFullRedraw でキャッシュ無効化
+    // restoreCursorPos → setCursorToPos でキャッシュ再設定
     e.markCurrentBufferFullRedraw();
     e.restoreCursorPos(result.?.cursor_pos);
 }
@@ -248,9 +246,7 @@ pub fn yank(e: *Editor) !void {
 
     buffer_state.editing_ctx.modified = true;
 
-    // キャッシュを無効化（setCursorToPosで再計算される）
-    e.getCurrentView().invalidateCursorPosCache();
-
+    // setCursorToPosでキャッシュが再設定されるため、事前の無効化は不要
     e.setCursorToPos(pos + text.len);
 
     e.markCurrentBufferDirtyForText(current_line, text);
@@ -447,86 +443,63 @@ pub fn toggleComment(e: *Editor) !void {
     // 選択範囲は維持（連続操作のため）
 }
 
-/// Alt+Up: 行を上に移動
-pub fn moveLineUp(e: *Editor) !void {
+/// 行を上下に移動する共通処理
+fn moveLineImpl(e: *Editor, direction: enum { up, down }) !void {
     if (e.isReadOnly()) return;
     const buffer_state = e.getCurrentBuffer();
     const buffer = e.getCurrentBufferContent();
     const view = e.getCurrentView();
     const current_line = e.getCurrentLine();
 
-    if (current_line == 0) {
-        view.setError(config.Messages.BEGINNING_OF_BUFFER);
-        return;
+    // 境界チェック
+    if (direction == .up) {
+        if (current_line == 0) {
+            view.setError(config.Messages.BEGINNING_OF_BUFFER);
+            return;
+        }
+    } else {
+        if (current_line + 1 >= buffer.lineCount()) {
+            view.setError(config.Messages.END_OF_BUFFER);
+            return;
+        }
     }
 
     const line_start = buffer.getLineStart(current_line) orelse return;
     const line_end = buffer.findNextLineFromPos(line_start);
-
-    const prev_line_start = buffer.getLineStart(current_line - 1) orelse return;
-
     const line_len = line_end - line_start;
+
+    // 移動先の位置を計算
+    const insert_pos = if (direction == .up)
+        buffer.getLineStart(current_line - 1) orelse return
+    else
+        buffer.findNextLineFromPos(line_end) - line_len;
+
     const line_content = try e.extractText(line_start, line_len);
     defer e.allocator.free(line_content);
 
     try buffer.delete(line_start, line_len);
-    // 削除後のinsertSlice失敗時にrollback
     errdefer buffer.insertSlice(line_start, line_content) catch {};
 
-    try buffer.insertSlice(prev_line_start, line_content);
-    // insert後のrecordDelete失敗時にrollback
-    errdefer buffer.delete(prev_line_start, line_len) catch {};
+    try buffer.insertSlice(insert_pos, line_content);
+    errdefer buffer.delete(insert_pos, line_len) catch {};
 
     try e.recordDelete(line_start, line_content, view.getCursorBufferPos());
-    try e.recordInsert(prev_line_start, line_content, view.getCursorBufferPos());
+    try e.recordInsert(insert_pos, line_content, view.getCursorBufferPos());
 
     buffer_state.editing_ctx.modified = true;
-    // moveLineUpは行の入れ替えのため全画面再描画が必要
     e.markCurrentBufferFullRedraw();
 
-    view.moveCursorUp();
+    if (direction == .up) view.moveCursorUp() else view.moveCursorDown();
+}
+
+/// Alt+Up: 行を上に移動
+pub fn moveLineUp(e: *Editor) !void {
+    try moveLineImpl(e, .up);
 }
 
 /// Alt+Down: 行を下に移動
 pub fn moveLineDown(e: *Editor) !void {
-    if (e.isReadOnly()) return;
-    const buffer_state = e.getCurrentBuffer();
-    const buffer = e.getCurrentBufferContent();
-    const view = e.getCurrentView();
-    const current_line = e.getCurrentLine();
-    const total_lines = buffer.lineCount();
-
-    if (current_line + 1 >= total_lines) {
-        view.setError(config.Messages.END_OF_BUFFER);
-        return;
-    }
-
-    const line_start = buffer.getLineStart(current_line) orelse return;
-    const line_end = buffer.findNextLineFromPos(line_start);
-
-    const next_line_end = buffer.findNextLineFromPos(line_end);
-
-    const line_len = line_end - line_start;
-    const line_content = try e.extractText(line_start, line_len);
-    defer e.allocator.free(line_content);
-
-    try buffer.delete(line_start, line_len);
-    // 削除後のinsertSlice失敗時にrollback
-    errdefer buffer.insertSlice(line_start, line_content) catch {};
-
-    const new_insert_pos = next_line_end - line_len;
-    try buffer.insertSlice(new_insert_pos, line_content);
-    // insert後のrecordDelete失敗時にrollback
-    errdefer buffer.delete(new_insert_pos, line_len) catch {};
-
-    try e.recordDelete(line_start, line_content, view.getCursorBufferPos());
-    try e.recordInsert(new_insert_pos, line_content, view.getCursorBufferPos());
-
-    buffer_state.editing_ctx.modified = true;
-    // moveLineDownは行の入れ替えのため全画面再描画が必要
-    e.markCurrentBufferFullRedraw();
-
-    view.moveCursorDown();
+    try moveLineImpl(e, .down);
 }
 
 // ========================================

@@ -186,8 +186,8 @@ test "BufferState - buffer() shorthand" {
 
     const buf_state = try bm.createBuffer();
 
-    // buffer()メソッドでもアクセスできる
-    const buffer = buf_state.buffer();
+    // getBuffer()メソッドでアクセスできる
+    const buffer = buf_state.getBuffer();
     try testing.expect(buffer == buf_state.editing_ctx.buffer);
 }
 

@@ -22,7 +22,7 @@ pub const Minibuffer = struct {
     allocator: std.mem.Allocator,
     buffer: std.ArrayListUnmanaged(u8),
     cursor: usize,
-    prompt: [256]u8,
+    prompt: [config.Minibuffer.MAX_PROMPT_LEN]u8,
     prompt_len: usize,
 
     const Self = @This();

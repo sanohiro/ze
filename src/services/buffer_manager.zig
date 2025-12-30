@@ -97,12 +97,6 @@ pub const BufferState = struct {
         return self.editing_ctx.buffer;
     }
 
-    /// 従来のコードとの互換性のためにbufferフィールドとしてアクセス可能にする
-    /// 注意: これは段階的移行のためのブリッジであり、将来的には削除される
-    pub fn buffer(self: *BufferState) *Buffer {
-        return self.editing_ctx.buffer;
-    }
-
     /// 変更フラグ（EditingContext経由）
     pub fn isModified(self: *const BufferState) bool {
         return self.editing_ctx.modified;

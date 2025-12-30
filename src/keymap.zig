@@ -167,7 +167,7 @@ const default_alt_bindings = [_]AltBinding{
     // ページスクロール（上）
     .{ .key = 'v', .handler = movement.pageUp },
     // 選択しながらページスクロール（上）(Alt+Shift+v = M-V)
-    .{ .key = 'V', .handler = movement.selectPageUpAlt },
+    .{ .key = 'V', .handler = movement.selectPageUp },
 };
 
 /// デフォルト特殊キーバインド（comptime配列）

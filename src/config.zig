@@ -1,6 +1,8 @@
 // zeエディタの設定定数
 // すべてのマジックナンバーをここに集約
 
+const std = @import("std");
+
 /// ターミナル関連の定数
 pub const Terminal = struct {
     /// デフォルトの幅（cols）
@@ -14,6 +16,9 @@ pub const Terminal = struct {
 
     /// カーソル移動のエスケープシーケンスバッファサイズ
     pub const CURSOR_BUF_SIZE: usize = 32;
+
+    /// 出力バッファの初期容量
+    pub const OUTPUT_BUFFER_CAPACITY: usize = 8192;
 };
 
 /// ANSIエスケープシーケンス
@@ -35,12 +40,6 @@ pub const ANSI = struct {
     pub const ENTER_ALT_SCREEN = "\x1b[?1049h";
     /// 代替画面バッファを無効化（元の画面に戻る）
     pub const EXIT_ALT_SCREEN = "\x1b[?1049l";
-
-    // === マウスイベント ===
-    /// マウスボタンイベントを有効化（スクロールを含む）
-    pub const ENABLE_MOUSE = "\x1b[?1000h";
-    /// マウスボタンイベントを無効化
-    pub const DISABLE_MOUSE = "\x1b[?1000l";
 
     // === ブラケットペーストモード ===
     /// ブラケットペーストモードを有効化
@@ -155,9 +154,9 @@ pub const Editor = struct {
     /// Undo/Redoスタックの最大エントリ数
     pub const MAX_UNDO_ENTRIES: usize = 1000;
 
-    /// Undoコアレッシングのタイムアウト（ミリ秒）
-    /// この時間以上間隔があいた操作は別のundoグループになる
-    pub const UNDO_COALESCE_TIMEOUT_MS: u64 = 500;
+    /// Undoグループ化のタイムアウト（ナノ秒）
+    /// この時間以内の連続した同種の操作は1つのundoグループにまとめられる
+    pub const UNDO_GROUP_TIMEOUT_NS: i128 = 300 * std.time.ns_per_ms;
 
     /// スクロールマージン（上下の余白行数）
     pub const SCROLL_MARGIN: usize = 3;
@@ -191,6 +190,33 @@ pub const Buffer = struct {
 
     /// 初期add_bufferのキャパシティ
     pub const INITIAL_ADD_CAPACITY: usize = 1024;
+
+    /// searchBackward用スタックバッファの最大piece数
+    pub const MAX_PIECES_STACK_BUFFER: usize = 256;
+};
+
+/// シェル関連の定数
+pub const Shell = struct {
+    /// 読み取りバッファサイズ
+    pub const READ_BUFFER_SIZE: usize = 16 * 1024;
+
+    /// 最大出力サイズ（10MB）
+    pub const MAX_OUTPUT_SIZE: usize = 10 * 1024 * 1024;
+
+    /// 大きなチャンクサイズ（64KB）
+    pub const LARGE_CHUNK_SIZE: usize = 64 * 1024;
+};
+
+/// 正規表現関連の定数
+pub const Regex = struct {
+    /// 最大バックトラック位置数（病的パターンでの指数時間防止）
+    pub const MAX_POSITIONS: usize = 10000;
+};
+
+/// ミニバッファ関連の定数
+pub const Minibuffer = struct {
+    /// プロンプトの最大長
+    pub const MAX_PROMPT_LEN: usize = 256;
 };
 
 /// ユーザー向けメッセージ（一元管理）
@@ -217,7 +243,6 @@ pub const Messages = struct {
     pub const CONFIRM_YES_NO_CANCEL = "Please answer: (y)es, (n)o, (c)ancel";
 
     // === 状態メッセージ ===
-    pub const RUNNING_SHELL = "Running... (C-g to cancel)";
     pub const SEARCH_WRAPPED = "Wrapped";
     pub const SEARCH_NOT_FOUND = "Not found";
 

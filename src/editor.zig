@@ -29,7 +29,6 @@ const std = @import("std");
 const builtin = @import("builtin");
 const buffer_mod = @import("buffer");
 const Buffer = buffer_mod.Buffer;
-const Piece = buffer_mod.Piece;
 const PieceIterator = buffer_mod.PieceIterator;
 const View = @import("view").View;
 const Terminal = @import("terminal").Terminal;
@@ -1830,10 +1829,30 @@ pub const Editor = struct {
             }
         }
 
-        // 描画が不要でもカーソル位置は更新する
+        // 描画が不要でもカーソル位置とステータスバーは更新する
         if (!needs_render) {
-            // アクティブウィンドウのカーソル位置を更新
-            const window = self.window_manager.getCurrentWindowConst();
+            const window = self.window_manager.getCurrentWindow();
+            const buffer_state = self.findBufferById(window.buffer_id) orelse {
+                const pos = window.view.getCursorScreenPosition(window.x, window.y, window.width);
+                try self.terminal.moveCursor(pos.row, pos.col);
+                try self.terminal.flush();
+                return;
+            };
+            const buffer = buffer_state.editing_ctx.buffer;
+            // ステータスバーのみ更新（カーソル位置を表示するため）
+            try window.view.renderStatusBarAt(
+                &self.terminal,
+                window.x,
+                window.y + window.height - 1,
+                window.width,
+                buffer_state.editing_ctx.modified,
+                buffer_state.file.readonly,
+                self.overwrite_mode,
+                buffer.detected_line_ending,
+                buffer.detected_encoding,
+                buffer_state.file.filename,
+            );
+            // カーソル位置を更新
             const pos = window.view.getCursorScreenPosition(window.x, window.y, window.width);
             try self.terminal.moveCursor(pos.row, pos.col);
             try self.terminal.flush();
@@ -3478,10 +3497,7 @@ pub const Editor = struct {
         try self.recordInsert(pos, content, pos);
         buffer_state.editing_ctx.modified = true;
 
-        // キャッシュを無効化（setCursorToPosで再計算される）
-        self.getCurrentView().invalidateCursorPosCache();
-
-        // カーソル位置を挿入後の位置に移動（yank と同様）
+        // カーソル位置を挿入後の位置に移動（setCursorToPosでキャッシュ再設定）
         self.setCursorToPos(pos + content.len);
 
         // 全画面再描画（複数行にわたる可能性があるため）

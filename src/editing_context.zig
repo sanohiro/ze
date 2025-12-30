@@ -23,6 +23,7 @@ const buffer_mod = @import("buffer");
 const Buffer = buffer_mod.Buffer;
 const PieceIterator = buffer_mod.PieceIterator;
 const unicode = @import("unicode");
+const config = @import("config");
 
 /// 変更の種類
 pub const ChangeType = enum {
@@ -64,6 +65,26 @@ const UndoEntry = struct {
     fn freeData(self: *const UndoEntry, allocator: std.mem.Allocator) void {
         if (self.data_capacity > 0) {
             allocator.free(self.data.ptr[0..self.data_capacity]);
+        }
+    }
+
+    /// データ末尾に追加（償却O(1)）
+    fn appendData(self: *UndoEntry, allocator: std.mem.Allocator, text: []const u8) !void {
+        const new_len = self.data.len + text.len;
+        if (new_len <= self.data_capacity) {
+            // 容量内に収まる場合は追記のみ（再アロケーションなし）
+            const full_slice = self.data.ptr[0..self.data_capacity];
+            @memcpy(full_slice[self.data.len..][0..text.len], text);
+            self.data = full_slice[0..new_len];
+        } else {
+            // 容量不足: 2倍に拡張（償却O(1)を実現）
+            const new_capacity = @max(new_len * 2, 64);
+            const new_data = try allocator.alloc(u8, new_capacity);
+            @memcpy(new_data[0..self.data.len], self.data);
+            @memcpy(new_data[self.data.len..][0..text.len], text);
+            self.freeData(allocator);
+            self.data = new_data[0..new_len];
+            self.data_capacity = new_capacity;
         }
     }
 };
@@ -122,13 +143,20 @@ pub const EditingContext = struct {
     // 2. 一定時間（300ms）経過後も新しいグループを開始
     last_record_time: i128 = 0, // 直前のUndo記録時刻（ナノ秒）
 
-    /// Undoグループ分けのタイムアウト（300ms）
-    const UNDO_GROUP_TIMEOUT_NS: i128 = 300 * std.time.ns_per_ms;
 
     const ListenerEntry = struct {
         callback: ChangeListener,
         context: ?*anyopaque,
     };
+
+    /// セーブポイントと比較してmodifiedフラグを更新
+    fn updateModifiedFlag(self: *EditingContext) void {
+        if (self.savepoint) |sp| {
+            self.modified = (self.undo_stack.items.len != sp);
+        } else {
+            self.modified = (self.undo_stack.items.len != 0);
+        }
+    }
 
     /// 新規バッファで初期化
     pub fn init(allocator: std.mem.Allocator) !*EditingContext {
@@ -187,23 +215,8 @@ pub const EditingContext = struct {
     }
 
     // ========================================
-    // リスナー管理
+    // 変更通知
     // ========================================
-
-    pub fn addListener(self: *EditingContext, callback: ChangeListener, context: ?*anyopaque) !void {
-        try self.listeners.append(self.allocator, .{ .callback = callback, .context = context });
-    }
-
-    pub fn removeListener(self: *EditingContext, callback: ChangeListener) void {
-        var i: usize = 0;
-        while (i < self.listeners.items.len) {
-            if (self.listeners.items[i].callback == callback) {
-                _ = self.listeners.orderedRemove(i);
-            } else {
-                i += 1;
-            }
-        }
-    }
 
     fn notifyChange(self: *EditingContext, event: ChangeEvent) void {
         for (self.listeners.items) |entry| {
@@ -256,11 +269,7 @@ pub const EditingContext = struct {
     }
 
     pub fn setMark(self: *EditingContext) void {
-        if (self.mark != null) {
-            self.mark = null;
-        } else {
-            self.mark = self.cursor;
-        }
+        self.mark = if (self.mark != null) null else self.cursor;
         self.notifyChange(.{
             .change_type = .selection_change,
             .position = self.cursor,
@@ -271,16 +280,15 @@ pub const EditingContext = struct {
     }
 
     pub fn clearMark(self: *EditingContext) void {
-        if (self.mark != null) {
-            self.mark = null;
-            self.notifyChange(.{
-                .change_type = .selection_change,
-                .position = self.cursor,
-                .length = 0,
-                .line = self.getCursorLine(),
-                .line_end = null,
-            });
-        }
+        if (self.mark == null) return;
+        self.mark = null;
+        self.notifyChange(.{
+            .change_type = .selection_change,
+            .position = self.cursor,
+            .length = 0,
+            .line = self.getCursorLine(),
+            .line_end = null,
+        });
     }
 
     // ========================================
@@ -831,11 +839,7 @@ pub const EditingContext = struct {
         self.cursor = first_cursor;
 
         // セーブポイントに戻ったらmodifiedをfalseに
-        if (self.savepoint) |sp| {
-            self.modified = (self.undo_stack.items.len != sp);
-        } else {
-            self.modified = (self.undo_stack.items.len != 0);
-        }
+        self.updateModifiedFlag();
 
         const line = self.buffer.findLineByPos(last_position);
         self.notifyChange(.{
@@ -896,11 +900,7 @@ pub const EditingContext = struct {
         self.cursor = last_cursor;
 
         // セーブポイントと比較してmodifiedを更新
-        if (self.savepoint) |sp| {
-            self.modified = (self.undo_stack.items.len != sp);
-        } else {
-            self.modified = (self.undo_stack.items.len != 0);
-        }
+        self.updateModifiedFlag();
 
         const line = self.buffer.findLineByPos(last_position);
         self.notifyChange(.{
@@ -968,7 +968,7 @@ pub const EditingContext = struct {
         // 連続した挿入操作をグループ化
         // 条件: 直前の操作も挿入で、位置が連続していて、
         //       タイムアウト内かつ単語境界をまたがない
-        if (self.undo_stack.items.len > 0 and time_elapsed < UNDO_GROUP_TIMEOUT_NS) {
+        if (self.undo_stack.items.len > 0 and time_elapsed < config.Editor.UNDO_GROUP_TIMEOUT_NS) {
             const last = &self.undo_stack.items[self.undo_stack.items.len - 1];
             if (last.op == .insert and last.groupable and
                 last.position + last.data.len == pos and
@@ -1000,23 +1000,7 @@ pub const EditingContext = struct {
                         (last_is_whitespace and new_is_word);
 
                     if (should_merge) {
-                        // 既存のエントリにデータを追加（償却O(1)）
-                        const new_len = last.data.len + text.len;
-                        if (new_len <= last.data_capacity) {
-                            // 容量内に収まる場合は追記のみ（再アロケーションなし）
-                            const full_slice = last.data.ptr[0..last.data_capacity];
-                            @memcpy(full_slice[last.data.len..][0..text.len], text);
-                            last.data = full_slice[0..new_len];
-                        } else {
-                            // 容量不足: 2倍に拡張（償却O(1)を実現）
-                            const new_capacity = @max(new_len * 2, 64);
-                            const new_data = try self.allocator.alloc(u8, new_capacity);
-                            @memcpy(new_data[0..last.data.len], last.data);
-                            @memcpy(new_data[last.data.len..][0..text.len], text);
-                            self.allocator.free(last.data.ptr[0..last.data_capacity]);
-                            last.data = new_data[0..new_len];
-                            last.data_capacity = new_capacity;
-                        }
+                        try last.appendData(self.allocator, text);
                         last.cursor_after = pos + text.len;
                         self.last_record_time = now;
                         return;
@@ -1052,7 +1036,7 @@ pub const EditingContext = struct {
 
         // 連続した削除操作をグループ化
         // 条件: 直前の操作も削除で、位置が連続していて、タイムアウト内
-        if (self.undo_stack.items.len > 0 and time_elapsed < UNDO_GROUP_TIMEOUT_NS) {
+        if (self.undo_stack.items.len > 0 and time_elapsed < config.Editor.UNDO_GROUP_TIMEOUT_NS) {
             const last = &self.undo_stack.items[self.undo_stack.items.len - 1];
             if (last.op == .delete and last.groupable and
                 !containsNewline(text) and !containsNewline(last.data))
@@ -1077,23 +1061,7 @@ pub const EditingContext = struct {
                 }
                 // Delete (C-d)の場合: 削除位置が同じ
                 if (pos == last.position) {
-                    // 末尾に追加（償却O(1)）
-                    const new_len = last.data.len + text.len;
-                    if (new_len <= last.data_capacity) {
-                        // 容量内に収まる場合は追記のみ
-                        const full_slice = last.data.ptr[0..last.data_capacity];
-                        @memcpy(full_slice[last.data.len..][0..text.len], text);
-                        last.data = full_slice[0..new_len];
-                    } else {
-                        // 容量不足: 2倍に拡張
-                        const new_capacity = @max(new_len * 2, 64);
-                        const new_data = try self.allocator.alloc(u8, new_capacity);
-                        @memcpy(new_data[0..last.data.len], last.data);
-                        @memcpy(new_data[last.data.len..][0..text.len], text);
-                        last.freeData(self.allocator);
-                        last.data = new_data[0..new_len];
-                        last.data_capacity = new_capacity;
-                    }
+                    try last.appendData(self.allocator, text);
                     // cursor_before/afterは変わらない
                     self.last_record_time = now;
                     return;
@@ -1193,12 +1161,30 @@ pub const EditingContext = struct {
     }
 
     fn extractText(self: *EditingContext, start: usize, length: usize) ![]const u8 {
-        var result = try self.allocator.alloc(u8, length);
+        // 実際にコピー可能なバイト数を事前に計算
+        const actual_length = @min(length, self.buffer.len() -| start);
+        if (actual_length == 0) {
+            return &[_]u8{};
+        }
+
+        var result = try self.allocator.alloc(u8, actual_length);
+        errdefer self.allocator.free(result);
+
         var iter = PieceIterator.init(self.buffer);
         iter.seek(start);
 
         // copyBytes()でスライス単位コピー（50-100倍高速）
         const copied = iter.copyBytes(result);
-        return result[0..copied];
+
+        // コピー数がアロケーションと一致することを確認
+        // 事前計算しているので通常は一致するはず
+        if (copied != actual_length) {
+            // 一致しない場合は新しくallocしてコピー（freeサイズ不一致を防ぐ）
+            const final = try self.allocator.alloc(u8, copied);
+            @memcpy(final, result[0..copied]);
+            self.allocator.free(result);
+            return final;
+        }
+        return result;
     }
 };

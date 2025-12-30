@@ -523,9 +523,6 @@ pub const Buffer = struct {
     last_access_piece_idx: usize, // 直近アクセスしたPieceのインデックス
     last_access_piece_start: usize, // そのPieceの開始位置
 
-    /// Undoグループのタイムアウト（ナノ秒）
-    /// この時間以上経過すると、連続入力でも新しいPieceを作成
-    const UNDO_GROUP_TIMEOUT_NS: i128 = 300 * std.time.ns_per_ms;
 
     pub fn init(allocator: std.mem.Allocator) !Buffer {
         // 空のArrayListで初期化（遅延アロケーション）
@@ -1164,7 +1161,7 @@ pub const Buffer = struct {
         if (self.last_insert_end) |last_end| {
             const time_elapsed = now - self.last_insert_time;
             if (pos == last_end and
-                time_elapsed < UNDO_GROUP_TIMEOUT_NS and
+                time_elapsed < config.Editor.UNDO_GROUP_TIMEOUT_NS and
                 self.last_insert_piece_idx < self.pieces.items.len)
             {
                 const last_piece = &self.pieces.items[self.last_insert_piece_idx];
@@ -1600,45 +1597,6 @@ pub const Buffer = struct {
         return result;
     }
 
-    /// Undo/Redo用: pieceの配列を複製してスナップショットを作成
-    ///
-    /// 【Piece Tableの利点 - 効率的なUndo/Redo】
-    /// pieceの配列（数十〜数百要素）をコピーするだけでスナップショットが取れる。
-    /// original/add_bufferは共有されるため、メモリ効率が良い。
-    ///
-    /// 例: 100MBのファイルでも、Undo履歴は数KB程度で済む。
-    pub fn clonePieces(self: *const Buffer, allocator: std.mem.Allocator) ![]Piece {
-        return try allocator.dupe(Piece, self.pieces.items);
-    }
-
-    pub fn restorePieces(self: *Buffer, pieces: []const Piece) !void {
-        // 事前にキャパシティを確保（これが失敗しても現在の状態は変わらない）
-        // 既存のキャパシティで足りる場合は何もしない
-        try self.pieces.ensureTotalCapacity(self.allocator, pieces.len);
-
-        // ここからは失敗しない（キャパシティは確保済み）
-        // findPieceAtキャッシュを無効化（Piece配列が完全に置換されるため）
-        self.last_access_piece_idx = 0;
-        self.last_access_piece_start = 0;
-
-        // Piece統合状態をリセット（Undo/Redo後は連続入力とみなさない）
-        self.last_insert_end = null;
-        self.last_insert_piece_idx = 0;
-        self.last_insert_time = 0;
-
-        self.pieces.clearRetainingCapacity();
-        self.pieces.appendSliceAssumeCapacity(pieces);
-
-        // total_lenを再計算（Undo/Redo後の整合性確保）
-        self.total_len = 0;
-        for (self.pieces.items) |piece| {
-            self.total_len += piece.length;
-        }
-
-        // Undo/Redo後は行キャッシュを無効化
-        self.line_index.invalidate();
-    }
-
     // ========================================
     // 検索機能（コピーなし、PieceIterator使用）
     // ========================================
@@ -1799,8 +1757,8 @@ pub const Buffer = struct {
         if (pieces.len == 0) return null;
 
         // 各pieceの終了位置を計算（1回のみ、後続の検索で再利用）
-        var piece_ends: [256]usize = undefined;
-        const use_stack_buf = pieces.len <= 256;
+        var piece_ends: [config.Buffer.MAX_PIECES_STACK_BUFFER]usize = undefined;
+        const use_stack_buf = pieces.len <= config.Buffer.MAX_PIECES_STACK_BUFFER;
 
         if (use_stack_buf) {
             var cumulative: usize = 0;

@@ -311,24 +311,6 @@ pub const SearchService = struct {
         }
     }
 
-    /// リテラル検索（常にリテラルとして処理）
-    /// 注意: 前方検索ではカーソルは既にマッチ終端にあるのでskip_currentでもバイト加算は不要
-    pub fn searchLiteral(self: *Self, content: []const u8, pattern: []const u8, start_pos: usize, forward: bool, skip_current: bool) ?SearchMatch {
-        if (forward) {
-            // 前方検索: カーソル位置から検索（カーソルは既にマッチ終端なのでスキップ不要）
-            return self.searchForward(content, pattern, start_pos);
-        } else {
-            // 後方検索: パターン長分戻して検索
-            const search_from = if (skip_current and start_pos >= pattern.len)
-                start_pos - pattern.len
-            else if (skip_current)
-                0
-            else
-                start_pos;
-            return self.searchBackward(content, pattern, search_from);
-        }
-    }
-
     /// Buffer直接検索（コピーなし、リテラル検索専用）
     /// 呼び出し側が既にリテラル検索であることを確認している前提
     /// 前方検索: カーソルはマッチ終端（skip_currentでもバイト加算は不要）

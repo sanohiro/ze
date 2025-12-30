@@ -615,12 +615,6 @@ pub fn selectBackwardWord(e: *Editor) !void {
     try backwardWord(e);
 }
 
-/// M-V (Alt+Shift+v): 選択しながらページ上に移動
-pub fn selectPageUpAlt(e: *Editor) !void {
-    ensureMark(e);
-    pageScroll(e, .up);
-}
-
 // ========================================
 // ヘルパー関数
 // ========================================

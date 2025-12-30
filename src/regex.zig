@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const unicode = @import("unicode");
+const config = @import("config");
 
 /// 簡易正規表現エンジン
 ///
@@ -600,8 +601,6 @@ pub const Regex = struct {
     /// 繰り返しマッチのバッファ管理（スタック優先、必要時ヒープ移行）
     /// 病的パターン（.*.*.*等）での指数時間を防ぐため、最大位置数を制限
     const PositionCollector = struct {
-        // 最大バックトラック位置数（これを超えるとマッチ失敗扱い）
-        const MAX_POSITIONS: usize = 10000;
 
         stack_buf: [256]usize,
         heap_buf: ?std.ArrayList(usize),
@@ -628,7 +627,7 @@ pub const Regex = struct {
 
         fn append(self: *PositionCollector, pos: usize) bool {
             // 最大位置数制限（病的パターンでの指数時間防止）
-            if (self.len >= MAX_POSITIONS) return false;
+            if (self.len >= config.Regex.MAX_POSITIONS) return false;
 
             if (self.heap_buf) |*h| {
                 h.append(self.allocator, pos) catch return false;

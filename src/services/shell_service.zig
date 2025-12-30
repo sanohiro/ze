@@ -16,9 +16,7 @@
 const std = @import("std");
 const history_mod = @import("history");
 const LazyHistory = history_mod.LazyHistory;
-
-/// I/O読み取りバッファサイズ（16KB = システムコール削減）
-const READ_BUFFER_SIZE: usize = 16 * 1024;
+const config = @import("config");
 
 /// シェルコマンド出力先
 pub const OutputDest = enum {
@@ -82,9 +80,6 @@ pub const ShellService = struct {
 
     const Self = @This();
 
-    /// 出力バッファの上限（OOM防止）
-    const MAX_OUTPUT_SIZE: usize = 10 * 1024 * 1024; // 10MB
-
     /// バッファサイズ制限付きで読み取り（ノンブロッキング対応）
     /// handle_would_block: trueならWouldBlockを特別処理、falseなら全エラーでbreak
     /// 戻り値: trueなら制限に達して切り詰めた
@@ -96,13 +91,13 @@ pub const ShellService = struct {
         handle_would_block: bool,
     ) !bool {
         var truncated = false;
-        while (buffer.items.len < MAX_OUTPUT_SIZE) {
+        while (buffer.items.len < config.Shell.MAX_OUTPUT_SIZE) {
             const bytes_read = file.read(read_buf) catch |err| {
                 if (handle_would_block and err == error.WouldBlock) break;
                 break;
             };
             if (bytes_read == 0) break;
-            const available = MAX_OUTPUT_SIZE - buffer.items.len;
+            const available = config.Shell.MAX_OUTPUT_SIZE - buffer.items.len;
             const to_append = @min(bytes_read, available);
             if (to_append > 0) {
                 try buffer.appendSlice(allocator, read_buf[0..to_append]);
@@ -113,7 +108,7 @@ pub const ShellService = struct {
             }
         }
         // 上限に達したかチェック
-        if (buffer.items.len >= MAX_OUTPUT_SIZE) {
+        if (buffer.items.len >= config.Shell.MAX_OUTPUT_SIZE) {
             truncated = true;
         }
         return truncated;
@@ -484,7 +479,7 @@ pub const ShellService = struct {
             }
         }
 
-        var read_buf: [READ_BUFFER_SIZE]u8 = undefined;
+        var read_buf: [config.Shell.READ_BUFFER_SIZE]u8 = undefined;
 
         // stdout と stderr を交互に読取（デッドロック防止）
         // 一方のパイプが詰まってもう一方を先に処理する必要がある場合に対応
@@ -495,11 +490,11 @@ pub const ShellService = struct {
 
             // stdout から1チャンク読み取り
             if (state.child.stdout) |stdout_file| {
-                if (state.stdout_buffer.items.len < MAX_OUTPUT_SIZE) {
+                if (state.stdout_buffer.items.len < config.Shell.MAX_OUTPUT_SIZE) {
                     const bytes_read: usize = stdout_file.read(&read_buf) catch 0;
                     if (bytes_read > 0) {
                         any_read = true;
-                        const available = MAX_OUTPUT_SIZE - state.stdout_buffer.items.len;
+                        const available = config.Shell.MAX_OUTPUT_SIZE - state.stdout_buffer.items.len;
                         const to_append = @min(bytes_read, available);
                         if (to_append > 0) {
                             try state.stdout_buffer.appendSlice(self.allocator, read_buf[0..to_append]);
@@ -510,7 +505,7 @@ pub const ShellService = struct {
                     }
                 }
                 // 上限に達したらパイプを閉じる（子プロセスのブロックを防ぐ）
-                if (state.stdout_buffer.items.len >= MAX_OUTPUT_SIZE) {
+                if (state.stdout_buffer.items.len >= config.Shell.MAX_OUTPUT_SIZE) {
                     state.stdout_truncated = true; // 上限到達時も truncated フラグを設定
                     stdout_file.close();
                     state.child.stdout = null;
@@ -519,11 +514,11 @@ pub const ShellService = struct {
 
             // stderr から1チャンク読み取り
             if (state.child.stderr) |stderr_file| {
-                if (state.stderr_buffer.items.len < MAX_OUTPUT_SIZE) {
+                if (state.stderr_buffer.items.len < config.Shell.MAX_OUTPUT_SIZE) {
                     const bytes_read: usize = stderr_file.read(&read_buf) catch 0;
                     if (bytes_read > 0) {
                         any_read = true;
-                        const available = MAX_OUTPUT_SIZE - state.stderr_buffer.items.len;
+                        const available = config.Shell.MAX_OUTPUT_SIZE - state.stderr_buffer.items.len;
                         const to_append = @min(bytes_read, available);
                         if (to_append > 0) {
                             try state.stderr_buffer.appendSlice(self.allocator, read_buf[0..to_append]);
@@ -534,7 +529,7 @@ pub const ShellService = struct {
                     }
                 }
                 // 上限に達したらパイプを閉じる（子プロセスのブロックを防ぐ）
-                if (state.stderr_buffer.items.len >= MAX_OUTPUT_SIZE) {
+                if (state.stderr_buffer.items.len >= config.Shell.MAX_OUTPUT_SIZE) {
                     state.stderr_truncated = true; // 上限到達時も truncated フラグを設定
                     stderr_file.close();
                     state.child.stderr = null;
@@ -554,11 +549,10 @@ pub const ShellService = struct {
                     0;
                 if (remaining > 0) {
                     // 大きなデータでは64KBチャンク、通常は16KBチャンク（システムコール削減）
-                    const large_chunk_size: usize = 64 * 1024;
                     const chunk_size = if (data.len > 1024 * 1024)
-                        @min(remaining, large_chunk_size)
+                        @min(remaining, config.Shell.LARGE_CHUNK_SIZE)
                     else
-                        @min(remaining, READ_BUFFER_SIZE);
+                        @min(remaining, config.Shell.READ_BUFFER_SIZE);
                     const chunk = data[state.stdin_write_pos .. state.stdin_write_pos + chunk_size];
                     const bytes_written = stdin_file.write(chunk) catch |err| switch (err) {
                         error.WouldBlock => 0,
@@ -770,7 +764,7 @@ pub const ShellService = struct {
         const result = std.process.Child.run(.{
             .allocator = self.allocator,
             .argv = &.{ bash_path, "-c", cmd },
-            .max_output_bytes = 64 * 1024, // 64KB上限
+            .max_output_bytes = config.Shell.LARGE_CHUNK_SIZE,
         }) catch return null;
         defer self.allocator.free(result.stdout);
         defer self.allocator.free(result.stderr);

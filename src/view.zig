@@ -758,7 +758,7 @@ pub const View = struct {
 
     /// 再描画が必要かどうか
     pub fn needsRedraw(self: *const View) bool {
-        return self.needs_full_redraw or self.dirty_start != null;
+        return self.needs_full_redraw or self.dirty_start != null or self.scroll_delta != 0;
     }
 
     /// ブロックコメント状態の計算（キャッシュ付き）

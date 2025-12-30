@@ -39,13 +39,14 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // regex <- unicode
+    // regex <- unicode, config
     const regex_mod = b.addModule("regex", .{
         .root_source_file = b.path("src/regex.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "unicode", .module = unicode_mod },
+            .{ .name = "config", .module = config_mod },
         },
     });
 
@@ -121,7 +122,7 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    // editing_context <- buffer, unicode
+    // editing_context <- buffer, unicode, config
     const editing_context_mod = b.addModule("editing_context", .{
         .root_source_file = b.path("src/editing_context.zig"),
         .target = target,
@@ -129,6 +130,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "buffer", .module = buffer_mod },
             .{ .name = "unicode", .module = unicode_mod },
+            .{ .name = "config", .module = config_mod },
         },
     });
 
@@ -156,13 +158,14 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    // services/shell_service <- history
+    // services/shell_service <- history, config
     const shell_service_mod = b.addModule("shell_service", .{
         .root_source_file = b.path("src/services/shell_service.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "history", .module = history_mod },
+            .{ .name = "config", .module = config_mod },
         },
     });
 

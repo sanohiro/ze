@@ -381,11 +381,6 @@ pub fn getCharType(cp: u21) CharType {
     return .other;
 }
 
-/// 空白文字判定
-pub fn isWhitespace(cp: u21) bool {
-    return cp == ' ' or cp == '\t' or cp == '\n' or cp == '\r';
-}
-
 /// 英数字判定（コードポイント用）
 pub inline fn isAlnum(cp: u21) bool {
     return (cp >= 'a' and cp <= 'z') or
