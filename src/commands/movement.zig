@@ -74,7 +74,7 @@ pub fn forwardWord(e: *Editor) !void {
         const byte = iter.next() orelse break;
 
         // 非ASCIIバイトならコードポイント処理にフォールバック
-        if (byte >= 0x80) {
+        if (!unicode.isAsciiByte(byte)) {
             // 現在位置に戻してコードポイント単位で処理
             iter.seek(current_pos);
             while (iter.nextCodepoint() catch null) |cp| {
@@ -152,10 +152,10 @@ pub fn backwardWord(e: *Editor) !void {
         const byte = chunk[i - 1];
 
         // 非ASCII: UTF-8の先頭バイトを探す
-        if (byte >= 0x80) {
+        if (!unicode.isAsciiByte(byte)) {
             // continuation byte (10xxxxxx) をスキップして先頭を探す
             var char_start_idx = i - 1;
-            while (char_start_idx > 0 and (chunk[char_start_idx] & 0xC0) == 0x80) {
+            while (char_start_idx > 0 and unicode.isUtf8Continuation(chunk[char_start_idx])) {
                 char_start_idx -= 1;
             }
 
@@ -219,9 +219,9 @@ pub fn backwardWord(e: *Editor) !void {
             const byte = chunk[i - 1];
 
             // 非ASCII: UTF-8の先頭バイトを探す
-            if (byte >= 0x80) {
+            if (!unicode.isAsciiByte(byte)) {
                 var char_start_idx = i - 1;
-                while (char_start_idx > 0 and (chunk[char_start_idx] & 0xC0) == 0x80) {
+                while (char_start_idx > 0 and unicode.isUtf8Continuation(chunk[char_start_idx])) {
                     char_start_idx -= 1;
                 }
 
@@ -267,7 +267,7 @@ fn decodeUtf8FromChunk(bytes: []const u8) ?u21 {
     if (bytes.len == 0) return null;
     const first = bytes[0];
 
-    if (first < 0x80) return first;
+    if (unicode.isAsciiByte(first)) return first;
     if (bytes.len < 2) return null;
 
     if ((first & 0xE0) == 0xC0) {

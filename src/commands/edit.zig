@@ -83,7 +83,7 @@ pub fn deleteChar(e: *Editor) !void {
     // ASCII高速パス: 1バイト文字ならイテレータ作成をスキップ
     const delete_len: usize = blk: {
         if (buffer.getByteAt(pos)) |byte| {
-            if (byte < 0x80) break :blk 1;
+            if (unicode.isAsciiByte(byte)) break :blk 1;
         }
         // 非ASCII: grapheme clusterのバイト数を取得
         var iter = PieceIterator.init(buffer);

@@ -674,7 +674,7 @@ pub const EditingContext = struct {
 
         // ASCII高速パス: 1バイト文字ならイテレータ作成をスキップ
         if (self.buffer.getByteAt(self.cursor)) |byte| {
-            if (byte < 0x80) {
+            if (unicode.isAsciiByte(byte)) {
                 // ASCII文字は常に1バイト（grapheme cluster処理不要）
                 try self.delete(1);
                 return;
@@ -1004,9 +1004,7 @@ pub const EditingContext = struct {
 
     /// ASCII/非ASCII境界をまたぐかどうか（例: "hello"→"日本語"）
     fn crossesAsciiBoundary(last_byte: u8, new_byte: u8) bool {
-        const last_ascii = last_byte < 0x80;
-        const new_ascii = new_byte < 0x80;
-        return last_ascii != new_ascii;
+        return unicode.isAsciiByte(last_byte) != unicode.isAsciiByte(new_byte);
     }
 
     /// 挿入操作をUndo履歴に記録
