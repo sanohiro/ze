@@ -31,12 +31,23 @@
 // ============================================================================
 
 const std = @import("std");
+const builtin = @import("builtin");
 const unicode = @import("unicode");
 const config = @import("config");
 const encoding = @import("encoding");
 
-// macOSではstd.posix.getgid()が存在しないため、libcからextern宣言
-extern fn getgid() std.c.gid_t;
+// プラットフォーム別のgetgid実装
+fn getCurrentGid() std.posix.gid_t {
+    if (builtin.os.tag == .linux) {
+        return std.os.linux.getgid();
+    } else {
+        // macOS等ではlibcのgetgidを使用
+        const getgid = struct {
+            extern "c" fn getgid() std.posix.gid_t;
+        }.getgid;
+        return getgid();
+    }
+}
 
 /// ピースのソース（元ファイル or 追加バッファ）
 pub const PieceSource = enum {
@@ -962,7 +973,7 @@ pub const Buffer = struct {
         // 元のファイルの所有権を復元
         // 現在のプロセスのUID/GIDと異なる場合のみ警告の可能性がある
         const current_uid = std.posix.getuid();
-        const current_gid = getgid();
+        const current_gid = getCurrentGid();
         var ownership_warning: ?[]const u8 = null;
 
         if (original_uid != null or original_gid != null) {
