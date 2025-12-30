@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2025-12-31
+
+### Fixed
+- Test harness: Correctly decode wait status using IFEXITED/EXITSTATUS/IFSIGNALED/TERMSIG
+- Test harness: Handle CRLF line endings in --input-file
+- Test harness: Error when --expect used without --file or --expect-file
+- Test harness: CRLF/LF normalization in expectation comparison
+- File save: Preserve original GID (not just UID) when saving files
+- Command window: Prevent half-initialized window on OOM (errdefer cleanup)
+
 ## [1.2.0] - 2025-12-28
 
 ### Changed
