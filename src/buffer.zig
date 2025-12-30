@@ -1523,16 +1523,29 @@ pub const Buffer = struct {
         return iter.global_pos;
     }
 
-    /// 指定位置から次の改行位置を取得（改行の次の位置、またはEOF）
+    /// 指定位置から次の改行位置を検索（SIMD最適化版）
+    /// 戻り値: 改行の次のバイト位置（改行がなければバッファ末尾）
     pub fn findNextLineFromPos(self: *Buffer, pos: usize) usize {
-        var iter = PieceIterator.init(self);
-        iter.seek(pos);
-        while (iter.next()) |ch| {
-            if (ch == '\n') {
-                return iter.global_pos;
+        // Piece毎にmemchrで改行検索（SIMDで高速化）
+        var global_pos: usize = 0;
+        for (self.pieces.items) |piece| {
+            const piece_end = global_pos + piece.length;
+
+            // このpieceがpos以降を含む場合のみ処理
+            if (piece_end > pos) {
+                const data = self.getPieceData(piece);
+                // piece内の開始位置を計算
+                const start_in_piece = if (global_pos >= pos) 0 else pos - global_pos;
+
+                if (std.mem.indexOfScalar(u8, data[start_in_piece..], '\n')) |rel_pos| {
+                    // 改行の次の位置を返す
+                    return global_pos + start_in_piece + rel_pos + 1;
+                }
             }
+            global_pos = piece_end;
         }
-        return iter.global_pos;
+        // 改行が見つからなければバッファ末尾
+        return self.total_len;
     }
 
     // バイト位置から列番号を計算（表示幅ベース）

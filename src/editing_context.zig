@@ -660,13 +660,28 @@ pub const EditingContext = struct {
         if (prev.len > 0) {
             self.cursor = prev.start;
             try self.delete(prev.len);
+
+            // 連続Backspace最適化: 次のBackspace用にキャッシュを先行計算
+            // delete()でキャッシュが無効化されるため、ここで再計算しておく
+            if (self.cursor > 0) {
+                _ = self.findPrevGrapheme();
+            }
         }
     }
 
     pub fn deleteChar(self: *EditingContext) !void {
         if (self.cursor >= self.buffer.len()) return;
 
-        // 現在位置のgrapheme clusterのサイズを取得
+        // ASCII高速パス: 1バイト文字ならイテレータ作成をスキップ
+        if (self.buffer.getByteAt(self.cursor)) |byte| {
+            if (byte < 0x80) {
+                // ASCII文字は常に1バイト（grapheme cluster処理不要）
+                try self.delete(1);
+                return;
+            }
+        }
+
+        // 非ASCII: grapheme clusterのサイズを取得
         var iter = PieceIterator.init(self.buffer);
         iter.seek(self.cursor);
 

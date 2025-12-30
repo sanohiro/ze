@@ -80,11 +80,14 @@ pub fn deleteChar(e: *Editor) !void {
     const pos = e.getCurrentView().getCursorBufferPos();
     if (pos >= buffer.len()) return;
 
-    // カーソル位置のgrapheme clusterのバイト数を取得
-    var iter = PieceIterator.init(buffer);
-    iter.seek(pos);
-
+    // ASCII高速パス: 1バイト文字ならイテレータ作成をスキップ
     const delete_len: usize = blk: {
+        if (buffer.getByteAt(pos)) |byte| {
+            if (byte < 0x80) break :blk 1;
+        }
+        // 非ASCII: grapheme clusterのバイト数を取得
+        var iter = PieceIterator.init(buffer);
+        iter.seek(pos);
         const cluster = iter.nextGraphemeCluster() catch break :blk 1;
         break :blk if (cluster) |gc| gc.byte_len else 1;
     };
