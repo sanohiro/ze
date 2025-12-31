@@ -82,32 +82,32 @@ pub const MacroService = struct {
     }
 
     /// 最後に記録したマクロを取得
-    pub fn getLastMacro(self: *const Self) ?[]const input.Key {
+    pub inline fn getLastMacro(self: *const Self) ?[]const input.Key {
         return self.last_macro;
     }
 
     /// 記録中かどうか
-    pub fn isRecording(self: *const Self) bool {
+    pub inline fn isRecording(self: *const Self) bool {
         return self.is_recording;
     }
 
     /// 再生開始をマーク
-    pub fn beginPlayback(self: *Self) void {
+    pub inline fn beginPlayback(self: *Self) void {
         self.is_playing = true;
     }
 
     /// 再生終了をマーク
-    pub fn endPlayback(self: *Self) void {
+    pub inline fn endPlayback(self: *Self) void {
         self.is_playing = false;
     }
 
     /// 再生中かどうか
-    pub fn isPlaying(self: *const Self) bool {
+    pub inline fn isPlaying(self: *const Self) bool {
         return self.is_playing;
     }
 
     /// 記録されたキー数を取得
-    pub fn recordedKeyCount(self: *const Self) usize {
+    pub inline fn recordedKeyCount(self: *const Self) usize {
         return self.recording.items.len;
     }
 

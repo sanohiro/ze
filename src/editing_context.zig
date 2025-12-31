@@ -294,11 +294,11 @@ pub const EditingContext = struct {
     // 基本情報
     // ========================================
 
-    pub fn len(self: *EditingContext) usize {
+    pub inline fn len(self: *EditingContext) usize {
         return self.buffer.len();
     }
 
-    pub fn lineCount(self: *EditingContext) usize {
+    pub inline fn lineCount(self: *EditingContext) usize {
         return self.buffer.lineCount();
     }
 
@@ -499,15 +499,16 @@ pub const EditingContext = struct {
         if (self.cursor == 0) return;
         var pos = self.cursor;
 
-        // 後方スキャン用にチャンクを読み込む（最大256バイト）
-        const look_back = @min(pos, 256);
+        // 後方スキャン用にチャンクを読み込む
+        const chunk_size = config.Search.BACKWARD_CHUNK_SIZE;
+        const look_back = @min(pos, chunk_size);
         const scan_start = pos - look_back;
 
         var iter = PieceIterator.init(self.buffer);
         iter.seek(scan_start);
 
         // チャンクを読み込み
-        var chunk: [256]u8 = undefined;
+        var chunk: [chunk_size]u8 = undefined;
         var chunk_len: usize = 0;
         while (chunk_len < look_back) {
             chunk[chunk_len] = iter.next() orelse break;
@@ -539,7 +540,7 @@ pub const EditingContext = struct {
 
         // チャンク先頭に到達した場合、さらに後方を処理
         while (i == 0 and pos > 0) {
-            const next_look_back = @min(pos, 256);
+            const next_look_back = @min(pos, chunk_size);
             const next_scan_start = pos - next_look_back;
 
             iter.seek(next_scan_start);
@@ -588,7 +589,7 @@ pub const EditingContext = struct {
         self.modified = true;
 
         // 改行を含むかで影響範囲を決定
-        const has_newline = std.mem.indexOf(u8, text, "\n") != null;
+        const has_newline = std.mem.indexOfScalar(u8, text, '\n') != null;
         self.notifyChange(.{
             .change_type = .insert,
             .position = pos,
@@ -625,7 +626,7 @@ pub const EditingContext = struct {
         const deleted = try self.extractText(pos, actual_count);
 
         // 改行を含むかで影響範囲を決定
-        const has_newline = std.mem.indexOf(u8, deleted, "\n") != null;
+        const has_newline = std.mem.indexOfScalar(u8, deleted, '\n') != null;
 
         // バッファから削除
         self.buffer.delete(pos, actual_count) catch |err| {
@@ -998,12 +999,12 @@ pub const EditingContext = struct {
     // - cursor_after: 操作後の位置（Redoで復元）
 
     /// 空白文字かどうか
-    fn isWhitespace(byte: u8) bool {
+    inline fn isWhitespace(byte: u8) bool {
         return byte == ' ' or byte == '\t';
     }
 
     /// ASCII/非ASCII境界をまたぐかどうか（例: "hello"→"日本語"）
-    fn crossesAsciiBoundary(last_byte: u8, new_byte: u8) bool {
+    inline fn crossesAsciiBoundary(last_byte: u8, new_byte: u8) bool {
         return unicode.isAsciiByte(last_byte) != unicode.isAsciiByte(new_byte);
     }
 
@@ -1254,7 +1255,7 @@ pub const EditingContext = struct {
     }
 
     fn containsNewline(text: []const u8) bool {
-        return std.mem.indexOf(u8, text, "\n") != null;
+        return std.mem.indexOfScalar(u8, text, '\n') != null;
     }
 
     /// 内部用：現在のカーソル位置でDeleteを記録

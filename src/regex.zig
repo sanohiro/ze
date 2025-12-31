@@ -375,7 +375,7 @@ pub const Regex = struct {
     pub fn search(self: *const Regex, text: []const u8, start_pos: usize) ?MatchResult {
         if (self.compiled.len == 0) return null;
 
-        const has_start_anchor = self.compiled.len > 0 and self.compiled[0] == .anchor_start;
+        const has_start_anchor = self.compiled[0] == .anchor_start;
 
         var pos = start_pos;
         while (pos <= text.len) {
@@ -759,13 +759,13 @@ pub const Regex = struct {
         return self.tryBacktrack(text, current_idx, collector.getPositions(), min_count);
     }
 
-    fn isDigit(c: u8) bool {
+    inline fn isDigit(c: u8) bool {
         return c >= '0' and c <= '9';
     }
 
     // isWordChar は unicode.isWordCharByte に共通化済み
 
-    fn isSpaceChar(c: u8) bool {
+    inline fn isSpaceChar(c: u8) bool {
         return c == ' ' or c == '\t' or c == '\n' or c == '\r' or c == 0x0c or c == 0x0b;
     }
 };

@@ -182,37 +182,36 @@ pub const ShellService = struct {
         return result;
     }
 
-    /// bashのパスを探す（スタックバッファ使用でアロケーション削減）
-    fn findBashPath(allocator: std.mem.Allocator) ?[]const u8 {
-        // 1. $SHELL がbashなら使用（絶対パスの場合）
-        if (std.posix.getenv("SHELL")) |shell| {
-            if (std.mem.endsWith(u8, shell, "/bash")) {
-                if (std.fs.accessAbsolute(shell, .{})) |_| {
-                    return allocator.dupe(u8, shell) catch null;
-                } else |_| {}
+    /// 実行可能ファイルをPATHとフォールバックパスから検索する共通関数
+    fn findExecutable(
+        allocator: std.mem.Allocator,
+        name: []const u8,
+        shell_env_suffix: ?[]const u8,
+        fallback_paths: []const []const u8,
+    ) ?[]const u8 {
+        // 1. $SHELL 環境変数をチェック（suffixが指定された場合のみ）
+        if (shell_env_suffix) |suffix| {
+            if (std.posix.getenv("SHELL")) |shell| {
+                if (std.mem.endsWith(u8, shell, suffix)) {
+                    if (std.fs.accessAbsolute(shell, .{})) |_| {
+                        return allocator.dupe(u8, shell) catch null;
+                    } else |_| {}
+                }
             }
         }
-        // 2. PATH環境変数から探す（スタックバッファ使用）
+        // 2. PATH環境変数から検索（スタックバッファ使用）
         if (std.posix.getenv("PATH")) |path_env| {
             var path_buf: [512]u8 = undefined;
             var it = std.mem.splitScalar(u8, path_env, ':');
             while (it.next()) |dir| {
-                const bash_path = std.fmt.bufPrint(&path_buf, "{s}/bash", .{dir}) catch continue;
-                if (std.fs.accessAbsolute(bash_path, .{})) |_| {
-                    // 見つかった時だけアロケーション
-                    return allocator.dupe(u8, bash_path) catch null;
+                const exec_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir, name }) catch continue;
+                if (std.fs.accessAbsolute(exec_path, .{})) |_| {
+                    return allocator.dupe(u8, exec_path) catch null;
                 } else |_| {}
             }
         }
-        // 3. 一般的なパスを試す（フォールバック）
-        const paths = [_][]const u8{
-            "/bin/bash",
-            "/usr/bin/bash",
-            "/usr/local/bin/bash",
-            "/opt/homebrew/bin/bash",
-            "/opt/local/bin/bash",
-        };
-        for (paths) |path| {
+        // 3. フォールバックパスを試す
+        for (fallback_paths) |path| {
             if (std.fs.accessAbsolute(path, .{})) |_| {
                 return allocator.dupe(u8, path) catch null;
             } else |_| {}
@@ -220,34 +219,22 @@ pub const ShellService = struct {
         return null;
     }
 
-    /// shのパスを探す（/bin/shが無い環境用）
-    /// 戻り値: 見つかった場合はアロケートされたパス、見つからない場合はnull
-    /// 呼び出し側は戻り値を解放する責任を持つ
+    /// bashのパスを探す
+    fn findBashPath(allocator: std.mem.Allocator) ?[]const u8 {
+        const fallbacks = [_][]const u8{
+            "/bin/bash",
+            "/usr/bin/bash",
+            "/usr/local/bin/bash",
+            "/opt/homebrew/bin/bash",
+            "/opt/local/bin/bash",
+        };
+        return findExecutable(allocator, "bash", "/bash", &fallbacks);
+    }
+
+    /// shのパスを探す
     fn findShPath(allocator: std.mem.Allocator) ?[]const u8 {
-        // 1. /bin/sh を試す（最も一般的）
-        if (std.fs.accessAbsolute("/bin/sh", .{})) |_| {
-            return allocator.dupe(u8, "/bin/sh") catch null;
-        } else |_| {}
-        // 2. PATH環境変数から探す（スタックバッファ使用）
-        if (std.posix.getenv("PATH")) |path_env| {
-            var path_buf: [512]u8 = undefined;
-            var it = std.mem.splitScalar(u8, path_env, ':');
-            while (it.next()) |dir| {
-                const sh_path = std.fmt.bufPrint(&path_buf, "{s}/sh", .{dir}) catch continue;
-                if (std.fs.accessAbsolute(sh_path, .{})) |_| {
-                    return allocator.dupe(u8, sh_path) catch null;
-                } else |_| {}
-            }
-        }
-        // 3. フォールバック
-        const paths = [_][]const u8{ "/usr/bin/sh", "/system/bin/sh" };
-        for (paths) |path| {
-            if (std.fs.accessAbsolute(path, .{})) |_| {
-                return allocator.dupe(u8, path) catch null;
-            } else |_| {}
-        }
-        // 見つからない場合はnull（呼び出し側でデフォルト値を使用）
-        return null;
+        const fallbacks = [_][]const u8{ "/bin/sh", "/usr/bin/sh", "/system/bin/sh" };
+        return findExecutable(allocator, "sh", null, &fallbacks);
     }
 
     pub fn deinit(self: *Self) void {

@@ -293,11 +293,6 @@ pub const BufferManager = struct {
         return self.buffers.items;
     }
 
-    /// 全バッファのイテレータ（const版）
-    pub fn iteratorConst(self: *const Self) []const *BufferState {
-        return self.buffers.items;
-    }
-
     /// 最初のバッファを取得（初期化直後の*scratch*バッファなど）
     pub fn getFirst(self: *Self) ?*BufferState {
         if (self.buffers.items.len > 0) {

@@ -178,7 +178,7 @@ pub const PollPoller = struct {
         return .{ .stdin_fd = stdin_fd };
     }
 
-    pub fn deinit(_: *PollPoller) void {}
+    pub inline fn deinit(_: *PollPoller) void {}
 
     /// 入力を待機
     pub fn wait(self: *PollPoller, timeout_ms: ?u32) PollResult {

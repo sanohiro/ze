@@ -2,6 +2,7 @@
 // カーソル移動、単語移動、段落移動、ページスクロール、ウィンドウ切り替え
 
 const std = @import("std");
+const config = @import("config");
 const Editor = @import("editor").Editor;
 const buffer_mod = @import("buffer");
 const Buffer = buffer_mod.Buffer;
@@ -125,15 +126,16 @@ pub fn backwardWord(e: *Editor) !void {
     const start_pos = e.getCurrentView().getCursorBufferPos();
     if (start_pos == 0) return;
 
-    // 最大256バイトを前方に読み込んで後方処理
-    const look_back = @min(start_pos, 256);
+    // 後方スキャン用にチャンクを読み込む
+    const chunk_size = config.Search.BACKWARD_CHUNK_SIZE;
+    const look_back = @min(start_pos, chunk_size);
     const scan_start = start_pos - look_back;
 
     // PieceIteratorでチャンクを読み込み（1回のseek + 順次読み）
     var iter = PieceIterator.init(buffer);
     iter.seek(scan_start);
 
-    var chunk: [256]u8 = undefined;
+    var chunk: [chunk_size]u8 = undefined;
     var chunk_len: usize = 0;
     while (chunk_len < look_back) {
         if (iter.next()) |byte| {
@@ -201,7 +203,7 @@ pub fn backwardWord(e: *Editor) !void {
     // 追加チャンクを読み込んで継続（getByteAtのO(pieces)を回避）
     while (i == 0 and pos > 0 and found_non_space) {
         // 次のチャンクを読み込む
-        const next_look_back = @min(pos, 256);
+        const next_look_back = @min(pos, chunk_size);
         const next_scan_start = pos - next_look_back;
 
         iter.seek(next_scan_start);

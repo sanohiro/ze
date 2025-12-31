@@ -382,16 +382,8 @@ fn guessJapaneseEncoding(content: []const u8) Encoding {
         i += 1;
     }
 
-    // スコア比較で判定
-    if (sjis_score > eucjp_score) {
-        return .SHIFT_JIS;
-    } else if (eucjp_score > sjis_score) {
-        return .EUC_JP;
-    } else {
-        // スコアが同じ、またはどちらも0
-        // デフォルトでShift_JIS（Windowsユーザーが多いため）
-        return .SHIFT_JIS;
-    }
+    // スコア比較で判定（同点時はShift_JIS、Windowsユーザーが多いため）
+    return if (eucjp_score > sjis_score) .EUC_JP else .SHIFT_JIS;
 }
 
 /// 改行コードを正規化（LFに統一）

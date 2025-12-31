@@ -263,15 +263,15 @@ pub const Keymap = struct {
     }
 
     // キーバインド検索: 配列の直接インデックスでO(1)
-    pub fn findCtrl(self: *const Keymap, key: u8) ?CommandFn {
+    pub inline fn findCtrl(self: *const Keymap, key: u8) ?CommandFn {
         return self.ctrl_table[key];
     }
 
-    pub fn findAlt(self: *const Keymap, key: u8) ?CommandFn {
+    pub inline fn findAlt(self: *const Keymap, key: u8) ?CommandFn {
         return self.alt_table[key];
     }
 
-    pub fn findSpecial(self: *const Keymap, key: SpecialKey) ?CommandFn {
+    pub inline fn findSpecial(self: *const Keymap, key: SpecialKey) ?CommandFn {
         return self.special_table[@intFromEnum(key)];
     }
 

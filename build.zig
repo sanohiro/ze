@@ -234,7 +234,7 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    // commands/movement <- buffer, unicode
+    // commands/movement <- buffer, unicode, config
     const movement_cmd_mod = b.addModule("commands_movement", .{
         .root_source_file = b.path("src/commands/movement.zig"),
         .target = target,
@@ -242,6 +242,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "buffer", .module = buffer_mod },
             .{ .name = "unicode", .module = unicode_mod },
+            .{ .name = "config", .module = config_mod },
         },
     });
 

@@ -14,7 +14,6 @@
 
 const std = @import("std");
 const unicode = @import("unicode");
-const input = @import("input");
 const config = @import("config");
 
 /// ミニバッファ

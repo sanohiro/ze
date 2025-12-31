@@ -67,8 +67,17 @@ const FULLWIDTH_SPACE_VISUAL: []const u8 = ANSI.BG_DARK_GRAY ++ &config.UTF8.FUL
 
 /// 制御文字の表示用テーブル（0x00-0x1F → ^@ 〜 ^_）
 /// 表示幅は2（^ + 文字）
+/// comptimeでルックアップテーブルを生成して実行時コストを削減
+const CONTROL_CHAR_TABLE: [32][2]u8 = blk: {
+    var table: [32][2]u8 = undefined;
+    for (0..32) |i| {
+        table[i] = .{ '^', @intCast(i + '@') };
+    }
+    break :blk table;
+};
+
 fn renderControlChar(ch: u8) [2]u8 {
-    return .{ '^', ch + '@' }; // 0x00→^@, 0x01→^A, ..., 0x1F→^_
+    return CONTROL_CHAR_TABLE[ch & 0x1F];
 }
 
 /// truncateUtf8の戻り値
@@ -189,12 +198,14 @@ fn detectAnsiCodes(line: []const u8, content_start: usize) AnsiFlags {
     if (content_start >= line.len) return .{ .has_gray = false, .has_invert = false };
     const content = line[content_start..];
 
-    // ESC文字（0x1b）を探して、その後の文字列をチェック
+    // ESC文字（0x1b）がなければ即座にfalseを返す（SIMD最適化済みの高速検索）
     var has_gray = false;
     var has_invert = false;
-    var i: usize = 0;
-    while (i < content.len) : (i += 1) {
-        if (content[i] == '\x1b' and i + 1 < content.len and content[i + 1] == '[') {
+    var search_start: usize = 0;
+
+    while (std.mem.indexOfScalar(u8, content[search_start..], '\x1b')) |rel_pos| {
+        const i = search_start + rel_pos;
+        if (i + 1 < content.len and content[i + 1] == '[') {
             // GRAY = "\x1b[90m" (len=5), INVERT = "\x1b[7m" (len=4)
             if (i + 4 < content.len and content[i + 2] == '9' and content[i + 3] == '0' and content[i + 4] == 'm') {
                 has_gray = true;
@@ -204,6 +215,7 @@ fn detectAnsiCodes(line: []const u8, content_start: usize) AnsiFlags {
             // 両方見つかったら早期終了
             if (has_gray and has_invert) break;
         }
+        search_start = i + 1;
     }
     return .{ .has_gray = has_gray, .has_invert = has_invert };
 }
@@ -284,7 +296,7 @@ pub const View = struct {
 
     // === 行幅キャッシュ（カーソル移動高速化）===
     // 画面内の各行の表示幅をキャッシュ。上下移動時の再計算を回避
-    line_width_cache: [128]?u16, // 最大128行分（null=未計算）
+    line_width_cache: [config.View.LINE_WIDTH_CACHE_SIZE]?u16, // null=未計算
     line_width_cache_top_line: usize, // キャッシュの基準top_line
 
     // === カーソルバイト位置キャッシュ（文字入力高速化）===
@@ -334,7 +346,7 @@ pub const View = struct {
             .cached_cursor_byte_pos = null, // キャッシュ無効
             .cached_cursor_expanded_pos = 0,
             .block_comment_temp_buf = .{}, // 遅延初期化
-            .line_width_cache = .{null} ** 128, // 全てnull（未計算）
+            .line_width_cache = .{null} ** config.View.LINE_WIDTH_CACHE_SIZE, // 全てnull（未計算）
             .line_width_cache_top_line = 0,
             .cursor_byte_pos_cache = null, // キャッシュ無効
             .cursor_byte_pos_cache_x = 0,
@@ -399,7 +411,7 @@ pub const View = struct {
         var needs_redraw = false;
 
         // ステータスバー分を除いた最大行
-        const max_cursor_y = if (self.viewport_height >= 2) self.viewport_height - 2 else 0;
+        const max_cursor_y = self.viewport_height -| 2;
         if (self.cursor_y > max_cursor_y) {
             // カーソルがビューポート外なら、スクロールして見えるようにする
             const overshoot = self.cursor_y - max_cursor_y;
@@ -493,7 +505,7 @@ pub const View = struct {
     }
 
     // エラーメッセージを取得
-    pub fn getError(self: *const View) ?[]const u8 {
+    pub inline fn getError(self: *const View) ?[]const u8 {
         if (self.error_msg_len == 0) return null;
         return self.error_msg_buf[0..self.error_msg_len];
     }
@@ -539,7 +551,7 @@ pub const View = struct {
     }
 
     // 検索ハイライト文字列を取得
-    pub fn getSearchHighlight(self: *const View) ?[]const u8 {
+    pub inline fn getSearchHighlight(self: *const View) ?[]const u8 {
         if (self.search_highlight_len == 0) return null;
         return self.search_highlight_buf[0..self.search_highlight_len];
     }
@@ -936,7 +948,7 @@ pub const View = struct {
         self.highlighted_line.clearRetainingCapacity();
 
         // 検索パターンの表示幅を計算（カーソル位置比較用）
-        const search_display_width = unicode.stringDisplayWidth(search_str);
+        const search_display_width = stringDisplayWidth(search_str);
 
         // content_startからfirst_matchまでの表示幅を計算
         const first_visible_pos = countDisplayWidth(line, content_start, first_match);
@@ -1084,9 +1096,8 @@ pub const View = struct {
         last_raw_pos = match_end_raw;
 
         // 残りのマッチを処理（上限付きで過剰なマッチによる遅延を防止）
-        const MAX_MATCHES_PER_LINE = 100;
         var match_count: usize = 1; // 最初のマッチをカウント
-        while (visible_pos < self.regex_visible_text.items.len and match_count < MAX_MATCHES_PER_LINE) {
+        while (visible_pos < self.regex_visible_text.items.len and match_count < config.View.MAX_MATCHES_PER_LINE) {
             if (re.search(self.regex_visible_text.items, visible_pos)) |match_result| {
                 match_count += 1;
                 if (match_result.end == match_result.start) {
@@ -1298,11 +1309,6 @@ pub const View = struct {
 
         // 前フレームバッファを更新
         try self.updatePrevScreenBuffer(screen_row, new_line);
-    }
-
-    // イテレータを再利用して行を描画（セルレベル差分描画版）
-    fn renderLineWithIter(self: *View, term: *Terminal, screen_row: usize, file_line: usize, iter: *PieceIterator, line_buffer: *std.ArrayList(u8)) !bool {
-        return self.renderLineWithIterOffset(term, 0, 0, self.viewport_width, screen_row, file_line, iter, line_buffer, false);
     }
 
     /// 行データを読み取る（イテレータから改行まで）
@@ -1675,10 +1681,8 @@ pub const View = struct {
         // scroll_delta が設定されている場合、ターミナルのスクロール機能を使って
         // prev_screen をシフトし、新しく表示される行のみを描画対象にする
         if (self.scroll_delta != 0 and !self.needs_full_redraw) {
-            const abs_delta = if (self.scroll_delta > 0)
-                @as(usize, @intCast(self.scroll_delta))
-            else
-                @as(usize, @intCast(-self.scroll_delta));
+            // 符号付き→符号なし変換: @abs()を使用（minIntも安全に処理）
+            const abs_delta: usize = @abs(self.scroll_delta);
 
             // スクロール量が画面の半分を超えたら全画面再描画の方が効率的
             if (abs_delta >= max_lines / 2) {
@@ -1872,9 +1876,7 @@ pub const View = struct {
             const truncated = truncateUtf8(status, viewport_width);
             try term.write(truncated.slice);
             const padding = if (truncated.display_width < viewport_width) viewport_width - truncated.display_width else 0;
-            for (0..padding) |_| {
-                try term.write(" ");
-            }
+            try writeSpaces(term, padding);
             try term.write(config.ANSI.RESET);
             return;
         }
@@ -1883,7 +1885,7 @@ pub const View = struct {
         var left_buf: [1024]u8 = undefined;
         const modified_char: u8 = if (modified) '*' else ' ';
         const readonly_str = if (readonly) "[RO] " else "";
-        const fname = if (filename) |f| f else "[No Name]";
+        const fname = filename orelse "[No Name]";
         const left_part = std.fmt.bufPrint(&left_buf, " {c}{s}{s}", .{ modified_char, readonly_str, fname }) catch " [path too long]";
 
         // 右側: 位置 | エンコード(改行) | OVR
@@ -1914,18 +1916,14 @@ pub const View = struct {
                 const trunc_right = truncateUtf8(right_part, remaining);
                 // パディング
                 const pad = if (remaining > trunc_right.display_width) remaining - trunc_right.display_width else 0;
-                for (0..pad) |_| {
-                    try term.write(" ");
-                }
+                try writeSpaces(term, pad);
                 try term.write(trunc_right.slice);
             }
         } else {
             // 通常表示: 左 + パディング + 右
             try term.write(left_part);
             const padding = viewport_width - total_content;
-            for (0..padding) |_| {
-                try term.write(" ");
-            }
+            try writeSpaces(term, padding);
             try term.write(right_part);
         }
 
@@ -2152,20 +2150,20 @@ pub const View = struct {
     // 現在行の表示幅を取得（grapheme cluster単位）
     /// 行幅キャッシュを無効化
     pub fn invalidateLineWidthCache(self: *View) void {
-        self.line_width_cache = .{null} ** 128;
+        self.line_width_cache = .{null} ** config.View.LINE_WIDTH_CACHE_SIZE;
     }
 
     /// 特定行の行幅キャッシュを無効化
     fn invalidateLineWidthCacheAt(self: *View, file_line: usize) void {
         if (self.line_width_cache_top_line != self.top_line) {
             // top_lineが変わったらキャッシュ全体を無効化
-            self.line_width_cache = .{null} ** 128;
+            self.line_width_cache = .{null} ** config.View.LINE_WIDTH_CACHE_SIZE;
             self.line_width_cache_top_line = self.top_line;
             return;
         }
         if (file_line >= self.top_line) {
             const cache_idx = file_line - self.top_line;
-            if (cache_idx < 128) {
+            if (cache_idx < config.View.LINE_WIDTH_CACHE_SIZE) {
                 self.line_width_cache[cache_idx] = null;
             }
         }
@@ -2174,16 +2172,17 @@ pub const View = struct {
     /// 行幅キャッシュを上方向にシフト（下スクロール時）
     /// 上位 n 行分を破棄し、残りを上にシフト、末尾を null で埋める
     fn shiftLineWidthCacheUp(self: *View, n: usize) void {
-        if (n >= 128) {
-            self.line_width_cache = .{null} ** 128;
+        const CACHE_SIZE = config.View.LINE_WIDTH_CACHE_SIZE;
+        if (n >= CACHE_SIZE) {
+            self.line_width_cache = .{null} ** CACHE_SIZE;
             return;
         }
         // シフト: [n..] -> [0..]
-        for (n..128) |i| {
+        for (n..CACHE_SIZE) |i| {
             self.line_width_cache[i - n] = self.line_width_cache[i];
         }
         // 末尾を null で埋める
-        for ((128 - n)..128) |i| {
+        for ((CACHE_SIZE - n)..CACHE_SIZE) |i| {
             self.line_width_cache[i] = null;
         }
         // top_line は呼び出し元で既に更新されている想定
@@ -2193,12 +2192,13 @@ pub const View = struct {
     /// 行幅キャッシュを下方向にシフト（上スクロール時）
     /// 下位 n 行分を破棄し、残りを下にシフト、先頭を null で埋める
     fn shiftLineWidthCacheDown(self: *View, n: usize) void {
-        if (n >= 128) {
-            self.line_width_cache = .{null} ** 128;
+        const CACHE_SIZE = config.View.LINE_WIDTH_CACHE_SIZE;
+        if (n >= CACHE_SIZE) {
+            self.line_width_cache = .{null} ** CACHE_SIZE;
             return;
         }
-        // シフト: [0..128-n] -> [n..128]（末尾から処理して上書きを防ぐ）
-        var i: usize = 128;
+        // シフト: [0..CACHE_SIZE-n] -> [n..CACHE_SIZE]（末尾から処理して上書きを防ぐ）
+        var i: usize = CACHE_SIZE;
         while (i > n) {
             i -= 1;
             self.line_width_cache[i] = self.line_width_cache[i - n];
@@ -2216,14 +2216,14 @@ pub const View = struct {
     pub fn updateLineWidthCacheAfterInsert(self: *View, char_width: usize) void {
         if (self.line_width_cache_top_line != self.top_line) {
             // top_lineが変わったらキャッシュ全体を無効化（差分更新不可）
-            self.line_width_cache = .{null} ** 128;
+            self.line_width_cache = .{null} ** config.View.LINE_WIDTH_CACHE_SIZE;
             self.line_width_cache_top_line = self.top_line;
             return;
         }
 
         // cache_idx = (top_line + cursor_y) - top_line = cursor_y
         const cache_idx = self.cursor_y;
-        if (cache_idx >= 128) return;
+        if (cache_idx >= config.View.LINE_WIDTH_CACHE_SIZE) return;
 
         if (self.line_width_cache[cache_idx]) |cached| {
             // キャッシュに幅を加算（u16オーバーフロー時は無効化）
@@ -2241,14 +2241,14 @@ pub const View = struct {
     fn getLineWidthCached(self: *View, file_line: usize) usize {
         // top_lineが変わったらキャッシュをリセット
         if (self.line_width_cache_top_line != self.top_line) {
-            self.line_width_cache = .{null} ** 128;
+            self.line_width_cache = .{null} ** config.View.LINE_WIDTH_CACHE_SIZE;
             self.line_width_cache_top_line = self.top_line;
         }
 
         // キャッシュインデックス計算
         if (file_line < self.top_line) return self.calculateLineWidth(file_line);
         const cache_idx = file_line - self.top_line;
-        if (cache_idx >= 128) return self.calculateLineWidth(file_line);
+        if (cache_idx >= config.View.LINE_WIDTH_CACHE_SIZE) return self.calculateLineWidth(file_line);
 
         // キャッシュヒット
         if (self.line_width_cache[cache_idx]) |cached| {
@@ -2391,7 +2391,7 @@ pub const View = struct {
         if (info.is_eof) return;
 
         // ステータスバー分を除いた最大行
-        const max_cursor_y = if (self.viewport_height >= 2) self.viewport_height - 2 else 0;
+        const max_cursor_y = self.viewport_height -| 2;
 
         if (info.is_newline) {
             // 改行の場合は次の行の先頭へ
@@ -2457,7 +2457,7 @@ pub const View = struct {
     }
 
     pub fn moveCursorDown(self: *View) void {
-        const max_cursor_y = if (self.viewport_height >= 2) self.viewport_height - 2 else 0;
+        const max_cursor_y = self.viewport_height -| 2;
         if (self.cursor_y < max_cursor_y and self.top_line + self.cursor_y + 1 < self.buffer.lineCount()) {
             self.cursor_y += 1;
         } else if (self.top_line + self.cursor_y + 1 < self.buffer.lineCount()) {
@@ -2605,7 +2605,7 @@ pub const View = struct {
         const last_line = if (total_lines > 0) total_lines - 1 else 0;
 
         // ビューポートの表示可能行数
-        const max_screen_lines = if (self.viewport_height >= 2) self.viewport_height - 2 else 0;
+        const max_screen_lines = self.viewport_height -| 2;
 
         // 最終行をできるだけ画面下部に表示
         if (last_line <= max_screen_lines) {

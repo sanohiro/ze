@@ -26,7 +26,6 @@
 // ============================================================================
 
 const std = @import("std");
-const builtin = @import("builtin");
 const buffer_mod = @import("buffer");
 const Buffer = buffer_mod.Buffer;
 const PieceIterator = buffer_mod.PieceIterator;
@@ -35,9 +34,6 @@ const Terminal = @import("terminal").Terminal;
 const input = @import("input");
 const config = @import("config");
 const regex = @import("regex");
-const history_mod = @import("history");
-const History = history_mod.History;
-const HistoryType = history_mod.HistoryType;
 const unicode = @import("unicode");
 
 // サービス
@@ -58,8 +54,6 @@ const BufferState = buffer_manager_mod.BufferState;
 const window_manager_mod = @import("window_manager");
 const WindowManager = window_manager_mod.WindowManager;
 const Window = window_manager_mod.Window;
-const SplitType = window_manager_mod.SplitType;
-const EditingContext = @import("editing_context").EditingContext;
 const Keymap = @import("keymap").Keymap;
 const MacroService = @import("macro_service").MacroService;
 const edit = @import("commands_edit");
@@ -439,7 +433,7 @@ pub const Editor = struct {
     /// 改行を含む場合は現在行以降全体、そうでなければ現在行のみ
     pub fn markCurrentBufferDirtyForText(self: *Editor, current_line: usize, text: []const u8) void {
         const buffer_id = self.getCurrentBuffer().id;
-        if (std.mem.indexOf(u8, text, "\n") != null) {
+        if (std.mem.indexOfScalar(u8, text, '\n') != null) {
             self.markAllViewsDirtyForBuffer(buffer_id, current_line, null);
         } else {
             self.markAllViewsDirtyForBuffer(buffer_id, current_line, current_line);
@@ -1328,7 +1322,7 @@ pub const Editor = struct {
     /// バッファ一覧を表示（C-x C-b）
     pub fn showBufferList(self: *Editor) !void {
         // バッファ一覧のテキストを生成
-        var list_text = try std.ArrayList(u8).initCapacity(self.allocator, 0);
+        var list_text = std.ArrayList(u8){};
         defer list_text.deinit(self.allocator);
 
         const writer = list_text.writer(self.allocator);
@@ -1348,7 +1342,7 @@ pub const Editor = struct {
             const ro_char: u8 = if (buf.file.readonly) '%' else '.';
 
             // バッファ名
-            const buf_name = if (buf.file.filename) |fname| fname else "*scratch*";
+            const buf_name = buf.file.filename orelse "*scratch*";
 
             // サイズ
             const size = buf.editing_ctx.buffer.total_len;
@@ -1359,7 +1353,7 @@ pub const Editor = struct {
                 ro_char,
                 buf_name,
                 size,
-                if (buf.file.filename) |fname| fname else "",
+                buf.file.filename orelse "",
             });
         }
 
@@ -1516,7 +1510,7 @@ pub const Editor = struct {
 
         // バッファを検索
         for (self.buffer_manager.iterator()) |buf| {
-            const name = if (buf.file.filename) |fname| fname else "*scratch*";
+            const name = buf.file.filename orelse "*scratch*";
             if (std.mem.eql(u8, name, buf_name)) {
                 try self.switchToBuffer(buf.id);
                 return;
@@ -2122,7 +2116,7 @@ pub const Editor = struct {
         if (view.viewport_height == 0) return;
 
         // ビューポートの表示可能行数（ステータスバー分を引く）
-        const max_screen_lines = if (view.viewport_height >= 1) view.viewport_height - 1 else 0;
+        const max_screen_lines = view.viewport_height -| 1;
 
         // top_lineが範囲外の場合は調整
         if (view.top_line >= total_lines) {
@@ -2184,7 +2178,7 @@ pub const Editor = struct {
 
         // 画面内の行位置を計算（ビューポート高さを使用）
         // 現在のtop_lineをなるべく維持し、カーソルが画面外に出た場合のみスクロール
-        const max_screen_lines = if (view.viewport_height >= 1) view.viewport_height - 1 else 0;
+        const max_screen_lines = view.viewport_height -| 1;
         if (max_screen_lines == 0) {
             view.top_line = 0;
             view.cursor_y = line;
@@ -3420,14 +3414,14 @@ pub const Editor = struct {
 
         // バッファ変更を先に実行
         try buffer.insertSlice(pos, buf[0..len]);
-        errdefer buffer.delete(pos, len) catch unreachable; // rollback失敗は致命的
+        errdefer buffer.delete(pos, len) catch {};
         try self.recordInsert(pos, buf[0..len], pos); // 編集前のカーソル位置を記録
         buffer_state.editing_ctx.modified = true;
 
         if (codepoint == '\n') {
             // 改行処理
             const view = self.getCurrentView();
-            const max_screen_line = if (view.viewport_height >= 2) view.viewport_height - 2 else 0;
+            const max_screen_line = view.viewport_height -| 2;
             if (view.cursor_y < max_screen_line) {
                 view.cursor_y += 1;
             } else {
@@ -3495,7 +3489,7 @@ pub const Editor = struct {
 
         // バッファに挿入
         try buffer.insertSlice(pos, content);
-        errdefer buffer.delete(pos, content.len) catch unreachable;
+        errdefer buffer.delete(pos, content.len) catch {};
 
         // Undo用に記録（1回の操作として記録）
         try self.recordInsert(pos, content, pos);
@@ -3759,8 +3753,8 @@ pub const Editor = struct {
         // 置換した行から再描画
         // マッチテキスト・置換文字列に改行が含まれる場合は行数が変わるため全画面再描画
         // 同一バッファを表示している全ウィンドウを更新
-        const has_newline = std.mem.indexOf(u8, old_text, "\n") != null or
-            std.mem.indexOf(u8, replacement, "\n") != null;
+        const has_newline = std.mem.indexOfScalar(u8, old_text, '\n') != null or
+            std.mem.indexOfScalar(u8, replacement, '\n') != null;
         if (has_newline) {
             self.markAllViewsFullRedrawForBuffer(buffer_state.id);
         } else {

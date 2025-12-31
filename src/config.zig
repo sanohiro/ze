@@ -149,6 +149,20 @@ pub const Window = struct {
     pub const MIN_HEIGHT: usize = 3;
 };
 
+/// ビュー関連の定数
+pub const View = struct {
+    /// 行幅キャッシュのサイズ（行数）
+    pub const LINE_WIDTH_CACHE_SIZE: usize = 128;
+    /// 1行あたりの最大ハイライトマッチ数
+    pub const MAX_MATCHES_PER_LINE: usize = 100;
+};
+
+/// 検索関連の定数
+pub const Search = struct {
+    /// 後方スキャンのチャンクサイズ（バイト）
+    pub const BACKWARD_CHUNK_SIZE: usize = 256;
+};
+
 /// エディタ動作の定数
 pub const Editor = struct {
     /// Undo/Redoスタックの最大エントリ数
@@ -233,7 +247,6 @@ pub const Messages = struct {
     pub const COMMAND_START_FAILED = "Failed to start command";
     pub const COMMAND_FAILED = "Command failed";
     pub const NO_MATCH = "No match";
-    pub const NO_MATCH_FOUND = "No match found";
     pub const NO_COMMAND_SPECIFIED = "No command specified";
     pub const SHELL_RUNNING = "Running... (C-g to cancel)";
     pub const CANCELLED = "Cancelled";

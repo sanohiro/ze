@@ -25,21 +25,6 @@ pub const SearchMatch = struct {
     len: usize,
 };
 
-/// 検索状態
-pub const SearchState = struct {
-    start_pos: ?usize, // 検索開始位置
-    last_search: ?[]const u8, // 最後の検索パターン
-    is_forward: bool, // 前方検索かどうか
-};
-
-/// 置換状態
-pub const ReplaceState = struct {
-    search: ?[]const u8, // 検索パターン
-    replacement: ?[]const u8, // 置換文字列
-    current_pos: ?usize, // 現在のマッチ位置
-    match_count: usize, // 置換回数
-};
-
 /// 正規表現キャッシュエントリ（LRU用）
 const RegexCacheEntry = struct {
     pattern: []const u8,
@@ -313,9 +298,10 @@ pub const SearchService = struct {
 
     /// Buffer直接検索（コピーなし、リテラル検索専用）
     /// 呼び出し側が既にリテラル検索であることを確認している前提
-    /// 前方検索: カーソルはマッチ終端（skip_currentでもバイト加算は不要）
-    /// 後方検索: カーソルはマッチ先頭（skip_currentでstart_posまで検索でOK）
-    pub fn searchBuffer(_: *Self, buffer: *const Buffer, pattern: []const u8, start_pos: usize, forward: bool, skip_current: bool) ?SearchMatch {
+    /// skip_currentはAPI互換性のためのパラメータ（この検索では不使用）
+    /// - 前方検索: カーソルは既にマッチ終端にあるのでスキップ不要
+    /// - 後方検索: カーソルは既にマッチ先頭にあるのでそのまま検索
+    pub fn searchBuffer(_: *Self, buffer: *const Buffer, pattern: []const u8, start_pos: usize, forward: bool, _: bool) ?SearchMatch {
         if (forward) {
             // 前方検索: カーソル位置から検索（カーソルは既にマッチ終端なのでスキップ不要）
             if (buffer.searchForwardWrap(pattern, start_pos)) |match| {
@@ -324,9 +310,7 @@ pub const SearchService = struct {
         } else {
             // 後方検索: カーソルはマッチ先頭にあるので、start_posより前を検索
             // searchBackwardWrapは[0..search_from)を検索するので、start_posでOK
-            const search_from = start_pos;
-            _ = skip_current; // 後方検索ではカーソルがマッチ先頭なのでそのまま使用
-            if (buffer.searchBackwardWrap(pattern, search_from)) |match| {
+            if (buffer.searchBackwardWrap(pattern, start_pos)) |match| {
                 return .{ .start = match.start, .len = match.len };
             }
         }

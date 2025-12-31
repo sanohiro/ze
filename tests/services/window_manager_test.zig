@@ -78,15 +78,6 @@ test "WindowManager - iterator empty" {
     try testing.expectEqual(@as(usize, 0), windows.len);
 }
 
-test "WindowManager - iteratorConst empty" {
-    var wm = WindowManager.init(testing.allocator, 80, 24);
-    defer wm.deinit();
-
-    const const_wm: *const WindowManager = &wm;
-    const windows = const_wm.iteratorConst();
-    try testing.expectEqual(@as(usize, 0), windows.len);
-}
-
 // ============================================================
 // Window struct tests
 // ============================================================

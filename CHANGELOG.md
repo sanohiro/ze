@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2025-12-31
+
+### Refactored
+- Removed unused imports: `History`, `HistoryType` from editor.zig, `input` from minibuffer.zig
+- Removed unused code: `iteratorConst()` from buffer_manager/window_manager, `SearchState`/`ReplaceState` from search_service
+- Deleted duplicate/implementation-less tests from input_test.zig, buffer_manager_test.zig, window_manager_test.zig
+- Consolidated shell error checking into shared helper function
+
+### Performance
+- Inline hot-path functions:
+  - keymap.zig: `findCtrl()`, `findAlt()`, `findSpecial()`
+  - history.zig: `matchesPrefix()`
+  - syntax.zig: `hasComments()`
+  - macro_service.zig: `getLastMacro()`, `isRecording()`, `beginPlayback()`, `endPlayback()`, `isPlaying()`, `recordedKeyCount()`
+  - buffer.zig: `len()`
+  - editing_context.zig: `len()`, `lineCount()`
+  - input.zig: `available()`
+  - view.zig: `getError()`, `getSearchHighlight()`
+- Replaced hardcoded constants with config values for maintainability
+
+### Fixed
+- input_test.zig: Removed unused variable in Ctrl key mapping test
+
 ## [1.2.1] - 2025-12-31
 
 ### Fixed

@@ -114,7 +114,7 @@ pub const History = struct {
     }
 
     /// エントリがプレフィックスにマッチするかチェック
-    fn matchesPrefix(self: *const History, entry: []const u8) bool {
+    inline fn matchesPrefix(self: *const History, entry: []const u8) bool {
         if (self.filter_prefix) |prefix| {
             return std.mem.startsWith(u8, entry, prefix);
         }

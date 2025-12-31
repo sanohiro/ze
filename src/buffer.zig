@@ -467,29 +467,6 @@ pub const LineIndex = struct {
     }
 };
 
-/// バッファの内部コンポーネント（ArrayListとLineIndex）を初期化
-/// エラーハンドリングを統一し、コードの重複を削減する
-fn initBufferComponents(allocator: std.mem.Allocator) !struct {
-    add_buffer: std.ArrayList(u8),
-    pieces: std.ArrayList(Piece),
-    line_index: LineIndex,
-} {
-    var add_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
-    errdefer add_buffer.deinit(allocator);
-
-    var pieces = try std.ArrayList(Piece).initCapacity(allocator, 0);
-    errdefer pieces.deinit(allocator);
-
-    const line_index = LineIndex.init(allocator);
-    // line_index.init()はアロケーションしないのでerrdefer不要
-
-    return .{
-        .add_buffer = add_buffer,
-        .pieces = pieces,
-        .line_index = line_index,
-    };
-}
-
 /// Piece Table バッファ: テキストエディタの中核データ構造
 ///
 /// 【概要】
@@ -677,13 +654,7 @@ pub const Buffer = struct {
             }
 
             // UTF-8 + LF以外 → mmapデータを直接変換（再読み込み不要）
-            // サポート外のエンコーディングはエラー
-            if (detected.encoding == .Unknown) {
-                std.posix.munmap(mapped_ptr[0..file_size]);
-                return error.UnsupportedEncoding;
-            }
-
-            // mmapデータから直接変換（I/O削減）
+            // 注: .Unknownは既に上でBinaryFileとして処理済み
             const result = try loadFromMappedContent(allocator, mapped, detected, stat.mtime);
             std.posix.munmap(mapped_ptr[0..file_size]);
             return result;
@@ -976,25 +947,21 @@ pub const Buffer = struct {
         const current_gid = getCurrentGid();
         var ownership_warning: ?[]const u8 = null;
 
-        if (original_uid != null or original_gid != null) {
-            // 元の所有権が現在のユーザーと異なる場合（UIDまたはGIDのどちらかが異なる）
-            const uid_changed = if (original_uid) |ouid| ouid != current_uid else false;
-            const gid_changed = if (original_gid) |ogid| ogid != current_gid else false;
-            if (uid_changed or gid_changed) {
-                // ファイルを再度開いてfchownで所有権を復元
-                if (std.fs.cwd().openFile(real_path, .{ .mode = .read_write })) |file| {
-                    defer file.close();
-                    std.posix.fchown(file.handle, original_uid, original_gid) catch {
-                        // 権限エラー：所有権が変更されることを警告
-                        ownership_warning = "Warning: file ownership changed (permission denied for chown)";
-                    };
-                } else |_| {}
-            }
+        // 元の所有権が現在のユーザーと異なる場合のみchown
+        const needs_chown = (original_uid != null and original_uid.? != current_uid) or
+            (original_gid != null and original_gid.? != current_gid);
+        if (needs_chown) {
+            if (std.fs.cwd().openFile(real_path, .{ .mode = .read_write })) |file| {
+                defer file.close();
+                std.posix.fchown(file.handle, original_uid, original_gid) catch {
+                    ownership_warning = "Warning: file ownership changed (permission denied for chown)";
+                };
+            } else |_| {}
         }
         return ownership_warning;
     }
 
-    pub fn len(self: *const Buffer) usize {
+    pub inline fn len(self: *const Buffer) usize {
         return self.total_len;
     }
 

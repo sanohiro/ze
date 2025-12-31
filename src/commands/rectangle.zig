@@ -1,7 +1,9 @@
 const std = @import("std");
 const config = @import("config");
 const Editor = @import("editor").Editor;
-const PieceIterator = @import("buffer").PieceIterator;
+const buffer_mod = @import("buffer");
+const Buffer = buffer_mod.Buffer;
+const PieceIterator = buffer_mod.PieceIterator;
 const EditingContext = @import("editing_context").EditingContext;
 
 // ========================================
@@ -24,7 +26,7 @@ const LineBounds = struct {
     end: usize,
 };
 
-fn getLineBounds(buffer: anytype, line_num: usize) ?LineBounds {
+fn getLineBounds(buffer: *Buffer, line_num: usize) ?LineBounds {
     const line_start = buffer.getLineStart(line_num) orelse return null;
     const next_line_start = buffer.getLineStart(line_num + 1);
     const line_end = if (next_line_start) |nls|
@@ -49,7 +51,7 @@ const ColumnSeekResult = struct {
 };
 
 /// イテレータをtarget_colまで進める共通処理
-fn advanceToColumn(iter: anytype, line_end: usize, start_col: usize, target_col: usize, tab_width: usize) ColumnSeekResult {
+fn advanceToColumn(iter: *PieceIterator, line_end: usize, start_col: usize, target_col: usize, tab_width: usize) ColumnSeekResult {
     var current_col = start_col;
     while (iter.global_pos < line_end and current_col < target_col) {
         const gc = iter.nextGraphemeCluster() catch break;
@@ -71,12 +73,12 @@ fn getColumnByteRangeReusing(iter: *PieceIterator, line_bounds: LineBounds, left
     return .{ .start = left_result.byte_pos, .end = right_result.byte_pos };
 }
 
-fn getColumnByteRange(buffer: anytype, line_bounds: LineBounds, left_col: usize, right_col: usize, tab_width: usize) ByteRange {
+fn getColumnByteRange(buffer: *Buffer, line_bounds: LineBounds, left_col: usize, right_col: usize, tab_width: usize) ByteRange {
     var iter = PieceIterator.init(buffer);
     return getColumnByteRangeReusing(&iter, line_bounds, left_col, right_col, tab_width);
 }
 
-fn seekToColumn(buffer: anytype, line_bounds: LineBounds, target_col: usize, tab_width: usize) ColumnSeekResult {
+fn seekToColumn(buffer: *Buffer, line_bounds: LineBounds, target_col: usize, tab_width: usize) ColumnSeekResult {
     var iter = PieceIterator.init(buffer);
     iter.seek(line_bounds.start);
     return advanceToColumn(&iter, line_bounds.end, 0, target_col, tab_width);
@@ -102,7 +104,7 @@ fn extractBytesReusing(allocator: std.mem.Allocator, iter: *PieceIterator, start
 }
 
 /// バッファからバイト範囲のテキストを抽出
-fn extractBytes(allocator: std.mem.Allocator, buffer: anytype, start: usize, end: usize) ![]const u8 {
+fn extractBytes(allocator: std.mem.Allocator, buffer: *Buffer, start: usize, end: usize) ![]const u8 {
     var iter = PieceIterator.init(buffer);
     return extractBytesReusing(allocator, &iter, start, end);
 }
@@ -393,10 +395,11 @@ fn createPaddedText(allocator: std.mem.Allocator, padding: usize, text: []const 
     var padded = std.ArrayList(u8).initCapacity(allocator, padding + text.len) catch return null;
     errdefer padded.deinit(allocator);
 
+    // 容量は事前確保済みなのでAssumeCapacityを使用
     for (0..padding) |_| {
-        padded.append(allocator, ' ') catch return null;
+        padded.appendAssumeCapacity(' ');
     }
-    padded.appendSlice(allocator, text) catch return null;
+    padded.appendSliceAssumeCapacity(text);
 
     return padded.toOwnedSlice(allocator) catch null;
 }

@@ -94,7 +94,7 @@ pub const LanguageDef = struct {
     };
 
     /// コメント定義があるかどうか
-    pub fn hasComments(self: *const LanguageDef) bool {
+    pub inline fn hasComments(self: *const LanguageDef) bool {
         return self.line_comment != null or self.block_comment != null;
     }
 

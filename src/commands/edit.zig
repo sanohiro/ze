@@ -30,7 +30,7 @@ fn deleteRangeCommon(e: *Editor, start: usize, len: usize, cursor_pos_for_undo: 
     errdefer e.allocator.free(deleted);
 
     try buffer.delete(start, len);
-    errdefer buffer.insertSlice(start, deleted) catch unreachable;
+    errdefer buffer.insertSlice(start, deleted) catch {};
     try e.recordDelete(start, deleted, cursor_pos_for_undo);
 
     buffer_state.editing_ctx.modified = true;
@@ -131,7 +131,7 @@ pub fn backspace(e: *Editor) !void {
     if (deleted == null) return;
     defer e.allocator.free(deleted.?);
 
-    const is_newline = std.mem.indexOf(u8, deleted.?, "\n") != null;
+    const is_newline = std.mem.indexOfScalar(u8, deleted.?, '\n') != null;
     const is_tab = char_base == '\t';
 
     // カーソル移動（タブや改行は位置再計算が必要）
@@ -244,7 +244,7 @@ pub fn yank(e: *Editor) !void {
     const pos = e.getCurrentView().getCursorBufferPos();
 
     try buffer.insertSlice(pos, text);
-    errdefer buffer.delete(pos, text.len) catch unreachable;
+    errdefer buffer.delete(pos, text.len) catch {};
     try e.recordInsert(pos, text, pos);
 
     buffer_state.editing_ctx.modified = true;
@@ -334,7 +334,7 @@ pub fn joinLine(e: *Editor) !void {
 
     if (delete_len > 0) {
         const deleted = try e.extractText(delete_start, delete_len);
-        errdefer e.allocator.free(deleted);
+        defer e.allocator.free(deleted);
 
         try buffer.delete(delete_start, delete_len);
         // 削除後のロールバック用errdefer（recordDeleteが失敗した場合）
@@ -364,8 +364,6 @@ pub fn joinLine(e: *Editor) !void {
         e.markCurrentBufferFullRedraw();
 
         e.setCursorToPos(delete_start);
-
-        e.allocator.free(deleted);
     }
 }
 
@@ -816,10 +814,6 @@ pub fn getCurrentLineIndent(e: *Editor) []const u8 {
 
     return Static.buf[0..indent_len];
 }
-
-// ========================================
-// ヘルパー関数
-// ========================================
 
 /// 行頭の空白（スペース/タブ）をスキップした位置を返す
 fn skipLeadingWhitespace(line: []const u8) usize {

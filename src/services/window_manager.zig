@@ -383,9 +383,4 @@ pub const WindowManager = struct {
     pub fn iterator(self: *Self) []Window {
         return self.windows.items;
     }
-
-    /// 全ウィンドウのイテレータ（const版）
-    pub fn iteratorConst(self: *const Self) []const Window {
-        return self.windows.items;
-    }
 };

@@ -207,18 +207,6 @@ test "BufferManager - iterator" {
     try testing.expectEqual(@as(usize, 3), buffers.len);
 }
 
-test "BufferManager - iteratorConst" {
-    var bm = BufferManager.init(testing.allocator);
-    defer bm.deinit();
-
-    _ = try bm.createBuffer();
-    _ = try bm.createBuffer();
-
-    const const_bm: *const BufferManager = &bm;
-    const buffers = const_bm.iteratorConst();
-    try testing.expectEqual(@as(usize, 2), buffers.len);
-}
-
 test "BufferManager - getFirst" {
     var bm = BufferManager.init(testing.allocator);
     defer bm.deinit();
