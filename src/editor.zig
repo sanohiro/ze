@@ -3932,6 +3932,33 @@ pub const Editor = struct {
         return false;
     }
 
+    /// シェル出力で範囲を置換する共通処理
+    /// start位置からlengthバイトを削除し、contentを挿入する
+    fn replaceRangeWithShellOutput(self: *Editor, start: usize, length: usize, content: []const u8, cursor_after: ?usize, clear_mark: bool) !void {
+        const buf = self.getCurrentBufferContent();
+        const cursor_pos = self.getCurrentView().getCursorBufferPos();
+
+        // 既存コンテンツを削除（undo記録付き）
+        if (length > 0) {
+            const old = try buf.getRange(self.allocator, start, length);
+            defer self.allocator.free(old);
+            try buf.delete(start, length);
+            try self.recordDelete(start, old, cursor_pos);
+        }
+
+        // 新しいコンテンツを挿入（undo記録付き）
+        if (content.len > 0) {
+            try buf.insertSlice(start, content);
+            try self.recordInsert(start, content, start);
+        }
+
+        // 状態更新
+        self.getCurrentBuffer().editing_ctx.modified = true;
+        if (cursor_after) |pos| self.setCursorToPos(pos);
+        if (clear_mark) self.window_manager.getCurrentWindow().mark_pos = null;
+        self.markAllViewsFullRedrawForBuffer(self.getCurrentBuffer().id);
+    }
+
     /// シェル実行結果を処理
     fn processShellResult(self: *Editor, stdout: []const u8, stderr: []const u8, exit_status: ?u32, input_source: ShellInputSource, output_dest: ShellOutputDest, truncated: bool) !void {
         const window = self.window_manager.getCurrentWindow();
@@ -4041,117 +4068,52 @@ pub const Editor = struct {
                     self.getCurrentView().setError(msg);
                 }
             },
-            .replace => {
-                // コマンドが失敗した場合は置換しない
+            .replace, .insert => {
+                // コマンドが失敗した場合は置換/挿入しない
                 if (self.checkShellError(exit_status, ", buffer unchanged", truncated_suffix)) return;
-                // 読み取り専用バッファでは置換を禁止
+                // 読み取り専用バッファでは置換/挿入を禁止
                 if (self.isReadOnly()) {
                     self.getCurrentView().setError(config.Messages.BUFFER_READONLY);
                     return;
                 }
-                // 入力元を置換
-                switch (input_source) {
-                    .selection => {
-                        if (window.mark_pos) |mark| {
-                            const cursor_pos = self.getCurrentView().getCursorBufferPos();
-                            const start = @min(mark, cursor_pos);
-                            const end_pos = @max(mark, cursor_pos);
-                            if (end_pos > start) {
-                                // 削除してから挿入
-                                const buf = self.getCurrentBufferContent();
-                                const deleted = try buf.getRange(self.allocator, start, end_pos - start);
-                                defer self.allocator.free(deleted);
-                                try buf.delete(start, end_pos - start);
-                                try self.recordDelete(start, deleted, cursor_pos);
-
-                                if (stdout.len > 0) {
-                                    try buf.insertSlice(start, stdout);
-                                    try self.recordInsert(start, stdout, start);
-                                }
-                                self.getCurrentBuffer().editing_ctx.modified = true;
-                                self.setCursorToPos(start);
-                                self.window_manager.getCurrentWindow().mark_pos = null; // マークをクリア
-                                // シェル出力は行数が変わる可能性があるため全画面再描画
-                                // 同一バッファを表示している全ウィンドウを更新
-                                self.markAllViewsFullRedrawForBuffer(self.getCurrentBuffer().id);
-                            }
-                        } else {
-                            // 選択なしの場合はカーソル位置に挿入（+> と同じ動作）
-                            if (stdout.len > 0) {
-                                const pos = self.getCurrentView().getCursorBufferPos();
-                                const buf = self.getCurrentBufferContent();
-                                try buf.insertSlice(pos, stdout);
-                                try self.recordInsert(pos, stdout, pos);
-                                self.getCurrentBuffer().editing_ctx.modified = true;
-                                // シェル出力は行数が変わる可能性があるため全画面再描画
-                                // 同一バッファを表示している全ウィンドウを更新
-                                self.markAllViewsFullRedrawForBuffer(self.getCurrentBuffer().id);
-                            }
-                        }
+                // 置換/挿入の開始位置と長さを計算
+                const replace_info: struct { start: usize, length: usize, cursor_after: usize, clear_mark: bool } = switch (input_source) {
+                    .selection => if (window.mark_pos) |mark| blk: {
+                        const cursor_pos = self.getCurrentView().getCursorBufferPos();
+                        const start = @min(mark, cursor_pos);
+                        const end_pos = @max(mark, cursor_pos);
+                        // .insertの場合、または選択範囲が空の場合は挿入のみ
+                        const length = if (output_dest == .insert or end_pos <= start) 0 else end_pos - start;
+                        break :blk .{ .start = start, .length = length, .cursor_after = start, .clear_mark = length > 0 };
+                    } else blk: {
+                        // 選択なしの場合はカーソル位置に挿入
+                        const pos = self.getCurrentView().getCursorBufferPos();
+                        break :blk .{ .start = pos, .length = 0, .cursor_after = pos, .clear_mark = false };
                     },
-                    .buffer_all => {
-                        // バッファ全体を置換
-                        const buf = self.getCurrentBufferContent();
-                        const total_len = buf.total_len;
-                        if (total_len > 0) {
-                            const old_content = try buf.getRange(self.allocator, 0, total_len);
-                            defer self.allocator.free(old_content);
-                            try buf.delete(0, total_len);
-                            try self.recordDelete(0, old_content, self.getCurrentView().getCursorBufferPos());
-                        }
-                        if (stdout.len > 0) {
-                            try buf.insertSlice(0, stdout);
-                            try self.recordInsert(0, stdout, 0);
-                        }
-                        self.getCurrentBuffer().editing_ctx.modified = true;
-                        self.setCursorToPos(0);
-                        // シェル出力は行数が変わる可能性があるため全画面再描画
-                        // 同一バッファを表示している全ウィンドウを更新
-                        self.markAllViewsFullRedrawForBuffer(self.getCurrentBuffer().id);
+                    .buffer_all => .{
+                        .start = 0,
+                        .length = if (output_dest == .insert) 0 else self.getCurrentBufferContent().total_len,
+                        .cursor_after = 0,
+                        .clear_mark = false,
                     },
-                    .current_line => {
-                        // 現在行を置換
+                    .current_line => blk: {
                         const line_num = self.getCurrentView().top_line + self.getCurrentView().cursor_y;
-                        var buf = self.getCurrentBufferContent();
+                        const buf = self.getCurrentBufferContent();
                         const line_start = buf.getLineStart(line_num) orelse 0;
-                        const next_line_start = buf.getLineStart(line_num + 1);
-                        const line_end = if (next_line_start) |ns| ns else buf.total_len;
-                        if (line_end > line_start) {
-                            const old_line = try buf.getRange(self.allocator, line_start, line_end - line_start);
-                            defer self.allocator.free(old_line);
-                            try buf.delete(line_start, line_end - line_start);
-                            try self.recordDelete(line_start, old_line, self.getCurrentView().getCursorBufferPos());
-                        }
-                        if (stdout.len > 0) {
-                            try buf.insertSlice(line_start, stdout);
-                            try self.recordInsert(line_start, stdout, line_start);
-                        }
-                        self.getCurrentBuffer().editing_ctx.modified = true;
-                        self.setCursorToPos(line_start);
-                        // シェル出力は行数が変わる可能性があるため全画面再描画
-                        // 同一バッファを表示している全ウィンドウを更新
-                        self.markAllViewsFullRedrawForBuffer(self.getCurrentBuffer().id);
+                        const line_end = if (buf.getLineStart(line_num + 1)) |ns| ns else buf.total_len;
+                        const length = if (output_dest == .insert) 0 else line_end - line_start;
+                        break :blk .{ .start = line_start, .length = length, .cursor_after = line_start, .clear_mark = false };
                     },
-                }
-            },
-            .insert => {
-                // コマンドが失敗した場合は挿入しない
-                if (self.checkShellError(exit_status, ", buffer unchanged", truncated_suffix)) return;
-                // 読み取り専用バッファでは挿入を禁止
-                if (self.isReadOnly()) {
-                    self.getCurrentView().setError(config.Messages.BUFFER_READONLY);
-                    return;
-                }
-                // カーソル位置に挿入
-                if (stdout.len > 0) {
-                    const pos = self.getCurrentView().getCursorBufferPos();
-                    const buf = self.getCurrentBufferContent();
-                    try buf.insertSlice(pos, stdout);
-                    try self.recordInsert(pos, stdout, pos);
-                    self.getCurrentBuffer().editing_ctx.modified = true;
-                    // シェル出力は行数が変わる可能性があるため全画面再描画
-                    // 同一バッファを表示している全ウィンドウを更新
-                    self.markAllViewsFullRedrawForBuffer(self.getCurrentBuffer().id);
+                };
+                // stdoutが空の場合でも削除は行う（置換対象を消す）
+                if (stdout.len > 0 or replace_info.length > 0) {
+                    try self.replaceRangeWithShellOutput(
+                        replace_info.start,
+                        replace_info.length,
+                        stdout,
+                        replace_info.cursor_after,
+                        replace_info.clear_mark,
+                    );
                 }
             },
             .new_buffer => {

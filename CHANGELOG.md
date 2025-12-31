@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed unused code: `iteratorConst()` from buffer_manager/window_manager, `SearchState`/`ReplaceState` from search_service
 - Deleted duplicate/implementation-less tests from input_test.zig, buffer_manager_test.zig, window_manager_test.zig
 - Consolidated shell error checking into shared helper function
+- Unified `.replace` and `.insert` shell output handling with `replaceRangeWithShellOutput()` helper (~50 lines reduced)
 
 ### Performance
 - Inline hot-path functions:
