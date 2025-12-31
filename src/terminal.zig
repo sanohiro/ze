@@ -20,7 +20,6 @@
 
 const std = @import("std");
 const posix = std.posix;
-const io = std.io;
 const config = @import("config");
 
 /// グローバルリサイズフラグ（SIGWINCHハンドラから設定）

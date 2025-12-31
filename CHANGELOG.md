@@ -8,11 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.2.2] - 2025-12-31
 
 ### Refactored
-- Removed unused imports: `History`, `HistoryType` from editor.zig, `input` from minibuffer.zig
+- Removed unused imports: `History`, `HistoryType` from editor.zig, `input` from minibuffer.zig, `regex` from editor.zig, `EditingContext` from rectangle.zig
 - Removed unused code: `iteratorConst()` from buffer_manager/window_manager, `SearchState`/`ReplaceState` from search_service
 - Deleted duplicate/implementation-less tests from input_test.zig, buffer_manager_test.zig, window_manager_test.zig
 - Consolidated shell error checking into shared helper function
 - Unified `.replace` and `.insert` shell output handling with `replaceRangeWithShellOutput()` helper (~50 lines reduced)
+- Consolidated special buffer creation with `getOrCreateSpecialBuffer()` helper (~20 lines reduced)
+- Query Replace prompts centralized in `config.QueryReplace` struct
+- Confirmation messages moved to `config.Messages` constants (`CONFIRM_YES_NO`, `CONFIRM_YES_NO_CANCEL`, `CONFIRM_REPLACE`)
+- Additional constants added to config.zig: `ASCII.BACKSPACE`, `Editor.MAX_TAB_WIDTH`, `Editor.INDENT_BUF_SIZE`, etc.
+- Removed stale comment from editing_context.zig
+
+### Fixed
+- rectangle.zig: Fixed potential memory leak on ArrayList append failure (4 locations)
+- rectangle.zig: Simplified `getLineBounds()` using `buffer.getLineRange()`
 
 ### Performance
 - Inline hot-path functions:

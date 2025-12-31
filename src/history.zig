@@ -51,12 +51,7 @@ pub const History = struct {
             self.allocator.free(entry);
         }
         self.entries.deinit(self.allocator);
-        if (self.temp_input) |temp| {
-            self.allocator.free(temp);
-        }
-        if (self.filter_prefix) |prefix| {
-            self.allocator.free(prefix);
-        }
+        self.clearNavState();
     }
 
     /// 履歴にエントリを追加
@@ -89,28 +84,32 @@ pub const History = struct {
 
     /// ナビゲーション開始（現在の入力を保存、プレフィックスフィルタとして使用）
     pub fn startNavigation(self: *History, current_input: []const u8) !void {
-        // 先にdupeしてからfreeする（dupe失敗時のダングリングポインタ防止）
+        // 先に両方dupeする（片方失敗時のメモリリーク防止）
         const new_temp = try self.allocator.dupe(u8, current_input);
-        if (self.temp_input) |old| {
-            self.allocator.free(old);
-        }
-        self.temp_input = new_temp;
+        errdefer self.allocator.free(new_temp);
 
-        // プレフィックスフィルタを設定（空でなければ）
-        if (current_input.len > 0) {
-            const new_prefix = try self.allocator.dupe(u8, current_input);
-            if (self.filter_prefix) |old| {
-                self.allocator.free(old);
-            }
-            self.filter_prefix = new_prefix;
-        } else {
-            if (self.filter_prefix) |old| {
-                self.allocator.free(old);
-            }
+        const new_prefix: ?[]const u8 = if (current_input.len > 0)
+            try self.allocator.dupe(u8, current_input)
+        else
+            null;
+
+        // 両方成功したので古いものを解放して新しいものを設定
+        self.clearNavState();
+        self.temp_input = new_temp;
+        self.filter_prefix = new_prefix;
+        self.current_index = null;
+    }
+
+    /// ナビゲーション状態のメモリを解放（共通処理）
+    fn clearNavState(self: *History) void {
+        if (self.temp_input) |temp| {
+            self.allocator.free(temp);
+            self.temp_input = null;
+        }
+        if (self.filter_prefix) |prefix| {
+            self.allocator.free(prefix);
             self.filter_prefix = null;
         }
-
-        self.current_index = null;
     }
 
     /// エントリがプレフィックスにマッチするかチェック
@@ -183,14 +182,7 @@ pub const History = struct {
     /// ナビゲーション状態をリセット
     pub fn resetNavigation(self: *History) void {
         self.current_index = null;
-        if (self.temp_input) |temp| {
-            self.allocator.free(temp);
-            self.temp_input = null;
-        }
-        if (self.filter_prefix) |prefix| {
-            self.allocator.free(prefix);
-            self.filter_prefix = null;
-        }
+        self.clearNavState();
     }
 
     /// ~/.ze/ ディレクトリのパスを取得

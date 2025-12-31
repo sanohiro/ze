@@ -1530,9 +1530,9 @@ pub const Buffer = struct {
 
     // バイト位置から列番号を計算（表示幅ベース）
     // 日本語やCJK文字は2カラム、ASCII文字は1カラムとして計算
-    // タブはデフォルト幅8で計算
+    // タブはconfig.Editor.TAB_WIDTHで計算
     pub fn findColumnByPos(self: *Buffer, pos: usize) usize {
-        return self.findColumnByPosWithTabWidth(pos, 8);
+        return self.findColumnByPosWithTabWidth(pos, config.Editor.TAB_WIDTH);
     }
 
     // バイト位置から列番号を計算（タブ幅指定版）
@@ -1547,7 +1547,7 @@ pub const Buffer = struct {
         iter.seek(line_start);
 
         var col: usize = 0;
-        const tw: usize = if (tab_width == 0) 8 else tab_width;
+        const tw: usize = if (tab_width == 0) config.Editor.TAB_WIDTH else tab_width;
         while (iter.global_pos < pos) {
             const gc = iter.nextGraphemeCluster() catch break orelse break;
             // タブは次のタブストップまで進める

@@ -424,8 +424,9 @@ fn pageScroll(e: *Editor, direction: enum { up, down }) void {
     const total_lines = buffer.lineCount();
     if (total_lines == 0) return;
 
-    const page_size = if (view.viewport_height >= 3) view.viewport_height - 2 else 1;
-    const max_cursor_y = if (view.viewport_height >= 2) view.viewport_height - 2 else 0;
+    const reserved = config.Editor.VIEWPORT_RESERVED_LINES;
+    const page_size = if (view.viewport_height >= reserved + 1) view.viewport_height - reserved else 1;
+    const max_cursor_y = if (view.viewport_height >= reserved) view.viewport_height - reserved else 0;
     const max_line = if (total_lines > 0) total_lines - 1 else 0;
 
     const current_line = view.top_line + view.cursor_y;
@@ -500,7 +501,8 @@ fn pageScroll(e: *Editor, direction: enum { up, down }) void {
 /// C-l: 画面を中央に再配置
 pub fn recenter(e: *Editor) !void {
     const view = e.getCurrentView();
-    const visible_lines = if (view.viewport_height >= 2) view.viewport_height - 2 else 1;
+    const reserved = config.Editor.VIEWPORT_RESERVED_LINES;
+    const visible_lines = if (view.viewport_height >= reserved) view.viewport_height - reserved else 1;
     const center = visible_lines / 2;
     const current_line = view.top_line + view.cursor_y;
     const old_top_line = view.top_line;

@@ -383,7 +383,7 @@ pub fn toggleComment(e: *Editor) !void {
         }
         break :blk "#"; // 両方ともnullの場合のみフォールバック
     };
-    var comment_buf: [64]u8 = undefined;
+    var comment_buf: [config.Editor.COMMENT_BUF_SIZE]u8 = undefined;
     const comment_str = std.fmt.bufPrint(&comment_buf, "{s} ", .{line_comment}) catch "# ";
 
     const current_line = e.getCurrentLine();
@@ -720,8 +720,8 @@ pub fn unindentRegion(e: *Editor) !void {
         }
 
         if (spaces_to_remove > 0) {
-            // スタックバッファを使用（タブ幅は最大でも16程度なのでヒープアロケーション不要）
-            var stack_buf: [16]u8 = undefined;
+            // スタックバッファを使用（タブ幅は最大でもINDENT_BUF_SIZEなのでヒープアロケーション不要）
+            var stack_buf: [config.Editor.INDENT_BUF_SIZE]u8 = undefined;
             const deleted = blk: {
                 // イテレータを再利用（seek()キャッシュにより高速）
                 iter.seek(line_start);
@@ -791,9 +791,8 @@ pub fn getCurrentLineIndent(e: *Editor) []const u8 {
 
     // バッファからテキストを取得してインデント部分を抽出
     // 静的バッファを使用して安全にスライスを返す
-    const max_indent = 256;
     const Static = struct {
-        var buf: [max_indent]u8 = undefined;
+        var buf: [config.Editor.MAX_INDENT_LENGTH]u8 = undefined;
     };
     var indent_len: usize = 0;
 
@@ -803,7 +802,7 @@ pub fn getCurrentLineIndent(e: *Editor) []const u8 {
 
     while (iter.next()) |byte| {
         if (byte == ' ' or byte == '\t') {
-            if (indent_len < max_indent) {
+            if (indent_len < config.Editor.MAX_INDENT_LENGTH) {
                 Static.buf[indent_len] = byte;
                 indent_len += 1;
             }

@@ -128,7 +128,7 @@ fn cmdTab(e: *Editor, arg: ?[]const u8) !void {
             e.getCurrentView().setError(config.Messages.MX_INVALID_TAB_WIDTH);
             return;
         };
-        if (width == 0 or width > 16) {
+        if (width == 0 or width > config.Editor.MAX_TAB_WIDTH) {
             e.getCurrentView().setError(config.Messages.MX_TAB_WIDTH_RANGE);
             return;
         }

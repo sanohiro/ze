@@ -294,10 +294,13 @@ pub const ShellService = struct {
         // 先頭の空白をスキップ
         while (cmd_start < cmd.len and cmd[cmd_start] == ' ') : (cmd_start += 1) {}
 
-        // プレフィックス解析
-        if (cmd_start < cmd.len) {
+        // プレフィックス解析（引用符内でない場合のみ）
+        // 注意: 先頭位置なのでisPositionInsideQuotesは常にfalseだが、
+        // '%foo'のような入力でも'%'が先頭にある場合を考慮
+        if (cmd_start < cmd.len and !isPositionInsideQuotes(cmd, cmd_start)) {
             if (cmd[cmd_start] == '%') {
                 // "% " または "%|" の場合のみバッファ全体プレフィックス
+                // '%foo' のようにクォートされている場合は通常コマンド
                 const next_idx = cmd_start + 1;
                 if (next_idx >= cmd.len or cmd[next_idx] == ' ' or cmd[next_idx] == '|') {
                     input_source = .buffer_all;
@@ -769,6 +772,7 @@ pub const ShellService = struct {
         while (iter.next()) |line| {
             if (line.len > 0) {
                 const duped = try self.allocator.dupe(u8, line);
+                errdefer self.allocator.free(duped); // append失敗時のリーク防止
                 try lines.append(self.allocator, duped);
             }
         }
@@ -790,16 +794,43 @@ pub const ShellService = struct {
     }
 
     /// 入力から最後のトークン（補完対象）を取得
+    /// クォートとバックスラッシュエスケープを考慮
     fn getLastToken(input: []const u8) []const u8 {
-        // 後ろから空白を探す
-        var i = input.len;
-        while (i > 0) {
-            i -= 1;
-            if (input[i] == ' ' or input[i] == '\t' or input[i] == '|' or input[i] == ';') {
-                return input[i + 1 ..];
+        var in_single = false;
+        var in_double = false;
+        var last_delim_end: usize = 0; // 最後の区切り文字の次の位置
+
+        var i: usize = 0;
+        while (i < input.len) {
+            const c = input[i];
+
+            // バックスラッシュエスケープ（シングルクォート内では無効）
+            if (c == '\\' and i + 1 < input.len and !in_single) {
+                const next_c = input[i + 1];
+                // ダブルクォート内では \" と \\ のみエスケープ
+                // 引用符外では全てエスケープ
+                if (!in_double or next_c == '"' or next_c == '\\') {
+                    i += 2; // エスケープシーケンスをスキップ
+                    continue;
+                }
             }
+
+            // クォート状態の更新
+            if (c == '\'' and !in_double) {
+                in_single = !in_single;
+            } else if (c == '"' and !in_single) {
+                in_double = !in_double;
+            } else if (!in_single and !in_double) {
+                // 引用符外の区切り文字
+                if (c == ' ' or c == '\t' or c == '|' or c == ';') {
+                    last_delim_end = i + 1;
+                }
+            }
+
+            i += 1;
         }
-        return input;
+
+        return input[last_delim_end..];
     }
 
     /// シェル用にエスケープ（シングルクォート内で使用）

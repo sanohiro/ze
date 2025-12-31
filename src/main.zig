@@ -5,9 +5,19 @@ const encoding = @import("encoding");
 
 const version = build_options.version;
 
+/// 標準出力/エラー出力
+const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
+const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
+
+/// stderr にエラーメッセージを出力
+fn writeError(comptime fmt: []const u8, args: anytype) void {
+    var buf: [512]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, fmt, args) catch return;
+    stderr.writeAll(msg) catch {};
+}
+
 fn printHelp() void {
-    const stdout_file: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
-    stdout_file.writeAll(
+    stdout.writeAll(
         \\ze - Zig Editor / Zero-latency Editor
         \\
         \\Usage: ze [options] [file]
@@ -26,10 +36,9 @@ fn printHelp() void {
 }
 
 fn printVersion() void {
-    const stdout_file: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
     var buf: [32]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, "ze {s}\n", .{version}) catch return;
-    stdout_file.writeAll(msg) catch {};
+    stdout.writeAll(msg) catch {};
 }
 
 /// Exit codes (Unix convention)
@@ -60,10 +69,7 @@ fn checkBinaryFile(path: []const u8) error{BinaryFile}!void {
 
 pub fn main() u8 {
     return mainImpl() catch |err| {
-        const stderr_file: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
-        var buf: [256]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Error: {}\n", .{err}) catch return EXIT_IO_ERROR;
-        stderr_file.writeAll(msg) catch {};
+        writeError("Error: {}\n", .{err});
         return EXIT_IO_ERROR;
     };
 }
@@ -99,13 +105,7 @@ fn mainImpl() !u8 {
             continue;
         } else if (!options_ended and arg.len > 0 and arg[0] == '-') {
             // 未知のオプション
-            const stderr_file: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
-            var buf: [256]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "Unknown option: {s}\n", .{arg}) catch {
-                printHelp();
-                return EXIT_USAGE_ERROR;
-            };
-            stderr_file.writeAll(msg) catch {};
+            writeError("Unknown option: {s}\n", .{arg});
             printHelp();
             return EXIT_USAGE_ERROR;
         } else {
@@ -119,10 +119,7 @@ fn mainImpl() !u8 {
     // ターミナルを代替スクリーンに入れる前にエラーを表示するため
     if (checked_filename) |filename| {
         checkBinaryFile(filename) catch {
-            const stderr_file: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
-            var buf: [256]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "Error: cannot open binary file: {s}\n", .{filename}) catch return EXIT_IO_ERROR;
-            stderr_file.writeAll(msg) catch {};
+            writeError("Error: cannot open binary file: {s}\n", .{filename});
             return EXIT_IO_ERROR;
         };
     }
@@ -135,10 +132,7 @@ fn mainImpl() !u8 {
         editor.loadFile(filename) catch |err| {
             if (err == error.BinaryFile) {
                 // 事前チェックをすり抜けた場合（通常は起きない）
-                const stderr_file: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
-                var buf: [256]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, "Error: cannot open binary file: {s}\n", .{filename}) catch return EXIT_IO_ERROR;
-                stderr_file.writeAll(msg) catch {};
+                writeError("Error: cannot open binary file: {s}\n", .{filename});
                 return EXIT_IO_ERROR;
             } else if (err == error.FileNotFound) {
                 // 新規ファイルの場合、現在のバッファにファイル名を設定

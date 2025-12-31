@@ -96,8 +96,9 @@ pub const Regex = struct {
             self.bitmap[byte_idx] |= (@as(u8, 1) << bit_idx);
         }
 
-        /// 範囲のビットを設定
+        /// 範囲のビットを設定（start > endの場合は何もしない）
         pub fn setRange(self: *CharClass, start: u8, end: u8) void {
+            if (start > end) return; // 無効な範囲（[z-a]等）は無視
             var c = start;
             while (true) {
                 self.setBit(c);

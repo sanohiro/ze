@@ -220,15 +220,6 @@ fn detectAnsiCodes(line: []const u8, content_start: usize) AnsiFlags {
     return .{ .has_gray = has_gray, .has_invert = has_invert };
 }
 
-/// 後方互換性のためのラッパー関数
-fn hasAnsiGray(line: []const u8, content_start: usize) bool {
-    return detectAnsiCodes(line, content_start).has_gray;
-}
-
-fn hasAnsiInvert(line: []const u8, content_start: usize) bool {
-    return detectAnsiCodes(line, content_start).has_invert;
-}
-
 /// View: バッファの表示状態を管理する構造体
 ///
 /// 【差分描画（Differential Rendering）】
@@ -265,6 +256,7 @@ pub const View = struct {
     dirty_start: ?usize, // 再描画が必要な開始行
     dirty_end: ?usize, // 再描画が必要な終了行
     needs_full_redraw: bool, // 全画面再描画が必要か
+    status_bar_dirty: bool, // ステータスバーの再描画が必要か
     prev_screen: std.ArrayList(std.ArrayList(u8)), // 前フレームの各行の内容
     prev_top_line: usize, // 前回のtop_line（スクロール検出用）
     scroll_delta: i32, // スクロール量（将来のスクロール最適化用）
@@ -328,6 +320,7 @@ pub const View = struct {
             .dirty_start = null,
             .dirty_end = null,
             .needs_full_redraw = true,
+            .status_bar_dirty = true,
             .line_buffer = .{},
             .error_msg_buf = undefined,
             .error_msg_len = 0,
@@ -567,58 +560,6 @@ pub const View = struct {
     /// 【バッチ最適化】
     /// 8スペースずつまとめてwrite()することでシステムコール回数を削減。
     ///
-    /// 【ASCII高速パス】
-    /// ASCII文字のみの行は幅1として簡易計算（グラフェム処理をスキップ）。
-    fn padToWidth(self: *View, term: *Terminal, line: []const u8, viewport_width: usize) !void {
-        _ = self;
-        // 表示幅を計算（ANSIエスケープシーケンスを除外）
-        var display_width: usize = 0;
-        var i: usize = 0;
-        var needs_grapheme_scan = false;
-
-        // 第1パス: ASCII高速パス（エスケープシーケンスをスキップしながら）
-        while (i < line.len) {
-            if (skipAnsiSequence(line, i)) |new_pos| {
-                i = new_pos;
-            } else if (unicode.isAsciiByte(line[i])) {
-                // ASCII文字: 幅1
-                display_width += 1;
-                i += 1;
-            } else {
-                // 非ASCII文字: グラフェムスキャンが必要
-                needs_grapheme_scan = true;
-                break;
-            }
-        }
-
-        // 非ASCII文字が見つかった場合は残りをグラフェムクラスタ単位で処理
-        if (needs_grapheme_scan) {
-            while (i < line.len) {
-                if (skipAnsiSequence(line, i)) |new_pos| {
-                    i = new_pos;
-                } else if (unicode.isAsciiByte(line[i])) {
-                    // ASCII文字: 幅1
-                    display_width += 1;
-                    i += 1;
-                } else {
-                    // グラフェムクラスタ単位で処理（ZWJ絵文字等を正しく扱う）
-                    if (unicode.nextGraphemeCluster(line[i..])) |cluster| {
-                        display_width += cluster.display_width;
-                        i += cluster.byte_len;
-                    } else {
-                        i += 1;
-                        display_width += 1;
-                    }
-                }
-            }
-        }
-
-        // 残りをスペースで埋める（バッチ書き込みで高速化）
-        if (display_width < viewport_width) {
-            try writeSpaces(term, viewport_width - display_width);
-        }
-    }
-
     /// スペースをバッチ書き込み（高速化）
     fn writeSpaces(term: anytype, count: usize) !void {
         const SPACES_32 = "                                "; // 32 spaces
@@ -667,6 +608,8 @@ pub const View = struct {
     }
 
     pub fn markDirty(self: *View, start_line: usize, end_line: ?usize) void {
+        self.status_bar_dirty = true; // バッファ変更はステータスバーにも影響
+
         if (self.dirty_start) |ds| {
             self.dirty_start = @min(ds, start_line);
         } else {
@@ -720,6 +663,7 @@ pub const View = struct {
 
     pub fn markFullRedraw(self: *View) void {
         self.needs_full_redraw = true;
+        self.status_bar_dirty = true;
         self.dirty_start = null;
         self.dirty_end = null;
         self.scroll_delta = 0; // スクロール最適化をリセット
@@ -743,6 +687,7 @@ pub const View = struct {
 
         // スクロール量を累積（複数回のスクロールをまとめる）
         self.scroll_delta += lines;
+        self.status_bar_dirty = true; // スクロールでカーソル行が変わる
 
         // 新しく表示される行をdirty範囲として設定
         // prev_screenのシフトとターミナルスクロールは renderInBounds で実行
@@ -753,6 +698,7 @@ pub const View = struct {
     /// これにより変更のあるセルのみ出力される
     pub fn markHorizontalScroll(self: *View) void {
         self.needs_full_redraw = true;
+        self.status_bar_dirty = true; // カーソル列が変わる可能性
         self.dirty_start = null;
         self.dirty_end = null;
         self.scroll_delta = 0; // 水平スクロール時は垂直スクロール最適化を無効化
@@ -1836,8 +1782,11 @@ pub const View = struct {
             self.clearDirty();
         }
 
-        // ステータスバーの描画
-        try self.renderStatusBarAt(term, viewport_x, viewport_y + viewport_height - 1, viewport_width, modified, readonly, overwrite, line_ending, file_encoding, filename);
+        // ステータスバーの描画（dirty時のみ）
+        if (self.status_bar_dirty) {
+            try self.renderStatusBarAt(term, viewport_x, viewport_y + viewport_height - 1, viewport_width, modified, readonly, overwrite, line_ending, file_encoding, filename);
+            self.status_bar_dirty = false;
+        }
         // 注意: flush()とカーソル表示は呼び出し元で一括して行う（複数ウィンドウ時の効率化のため）
     }
 
@@ -2346,6 +2295,7 @@ pub const View = struct {
     }
 
     pub fn moveCursorLeft(self: *View) void {
+        self.status_bar_dirty = true;
         if (self.cursor_x > 0) {
             // ヘルパーで1回の走査でバイト位置と直前の文字幅を同時取得
             const info = self.getCursorPosWithPrevWidth();
@@ -2386,6 +2336,7 @@ pub const View = struct {
     }
 
     pub fn moveCursorRight(self: *View) void {
+        self.status_bar_dirty = true;
         // ヘルパーで1回の走査でバイト位置と次の文字情報を同時取得
         const info = self.getCursorPosWithNextInfo();
         if (info.is_eof) return;
@@ -2432,6 +2383,7 @@ pub const View = struct {
     }
 
     pub fn moveCursorUp(self: *View) void {
+        self.status_bar_dirty = true;
         if (self.cursor_y > 0) {
             self.cursor_y -= 1;
         } else if (self.top_line > 0) {
@@ -2457,6 +2409,7 @@ pub const View = struct {
     }
 
     pub fn moveCursorDown(self: *View) void {
+        self.status_bar_dirty = true;
         const max_cursor_y = self.viewport_height -| 2;
         if (self.cursor_y < max_cursor_y and self.top_line + self.cursor_y + 1 < self.buffer.lineCount()) {
             self.cursor_y += 1;
@@ -2485,6 +2438,7 @@ pub const View = struct {
     /// ビューポートをスクロール（カーソルの画面内位置は固定）
     /// lines: 正=下スクロール、負=上スクロール
     pub fn scrollViewport(self: *View, lines: i32) void {
+        self.status_bar_dirty = true;
         const total_lines = self.buffer.lineCount();
         if (total_lines == 0) return;
 
@@ -2535,6 +2489,7 @@ pub const View = struct {
     }
 
     pub fn moveToLineStart(self: *View) void {
+        self.status_bar_dirty = true;
         // 水平スクロールがあった場合は再描画が必要
         if (self.top_col != 0) {
             self.markHorizontalScroll();
@@ -2550,6 +2505,7 @@ pub const View = struct {
     }
 
     pub fn moveToLineEnd(self: *View) void {
+        self.status_bar_dirty = true;
         // 行幅キャッシュを使用（キャッシュヒットならO(1)）
         const line_width = self.getCurrentLineWidth();
         self.cursor_x = line_width;

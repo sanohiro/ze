@@ -4,7 +4,6 @@ const Editor = @import("editor").Editor;
 const buffer_mod = @import("buffer");
 const Buffer = buffer_mod.Buffer;
 const PieceIterator = buffer_mod.PieceIterator;
-const EditingContext = @import("editing_context").EditingContext;
 
 // ========================================
 // 共通ヘルパー関数
@@ -27,13 +26,9 @@ const LineBounds = struct {
 };
 
 fn getLineBounds(buffer: *Buffer, line_num: usize) ?LineBounds {
-    const line_start = buffer.getLineStart(line_num) orelse return null;
-    const next_line_start = buffer.getLineStart(line_num + 1);
-    const line_end = if (next_line_start) |nls|
-        if (nls > 0 and nls > line_start) nls - 1 else nls
-    else
-        buffer.len();
-    return .{ .start = line_start, .end = line_end };
+    // getLineRangeは改行直前の位置を返す
+    const range = buffer.getLineRange(line_num) orelse return null;
+    return .{ .start = range.start, .end = range.end };
 }
 
 /// 列範囲をバイト位置に変換
@@ -183,17 +178,28 @@ pub fn copyRectangle(e: *Editor) !void {
     while (line_num <= info.end_line) : (line_num += 1) {
         const bounds = getLineBounds(buffer, line_num) orelse {
             // 行が取得できない場合も空文字列を追加
-            try rect_ring.append(e.allocator, try e.allocator.dupe(u8, ""));
+            const empty_str = try e.allocator.dupe(u8, "");
+            rect_ring.append(e.allocator, empty_str) catch |err| {
+                e.allocator.free(empty_str);
+                return err;
+            };
             continue;
         };
         const byte_range = getColumnByteRangeReusing(&iter, bounds, info.left_col, info.right_col, tab_width);
 
         if (byte_range.end > byte_range.start) {
             const line_text = try extractBytesReusing(e.allocator, &iter, byte_range.start, byte_range.end);
-            try rect_ring.append(e.allocator, line_text);
+            rect_ring.append(e.allocator, line_text) catch |err| {
+                e.allocator.free(line_text);
+                return err;
+            };
         } else {
             // 短い行は空文字列を追加（行数を維持）
-            try rect_ring.append(e.allocator, try e.allocator.dupe(u8, ""));
+            const empty_str = try e.allocator.dupe(u8, "");
+            rect_ring.append(e.allocator, empty_str) catch |err| {
+                e.allocator.free(empty_str);
+                return err;
+            };
         }
     }
 
@@ -246,7 +252,11 @@ pub fn killRectangle(e: *Editor) !void {
     while (line_num <= info.end_line) : (line_num += 1) {
         const bounds = getLineBounds(buffer, line_num) orelse {
             // 行が取得できない場合も空文字列を追加（削除はしない）
-            try rect_ring.append(e.allocator, try e.allocator.dupe(u8, ""));
+            const empty_str = try e.allocator.dupe(u8, "");
+            rect_ring.append(e.allocator, empty_str) catch |err| {
+                e.allocator.free(empty_str);
+                return err;
+            };
             continue;
         };
         const byte_range = getColumnByteRangeReusing(&iter, bounds, info.left_col, info.right_col, tab_width);
@@ -254,20 +264,28 @@ pub fn killRectangle(e: *Editor) !void {
         if (byte_range.end > byte_range.start) {
             // テキストを抽出してrect_ringに追加
             const line_text = try extractBytesReusing(e.allocator, &iter, byte_range.start, byte_range.end);
-            errdefer e.allocator.free(line_text);
-            try rect_ring.append(e.allocator, line_text);
+            rect_ring.append(e.allocator, line_text) catch |err| {
+                e.allocator.free(line_text);
+                return err;
+            };
 
             // 削除情報を保存（テキストのコピーを作成）
             const text_copy = try e.allocator.dupe(u8, line_text);
-            errdefer e.allocator.free(text_copy);
-            try delete_infos.append(e.allocator, .{
+            delete_infos.append(e.allocator, .{
                 .pos = byte_range.start,
                 .len = byte_range.end - byte_range.start,
                 .text = text_copy,
-            });
+            }) catch |err| {
+                e.allocator.free(text_copy);
+                return err;
+            };
         } else {
             // 短い行は空文字列を追加（削除はしない）
-            try rect_ring.append(e.allocator, try e.allocator.dupe(u8, ""));
+            const empty_str = try e.allocator.dupe(u8, "");
+            rect_ring.append(e.allocator, empty_str) catch |err| {
+                e.allocator.free(empty_str);
+                return err;
+            };
         }
     }
 

@@ -98,6 +98,8 @@ pub const ASCII = struct {
     pub const ESC: u8 = 0x1B;
     /// DELキー
     pub const DEL: u8 = 0x7F;
+    /// Backspaceキー（Ctrl+H）
+    pub const BACKSPACE: u8 = 0x08;
     /// CSI開始の2文字目（'['）
     pub const CSI_BRACKET: u8 = '[';
 };
@@ -163,6 +165,24 @@ pub const Search = struct {
     pub const BACKWARD_CHUNK_SIZE: usize = 256;
 };
 
+/// Query Replaceプロンプト関連
+pub const QueryReplace = struct {
+    pub const PREFIX_REGEX = "Query replace regexp ";
+    pub const PREFIX_LITERAL = "Query replace ";
+    pub const PROMPT_REGEX = "Query replace regexp: ";
+    pub const PROMPT_LITERAL = "Query replace: ";
+
+    /// is_regex_replaceフラグに基づいてプレフィックスを返す
+    pub inline fn getPrefix(is_regex: bool) []const u8 {
+        return if (is_regex) PREFIX_REGEX else PREFIX_LITERAL;
+    }
+
+    /// is_regex_replaceフラグに基づいてプロンプトを返す
+    pub inline fn getPrompt(is_regex: bool) []const u8 {
+        return if (is_regex) PROMPT_REGEX else PROMPT_LITERAL;
+    }
+};
+
 /// エディタ動作の定数
 pub const Editor = struct {
     /// Undo/Redoスタックの最大エントリ数
@@ -183,6 +203,21 @@ pub const Editor = struct {
 
     /// 行番号を表示するか
     pub const SHOW_LINE_NUMBERS: bool = true;
+
+    /// 最大タブ幅
+    pub const MAX_TAB_WIDTH: usize = 16;
+
+    /// 最大インデント長（バイト）
+    pub const MAX_INDENT_LENGTH: usize = 256;
+
+    /// インデントバッファサイズ（タブ幅に対応）
+    pub const INDENT_BUF_SIZE: usize = 16;
+
+    /// コメントプレフィックス用バッファサイズ
+    pub const COMMENT_BUF_SIZE: usize = 64;
+
+    /// ビューポートの予約行数（ステータスバー + ミニバッファ）
+    pub const VIEWPORT_RESERVED_LINES: usize = 2;
 };
 
 /// 入力処理の定数
@@ -254,6 +289,7 @@ pub const Messages = struct {
     // === 確認メッセージ ===
     pub const CONFIRM_YES_NO = "Please answer: (y)es or (n)o";
     pub const CONFIRM_YES_NO_CANCEL = "Please answer: (y)es, (n)o, (c)ancel";
+    pub const CONFIRM_REPLACE = "Please answer: (y)es, (n)ext, (!)all, (q)uit";
 
     // === 状態メッセージ ===
     pub const SEARCH_WRAPPED = "Wrapped";

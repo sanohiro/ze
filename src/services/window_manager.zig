@@ -167,29 +167,21 @@ pub const WindowManager = struct {
         if (old_total_width == 0) old_total_width = total_width;
         if (old_total_height == 0) old_total_height = total_height;
 
-        // 各ウィンドウの比率を維持してリサイズ
+        // 各ウィンドウの比率を維持してリサイズ、境界調整、ビューポート更新を一括処理
         for (self.windows.items) |*window| {
-            // X座標と幅を新しい幅に比例してスケール
+            // 1. X座標と幅を新しい幅に比例してスケール
             const new_x = (window.x * total_width) / old_total_width;
             const new_right = ((window.x + window.width) * total_width) / old_total_width;
             window.x = new_x;
-            window.width = if (new_right > new_x) new_right - new_x else 1;
+            window.width = @max(if (new_right > new_x) new_right - new_x else 1, config.Window.MIN_WIDTH);
 
-            // Y座標と高さを新しい高さに比例してスケール
+            // 2. Y座標と高さを新しい高さに比例してスケール
             const new_y = (window.y * total_height) / old_total_height;
             const new_bottom = ((window.y + window.height) * total_height) / old_total_height;
             window.y = new_y;
-            window.height = if (new_bottom > new_y) new_bottom - new_y else 1;
+            window.height = @max(if (new_bottom > new_y) new_bottom - new_y else 1, config.Window.MIN_HEIGHT);
 
-            // 最小サイズを保証（config定数を使用）
-            if (window.width < config.Window.MIN_WIDTH) window.width = config.Window.MIN_WIDTH;
-            if (window.height < config.Window.MIN_HEIGHT) window.height = config.Window.MIN_HEIGHT;
-
-            window.view.markFullRedraw();
-        }
-
-        // 境界調整：ウィンドウが画面からはみ出ないようにする
-        for (self.windows.items) |*window| {
+            // 3. 境界調整：画面からはみ出ないようにする
             if (window.x + window.width > total_width) {
                 if (window.x >= total_width) {
                     window.x = 0;
@@ -206,11 +198,10 @@ pub const WindowManager = struct {
                     window.height = total_height - window.y;
                 }
             }
-        }
 
-        // 全ウィンドウのビューポートを更新（カーソル制約も行う）
-        for (self.windows.items) |*window| {
+            // 4. ビューポート更新（カーソル制約も行う）
             window.view.setViewport(window.width, window.height);
+            window.view.markFullRedraw();
         }
     }
 

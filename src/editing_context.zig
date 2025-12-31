@@ -565,8 +565,6 @@ pub const EditingContext = struct {
         self.setCursor(pos);
     }
 
-    // isWordChar は unicode.isWordCharByte に共通化済み
-
     // ========================================
     // 挿入操作
     // ========================================
@@ -1075,15 +1073,21 @@ pub const EditingContext = struct {
         self.modified = true;
     }
 
-    /// 削除操作をUndo履歴に記録（外部から呼び出し用）
-    /// textはコピーされるので、呼び出し元でfreeしても問題ない
-    /// 連続した削除はグループ化される（タイムアウト内のみ）
-    pub fn recordDeleteOp(self: *EditingContext, pos: usize, text: []const u8, cursor_pos_before: usize) !void {
+    /// 削除操作の内部共通処理
+    /// owned_memory: 所有権を受け取るメモリ（nullなら新規アロケーション）
+    fn recordDeleteOpInternal(
+        self: *EditingContext,
+        pos: usize,
+        text: []const u8,
+        cursor_pos_before: usize,
+        owned_memory: ?struct { ptr: [*]u8, capacity: usize },
+    ) !void {
+        // エラー時は所有権を持つメモリを解放（成功時は関数内で解放される）
+        errdefer if (owned_memory) |m| self.allocator.free(m.ptr[0..m.capacity]);
         const now = std.time.nanoTimestamp();
         const time_elapsed = now - self.last_record_time;
 
         // 連続した削除操作をグループ化
-        // 条件: 直前の操作も削除で、位置が連続していて、タイムアウト内
         if (self.undo_stack.items.len > 0 and time_elapsed < config.Editor.UNDO_GROUP_TIMEOUT_NS) {
             const last = &self.undo_stack.items[self.undo_stack.items.len - 1];
             if (last.op == .delete and last.groupable and
@@ -1091,8 +1095,6 @@ pub const EditingContext = struct {
             {
                 // Backspaceの場合: 削除位置が直前のエントリの直前
                 if (pos + text.len == last.position) {
-                    // 先頭に追加（Backspaceは逆順に文字を削除）
-                    // 先頭追加は容量ベース最適化が困難なため、毎回再アロケーション
                     const new_len = last.data.len + text.len;
                     const new_capacity = @max(new_len * 2, 64);
                     const new_data = try self.allocator.alloc(u8, new_capacity);
@@ -1103,28 +1105,34 @@ pub const EditingContext = struct {
                     last.data_capacity = new_capacity;
                     last.position = pos;
                     last.cursor_after = pos;
-                    // cursor_beforeは最初の削除時のまま保持
                     self.last_record_time = now;
+                    if (owned_memory) |m| self.allocator.free(m.ptr[0..m.capacity]);
                     return;
                 }
                 // Delete (C-d)の場合: 削除位置が同じ
                 if (pos == last.position) {
                     try last.appendData(self.allocator, text);
-                    // cursor_before/afterは変わらない
                     self.last_record_time = now;
+                    if (owned_memory) |m| self.allocator.free(m.ptr[0..m.capacity]);
                     return;
                 }
             }
         }
 
         self.clearRedoStack();
-        const data_copy = try self.allocator.alloc(u8, text.len);
-        @memcpy(data_copy, text);
+        // 所有権がある場合は直接使用、なければコピー
+        const data_slice, const data_cap = if (owned_memory) |m|
+            .{ @as([]u8, m.ptr[0..text.len]), m.capacity }
+        else blk: {
+            const data_copy = try self.allocator.alloc(u8, text.len);
+            @memcpy(data_copy, text);
+            break :blk .{ data_copy, text.len };
+        };
         try self.undo_stack.append(self.allocator, .{
             .op = .delete,
             .position = pos,
-            .data = data_copy,
-            .data_capacity = text.len,
+            .data = data_slice,
+            .data_capacity = data_cap,
             .cursor_before = cursor_pos_before,
             .cursor_after = pos,
             .group_id = self.current_group_id,
@@ -1133,59 +1141,15 @@ pub const EditingContext = struct {
         self.modified = true;
     }
 
+    /// 連続した削除はグループ化される（タイムアウト内のみ）
+    pub fn recordDeleteOp(self: *EditingContext, pos: usize, text: []const u8, cursor_pos_before: usize) !void {
+        return self.recordDeleteOpInternal(pos, text, cursor_pos_before, null);
+    }
+
     /// 削除操作をUndo履歴に記録（所有権移転版）
     /// textの所有権を受け取り、コピーを回避。不要になったらfreeする
     pub fn recordDeleteOpOwned(self: *EditingContext, pos: usize, text: []u8, capacity: usize, cursor_pos_before: usize) !void {
-        const now = std.time.nanoTimestamp();
-        const time_elapsed = now - self.last_record_time;
-
-        // 連続した削除操作をグループ化（recordDeleteOpと同じロジック）
-        if (self.undo_stack.items.len > 0 and time_elapsed < config.Editor.UNDO_GROUP_TIMEOUT_NS) {
-            const last = &self.undo_stack.items[self.undo_stack.items.len - 1];
-            if (last.op == .delete and last.groupable and
-                !containsNewline(text) and !containsNewline(last.data))
-            {
-                // Backspaceの場合: 削除位置が直前のエントリの直前
-                if (pos + text.len == last.position) {
-                    const new_len = last.data.len + text.len;
-                    const new_capacity = @max(new_len * 2, 64);
-                    const new_data = try self.allocator.alloc(u8, new_capacity);
-                    @memcpy(new_data[0..text.len], text);
-                    @memcpy(new_data[text.len..][0..last.data.len], last.data);
-                    last.freeData(self.allocator);
-                    last.data = new_data[0..new_len];
-                    last.data_capacity = new_capacity;
-                    last.position = pos;
-                    last.cursor_after = pos;
-                    self.last_record_time = now;
-                    // 渡されたメモリを解放
-                    self.allocator.free(text.ptr[0..capacity]);
-                    return;
-                }
-                // Delete (C-d)の場合: 削除位置が同じ
-                if (pos == last.position) {
-                    try last.appendData(self.allocator, text);
-                    self.last_record_time = now;
-                    // 渡されたメモリを解放
-                    self.allocator.free(text.ptr[0..capacity]);
-                    return;
-                }
-            }
-        }
-
-        self.clearRedoStack();
-        // 所有権移転: コピーせずに直接使用
-        try self.undo_stack.append(self.allocator, .{
-            .op = .delete,
-            .position = pos,
-            .data = text,
-            .data_capacity = capacity,
-            .cursor_before = cursor_pos_before,
-            .cursor_after = pos,
-            .group_id = self.current_group_id,
-        });
-        self.last_record_time = now;
-        self.modified = true;
+        return self.recordDeleteOpInternal(pos, text, cursor_pos_before, .{ .ptr = text.ptr, .capacity = capacity });
     }
 
     /// 置換操作をUndo履歴に記録（delete + insertを1つの操作として）
@@ -1211,6 +1175,7 @@ pub const EditingContext = struct {
 
         // 削除分（undo時に挿入される）- 先に追加
         const old_copy = try self.allocator.alloc(u8, old_text.len);
+        errdefer self.allocator.free(old_copy);
         @memcpy(old_copy, old_text);
         try self.undo_stack.append(self.allocator, .{
             .op = .delete,
@@ -1224,6 +1189,7 @@ pub const EditingContext = struct {
 
         // 挿入分（undo時に削除される）- 後に追加
         const new_copy = try self.allocator.alloc(u8, new_text.len);
+        errdefer self.allocator.free(new_copy);
         @memcpy(new_copy, new_text);
         try self.undo_stack.append(self.allocator, .{
             .op = .insert,

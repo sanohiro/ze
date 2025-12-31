@@ -334,7 +334,7 @@ pub fn readKeyFromReader(reader: *InputReader) !?Key {
     // 特殊キーを先にチェック（Ctrlキーと重複するため）
     switch (ch) {
         '\r', '\n' => return Key.enter,
-        8, config.ASCII.DEL => return Key.backspace,
+        config.ASCII.BACKSPACE, config.ASCII.DEL => return Key.backspace,
         '\t' => return Key.tab,
         else => {},
     }

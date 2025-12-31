@@ -33,7 +33,6 @@ const View = @import("view").View;
 const Terminal = @import("terminal").Terminal;
 const input = @import("input");
 const config = @import("config");
-const regex = @import("regex");
 const unicode = @import("unicode");
 
 // サービス
@@ -522,8 +521,8 @@ pub const Editor = struct {
     /// 置換文字列入力モードのプロンプト設定
     fn enterReplacementMode(self: *Editor) void {
         const search = self.replace_search orelse return;
-        const prefix = if (self.is_regex_replace) "Query replace regexp " else "Query replace ";
-        const prefix_len = stringDisplayWidth(prefix);
+        const prefix = config.QueryReplace.getPrefix(self.is_regex_replace);
+        const prefix_len = prefix.len; // ASCII only
         if (self.replace_replacement) |prev| {
             self.setPrompt("{s}{s} with (default {s}): ", .{ prefix, search, prev });
             // prefix + search + " with (default " + prev + "): "
@@ -606,17 +605,17 @@ pub const Editor = struct {
         self.clearInputBuffer();
         self.replace_match_count = 0;
 
-        const prompt_base = if (self.is_regex_replace) "Query replace regexp" else "Query replace";
+        const prompt = config.QueryReplace.getPrompt(self.is_regex_replace);
+        const prompt_base = prompt[0 .. prompt.len - 2]; // ": "を除去
 
         // 前回の値があればデフォルトとして表示
         if (self.replace_search) |prev| {
             self.setPrompt("{s} (default {s}): ", .{ prompt_base, prev });
-            const base_len: usize = if (self.is_regex_replace) 33 else 26; // "Query replace regexp (default ): " or "Query replace (default ): "
-            self.prompt_prefix_len = base_len + stringDisplayWidth(prev);
+            // " (default ": 10文字 + "): ": 3文字 + 1(末尾調整) = 14
+            self.prompt_prefix_len = prompt_base.len + 14 + stringDisplayWidth(prev);
         } else {
-            const base_len: usize = if (self.is_regex_replace) 22 else 15; // "Query replace regexp: " or "Query replace: "
-            self.prompt_prefix_len = base_len;
-            self.setPrompt("{s}: ", .{prompt_base});
+            self.prompt_prefix_len = prompt.len;
+            self.setPrompt("{s}", .{prompt});
         }
     }
 
@@ -674,6 +673,15 @@ pub const Editor = struct {
         }
     }
 
+    /// last_searchを更新（古い値があれば解放）
+    fn updateLastSearch(self: *Editor, new_value: []const u8) void {
+        const new_search = self.allocator.dupe(u8, new_value) catch return;
+        if (self.last_search) |old_search| {
+            self.allocator.free(old_search);
+        }
+        self.last_search = new_search;
+    }
+
     /// バッファ閉じる確認モードの文字処理
     fn handleKillBufferConfirmChar(self: *Editor, cp: u21) void {
         const c = unicode.toAsciiChar(cp);
@@ -686,7 +694,7 @@ pub const Editor = struct {
             'n', 'N' => {
                 self.resetToNormal();
             },
-            else => self.getCurrentView().setError("Please answer: (y)es or (n)o"),
+            else => self.getCurrentView().setError(config.Messages.CONFIRM_YES_NO),
         }
     }
 
@@ -728,7 +736,7 @@ pub const Editor = struct {
             'c', 'C' => {
                 self.resetToNormal();
             },
-            else => self.getCurrentView().setError("Please answer: (y)es, (n)o, (c)ancel"),
+            else => self.getCurrentView().setError(config.Messages.CONFIRM_YES_NO_CANCEL),
         }
     }
 
@@ -869,7 +877,7 @@ pub const Editor = struct {
             },
             else => {
                 // 無効な入力
-                self.getCurrentView().setError("Please answer: (y)es, (n)ext, (!)all, (q)uit");
+                self.getCurrentView().setError(config.Messages.CONFIRM_REPLACE);
             },
         }
     }
@@ -925,7 +933,6 @@ pub const Editor = struct {
     }
 
     /// 特殊バッファ（*Command*, *Buffer List*, *Help*等）を名前で検索
-    /// 特殊バッファの検索処理を共通化
     fn findBufferBySpecialName(self: *Editor, name: []const u8) ?*BufferState {
         for (self.buffer_manager.iterator()) |buf| {
             if (buf.file.filename) |fname| {
@@ -935,6 +942,18 @@ pub const Editor = struct {
             }
         }
         return null;
+    }
+
+    /// 特殊バッファを取得または作成
+    /// 既存バッファがあればそれを返し、なければ新規作成
+    fn getOrCreateSpecialBuffer(self: *Editor, name: []const u8) !*BufferState {
+        if (self.findBufferBySpecialName(name)) |buf| {
+            return buf;
+        }
+        const new_buffer = try self.createNewBuffer();
+        new_buffer.file.filename = try self.allocator.dupe(u8, name);
+        new_buffer.file.readonly = true;
+        return new_buffer;
     }
 
     // ========================================
@@ -1176,25 +1195,17 @@ pub const Editor = struct {
     /// Query Replace プロンプトの表示幅を計算
     /// "Query replace (regexp) <search> with: " の表示幅を返す
     fn calculateReplacementPromptWidth(self: *Editor) usize {
+        const prefix = config.QueryReplace.getPrefix(self.is_regex_replace);
         if (self.replace_search) |search| {
-            const prefix = if (self.is_regex_replace) "Query replace regexp " else "Query replace ";
-            return stringDisplayWidth(prefix) + stringDisplayWidth(search) + 7; // " with: " = 7
+            return prefix.len + stringDisplayWidth(search) + 7; // " with: " = 7
         } else {
-            return 20; // "Query replace with: " = 20
+            return prefix.len + 6; // "with: " = 6
         }
     }
 
     /// *Command* バッファを取得または作成
     fn getOrCreateCommandBuffer(self: *Editor) !*BufferState {
-        // 既存の *Command* バッファを探す
-        if (self.findBufferBySpecialName("*Command*")) |buf| {
-            return buf;
-        }
-        // なければ新規作成
-        const new_buffer = try self.createNewBuffer();
-        new_buffer.file.filename = try self.allocator.dupe(u8, "*Command*");
-        new_buffer.file.readonly = true; // コマンド出力は読み取り専用
-        return new_buffer;
+        return self.getOrCreateSpecialBuffer("*Command*");
     }
 
     /// *Command* バッファを表示するウィンドウを探す
@@ -1357,19 +1368,8 @@ pub const Editor = struct {
             });
         }
 
-        // "*Buffer List*"という名前のバッファを探す
-        const buffer_list_name = "*Buffer List*";
-        var buffer_list = self.findBufferBySpecialName(buffer_list_name);
-
-        if (buffer_list == null) {
-            // 新しいバッファを作成
-            const new_buffer = try self.createNewBuffer();
-            new_buffer.file.filename = try self.allocator.dupe(u8, buffer_list_name);
-            new_buffer.file.readonly = true; // バッファ一覧は読み取り専用
-            buffer_list = new_buffer;
-        }
-
-        const buf = buffer_list.?; // ここでは必ず値が設定されている
+        // "*Buffer List*"バッファを取得または作成
+        const buf = try self.getOrCreateSpecialBuffer("*Buffer List*");
 
         // バッファの内容をクリアして新しい一覧を挿入
         if (buf.editing_ctx.buffer.total_len > 0) {
@@ -1384,18 +1384,8 @@ pub const Editor = struct {
 
     /// ヘルプ画面を表示
     pub fn showHelp(self: *Editor) !void {
-        // "*Help*"という名前のバッファを探す
-        var help_buffer = self.findBufferBySpecialName(help.help_buffer_name);
-
-        if (help_buffer == null) {
-            // 新しいバッファを作成
-            const new_buffer = try self.createNewBuffer();
-            new_buffer.file.filename = try self.allocator.dupe(u8, help.help_buffer_name);
-            new_buffer.file.readonly = true;
-            help_buffer = new_buffer;
-        }
-
-        const buf = help_buffer.?;
+        // "*Help*"バッファを取得または作成
+        const buf = try self.getOrCreateSpecialBuffer(help.help_buffer_name);
 
         // バッファの内容をクリアしてヘルプを挿入
         if (buf.editing_ctx.buffer.total_len > 0) {
@@ -1428,21 +1418,15 @@ pub const Editor = struct {
             return;
         }
 
-        // 現在行の開始位置を取得
-        const line_start = buffer.getLineStart(cursor_line) orelse {
+        // 現在行の範囲を取得（getLineRangeはend=改行位置を返す）
+        const line_range = buffer.getLineRange(cursor_line) orelse {
             self.getCurrentView().setError("Invalid line");
             return;
         };
+        const line_start = line_range.start;
 
-        // 次の行の開始位置を取得（行の終わりを知るため）
-        const next_line_start = buffer.getLineStart(cursor_line + 1) orelse buffer.total_len;
-
-        // 行の長さを計算（改行を除く）
-        var line_len = if (next_line_start > line_start) next_line_start - line_start else 0;
-        if (line_len > 0 and next_line_start <= buffer.total_len) {
-            // 改行文字を除く
-            line_len = if (line_len > 0) line_len - 1 else 0;
-        }
+        // 行の長さを計算（getLineRangeのendは改行位置なので、そのまま使用）
+        const line_len = if (line_range.end > line_start) line_range.end - line_start else 0;
 
         if (line_len == 0) {
             self.getCurrentView().setError("Empty line");
@@ -2079,10 +2063,12 @@ pub const Editor = struct {
         // 必要に応じてバッファを拡大（1MB + 余裕）
         if (self.search_chunk_capacity < actual_len) {
             const new_capacity = actual_len + (actual_len / 4) + 4096;
+            // 先に新しいバッファを確保（失敗時に古いバッファを残す）
+            const new_buf = try self.allocator.alloc(u8, new_capacity);
             if (self.search_chunk_buffer) |old| {
                 self.allocator.free(old);
             }
-            self.search_chunk_buffer = try self.allocator.alloc(u8, new_capacity);
+            self.search_chunk_buffer = new_buf;
             self.search_chunk_capacity = new_capacity;
         }
 
@@ -2492,13 +2478,7 @@ pub const Editor = struct {
                         // C-x: 検索を終了してC-xプレフィックスモードに入る
                         if (self.minibuffer.getContent().len > 0) {
                             try self.search_service.addToHistory(self.minibuffer.getContent());
-                            // dupe成功後にfree（dupe失敗時は古い値を保持）
-                            if (self.allocator.dupe(u8, self.minibuffer.getContent())) |new_search| {
-                                if (self.last_search) |old_search| {
-                                    self.allocator.free(old_search);
-                                }
-                                self.last_search = new_search;
-                            } else |_| {}
+                            self.updateLastSearch(self.minibuffer.getContent());
                         }
                         self.endSearch();
                         self.mode = .prefix_x;
@@ -2568,13 +2548,7 @@ pub const Editor = struct {
             .enter => {
                 if (self.minibuffer.getContent().len > 0) {
                     try self.search_service.addToHistory(self.minibuffer.getContent());
-                    // dupe成功後にfree（dupe失敗時は古い値を保持）
-                    if (self.allocator.dupe(u8, self.minibuffer.getContent())) |new_search| {
-                        if (self.last_search) |old_search| {
-                            self.allocator.free(old_search);
-                        }
-                        self.last_search = new_search;
-                    } else |_| {}
+                    self.updateLastSearch(self.minibuffer.getContent());
                 }
                 self.endSearch();
             },
@@ -2769,8 +2743,8 @@ pub const Editor = struct {
         // M-r: 正規表現/リテラルモードをトグル
         if (key == .alt and key.alt == 'r') {
             self.is_regex_replace = !self.is_regex_replace;
-            const prompt = if (self.is_regex_replace) "Query replace regexp: " else "Query replace: ";
-            self.prompt_prefix_len = stringDisplayWidth(prompt);
+            const prompt = config.QueryReplace.getPrompt(self.is_regex_replace);
+            self.prompt_prefix_len = prompt.len;
             self.setPrompt("{s}{s}", .{ prompt, self.minibuffer.getContent() });
             // ハイライトを更新
             const content = self.minibuffer.getContent();
@@ -2779,8 +2753,8 @@ pub const Editor = struct {
             }
             return true;
         }
-        const prompt = if (self.is_regex_replace) "Query replace regexp: " else "Query replace: ";
-        self.prompt_prefix_len = stringDisplayWidth(prompt);
+        const prompt = config.QueryReplace.getPrompt(self.is_regex_replace);
+        self.prompt_prefix_len = prompt.len;
         try self.processMinibufferKeyWithPrompt(key, prompt);
         // インクリメンタルハイライト
         const content = self.minibuffer.getContent();
@@ -2835,7 +2809,7 @@ pub const Editor = struct {
         if (key == .alt and key.alt == 'r') {
             self.is_regex_replace = !self.is_regex_replace;
             if (self.replace_search) |search| {
-                const prefix = if (self.is_regex_replace) "Query replace regexp " else "Query replace ";
+                const prefix = config.QueryReplace.getPrefix(self.is_regex_replace);
                 self.prompt_prefix_len = self.calculateReplacementPromptWidth();
                 self.setPrompt("{s}{s} with: {s}", .{ prefix, search, self.minibuffer.getContent() });
                 // ハイライトを更新
@@ -2844,13 +2818,12 @@ pub const Editor = struct {
             return true;
         }
         _ = try self.handleMinibufferKey(key);
+        const prefix = config.QueryReplace.getPrefix(self.is_regex_replace);
+        self.prompt_prefix_len = self.calculateReplacementPromptWidth();
         if (self.replace_search) |search| {
-            const prefix = if (self.is_regex_replace) "Query replace regexp " else "Query replace ";
-            self.prompt_prefix_len = self.calculateReplacementPromptWidth();
             self.setPrompt("{s}{s} with: {s}", .{ prefix, search, self.minibuffer.getContent() });
         } else {
-            self.prompt_prefix_len = self.calculateReplacementPromptWidth();
-            self.setPrompt("Query replace with: {s}", .{self.minibuffer.getContent()});
+            self.setPrompt("{s}with: {s}", .{ prefix, self.minibuffer.getContent() });
         }
         return true;
     }
@@ -3522,6 +3495,83 @@ pub const Editor = struct {
         }
     }
 
+    /// チャンク化正規表現検索（共通ヘルパー）
+    /// 大きなファイルを1MBチャンクで分割し、ラップアラウンド検索を行う
+    /// 戻り値: マッチ位置と長さ（見つからなければnull）
+    fn searchRegexChunked(
+        self: *Editor,
+        search_str: []const u8,
+        start_pos: usize,
+        forward: bool,
+        skip_current: bool,
+    ) !?struct { pos: usize, len: usize } {
+        const buffer = self.getCurrentBufferContent();
+        const buf_len = buffer.total_len;
+        if (buf_len == 0 or search_str.len == 0) return null;
+
+        const max_chunk_size: usize = 1024 * 1024; // 1MB
+        const overlap: usize = 64 * 1024; // 64KB - チャンク境界マッチ用
+
+        var search_pos = start_pos;
+        var wrapped = false;
+        var first_chunk = true;
+
+        while (true) {
+            // チャンク範囲を計算
+            const chunk_start: usize = if (forward)
+                (if (first_chunk) search_pos else if (search_pos > overlap) search_pos - overlap else 0)
+            else
+                (if (search_pos > max_chunk_size) search_pos - max_chunk_size else 0);
+
+            const chunk_end: usize = if (forward)
+                @min(buf_len, chunk_start + max_chunk_size)
+            else
+                @min(buf_len, if (first_chunk) search_pos else search_pos + overlap);
+            const chunk_len = chunk_end - chunk_start;
+            if (chunk_len == 0) break;
+
+            // 再利用バッファで抽出
+            const content = try self.extractTextReusable(chunk_start, chunk_len);
+
+            // チャンク内での検索開始位置
+            const adjusted_start: usize = if (first_chunk)
+                (if (search_pos > chunk_start) search_pos - chunk_start else 0)
+            else if (forward)
+                (if (overlap < chunk_len) overlap else 0)
+            else
+                (if (chunk_len > overlap) chunk_len - overlap else chunk_len);
+
+            if (self.search_service.searchRegex(content, search_str, adjusted_start, forward, first_chunk and skip_current)) |match| {
+                return .{ .pos = match.start + chunk_start, .len = match.len };
+            }
+
+            first_chunk = false;
+
+            // 次のチャンクへ移動
+            if (forward) {
+                if (chunk_end >= buf_len) {
+                    if (wrapped) break;
+                    wrapped = true;
+                    search_pos = 0;
+                } else {
+                    search_pos = chunk_end;
+                }
+                if (wrapped and search_pos >= start_pos) break;
+            } else {
+                if (chunk_start == 0) {
+                    if (wrapped) break;
+                    wrapped = true;
+                    search_pos = buf_len;
+                } else {
+                    search_pos = chunk_start;
+                }
+                if (wrapped and search_pos <= start_pos) break;
+            }
+        }
+
+        return null;
+    }
+
     // インクリメンタルサーチ実行
     // forward: true=前方検索、false=後方検索
     // skip_current: true=現在位置をスキップして次を検索、false=現在位置から検索
@@ -3533,80 +3583,11 @@ pub const Editor = struct {
         const start_pos = self.getCurrentView().getCursorBufferPos();
 
         if (self.is_regex_search) {
-            // 正規表現検索（C-M-s / C-M-r）
-            // チャンク化検索 + ラップアラウンドで全ファイルを検索
-            const max_chunk_size: usize = 1024 * 1024; // 1MB
-            const overlap: usize = 64 * 1024; // チャンク境界マッチ用オーバーラップ（64KB）
-            const buf_len = buffer.total_len;
-
-            if (buf_len == 0) return;
-
-            var search_pos = start_pos;
-            var wrapped = false;
-            var first_chunk = true;
-
-            while (true) {
-                // チャンク範囲を計算
-                // 前方: 左端にオーバーラップ（前のチャンク境界を跨ぐマッチを検出）
-                // 後方: 右端にオーバーラップ（次のチャンク境界を跨ぐマッチを検出）
-                const chunk_start: usize = if (forward)
-                    (if (first_chunk) search_pos else if (search_pos > overlap) search_pos - overlap else 0)
-                else
-                    (if (search_pos > max_chunk_size) search_pos - max_chunk_size else 0);
-
-                const chunk_end: usize = if (forward)
-                    @min(buf_len, chunk_start + max_chunk_size)
-                else
-                    @min(buf_len, if (first_chunk) search_pos else search_pos + overlap);
-                const chunk_len = chunk_end - chunk_start;
-                if (chunk_len == 0) break;
-
-                // 再利用バッファで抽出（alloc/free削減）
-                const content = try self.extractTextReusable(chunk_start, chunk_len);
-
-                // チャンク内での検索開始位置
-                // 前方: オーバーラップ分をスキップ（既に検索済み）
-                // 後方: オーバーラップ領域より前を検索
-                const adjusted_start: usize = if (first_chunk)
-                    (if (search_pos > chunk_start) search_pos - chunk_start else 0)
-                else if (forward)
-                    (if (overlap < chunk_len) overlap else 0)
-                else
-                    (if (chunk_len > overlap) chunk_len - overlap else chunk_len);
-
-                if (self.search_service.searchRegex(content, search_str, adjusted_start, forward, first_chunk and skip_current)) |match| {
-                    // Emacs風: 前方検索はマッチ終端、後方検索はマッチ先頭にカーソル
-                    const cursor_pos = if (forward)
-                        match.start + match.len + chunk_start
-                    else
-                        match.start + chunk_start;
-                    self.setCursorToPos(cursor_pos);
-                    return;
-                }
-
-                first_chunk = false;
-
-                // 次のチャンクへ移動
-                if (forward) {
-                    if (chunk_end >= buf_len) {
-                        if (wrapped) break;
-                        wrapped = true;
-                        search_pos = 0;
-                    } else {
-                        search_pos = chunk_end;
-                    }
-                    // ラップ後に開始位置を超えたら終了
-                    if (wrapped and search_pos >= start_pos) break;
-                } else {
-                    if (chunk_start == 0) {
-                        if (wrapped) break;
-                        wrapped = true;
-                        search_pos = buf_len;
-                    } else {
-                        search_pos = chunk_start;
-                    }
-                    if (wrapped and search_pos <= start_pos) break;
-                }
+            // 正規表現検索（C-M-s / C-M-r）- 共通ヘルパーを使用
+            if (try self.searchRegexChunked(search_str, start_pos, forward, skip_current)) |match| {
+                // Emacs風: 前方検索はマッチ終端、後方検索はマッチ先頭にカーソル
+                const cursor_pos = if (forward) match.pos + match.len else match.pos;
+                self.setCursorToPos(cursor_pos);
             }
         } else {
             // リテラル検索（C-s / C-r）- コピーなしのBuffer直接検索
@@ -3614,10 +3595,8 @@ pub const Editor = struct {
                 // Emacs風: 前方検索はマッチ終端、後方検索はマッチ先頭にカーソル
                 const cursor_pos = if (forward) match.start + match.len else match.start;
                 self.setCursorToPos(cursor_pos);
-                return;
             }
         }
-
         // 見つからなかった場合：プロンプトはそのまま（カーソルが動かないだけ）
     }
 
@@ -3633,65 +3612,19 @@ pub const Editor = struct {
         const actual_start = if (start_pos >= buf_len) 0 else start_pos;
 
         if (self.is_regex_replace) {
-            // 正規表現置換（C-M-%）
-            // チャンク化検索 + ラップアラウンドで全ファイルを検索
-            const max_chunk_size: usize = 1024 * 1024; // 1MB
-            const overlap: usize = 4096; // チャンク境界マッチ用オーバーラップ
-
-            var search_pos = actual_start;
-            var wrapped = false;
-            var first_chunk = true;
-
-            while (true) {
-                // チャンク範囲を計算（前方検索のみ）
-                const chunk_start: usize = if (first_chunk)
-                    search_pos
-                else if (search_pos > overlap)
-                    search_pos - overlap
-                else
-                    0;
-
-                const chunk_end: usize = @min(buf_len, chunk_start + max_chunk_size);
-                const chunk_len = chunk_end - chunk_start;
-                if (chunk_len == 0) break;
-
-                // 再利用バッファで抽出（alloc/free削減）
-                const content = try self.extractTextReusable(chunk_start, chunk_len);
-
-                const adjusted_start: usize = if (first_chunk)
-                    0
-                else if (overlap < chunk_len)
-                    overlap
-                else
-                    0;
-
-                if (self.search_service.searchRegex(content, search, adjusted_start, true, false)) |match| {
-                    const pos = match.start + chunk_start;
-                    self.setCursorToPos(pos);
-                    self.replace_current_pos = pos;
-                    self.replace_match_len = match.len;
-                    return true;
-                }
-
-                first_chunk = false;
-
-                // 次のチャンクへ移動
-                if (chunk_end >= buf_len) {
-                    if (wrapped) break;
-                    wrapped = true;
-                    search_pos = 0;
-                } else {
-                    search_pos = chunk_end;
-                }
-                // ラップ後に開始位置を超えたら終了（actual_startを使用）
-                if (wrapped and search_pos >= actual_start) break;
+            // 正規表現置換（C-M-%）- 共通ヘルパーを使用
+            if (try self.searchRegexChunked(search, actual_start, true, false)) |match| {
+                self.setCursorToPos(match.pos);
+                self.replace_current_pos = match.pos;
+                self.replace_match_len = match.len;
+                return true;
             }
         } else {
             // リテラル置換（M-%）- コピーなしのBuffer直接検索
             if (self.search_service.searchBuffer(buffer, search, actual_start, true, false)) |match| {
                 self.setCursorToPos(match.start);
                 self.replace_current_pos = match.start;
-                self.replace_match_len = match.len; // リテラルなのでsearch.lenと同じ
+                self.replace_match_len = match.len;
                 return true;
             }
         }
@@ -3949,7 +3882,7 @@ pub const Editor = struct {
         // 新しいコンテンツを挿入（undo記録付き）
         if (content.len > 0) {
             try buf.insertSlice(start, content);
-            try self.recordInsert(start, content, start);
+            try self.recordInsert(start, content, cursor_pos);
         }
 
         // 状態更新
