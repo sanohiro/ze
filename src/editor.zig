@@ -930,7 +930,7 @@ pub const Editor = struct {
         self.updateIsearchHighlight();
 
         // 検索開始位置からやり直す（パターンが変わったので最初から検索）
-        if (self.minibuffer.getContent().len > 0) {
+        if (self.minibuffer.hasContent()) {
             if (self.search_start_pos) |start_pos| {
                 self.setCursorToPos(start_pos);
             }
@@ -2273,7 +2273,7 @@ pub const Editor = struct {
         }
 
         if (key == .enter) {
-            if (self.minibuffer.getContent().len > 0) {
+            if (self.minibuffer.hasContent()) {
                 if (is_save) {
                     try self.handleSaveFileEnter();
                 } else {
@@ -2417,7 +2417,7 @@ pub const Editor = struct {
             return true;
         }
         if (key == .enter) {
-            if (self.minibuffer.getContent().len > 0) {
+            if (self.minibuffer.hasContent()) {
                 const buffer_name = self.minibuffer.getContent();
                 // まず完全パスで検索
                 var found_buffer = self.findBufferByFilename(buffer_name);
@@ -2453,13 +2453,13 @@ pub const Editor = struct {
                         self.endSearch();
                     },
                     's' => {
-                        if (self.minibuffer.getContent().len > 0) {
+                        if (self.minibuffer.hasContent()) {
                             self.getCurrentView().setSearchHighlightEx(self.minibuffer.getContent(), self.is_regex_search);
                             try self.performSearch(true, true);
                         }
                     },
                     'r' => {
-                        if (self.minibuffer.getContent().len > 0) {
+                        if (self.minibuffer.hasContent()) {
                             self.getCurrentView().setSearchHighlightEx(self.minibuffer.getContent(), self.is_regex_search);
                             try self.performSearch(false, true);
                         }
@@ -2468,7 +2468,7 @@ pub const Editor = struct {
                     'n' => try self.navigateSearchHistory(false, is_forward),
                     'x' => {
                         // C-x: 検索を終了してC-xプレフィックスモードに入る
-                        if (self.minibuffer.getContent().len > 0) {
+                        if (self.minibuffer.hasContent()) {
                             try self.search_service.history.add(self.minibuffer.getContent());
                             self.updateLastSearch(self.minibuffer.getContent());
                         }
@@ -2506,14 +2506,14 @@ pub const Editor = struct {
                 switch (c) {
                     's' => {
                         // C-M-s: 次のマッチへ（C-sと同じ動作）
-                        if (self.minibuffer.getContent().len > 0) {
+                        if (self.minibuffer.hasContent()) {
                             self.getCurrentView().setSearchHighlightEx(self.minibuffer.getContent(), self.is_regex_search);
                             try self.performSearch(true, true);
                         }
                     },
                     'r' => {
                         // C-M-r: 前のマッチへ（C-rと同じ動作）
-                        if (self.minibuffer.getContent().len > 0) {
+                        if (self.minibuffer.hasContent()) {
                             self.getCurrentView().setSearchHighlightEx(self.minibuffer.getContent(), self.is_regex_search);
                             try self.performSearch(false, true);
                         }
@@ -2524,7 +2524,7 @@ pub const Editor = struct {
             .arrow_up => try self.navigateSearchHistory(true, is_forward),
             .arrow_down => try self.navigateSearchHistory(false, is_forward),
             .backspace => {
-                if (self.minibuffer.getContent().len > 0) {
+                if (self.minibuffer.hasContent()) {
                     self.minibuffer.moveToEnd();
                     self.minibuffer.backspace();
                     self.updateIsearchPrompt(is_forward);
@@ -2532,13 +2532,13 @@ pub const Editor = struct {
                     if (self.search_start_pos) |start_pos| {
                         self.setCursorToPos(start_pos);
                     }
-                    if (self.minibuffer.getContent().len > 0) {
+                    if (self.minibuffer.hasContent()) {
                         try self.performSearch(is_forward, false);
                     }
                 }
             },
             .enter => {
-                if (self.minibuffer.getContent().len > 0) {
+                if (self.minibuffer.hasContent()) {
                     try self.search_service.history.add(self.minibuffer.getContent());
                     self.updateLastSearch(self.minibuffer.getContent());
                 }
@@ -2886,7 +2886,7 @@ pub const Editor = struct {
                     self.updateMinibufferPrompt("| ");
                     return true;
                 }
-                if (self.minibuffer.getContent().len > 0) {
+                if (self.minibuffer.hasContent()) {
                     try self.shell_service.history.add(self.minibuffer.getContent());
                     self.shell_service.history.resetNavigation();
                     try self.startShellCommand();

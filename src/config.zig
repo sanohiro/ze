@@ -11,12 +11,6 @@ pub const Terminal = struct {
     /// デフォルトの高さ（rows）
     pub const DEFAULT_HEIGHT: usize = 24;
 
-    /// ステータスバーの高さ（行数）
-    pub const STATUS_BAR_HEIGHT: usize = 1;
-
-    /// カーソル移動のエスケープシーケンスバッファサイズ
-    pub const CURSOR_BUF_SIZE: usize = 32;
-
     /// 出力バッファの初期容量
     pub const OUTPUT_BUFFER_CAPACITY: usize = 8192;
 };
@@ -211,12 +205,6 @@ pub const Input = struct {
 
 /// バッファ関連の定数
 pub const Buffer = struct {
-    /// 初期piece配列のキャパシティ
-    pub const INITIAL_PIECES_CAPACITY: usize = 16;
-
-    /// 初期add_bufferのキャパシティ
-    pub const INITIAL_ADD_CAPACITY: usize = 1024;
-
     /// searchBackward用スタックバッファの最大piece数
     pub const MAX_PIECES_STACK_BUFFER: usize = 256;
 };

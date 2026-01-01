@@ -63,6 +63,11 @@ pub const Minibuffer = struct {
         return self.buffer.items;
     }
 
+    /// 内容があるか確認（`getContent().len > 0`の簡略化）
+    pub inline fn hasContent(self: *const Self) bool {
+        return self.buffer.items.len > 0;
+    }
+
     /// 内容を設定
     pub fn setContent(self: *Self, content: []const u8) !void {
         self.buffer.clearRetainingCapacity();

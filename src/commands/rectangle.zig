@@ -365,8 +365,11 @@ pub fn yankRectangle(e: *Editor) !void {
             // 行が存在しない場合は、改行を追加して新しい行を作成
             const buf_end = buffer.len();
             buffer.insert(buf_end, '\n') catch continue;
-            // Undo記録
-            editing_ctx.recordInsertOp(buf_end, "\n", cursor_before) catch {};
+            // Undo記録（失敗時は挿入をロールバック）
+            editing_ctx.recordInsertOp(buf_end, "\n", cursor_before) catch {
+                buffer.delete(buf_end, 1) catch {};
+                continue;
+            };
             // 新しく作成した行の境界を取得
             break :blk getLineBounds(buffer, target_line) orelse continue;
         };

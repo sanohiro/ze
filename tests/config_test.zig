@@ -70,14 +70,6 @@ test "Editor - タブ幅の妥当性" {
     try testing.expect(MAX_TAB_WIDTH <= 32); // 合理的な上限
 }
 
-test "Buffer - 初期容量の妥当性" {
-    const INITIAL_PIECES_CAPACITY: usize = 16;
-    const INITIAL_ADD_CAPACITY: usize = 1024;
-
-    try testing.expect(INITIAL_PIECES_CAPACITY >= 4);
-    try testing.expect(INITIAL_ADD_CAPACITY >= 256);
-}
-
 test "Regex - 最大ポジション数" {
     const MAX_POSITIONS: usize = 10000;
 
