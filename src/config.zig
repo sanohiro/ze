@@ -51,8 +51,14 @@ pub const ANSI = struct {
     /// グレー（明るい黒）
     pub const GRAY = "\x1b[90m";
 
+    // === カーソル位置の保存/復元 ===
+    /// カーソル位置を保存（DECSC）
+    pub const SAVE_CURSOR = "\x1b7";
+    /// カーソル位置を復元（DECRC）
+    pub const RESTORE_CURSOR = "\x1b8";
+
     // === スクロール制御 ===
-    /// スクロール領域をリセット
+    /// スクロール領域をリセット（注意：カーソルを(1,1)に移動する副作用あり）
     pub const RESET_SCROLL_REGION = "\x1b[r";
     /// 1行スクロールアップ
     pub const SCROLL_UP = "\x1b[S";

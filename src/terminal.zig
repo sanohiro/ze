@@ -80,7 +80,8 @@ pub const Terminal = struct {
         const stdout: std.fs.File = .{ .handle = posix.STDOUT_FILENO };
         // スクロール領域をリセットしてから代替画面に入る
         // （パイプ入力時に前のプロセスの出力で壊れた状態をクリア）
-        stdout.writeAll(config.ANSI.RESET_SCROLL_REGION ++ config.ANSI.ENTER_ALT_SCREEN ++ config.ANSI.ENABLE_BRACKETED_PASTE) catch {};
+        // 注: RESET_SCROLL_REGIONはカーソルを(1,1)に移動するため、保存/復元が必要
+        stdout.writeAll(config.ANSI.SAVE_CURSOR ++ config.ANSI.RESET_SCROLL_REGION ++ config.ANSI.RESTORE_CURSOR ++ config.ANSI.ENTER_ALT_SCREEN ++ config.ANSI.ENABLE_BRACKETED_PASTE) catch {};
 
         return self;
     }
