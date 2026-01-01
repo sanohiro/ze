@@ -17,6 +17,7 @@ const std = @import("std");
 const history_mod = @import("history");
 const LazyHistory = history_mod.LazyHistory;
 const config = @import("config");
+const unicode = @import("unicode");
 
 /// シェルコマンド出力先
 pub const OutputDest = enum {
@@ -129,16 +130,24 @@ pub const ShellService = struct {
 
     /// パス検索の遅延初期化（初回コマンド実行時に呼ばれる）
     fn ensurePathsInitialized(self: *Self) void {
-        if (self.paths_initialized) return;
-        self.paths_initialized = true;
+        if (!self.paths_initialized) {
+            self.paths_initialized = true;
 
-        // bashのパスを探す（$SHELL → 一般的なパス）
-        self.bash_path = findBashPath(self.allocator);
+            // bashのパスを探す（$SHELL → 一般的なパス）
+            self.bash_path = findBashPath(self.allocator);
 
-        // shのパスを探す（POSIX準拠シェル用）
-        self.sh_path = findShPath(self.allocator);
+            // shのパスを探す（POSIX準拠シェル用）
+            self.sh_path = findShPath(self.allocator);
+        }
 
-        // ~/.ze/aliases が存在するかチェック
+        // ~/.ze/aliases は未検出時のみ毎回チェック（動的に作成される可能性があるため）
+        if (self.aliases_path == null) {
+            self.checkAliasesFile();
+        }
+    }
+
+    /// ~/.ze/aliases ファイルの存在チェック
+    fn checkAliasesFile(self: *Self) void {
         if (std.posix.getenv("HOME")) |home| {
             const path = std.fmt.allocPrint(self.allocator, "{s}/.ze/aliases", .{home}) catch null;
             if (path) |p| {
@@ -641,36 +650,6 @@ pub const ShellService = struct {
         }
     }
 
-    /// 履歴にコマンドを追加（LazyHistoryに委譲）
-    pub fn addToHistory(self: *Self, cmd: []const u8) !void {
-        try self.history.add(cmd);
-    }
-
-    /// 履歴ナビゲーション開始（LazyHistoryに委譲）
-    pub fn startHistoryNavigation(self: *Self, current_input: []const u8) !void {
-        try self.history.startNavigation(current_input);
-    }
-
-    /// 履歴の前のエントリを取得（LazyHistoryに委譲）
-    pub fn historyPrev(self: *Self) ?[]const u8 {
-        return self.history.prev();
-    }
-
-    /// 履歴の次のエントリを取得（LazyHistoryに委譲）
-    pub fn historyNext(self: *Self) ?[]const u8 {
-        return self.history.next();
-    }
-
-    /// 履歴ナビゲーションをリセット（LazyHistoryに委譲）
-    pub fn resetHistoryNavigation(self: *Self) void {
-        self.history.resetNavigation();
-    }
-
-    /// 履歴ナビゲーション中かどうか（LazyHistoryに委譲）
-    pub fn isNavigating(self: *Self) bool {
-        return self.history.isNavigating();
-    }
-
     /// 実行中かどうか
     pub fn isRunning(self: *Self) bool {
         return self.state != null;
@@ -783,7 +762,7 @@ pub const ShellService = struct {
         }
 
         // 共通プレフィックスを計算
-        const common = findCommonPrefix(lines.items);
+        const common = unicode.findCommonPrefix(lines.items);
         const common_prefix = try self.allocator.dupe(u8, common);
 
         return CompletionResult{
@@ -852,23 +831,5 @@ pub const ShellService = struct {
             }
         }
         return buf[0..pos];
-    }
-
-    /// 文字列配列の共通プレフィックスを見つける
-    fn findCommonPrefix(strings: []const []const u8) []const u8 {
-        if (strings.len == 0) return "";
-        if (strings.len == 1) return strings[0];
-
-        const first = strings[0];
-        var prefix_len: usize = first.len;
-
-        for (strings[1..]) |s| {
-            var i: usize = 0;
-            while (i < prefix_len and i < s.len and first[i] == s[i]) : (i += 1) {}
-            prefix_len = i;
-            if (prefix_len == 0) break;
-        }
-
-        return first[0..prefix_len];
     }
 };

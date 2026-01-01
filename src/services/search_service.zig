@@ -239,7 +239,7 @@ pub const SearchService = struct {
     }
 
     /// パターンが正規表現かどうか判定
-    pub fn isRegexPattern(pattern: []const u8) bool {
+    pub inline fn isRegexPattern(pattern: []const u8) bool {
         return regex.isRegexPattern(pattern);
     }
 
@@ -318,37 +318,4 @@ pub const SearchService = struct {
         return null;
     }
 
-    // ========================================
-    // 履歴管理（LazyHistoryに委譲）
-    // ========================================
-
-    /// 履歴にパターンを追加
-    pub fn addToHistory(self: *Self, pattern: []const u8) !void {
-        try self.history.add(pattern);
-    }
-
-    /// 履歴ナビゲーション開始
-    pub fn startHistoryNavigation(self: *Self, current_input: []const u8) !void {
-        try self.history.startNavigation(current_input);
-    }
-
-    /// 履歴の前のエントリを取得
-    pub fn historyPrev(self: *Self) ?[]const u8 {
-        return self.history.prev();
-    }
-
-    /// 履歴の次のエントリを取得
-    pub fn historyNext(self: *Self) ?[]const u8 {
-        return self.history.next();
-    }
-
-    /// 履歴ナビゲーションをリセット
-    pub fn resetHistoryNavigation(self: *Self) void {
-        self.history.resetNavigation();
-    }
-
-    /// 履歴ナビゲーション中かどうか
-    pub fn isNavigating(self: *Self) bool {
-        return self.history.isNavigating();
-    }
 };

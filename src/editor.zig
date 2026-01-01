@@ -534,7 +534,7 @@ pub const Editor = struct {
     }
 
     /// C-g または Escape キーかどうか判定
-    fn isCancelKey(key: input.Key) bool {
+    inline fn isCancelKey(key: input.Key) bool {
         return switch (key) {
             .ctrl => |c| c == 'g',
             .escape => true,
@@ -559,7 +559,7 @@ pub const Editor = struct {
         self.search_start_pos = null;
         self.mode = .normal;
         self.minibuffer.clear();
-        self.search_service.resetHistoryNavigation();
+        self.search_service.history.resetNavigation();
         self.getCurrentView().setSearchHighlight(null);
         self.getCurrentView().clearError();
         self.getCurrentView().markFullRedraw();
@@ -651,9 +651,9 @@ pub const Editor = struct {
     /// I-searchプロンプトのプレフィックスを取得
     fn getIsearchPrefix(self: *const Editor, forward: bool) []const u8 {
         return if (self.is_regex_search)
-            (if (forward) "Regexp I-search: " else "Regexp I-search backward: ")
+            (if (forward) config.Messages.ISEARCH_REGEX_FORWARD else config.Messages.ISEARCH_REGEX_BACKWARD)
         else
-            (if (forward) "I-search: " else "I-search backward: ");
+            (if (forward) config.Messages.ISEARCH_FORWARD else config.Messages.ISEARCH_BACKWARD);
     }
 
     /// I-searchプロンプトを更新（ミニバッファ内容付き）
@@ -722,7 +722,7 @@ pub const Editor = struct {
                     self.mode = .filename_input;
                     self.quit_after_save = true;
                     self.minibuffer.clear();
-                    self.getCurrentView().setError("Write file: ");
+                    self.getCurrentView().setError(config.Messages.PROMPT_WRITE_FILE);
                 } else {
                     self.saveFile() catch |err| {
                         self.showError(err);
@@ -782,7 +782,7 @@ pub const Editor = struct {
                 self.clearPendingFilename();
                 self.resetToNormal();
             },
-            else => self.getCurrentView().setError("File exists. Overwrite? (y)es (n)o"),
+            else => self.getCurrentView().setError(config.Messages.CONFIRM_OVERWRITE),
         }
     }
 
@@ -809,7 +809,7 @@ pub const Editor = struct {
         if (!found) {
             self.finishReplace();
         } else {
-            self.getCurrentView().setError("Replace? (y)es (n)ext (!)all (q)uit");
+            self.getCurrentView().setError(config.Messages.REPLACE_PROMPT);
         }
     }
 
@@ -964,11 +964,6 @@ pub const Editor = struct {
     /// ミニバッファをクリア
     fn clearInputBuffer(self: *Editor) void {
         self.minibuffer.clear();
-    }
-
-    /// ミニバッファのカーソル位置に文字を挿入
-    fn insertAtInputCursor(self: *Editor, text: []const u8) !void {
-        try self.minibuffer.insertAtCursor(text);
     }
 
     /// ミニバッファにコードポイントを挿入（char/codepoint共通）
@@ -1205,7 +1200,7 @@ pub const Editor = struct {
 
     /// *Command* バッファを取得または作成
     fn getOrCreateCommandBuffer(self: *Editor) !*BufferState {
-        return self.getOrCreateSpecialBuffer("*Command*");
+        return self.getOrCreateSpecialBuffer(config.Messages.BUFFER_COMMAND);
     }
 
     /// *Command* バッファを表示するウィンドウを探す
@@ -1214,7 +1209,7 @@ pub const Editor = struct {
         for (windows, 0..) |window, idx| {
             if (self.findBufferById(window.buffer_id)) |buf| {
                 if (buf.file.filename) |name| {
-                    if (std.mem.eql(u8, name, "*Command*")) return idx;
+                    if (std.mem.eql(u8, name, config.Messages.BUFFER_COMMAND)) return idx;
                 }
             }
         }
@@ -1343,7 +1338,7 @@ pub const Editor = struct {
         for (self.buffer_manager.iterator()) |buf| {
             // 特殊バッファは除外
             if (buf.file.filename) |fname| {
-                if (std.mem.eql(u8, fname, "*Buffer List*")) continue;
+                if (std.mem.eql(u8, fname, config.Messages.BUFFER_LIST)) continue;
                 if (std.mem.eql(u8, fname, help.help_buffer_name)) continue;
             }
 
@@ -1353,7 +1348,7 @@ pub const Editor = struct {
             const ro_char: u8 = if (buf.file.readonly) '%' else '.';
 
             // バッファ名
-            const buf_name = buf.file.filename orelse "*scratch*";
+            const buf_name = buf.file.filename orelse config.Messages.BUFFER_SCRATCH;
 
             // サイズ
             const size = buf.editing_ctx.buffer.total_len;
@@ -1369,7 +1364,7 @@ pub const Editor = struct {
         }
 
         // "*Buffer List*"バッファを取得または作成
-        const buf = try self.getOrCreateSpecialBuffer("*Buffer List*");
+        const buf = try self.getOrCreateSpecialBuffer(config.Messages.BUFFER_LIST);
 
         // バッファの内容をクリアして新しい一覧を挿入
         if (buf.editing_ctx.buffer.total_len > 0) {
@@ -1494,7 +1489,7 @@ pub const Editor = struct {
 
         // バッファを検索
         for (self.buffer_manager.iterator()) |buf| {
-            const name = buf.file.filename orelse "*scratch*";
+            const name = buf.file.filename orelse config.Messages.BUFFER_SCRATCH;
             if (std.mem.eql(u8, name, buf_name)) {
                 try self.switchToBuffer(buf.id);
                 return;
@@ -1611,7 +1606,7 @@ pub const Editor = struct {
                 const maybe_file = std.fs.cwd().openFile(path, .{}) catch |err| blk: {
                     // ファイルが存在しない場合は外部で削除された
                     if (err == error.FileNotFound) {
-                        view.setError("Warning: file deleted externally");
+                        view.setError(config.Messages.WARNING_FILE_DELETED);
                         // 続行して保存する（再作成）
                         break :blk null;
                     } else {
@@ -1623,7 +1618,7 @@ pub const Editor = struct {
                     defer f.close();
                     const stat = try f.stat();
                     if (stat.mtime != original_mtime) {
-                        view.setError("Warning: file modified externally!");
+                        view.setError(config.Messages.WARNING_FILE_MODIFIED);
                         // 続行して上書きする（ユーザーの編集を優先）
                     }
                 }
@@ -1726,7 +1721,7 @@ pub const Editor = struct {
             self.completion_shown = false;
         } else {
             // 複数マッチ: 共通プレフィックスを補完して候補を表示
-            const common = findCommonPrefix(matches.items);
+            const common = unicode.findCommonPrefix(matches.items);
 
             if (common.len > prefix.len) {
                 // 共通部分で補完
@@ -1768,24 +1763,6 @@ pub const Editor = struct {
         // プロンプトを再描画
         self.minibuffer.setPrompt(prompt);
         return true;
-    }
-
-    /// 文字列配列の共通プレフィックスを見つける
-    /// 配列はソート済みであることを前提とし、最初と最後の文字列のみを比較
-    fn findCommonPrefix(strings: []const []const u8) []const u8 {
-        if (strings.len == 0) return "";
-        if (strings.len == 1) return strings[0];
-
-        // ソート済み配列なので、最初と最後の文字列の共通プレフィックスが
-        // 全体の共通プレフィックスになる
-        const first = strings[0];
-        const last = strings[strings.len - 1];
-        const min_len = @min(first.len, last.len);
-
-        var common_len: usize = 0;
-        while (common_len < min_len and first[common_len] == last[common_len]) : (common_len += 1) {}
-
-        return first[0..common_len];
     }
 
     /// 全ウィンドウをレンダリング
@@ -2477,12 +2454,12 @@ pub const Editor = struct {
                     'x' => {
                         // C-x: 検索を終了してC-xプレフィックスモードに入る
                         if (self.minibuffer.getContent().len > 0) {
-                            try self.search_service.addToHistory(self.minibuffer.getContent());
+                            try self.search_service.history.add(self.minibuffer.getContent());
                             self.updateLastSearch(self.minibuffer.getContent());
                         }
                         self.endSearch();
                         self.mode = .prefix_x;
-                        self.getCurrentView().setError("C-x-");
+                        self.getCurrentView().setError(config.Messages.KEY_PREFIX_CX);
                     },
                     else => {
                         // C-f/C-b/C-a/C-e/C-d/C-k/C-y等はミニバッファ共通処理へ
@@ -2547,7 +2524,7 @@ pub const Editor = struct {
             },
             .enter => {
                 if (self.minibuffer.getContent().len > 0) {
-                    try self.search_service.addToHistory(self.minibuffer.getContent());
+                    try self.search_service.history.add(self.minibuffer.getContent());
                     self.updateLastSearch(self.minibuffer.getContent());
                 }
                 self.endSearch();
@@ -2620,7 +2597,7 @@ pub const Editor = struct {
                         }
                         if (modified_count > 0) {
                             if (modified_count == 1) {
-                                const name = first_modified_name orelse "*scratch*";
+                                const name = first_modified_name orelse config.Messages.BUFFER_SCRATCH;
                                 self.setPrompt("Save changes to {s}? (y/n/c): ", .{name});
                             } else {
                                 self.setPrompt("{d} buffers modified; exit anyway? (y/n): ", .{modified_count});
@@ -2650,7 +2627,7 @@ pub const Editor = struct {
                     'k' => {
                         const buffer_state = self.getCurrentBuffer();
                         if (buffer_state.editing_ctx.modified) {
-                            const name = buffer_state.file.filename orelse "*scratch*";
+                            const name = buffer_state.file.filename orelse config.Messages.BUFFER_SCRATCH;
                             self.setPrompt("Buffer {s} modified; kill anyway? (y/n): ", .{name});
                             self.mode = .kill_buffer_confirm;
                         } else {
@@ -2851,7 +2828,7 @@ pub const Editor = struct {
                     'g' => {
                         self.mode = .normal;
                         self.clearInputBuffer();
-                        self.shell_service.resetHistoryNavigation();
+                        self.shell_service.history.resetNavigation();
                         self.completion_shown = false;
                         self.getCurrentView().clearError();
                         return true;
@@ -2882,7 +2859,7 @@ pub const Editor = struct {
             .escape => {
                 self.mode = .normal;
                 self.clearInputBuffer();
-                self.shell_service.resetHistoryNavigation();
+                self.shell_service.history.resetNavigation();
                 self.completion_shown = false;
                 self.getCurrentView().clearError();
                 return true;
@@ -2895,8 +2872,8 @@ pub const Editor = struct {
                     return true;
                 }
                 if (self.minibuffer.getContent().len > 0) {
-                    try self.shell_service.addToHistory(self.minibuffer.getContent());
-                    self.shell_service.resetHistoryNavigation();
+                    try self.shell_service.history.add(self.minibuffer.getContent());
+                    self.shell_service.history.resetNavigation();
                     try self.startShellCommand();
                 }
                 if (self.mode != .shell_running) {
@@ -3089,7 +3066,7 @@ pub const Editor = struct {
                 switch (c) {
                     'x' => {
                         self.mode = .prefix_x;
-                        self.getCurrentView().setError("C-x-");
+                        self.getCurrentView().setError(config.Messages.KEY_PREFIX_CX);
                     },
                     's' => try self.startIsearch(true),
                     'r' => try self.startIsearch(false),
@@ -3138,12 +3115,13 @@ pub const Editor = struct {
             .enter => {
                 const buffer_state = self.getCurrentBuffer();
                 if (buffer_state.file.filename) |fname| {
-                    if (std.mem.eql(u8, fname, "*Buffer List*")) {
+                    if (std.mem.eql(u8, fname, config.Messages.BUFFER_LIST)) {
                         try self.selectBufferFromList();
                         return;
                     }
                 }
-                const indent = edit.getCurrentLineIndent(self);
+                var indent_buf: [config.Editor.MAX_INDENT_LENGTH]u8 = undefined;
+                const indent = edit.getCurrentLineIndent(self, &indent_buf);
                 try self.insertChar('\n');
                 if (indent.len > 0) {
                     for (indent) |ch| {
@@ -3703,11 +3681,11 @@ pub const Editor = struct {
     /// シェルコマンド履歴をナビゲート
     fn navigateShellHistory(self: *Editor, prev: bool) !void {
         // 最初のナビゲーションなら現在の入力を保存
-        if (!self.shell_service.isNavigating()) {
-            try self.shell_service.startHistoryNavigation(self.minibuffer.getContent());
+        if (!self.shell_service.history.isNavigating()) {
+            try self.shell_service.history.startNavigation(self.minibuffer.getContent());
         }
 
-        const entry = if (prev) self.shell_service.historyPrev() else self.shell_service.historyNext();
+        const entry = if (prev) self.shell_service.history.prev() else self.shell_service.history.next();
         if (entry) |text| {
             // ミニバッファを履歴エントリで置き換え
             try self.minibuffer.setContent(text);
@@ -3718,11 +3696,11 @@ pub const Editor = struct {
     /// 検索履歴をナビゲート
     fn navigateSearchHistory(self: *Editor, prev: bool, is_forward: bool) !void {
         // 最初のナビゲーションなら現在の入力を保存
-        if (!self.search_service.isNavigating()) {
-            try self.search_service.startHistoryNavigation(self.minibuffer.getContent());
+        if (!self.search_service.history.isNavigating()) {
+            try self.search_service.history.startNavigation(self.minibuffer.getContent());
         }
 
-        const entry = if (prev) self.search_service.historyPrev() else self.search_service.historyNext();
+        const entry = if (prev) self.search_service.history.prev() else self.search_service.history.next();
         if (entry) |text| {
             // ミニバッファを履歴エントリで置き換え
             try self.minibuffer.setContent(text);
@@ -4093,21 +4071,21 @@ pub const Editor = struct {
     /// マクロ記録を開始
     fn startMacroRecording(self: *Editor) void {
         if (self.macro_service.isRecording()) {
-            self.getCurrentView().setError("Already recording macro");
+            self.getCurrentView().setError(config.Messages.MACRO_ALREADY_RECORDING);
             return;
         }
         if (self.macro_service.isPlaying()) {
-            self.getCurrentView().setError("Cannot record while playing");
+            self.getCurrentView().setError(config.Messages.MACRO_CANNOT_RECORD_WHILE_PLAYING);
             return;
         }
         self.macro_service.startRecording();
-        self.getCurrentView().setError("Defining kbd macro...");
+        self.getCurrentView().setError(config.Messages.MACRO_DEFINING);
     }
 
     /// マクロ記録を終了
     fn stopMacroRecording(self: *Editor) void {
         if (!self.macro_service.isRecording()) {
-            self.getCurrentView().setError("Not recording macro");
+            self.getCurrentView().setError(config.Messages.MACRO_NOT_RECORDING);
             return;
         }
         self.macro_service.stopRecording();
@@ -4115,7 +4093,7 @@ pub const Editor = struct {
         if (count > 0) {
             self.setPrompt("Keyboard macro defined ({d} keys)", .{count});
         } else {
-            self.getCurrentView().setError("Empty macro, previous kept");
+            self.getCurrentView().setError(config.Messages.MACRO_EMPTY);
         }
     }
 
@@ -4130,13 +4108,13 @@ pub const Editor = struct {
 
         // 連打モードに移行
         self.mode = .macro_repeat;
-        self.getCurrentView().setError("Press e to repeat macro");
+        self.getCurrentView().setError(config.Messages.MACRO_REPEAT_PROMPT);
     }
 
     /// マクロの内部実行（processKeyを使わない）
     fn executeMacroInternal(self: *Editor) anyerror!void {
         const macro = self.macro_service.getLastMacro() orelse {
-            self.getCurrentView().setError("No kbd macro defined");
+            self.getCurrentView().setError(config.Messages.MACRO_NOT_DEFINED);
             return error.NoMacroDefined;
         };
 
@@ -4156,7 +4134,7 @@ pub const Editor = struct {
                     // マクロを再実行
                     try self.executeMacroInternal();
                     // モードはmacro_repeatのまま
-                    self.getCurrentView().setError("Press e to repeat macro");
+                    self.getCurrentView().setError(config.Messages.MACRO_REPEAT_PROMPT);
                     return;
                 }
             },

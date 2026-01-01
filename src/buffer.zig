@@ -96,7 +96,7 @@ pub const PieceIterator = struct {
         };
     }
 
-    pub fn next(self: *PieceIterator) ?u8 {
+    pub inline fn next(self: *PieceIterator) ?u8 {
         while (self.piece_idx < self.buffer.pieces.items.len) {
             const piece = self.buffer.pieces.items[self.piece_idx];
 
@@ -236,6 +236,30 @@ pub const PieceIterator = struct {
             }
         }
         return copied;
+    }
+
+    /// 指定位置がUTF-8文字の途中であれば、文字の先頭位置を返す
+    /// チャンク読み込み時の境界調整に使用
+    /// pos: 調整したい位置
+    /// 戻り値: 調整後の位置（UTF-8文字の先頭）
+    pub fn alignToUtf8Start(self: *PieceIterator, pos: usize) usize {
+        if (pos == 0) return 0;
+
+        self.seek(pos);
+        const byte = self.next() orelse return pos;
+
+        if (!unicode.isUtf8Continuation(byte)) return pos;
+
+        // continuation byte なので、先頭を探す（最大4バイト戻る）
+        var back: usize = 1;
+        while (back <= 4 and pos >= back) : (back += 1) {
+            self.seek(pos - back);
+            const b = self.next() orelse break;
+            if (!unicode.isUtf8Continuation(b)) {
+                return pos - back;
+            }
+        }
+        return pos; // 見つからなければ元の位置を返す
     }
 
     /// 次のグラフェムクラスタを読み取る
@@ -891,8 +915,8 @@ pub const Buffer = struct {
                 try file.writeAll(encoded);
             } else {
                 // UTF-8/UTF-8_BOM: Zig 0.15の新I/O API
-                // バッファを提供してシステムコール回数を削減（8KBバッファ）
-                var write_buffer: [8192]u8 = undefined;
+                // バッファを提供してシステムコール回数を削減
+                var write_buffer: [config.Terminal.OUTPUT_BUFFER_CAPACITY]u8 = undefined;
                 var file_writer = file.writer(&write_buffer);
                 const writer = &file_writer.interface;
 
@@ -1565,7 +1589,7 @@ pub const Buffer = struct {
     // 最適化: スライス単位でmemcpyを使用（バイト単位ループより大幅に高速）
     pub fn getRange(self: *const Buffer, allocator: std.mem.Allocator, start: usize, length: usize) ![]u8 {
         if (length == 0) {
-            return try allocator.alloc(u8, 0);
+            return &[_]u8{};
         }
 
         // 境界チェック: 範囲がバッファサイズを超えていないか確認

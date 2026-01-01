@@ -158,7 +158,7 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    // services/shell_service <- history, config
+    // services/shell_service <- history, config, unicode
     const shell_service_mod = b.addModule("shell_service", .{
         .root_source_file = b.path("src/services/shell_service.zig"),
         .target = target,
@@ -166,10 +166,11 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "history", .module = history_mod },
             .{ .name = "config", .module = config_mod },
+            .{ .name = "unicode", .module = unicode_mod },
         },
     });
 
-    // services/buffer_manager <- buffer, editing_context
+    // services/buffer_manager <- buffer, editing_context, config
     const buffer_manager_mod = b.addModule("buffer_manager", .{
         .root_source_file = b.path("src/services/buffer_manager.zig"),
         .target = target,
@@ -177,6 +178,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "buffer", .module = buffer_mod },
             .{ .name = "editing_context", .module = editing_context_mod },
+            .{ .name = "config", .module = config_mod },
         },
     });
 
@@ -376,6 +378,11 @@ pub fn build(b: *std.Build) void {
         // commands/
         "tests/commands/edit_test.zig",
         "tests/commands/rectangle_test.zig",
+        "tests/commands/movement_test.zig",
+        "tests/commands/mx_test.zig",
+        "tests/commands/help_test.zig",
+        // config
+        "tests/config_test.zig",
     };
 
     const test_step = b.step("test", "Run unit tests");

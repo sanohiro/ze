@@ -18,10 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Confirmation messages moved to `config.Messages` constants (`CONFIRM_YES_NO`, `CONFIRM_YES_NO_CANCEL`, `CONFIRM_REPLACE`)
 - Additional constants added to config.zig: `ASCII.BACKSPACE`, `Editor.MAX_TAB_WIDTH`, `Editor.INDENT_BUF_SIZE`, etc.
 - Removed stale comment from editing_context.zig
+- Removed unused constants from config.zig: `BYTE2_MIN`, `BYTE4_MAX`, `CTRL_MASK`
+- Removed history API wrapper methods from search_service.zig and shell_service.zig (12 methods total) - now access `history` field directly
+- Consolidated word movement logic in minibuffer.zig with `findNextWordEnd()` helper
 
 ### Fixed
 - rectangle.zig: Fixed potential memory leak on ArrayList append failure (4 locations)
 - rectangle.zig: Simplified `getLineBounds()` using `buffer.getLineRange()`
+- view.zig: Added boundary checks in `applySearchHighlight()` to prevent slice overflow with ANSI sequences
 
 ### Performance
 - Inline hot-path functions:
@@ -32,8 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - buffer.zig: `len()`
   - editing_context.zig: `len()`, `lineCount()`
   - input.zig: `available()`
-  - view.zig: `getError()`, `getSearchHighlight()`
+  - view.zig: `getError()`, `getSearchHighlight()`, `renderControlChar()`
+  - editor.zig: `isCancelKey()`
 - Replaced hardcoded constants with config values for maintainability
+
+### Added
+- New test files: config_test.zig, commands/movement_test.zig, commands/mx_test.zig, commands/help_test.zig
 
 ### Fixed
 - input_test.zig: Removed unused variable in Ctrl key mapping test

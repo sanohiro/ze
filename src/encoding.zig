@@ -393,7 +393,7 @@ pub fn normalizeLineEndings(allocator: std.mem.Allocator, content: []const u8, l
         return try allocator.dupe(u8, content);
     }
 
-    var result = try std.ArrayList(u8).initCapacity(allocator, 1024);
+    var result = try std.ArrayList(u8).initCapacity(allocator, content.len);
     errdefer result.deinit(allocator);
 
     var i: usize = 0;
@@ -429,7 +429,8 @@ pub fn convertLineEndings(allocator: std.mem.Allocator, content: []const u8, tar
         return try allocator.dupe(u8, content);
     }
 
-    var result = try std.ArrayList(u8).initCapacity(allocator, 1024);
+    // CRLFの場合は最大2倍になる可能性があるが、通常は改行は少ないのでcontent.lenで十分
+    var result = try std.ArrayList(u8).initCapacity(allocator, content.len);
     errdefer result.deinit(allocator);
 
     for (content) |byte| {
@@ -473,7 +474,7 @@ pub fn convertFromUtf8(allocator: std.mem.Allocator, content: []const u8, encodi
         .UTF8 => try allocator.dupe(u8, content),
         .UTF8_BOM => blk: {
             // BOMを追加
-            var result = try std.ArrayList(u8).initCapacity(allocator, 1024);
+            var result = try std.ArrayList(u8).initCapacity(allocator, content.len + 3);
             errdefer result.deinit(allocator);
             try result.appendSlice(allocator, &config.BOM.UTF8);
             try result.appendSlice(allocator, content);
@@ -489,7 +490,8 @@ pub fn convertFromUtf8(allocator: std.mem.Allocator, content: []const u8, encodi
 
 /// UTF-16配列からUTF-8に変換する共通処理
 fn convertUtf16ArrayToUtf8(allocator: std.mem.Allocator, utf16_array: []const u16) ![]u8 {
-    var result = try std.ArrayList(u8).initCapacity(allocator, 1024);
+    // UTF-16からUTF-8への変換では最大3倍程度になる（サロゲートペア考慮）
+    var result = try std.ArrayList(u8).initCapacity(allocator, utf16_array.len * 3);
     errdefer result.deinit(allocator);
 
     var i: usize = 0;

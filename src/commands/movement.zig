@@ -128,14 +128,18 @@ pub fn backwardWord(e: *Editor) !void {
 
     // 後方スキャン用にチャンクを読み込む
     const chunk_size = config.Search.BACKWARD_CHUNK_SIZE;
-    const look_back = @min(start_pos, chunk_size);
-    const scan_start = start_pos - look_back;
+    const raw_scan_start = start_pos -| @min(start_pos, chunk_size);
 
     // PieceIteratorでチャンクを読み込み（1回のseek + 順次読み）
     var iter = PieceIterator.init(buffer);
+
+    // scan_start がUTF-8文字の途中であれば、先頭まで戻る
+    const scan_start = iter.alignToUtf8Start(raw_scan_start);
     iter.seek(scan_start);
 
-    var chunk: [chunk_size]u8 = undefined;
+    // scan_start 調整後の実際の読み込みサイズを計算
+    const look_back = start_pos - scan_start;
+    var chunk: [chunk_size + 4]u8 = undefined; // 最大4バイトの追加に対応
     var chunk_len: usize = 0;
     while (chunk_len < look_back) {
         if (iter.next()) |byte| {
@@ -202,10 +206,10 @@ pub fn backwardWord(e: *Editor) !void {
     // チャンク先頭に到達した場合、さらに後方を処理
     // 追加チャンクを読み込んで継続（getByteAtのO(pieces)を回避）
     while (i == 0 and pos > 0 and found_non_space) {
-        // 次のチャンクを読み込む
-        const next_look_back = @min(pos, chunk_size);
-        const next_scan_start = pos - next_look_back;
-
+        // 次のチャンクを読み込む（UTF-8境界を調整）
+        const raw_next_scan_start = pos -| @min(pos, chunk_size);
+        const next_scan_start = iter.alignToUtf8Start(raw_next_scan_start);
+        const next_look_back = pos - next_scan_start;
         iter.seek(next_scan_start);
         chunk_len = 0;
         while (chunk_len < next_look_back) {
@@ -265,7 +269,7 @@ pub fn backwardWord(e: *Editor) !void {
 }
 
 /// チャンクからUTF-8コードポイントをデコード（標準ライブラリを使用）
-fn decodeUtf8FromChunk(bytes: []const u8) ?u21 {
+inline fn decodeUtf8FromChunk(bytes: []const u8) ?u21 {
     if (bytes.len == 0) return null;
     return std.unicode.utf8Decode(bytes) catch null;
 }
@@ -333,18 +337,11 @@ pub fn forwardParagraph(e: *Editor) !void {
     }
 }
 
-/// 指定位置を含む行の先頭を見つける
-fn findLineStart(buffer: *const Buffer, pos: usize) usize {
+/// 指定位置を含む行の先頭を見つける（O(log N) - 行インデックス使用）
+fn findLineStart(buffer: *Buffer, pos: usize) usize {
     if (pos == 0) return 0;
-    var iter = PieceIterator.init(buffer);
-    var line_start = pos;
-    while (line_start > 0) {
-        iter.seek(line_start - 1);
-        const byte = iter.next() orelse break;
-        if (byte == '\n') break;
-        line_start -= 1;
-    }
-    return line_start;
+    const line_num = buffer.findLineByPos(pos);
+    return buffer.getLineStart(line_num) orelse 0;
 }
 
 /// M-{: 前の段落へ移動

@@ -54,12 +54,12 @@ pub const Minibuffer = struct {
     }
 
     /// プロンプトを取得
-    pub fn getPrompt(self: *const Self) []const u8 {
+    pub inline fn getPrompt(self: *const Self) []const u8 {
         return self.prompt[0..self.prompt_len];
     }
 
     /// 内容を取得
-    pub fn getContent(self: *const Self) []const u8 {
+    pub inline fn getContent(self: *const Self) []const u8 {
         return self.buffer.items;
     }
 
@@ -147,6 +147,7 @@ pub const Minibuffer = struct {
     }
 
     /// カーソルを1単語前に移動
+    /// movement.zigと同じ単語境界定義（getCharType）を使用（日本語対応）
     pub fn moveWordBackward(self: *Self) void {
         if (self.cursor == 0) return;
         self.normalizeCursor();
@@ -154,38 +155,52 @@ pub const Minibuffer = struct {
         const items = self.buffer.items;
         var pos = self.cursor;
 
-        // 空白をスキップ
+        // 空白・記号をスキップ
         while (pos > 0) {
             const prev = unicode.findPrevGraphemeStart(items, pos);
-            if (!isWhitespaceAt(items, prev)) break;
+            const char_type = unicode.getCharTypeAt(items, prev);
+            if (char_type != .space and char_type != .other) break;
             pos = prev;
         }
-        // 単語文字をスキップ
-        while (pos > 0) {
+        // 同じ文字種をスキップ（単語の先頭まで）
+        if (pos > 0) {
             const prev = unicode.findPrevGraphemeStart(items, pos);
-            if (isWhitespaceAt(items, prev)) break;
+            const word_type = unicode.getCharTypeAt(items, prev);
             pos = prev;
+            while (pos > 0) {
+                const next_prev = unicode.findPrevGraphemeStart(items, pos);
+                if (unicode.getCharTypeAt(items, next_prev) != word_type) break;
+                pos = next_prev;
+            }
         }
         self.cursor = pos;
     }
 
     /// カーソルを1単語後に移動
+    /// movement.zigと同じ単語境界定義（getCharType）を使用（日本語対応）
     pub fn moveWordForward(self: *Self) void {
-        const items = self.buffer.items;
-        if (self.cursor >= items.len) return;
-        var pos = self.cursor;
+        self.cursor = findNextWordEnd(self.buffer.items, self.cursor);
+    }
 
-        // 単語文字をスキップ
+    /// 次の単語の終端位置を返す（moveWordForward/deleteWordForward共通）
+    fn findNextWordEnd(items: []const u8, start: usize) usize {
+        if (start >= items.len) return start;
+        var pos = start;
+
+        // 現在の文字種を取得して、同じ種類をスキップ
+        const start_type = unicode.getCharTypeAt(items, pos);
+        if (start_type != .space and start_type != .other) {
+            while (pos < items.len and unicode.getCharTypeAt(items, pos) == start_type) {
+                pos = unicode.findNextGraphemeEnd(items, pos);
+            }
+        }
+        // 空白・記号をスキップ
         while (pos < items.len) {
-            if (isWhitespaceAt(items, pos)) break;
+            const char_type = unicode.getCharTypeAt(items, pos);
+            if (char_type != .space and char_type != .other) break;
             pos = unicode.findNextGraphemeEnd(items, pos);
         }
-        // 空白をスキップ
-        while (pos < items.len) {
-            if (!isWhitespaceAt(items, pos)) break;
-            pos = unicode.findNextGraphemeEnd(items, pos);
-        }
-        self.cursor = pos;
+        return pos;
     }
 
     /// 前の単語を削除（M-Backspace）
@@ -208,18 +223,7 @@ pub const Minibuffer = struct {
         const items = self.buffer.items;
         if (self.cursor >= items.len) return;
         const start_pos = self.cursor;
-
-        var end_pos = start_pos;
-        // 単語文字をスキップ
-        while (end_pos < items.len) {
-            if (isWhitespaceAt(items, end_pos)) break;
-            end_pos = unicode.findNextGraphemeEnd(items, end_pos);
-        }
-        // 空白をスキップ
-        while (end_pos < items.len) {
-            if (!isWhitespaceAt(items, end_pos)) break;
-            end_pos = unicode.findNextGraphemeEnd(items, end_pos);
-        }
+        const end_pos = findNextWordEnd(items, start_pos);
 
         const delete_len = end_pos - start_pos;
         if (delete_len > 0) {
@@ -246,25 +250,5 @@ pub const Minibuffer = struct {
             pos += cluster.byte_len;
         }
         return col;
-    }
-
-    // ========================================
-    // ヘルパー関数
-    // ========================================
-
-    fn isWhitespaceAt(text: []const u8, pos: usize) bool {
-        if (pos >= text.len) return false;
-        const c = text[pos];
-        // ASCII空白
-        if (c == ' ' or c == '\t' or c == '\n' or c == '\r') return true;
-        // 全角スペース (U+3000)
-        if (c == config.UTF8.FULLWIDTH_SPACE[0] and pos + 2 < text.len) {
-            if (text[pos + 1] == config.UTF8.FULLWIDTH_SPACE[1] and
-                text[pos + 2] == config.UTF8.FULLWIDTH_SPACE[2])
-            {
-                return true;
-            }
-        }
-        return false;
     }
 };

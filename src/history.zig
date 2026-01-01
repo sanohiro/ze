@@ -257,9 +257,10 @@ pub const History = struct {
         }
     }
 
-    /// 履歴をファイルに保存（アトミック: temp+rename方式）
+    /// 履歴をファイルに保存（アトミック: ロック+マージ+temp+rename方式）
     /// HOME未設定時は何もせずに正常終了（履歴は保存されない）
     /// 未読み込み・未変更の場合は既存ファイルを上書きしない
+    /// 複数プロセス対応: 保存前に最新の履歴とマージする
     pub fn save(self: *History, history_type: HistoryType) !void {
         // 未読み込みかつ未変更なら保存しない（既存ファイルを誤って空にしない）
         if (!self.loaded and !self.modified) return;
@@ -276,6 +277,98 @@ pub const History = struct {
         const path = getHistoryPath(self.allocator, history_type) orelse return;
         defer self.allocator.free(path);
 
+        // ロックファイルパスを作成（排他制御用）
+        const lock_path = try std.fmt.allocPrint(self.allocator, "{s}.lock", .{path});
+        defer self.allocator.free(lock_path);
+
+        // ロックファイルを作成/オープンして排他ロックを取得
+        const lock_file = std.fs.cwd().createFile(lock_path, .{ .mode = 0o600 }) catch {
+            // ロックファイル作成失敗時は従来通り保存を試みる
+            return self.saveWithoutLock(path, ze_dir);
+        };
+        defer lock_file.close();
+
+        // 排他ロックを取得（他プロセスの読み書きをブロック）
+        _ = std.posix.flock(lock_file.handle, std.posix.LOCK.EX) catch {
+            // ロック取得失敗時は従来通り保存を試みる
+            return self.saveWithoutLock(path, ze_dir);
+        };
+        defer {
+            _ = std.posix.flock(lock_file.handle, std.posix.LOCK.UN) catch {};
+        }
+
+        // ロック取得後、ファイルから最新の履歴を読み込んでマージ
+        try self.mergeFromFile(path);
+
+        // マージ後の履歴を保存
+        try self.saveWithoutLock(path, ze_dir);
+    }
+
+    /// ファイルから履歴を読み込んで現在の履歴とマージ
+    /// 新しいエントリのみを追加（重複排除）
+    fn mergeFromFile(self: *History, path: []const u8) !void {
+        const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+            if (err == error.FileNotFound) return; // ファイルがなければマージ不要
+            return err;
+        };
+        defer file.close();
+
+        const stat = try file.stat();
+        if (stat.size == 0) return;
+        if (stat.size > 1024 * 1024) return; // 1MB上限
+
+        const content = try self.allocator.alloc(u8, @intCast(stat.size));
+        defer self.allocator.free(content);
+        const bytes_read = try file.readAll(content);
+
+        // ファイルの履歴エントリを一時リストに収集
+        var file_entries: std.ArrayList([]const u8) = .{};
+        defer {
+            for (file_entries.items) |entry| {
+                self.allocator.free(entry);
+            }
+            file_entries.deinit(self.allocator);
+        }
+
+        var iter = std.mem.splitScalar(u8, content[0..bytes_read], '\n');
+        while (iter.next()) |raw_line| {
+            const line = if (raw_line.len > 0 and raw_line[raw_line.len - 1] == '\r')
+                raw_line[0 .. raw_line.len - 1]
+            else
+                raw_line;
+            if (line.len > 0) {
+                const duped = try self.allocator.dupe(u8, line);
+                try file_entries.append(self.allocator, duped);
+            }
+        }
+
+        // 現在のエントリをセットに変換（高速検索用）
+        var current_set = std.StringHashMap(void).init(self.allocator);
+        defer current_set.deinit();
+        for (self.entries.items) |entry| {
+            try current_set.put(entry, {});
+        }
+
+        // ファイルのエントリで、現在のリストにないものを先頭に挿入
+        // （古いものが先頭、新しいものが末尾の順序を維持）
+        var insert_count: usize = 0;
+        for (file_entries.items) |file_entry| {
+            if (!current_set.contains(file_entry)) {
+                const duped = try self.allocator.dupe(u8, file_entry);
+                try self.entries.insert(self.allocator, insert_count, duped);
+                insert_count += 1;
+            }
+        }
+
+        // MAX_HISTORY_SIZEを超えた古いエントリを削除
+        while (self.entries.items.len > MAX_HISTORY_SIZE) {
+            const old = self.entries.orderedRemove(0);
+            self.allocator.free(old);
+        }
+    }
+
+    /// ロックなしで履歴を保存（内部用）
+    fn saveWithoutLock(self: *History, path: []const u8, ze_dir: []const u8) !void {
         // 一時ファイルパスを作成（元のパス + ".tmp"）
         const tmp_path = try std.fmt.allocPrint(self.allocator, "{s}.tmp", .{path});
         defer self.allocator.free(tmp_path);
@@ -304,15 +397,13 @@ pub const History = struct {
         };
 
         // ディレクトリをsyncしてメタデータの永続化を保証
-        // 注: Zigのfs.Dirにはsyncメソッドがないため、fsyncで代替
         if (std.fs.cwd().openDir(ze_dir, .{})) |dir| {
             var d = dir;
-            // ディレクトリfdをfsync（POSIXのfsync(dirfd)相当）
             std.posix.fsync(d.fd) catch {};
             d.close();
         } else |_| {}
 
-        // 保存成功後にmodifiedフラグをリセット（次回の無駄な保存を防ぐ）
+        // 保存成功後にmodifiedフラグをリセット
         self.modified = false;
     }
 };

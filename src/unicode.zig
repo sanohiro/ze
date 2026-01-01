@@ -381,14 +381,6 @@ pub fn getCharType(cp: u21) CharType {
     return .other;
 }
 
-/// 英数字判定（コードポイント用）
-pub inline fn isAlnum(cp: u21) bool {
-    return (cp >= 'a' and cp <= 'z') or
-        (cp >= 'A' and cp <= 'Z') or
-        (cp >= '0' and cp <= '9') or
-        cp == '_';
-}
-
 /// 単語文字判定（バイト用 - ASCII英数字とアンダースコア）
 /// regex.zig と editing_context.zig で共通使用
 pub inline fn isWordCharByte(c: u8) bool {
@@ -398,9 +390,32 @@ pub inline fn isWordCharByte(c: u8) bool {
         c == '_';
 }
 
-/// ASCII範囲判定（コードポイント用）
-pub inline fn isAscii(cp: u21) bool {
-    return cp <= ASCII.MAX;
+/// スライスの指定位置からコードポイントをデコード
+/// 戻り値: (コードポイント, バイト長) または null
+pub fn decodeCodepointAt(data: []const u8, pos: usize) ?struct { cp: u21, len: usize } {
+    if (pos >= data.len) return null;
+    const first = data[pos];
+
+    // ASCII高速パス
+    if (first < 0x80) {
+        return .{ .cp = first, .len = 1 };
+    }
+
+    // UTF-8バイト数を判定
+    const len = std.unicode.utf8ByteSequenceLength(first) catch return null;
+    if (pos + len > data.len) return null;
+
+    const cp = std.unicode.utf8Decode(data[pos..][0..len]) catch return null;
+    return .{ .cp = cp, .len = len };
+}
+
+/// スライスの指定位置の文字種を取得（日本語対応）
+/// decodeCodepointAt + getCharType の共通パターン
+pub fn getCharTypeAt(data: []const u8, pos: usize) CharType {
+    if (decodeCodepointAt(data, pos)) |decoded| {
+        return getCharType(decoded.cp);
+    }
+    return .other;
 }
 
 /// ASCII範囲判定（バイト用）
@@ -439,6 +454,22 @@ pub inline fn normalizeFullwidth(cp: u21) u21 {
         return cp - 0xFF00 + 0x20;
     }
     return cp;
+}
+
+/// ソート済み文字列配列の共通プレフィックスを見つける
+/// 最初と最後の文字列のみを比較（ソート済みのため）
+pub fn findCommonPrefix(strings: []const []const u8) []const u8 {
+    if (strings.len == 0) return "";
+    if (strings.len == 1) return strings[0];
+
+    const first = strings[0];
+    const last = strings[strings.len - 1];
+    const min_len = @min(first.len, last.len);
+
+    var common_len: usize = 0;
+    while (common_len < min_len and first[common_len] == last[common_len]) : (common_len += 1) {}
+
+    return first[0..common_len];
 }
 
 /// グラフェムクラスタの情報

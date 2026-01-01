@@ -17,6 +17,7 @@
 const std = @import("std");
 const Buffer = @import("buffer").Buffer;
 const EditingContext = @import("editing_context").EditingContext;
+const config = @import("config");
 
 /// ファイルメタデータ
 /// ファイル関連の情報を管理（BufferStateから分離）
@@ -47,11 +48,11 @@ pub const FileMetadata = struct {
     }
 
     /// バッファ名を取得（ファイル名がなければ*scratch*）
-    pub fn getName(self: *const FileMetadata) []const u8 {
+    pub inline fn getName(self: *const FileMetadata) []const u8 {
         if (self.filename) |fname| {
             return std.fs.path.basename(fname);
         }
-        return "*scratch*";
+        return config.Messages.BUFFER_SCRATCH;
     }
 
     /// フルパスを取得
@@ -284,7 +285,7 @@ pub const BufferManager = struct {
     }
 
     /// バッファ数を取得
-    pub fn bufferCount(self: *const Self) usize {
+    pub inline fn bufferCount(self: *const Self) usize {
         return self.buffers.items.len;
     }
 

@@ -10,7 +10,7 @@ const PieceIterator = buffer_mod.PieceIterator;
 // ========================================
 
 /// 文字の表示幅を計算（タブは現在列に基づいて展開）
-fn getCharWidth(base: u21, width: usize, current_col: usize, tab_width: usize) usize {
+inline fn getCharWidth(base: u21, width: usize, current_col: usize, tab_width: usize) usize {
     if (base == '\t') {
         // タブは次のタブストップまで進める
         return (current_col / tab_width + 1) * tab_width - current_col;

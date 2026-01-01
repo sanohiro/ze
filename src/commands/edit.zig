@@ -478,6 +478,10 @@ fn moveLineImpl(e: *Editor, direction: enum { up, down }) !void {
     const line_content = try e.extractText(line_start, line_len);
     defer e.allocator.free(line_content);
 
+    // 行移動は1操作としてUndoグループ化（delete + insertを一括でUndo）
+    _ = buffer_state.editing_ctx.beginUndoGroup();
+    defer buffer_state.editing_ctx.endUndoGroup();
+
     try buffer.delete(line_start, line_len);
     errdefer buffer.insertSlice(line_start, line_content) catch {};
 
@@ -781,7 +785,8 @@ pub fn keyboardQuit(e: *Editor) !void {
 
 /// 現在行のインデント（先頭の空白）を取得
 /// Enter時の自動インデントに使用
-pub fn getCurrentLineIndent(e: *Editor) []const u8 {
+/// buf: 呼び出し元が提供するバッファ（スレッドセーフ）
+pub fn getCurrentLineIndent(e: *Editor, buf: []u8) []const u8 {
     const buffer = e.getCurrentBufferContent();
     const cursor_pos = e.getCurrentView().getCursorBufferPos();
 
@@ -789,11 +794,6 @@ pub fn getCurrentLineIndent(e: *Editor) []const u8 {
     const line_num = buffer.findLineByPos(cursor_pos);
     const line_start = buffer.getLineStart(line_num) orelse return "";
 
-    // バッファからテキストを取得してインデント部分を抽出
-    // 静的バッファを使用して安全にスライスを返す
-    const Static = struct {
-        var buf: [config.Editor.MAX_INDENT_LENGTH]u8 = undefined;
-    };
     var indent_len: usize = 0;
 
     // PieceIteratorで行頭からイテレート
@@ -802,8 +802,8 @@ pub fn getCurrentLineIndent(e: *Editor) []const u8 {
 
     while (iter.next()) |byte| {
         if (byte == ' ' or byte == '\t') {
-            if (indent_len < config.Editor.MAX_INDENT_LENGTH) {
-                Static.buf[indent_len] = byte;
+            if (indent_len < buf.len) {
+                buf[indent_len] = byte;
                 indent_len += 1;
             }
         } else {
@@ -811,7 +811,7 @@ pub fn getCurrentLineIndent(e: *Editor) []const u8 {
         }
     }
 
-    return Static.buf[0..indent_len];
+    return buf[0..indent_len];
 }
 
 /// 行頭の空白（スペース/タブ）をスキップした位置を返す

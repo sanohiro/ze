@@ -76,7 +76,7 @@ const CONTROL_CHAR_TABLE: [32][2]u8 = blk: {
     break :blk table;
 };
 
-fn renderControlChar(ch: u8) [2]u8 {
+inline fn renderControlChar(ch: u8) [2]u8 {
     return CONTROL_CHAR_TABLE[ch & 0x1F];
 }
 
@@ -428,7 +428,7 @@ pub const View = struct {
     }
 
     /// タブ幅を取得（設定値がなければ言語デフォルト、最小1）
-    pub fn getTabWidth(self: *const View) u8 {
+    pub inline fn getTabWidth(self: *const View) u8 {
         const width = self.tab_width orelse self.language.indent_width;
         // ゼロ除算を防ぐため、最小値は1
         return if (width == 0) 4 else width;
@@ -644,9 +644,15 @@ pub const View = struct {
 
         // 行幅キャッシュの無効化（変更された行範囲）
         if (end_line) |e| {
-            var line = start_line;
-            while (line <= e) : (line += 1) {
-                self.invalidateLineWidthCacheAt(line);
+            // キャッシュ範囲内に収まる行のみループ（O(n)→O(cache_size)に最適化）
+            const cache_size = config.View.LINE_WIDTH_CACHE_SIZE;
+            const cache_start = @max(start_line, self.top_line);
+            const cache_end = @min(e, self.top_line + cache_size - 1);
+            if (cache_start <= cache_end) {
+                var line = cache_start;
+                while (line <= cache_end) : (line += 1) {
+                    self.invalidateLineWidthCacheAt(line);
+                }
             }
         } else {
             // 改行を含む変更の場合は全キャッシュを無効化
@@ -906,9 +912,11 @@ pub const View = struct {
         const is_current = if (cursor_in_content) |cursor| cursor > first_visible_pos and cursor <= first_visible_pos + search_display_width else false;
         const hl = getHighlightColors(is_current);
         try self.highlighted_line.appendSlice(self.allocator, hl.start);
-        try self.highlighted_line.appendSlice(self.allocator, line[first_match .. first_match + search_str.len]);
+        // 境界チェック: ANSIシーケンスを含む場合でも安全にスライス
+        const first_match_end = @min(first_match + search_str.len, line.len);
+        try self.highlighted_line.appendSlice(self.allocator, line[first_match..first_match_end]);
         try self.highlighted_line.appendSlice(self.allocator, hl.end);
-        var pos: usize = first_match + search_str.len;
+        var pos: usize = first_match_end;
 
         // 残りのマッチを処理
         while (pos < line.len) {
@@ -922,9 +930,11 @@ pub const View = struct {
                 const is_cur = if (cursor_in_content) |cursor| cursor > visible_pos and cursor <= visible_pos + search_display_width else false;
                 const hl_cur = getHighlightColors(is_cur);
                 try self.highlighted_line.appendSlice(self.allocator, hl_cur.start);
-                try self.highlighted_line.appendSlice(self.allocator, line[match_pos .. match_pos + search_str.len]);
+                // 境界チェック: ANSIシーケンスを含む場合でも安全にスライス
+                const match_end = @min(match_pos + search_str.len, line.len);
+                try self.highlighted_line.appendSlice(self.allocator, line[match_pos..match_end]);
                 try self.highlighted_line.appendSlice(self.allocator, hl_cur.end);
-                pos = match_pos + search_str.len;
+                pos = match_end;
             } else {
                 // これ以上マッチなし：残りをコピー
                 try self.highlighted_line.appendSlice(self.allocator, line[pos..]);

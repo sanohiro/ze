@@ -501,14 +501,19 @@ pub const EditingContext = struct {
 
         // 後方スキャン用にチャンクを読み込む
         const chunk_size = config.Search.BACKWARD_CHUNK_SIZE;
-        const look_back = @min(pos, chunk_size);
-        const scan_start = pos - look_back;
+        const raw_scan_start = pos -| @min(pos, chunk_size);
 
         var iter = PieceIterator.init(self.buffer);
+
+        // scan_start がUTF-8文字の途中であれば、先頭まで戻る
+        const scan_start = iter.alignToUtf8Start(raw_scan_start);
         iter.seek(scan_start);
 
-        // チャンクを読み込み
-        var chunk: [chunk_size]u8 = undefined;
+        // scan_start 調整後の実際の読み込みサイズを計算
+        const look_back = pos - scan_start;
+
+        // チャンクを読み込み（+4バイトはUTF-8調整分の余裕）
+        var chunk: [chunk_size + 4]u8 = undefined;
         var chunk_len: usize = 0;
         while (chunk_len < look_back) {
             chunk[chunk_len] = iter.next() orelse break;
@@ -540,12 +545,14 @@ pub const EditingContext = struct {
 
         // チャンク先頭に到達した場合、さらに後方を処理
         while (i == 0 and pos > 0) {
-            const next_look_back = @min(pos, chunk_size);
-            const next_scan_start = pos - next_look_back;
+            // 次のチャンクを読み込む（UTF-8境界を調整）
+            const raw_next_scan_start = pos -| @min(pos, chunk_size);
+            const next_scan_start = iter.alignToUtf8Start(raw_next_scan_start);
+            const adjusted_look_back = pos - next_scan_start;
 
             iter.seek(next_scan_start);
             chunk_len = 0;
-            while (chunk_len < next_look_back) {
+            while (chunk_len < adjusted_look_back) {
                 chunk[chunk_len] = iter.next() orelse break;
                 chunk_len += 1;
             }
@@ -636,11 +643,9 @@ pub const EditingContext = struct {
 
         // Undo記録（所有権移転版：コピーを回避）
         // extractTextは新規アロケートなのでcapacity = len
-        self.recordDeleteOwned(pos, @constCast(deleted), deleted.len) catch |err| {
-            // 失敗時はextractTextの結果を解放
-            self.allocator.free(deleted);
-            return err;
-        };
+        // 注意: recordDeleteOwnedはerrdefer内でowned_memoryを解放するため、
+        //       失敗時にはここで解放する必要はない（ダブルフリー防止）
+        try self.recordDeleteOwned(pos, @constCast(deleted), deleted.len);
         // recordDeleteOwnedが成功したら所有権は移転済み（freeしない）
 
         self.modified = true;

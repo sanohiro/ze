@@ -54,12 +54,6 @@ pub const ANSI = struct {
     pub const INVERT = "\x1b[7m";
     /// 反転表示解除
     pub const INVERT_OFF = "\x1b[27m";
-    /// 下線
-    pub const UNDERLINE = "\x1b[4m";
-    /// 下線解除
-    pub const UNDERLINE_OFF = "\x1b[24m";
-    /// 薄い表示（dim）
-    pub const DIM = "\x1b[2m";
     /// グレー（明るい黒）
     pub const GRAY = "\x1b[90m";
 
@@ -111,22 +105,14 @@ pub const UTF8 = struct {
     /// 継続バイトのパターン
     pub const CONTINUATION_PATTERN: u8 = 0b10000000;
 
-    /// 最大codepoint（Unicode上限）
-    pub const MAX_CODEPOINT: u21 = 0x10FFFF;
-
-    /// 最大バイト長
-    pub const MAX_BYTE_LEN: usize = 4;
-
     // === バイト範囲定数 ===
-    /// 2バイト文字の先頭バイト範囲
-    pub const BYTE2_MIN: u8 = 0xC0;
+    /// 2バイト文字の先頭バイト最大値
     pub const BYTE2_MAX: u8 = 0xDF;
     /// 3バイト文字の先頭バイト範囲
     pub const BYTE3_MIN: u8 = 0xE0;
     pub const BYTE3_MAX: u8 = 0xEF;
-    /// 4バイト文字の先頭バイト範囲
+    /// 4バイト文字の先頭バイト最小値
     pub const BYTE4_MIN: u8 = 0xF0;
-    pub const BYTE4_MAX: u8 = 0xF7;
 
     // === 特殊文字 ===
     /// 全角スペース (U+3000) の UTF-8 バイト列
@@ -185,15 +171,9 @@ pub const QueryReplace = struct {
 
 /// エディタ動作の定数
 pub const Editor = struct {
-    /// Undo/Redoスタックの最大エントリ数
-    pub const MAX_UNDO_ENTRIES: usize = 1000;
-
     /// Undoグループ化のタイムアウト（ナノ秒）
     /// この時間以内の連続した同種の操作は1つのundoグループにまとめられる
     pub const UNDO_GROUP_TIMEOUT_NS: i128 = 300 * std.time.ns_per_ms;
-
-    /// スクロールマージン（上下の余白行数）
-    pub const SCROLL_MARGIN: usize = 3;
 
     /// ステータスバーのバッファサイズ
     pub const STATUS_BUF_SIZE: usize = 256;
@@ -227,9 +207,6 @@ pub const Input = struct {
 
     /// リングバッファサイズ（ペースト時等の大量入力に対応）
     pub const RING_BUF_SIZE: usize = 4096;
-
-    /// Ctrl+キーのマスク
-    pub const CTRL_MASK: u8 = ASCII.CTRL_MAX;
 };
 
 /// バッファ関連の定数
@@ -275,8 +252,6 @@ pub const Messages = struct {
     pub const NO_MARK_SET = "No mark set";
     pub const NO_ACTIVE_REGION = "No active region";
     pub const UNKNOWN_COMMAND = "Unknown command";
-    pub const FILE_NOT_FOUND = "File not found";
-    pub const BINARY_FILE = "Binary file detected";
     pub const MEMORY_ALLOCATION_FAILED = "Memory allocation failed";
     pub const NO_SEARCH_STRING = "Error: no search string";
     pub const COMMAND_START_FAILED = "Failed to start command";
@@ -290,6 +265,15 @@ pub const Messages = struct {
     pub const CONFIRM_YES_NO = "Please answer: (y)es or (n)o";
     pub const CONFIRM_YES_NO_CANCEL = "Please answer: (y)es, (n)o, (c)ancel";
     pub const CONFIRM_REPLACE = "Please answer: (y)es, (n)ext, (!)all, (q)uit";
+    pub const CONFIRM_OVERWRITE = "File exists. Overwrite? (y)es (n)o";
+    pub const REPLACE_PROMPT = "Replace? (y)es (n)ext (!)all (q)uit";
+
+    // === プロンプト ===
+    pub const PROMPT_WRITE_FILE = "Write file: ";
+
+    // === 警告メッセージ ===
+    pub const WARNING_FILE_DELETED = "Warning: file deleted externally";
+    pub const WARNING_FILE_MODIFIED = "Warning: file modified externally!";
 
     // === 状態メッセージ ===
     pub const SEARCH_WRAPPED = "Wrapped";
@@ -317,9 +301,17 @@ pub const Messages = struct {
     // === コメント操作メッセージ ===
     pub const LINE_COMMENT_NOT_SUPPORTED = "Line comment not supported for this language";
 
+    // === マクロメッセージ ===
+    pub const MACRO_ALREADY_RECORDING = "Already recording macro";
+    pub const MACRO_CANNOT_RECORD_WHILE_PLAYING = "Cannot record while playing";
+    pub const MACRO_DEFINING = "Defining kbd macro...";
+    pub const MACRO_NOT_RECORDING = "Not recording macro";
+    pub const MACRO_EMPTY = "Empty macro, previous kept";
+    pub const MACRO_REPEAT_PROMPT = "Press e to repeat macro";
+    pub const MACRO_NOT_DEFINED = "No kbd macro defined";
+
     // === キープレフィックス ===
     pub const KEY_PREFIX_CX = "C-x-";
-    pub const KEY_PREFIX_CXR = "C-x r ";
 
     // === M-xコマンドメッセージ ===
     pub const MX_COMMANDS_HELP = "Commands: line ln tab indent mode revert key ro exit ?";
@@ -339,4 +331,15 @@ pub const Messages = struct {
     pub const MX_READONLY_DISABLED = "Read-only disabled";
     pub const MX_KEY_DESCRIBE_PROMPT = "Press key: ";
     pub const MX_EXIT_CONFIRM = "Exit? (y)es (n)o";
+
+    // === 検索プロンプト ===
+    pub const ISEARCH_FORWARD = "I-search: ";
+    pub const ISEARCH_BACKWARD = "I-search backward: ";
+    pub const ISEARCH_REGEX_FORWARD = "Regexp I-search: ";
+    pub const ISEARCH_REGEX_BACKWARD = "Regexp I-search backward: ";
+
+    // === 特殊バッファ名 ===
+    pub const BUFFER_SCRATCH = "*scratch*";
+    pub const BUFFER_LIST = "*Buffer List*";
+    pub const BUFFER_COMMAND = "*Command*";
 };
