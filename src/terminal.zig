@@ -78,8 +78,9 @@ pub const Terminal = struct {
         // ブラケットペーストモードを有効化（ペースト時にまとめて挿入）
         // 注: マウスモードは無効（ターミナルでのテキスト選択・コピーを優先）
         const stdout: std.fs.File = .{ .handle = posix.STDOUT_FILENO };
-        // 1回のwrite()にまとめてシステムコール削減
-        stdout.writeAll(config.ANSI.ENTER_ALT_SCREEN ++ config.ANSI.ENABLE_BRACKETED_PASTE) catch {};
+        // スクロール領域をリセットしてから代替画面に入る
+        // （パイプ入力時に前のプロセスの出力で壊れた状態をクリア）
+        stdout.writeAll(config.ANSI.RESET_SCROLL_REGION ++ config.ANSI.ENTER_ALT_SCREEN ++ config.ANSI.ENABLE_BRACKETED_PASTE) catch {};
 
         return self;
     }
