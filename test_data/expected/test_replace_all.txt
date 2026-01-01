@@ -1,0 +1,5 @@
+bar is a test word.
+This bar should be replaced.
+Multiple bar bar bar here.
+No match on this line.
+Last bar here.

@@ -107,6 +107,12 @@ run_test() {
     fi
 }
 
+# テストファイルをリセット（元のtest_dataからコピー）
+reset_test_file() {
+    local file="$1"
+    cp "test_data/$file" "/tmp/ze_test_data/$file"
+}
+
 # 内容検証付きテスト実行ヘルパー（--expect使用）
 run_test_verify() {
     local test_name="$1"
@@ -392,16 +398,30 @@ if should_run_category 21; then
 
 echo
 echo "=== カテゴリ 21: Query Replace (M-%) ==="
-run_test "21.1 基本的な置換 (y)" --file=test_data/test_replace.txt "M-%" "foo" "Enter" "bar" "Enter" "y" "q" "C-x" "C-c" "n"
+# 各テスト前にファイルをリセット（前のテストの影響を排除）
+# 21.1: 最初の"foo"を"bar"に置換 → 期待値ファイルで検証
+reset_test_file "test_replace.txt"
+run_test_verify "21.1 基本的な置換 (y)" --file=test_data/test_replace.txt --expect-file=test_data/expected/test_replace_first.txt "M-%" "foo" "Enter" "bar" "Enter" "y" "q" "C-x" "C-s" "C-x" "C-c"
+reset_test_file "test_replace.txt"
 run_test "21.2 置換をスキップ (n)" --file=test_data/test_replace.txt "M-%" "foo" "Enter" "bar" "Enter" "n" "n" "q" "C-x" "C-c"
-run_test "21.3 全て置換 (!)" --file=test_data/test_replace.txt "M-%" "foo" "Enter" "bar" "Enter" "!" "C-x" "C-c" "n"
+# 21.3: 全ての"foo"を"bar"に置換 → 期待値ファイルで検証
+reset_test_file "test_replace.txt"
+run_test_verify "21.3 全て置換 (!)" --file=test_data/test_replace.txt --expect-file=test_data/expected/test_replace_all.txt "M-%" "foo" "Enter" "bar" "Enter" "!" "C-x" "C-s" "C-x" "C-c"
+reset_test_file "test_replace.txt"
 run_test "21.4 置換を中断 (q)" --file=test_data/test_replace.txt "M-%" "foo" "Enter" "bar" "Enter" "q" "C-x" "C-c"
+reset_test_file "test_replace.txt"
 run_test "21.5 置換をキャンセル (C-g)" --file=test_data/test_replace.txt "M-%" "foo" "Enter" "C-g" "C-x" "C-c"
+reset_test_file "test_replace.txt"
 run_test "21.6 マッチなし" --file=test_data/test_replace.txt "M-%" "n" "o" "t" "f" "o" "u" "n" "d" "Enter" "bar" "Enter" "C-x" "C-c"
+reset_test_file "test_replace.txt"
 run_test "21.7 空の置換文字列" --file=test_data/test_replace.txt "M-%" "foo" "Enter" "Enter" "y" "q" "C-x" "C-c" "n"
+reset_test_file "test_replace.txt"
 run_test "21.8 複数回の置換 (y,y,y)" --file=test_data/test_replace.txt "M-%" "foo" "Enter" "bar" "Enter" "y" "y" "y" "q" "C-x" "C-c" "n"
+reset_test_file "test_replace.txt"
 run_test "21.9 置換のUndo" --file=test_data/test_replace.txt "M-%" "foo" "Enter" "bar" "Enter" "!" "C-u" "C-x" "C-c" "n"
-run_test "21.10 日本語の置換" --input-file=test_data/test_japanese_replace_keys.txt --file=test_data/test_replace_ja.txt
+# 21.10: 日本語置換 → 期待値ファイルで検証
+reset_test_file "test_replace_ja.txt"
+run_test_verify "21.10 日本語の置換" --input-file=test_data/test_japanese_replace_keys.txt --file=test_data/test_replace_ja.txt --expect-file=test_data/expected/test_replace_ja_all.txt
 echo
 fi
 

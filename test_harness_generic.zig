@@ -355,13 +355,16 @@ pub fn main() !void {
                 // 正しくwait statusをデコード
                 if (posix.W.IFEXITED(wait_result.status)) {
                     exit_status = posix.W.EXITSTATUS(wait_result.status);
+                    std.debug.print("Child exited with status: {}\n", .{exit_status});
                 } else if (posix.W.IFSIGNALED(wait_result.status)) {
                     // シグナルで終了した場合は128+シグナル番号を返す（shell慣例）
-                    exit_status = 128 + @as(u8, @intCast(posix.W.TERMSIG(wait_result.status)));
+                    const sig = posix.W.TERMSIG(wait_result.status);
+                    exit_status = 128 + @as(u8, @intCast(sig));
+                    std.debug.print("Child killed by signal {} (exit code: {})\n", .{ sig, exit_status });
                 } else {
                     exit_status = 255; // 不明な終了
+                    std.debug.print("Child terminated abnormally (exit code: 255)\n", .{});
                 }
-                std.debug.print("Child exited with status: {} (decoded: {})\n", .{ wait_result.status, exit_status });
                 break;
             }
             std.Thread.sleep(100 * std.time.ns_per_ms);
@@ -434,10 +437,7 @@ pub fn main() !void {
             resetAndExit(exit_status);
         } else {
             std.debug.print("\n=== Test completed ===\n", .{});
-            // 正常終了でもターミナルをリセット
-            const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
-            stdout.writeAll("\x1b[?1000l\x1b[?1003l\x1b[?1006l") catch {};
-            stdout.writeAll("\x1b[?25h") catch {};
+            resetAndExit(0); // 明示的に成功終了
         }
     }
 }
@@ -847,7 +847,8 @@ extern "c" fn fcntl(fd: c_int, cmd: c_int, arg: c_int) c_int;
 
 const F_GETFL = 3;
 const F_SETFL = 4;
-const O_NONBLOCK = 0x0004;
+// O_NONBLOCK: macOS=0x0004, Linux=0x800
+const O_NONBLOCK: c_int = if (@import("builtin").os.tag == .linux) 0x800 else 0x0004;
 
 const winsize_t = extern struct {
     ws_row: c_ushort,
