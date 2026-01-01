@@ -18,6 +18,15 @@ fn isStdinPipe() bool {
     return mode == std.posix.S.IFIFO or mode == std.posix.S.IFREG;
 }
 
+/// stdoutがttyかどうかを判定
+fn isStdoutTty() bool {
+    const stdout_handle = std.posix.STDOUT_FILENO;
+    const stat = std.posix.fstat(stdout_handle) catch return false;
+    // S_IFCHR (character device) の場合はtty
+    const mode = stat.mode & std.posix.S.IFMT;
+    return mode == std.posix.S.IFCHR;
+}
+
 /// stderr にエラーメッセージを出力
 fn writeError(comptime fmt: []const u8, args: anytype) void {
     var buf: [512]u8 = undefined;
@@ -127,6 +136,12 @@ fn mainImpl() !u8 {
         }
     }
 
+    // stdoutがttyでなければエディタは動作できない
+    if (!isStdoutTty()) {
+        writeError("Error: stdout is not a terminal\n", .{});
+        return EXIT_IO_ERROR;
+    }
+
     // stdinがパイプの場合、内容を読み込む
     var stdin_content: ?[]u8 = null;
     var tty_file: ?std.fs.File = null;
@@ -134,9 +149,9 @@ fn mainImpl() !u8 {
     defer if (tty_file) |f| f.close();
 
     if (isStdinPipe()) {
-        // パイプからの入力を全て読み込む（最大64MB）
+        // パイプからの入力を全て読み込む（最大256MB）
         const stdin: std.fs.File = .{ .handle = std.posix.STDIN_FILENO };
-        stdin_content = stdin.readToEndAlloc(allocator, 64 * 1024 * 1024) catch |err| {
+        stdin_content = stdin.readToEndAlloc(allocator, 256 * 1024 * 1024) catch |err| {
             writeError("Error reading from stdin: {}\n", .{err});
             return EXIT_IO_ERROR;
         };

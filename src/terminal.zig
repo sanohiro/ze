@@ -127,7 +127,22 @@ pub const Terminal = struct {
         self.flush() catch {};
 
         self.disableRawMode() catch {};
+        self.restoreSignalHandlers();
         self.buf.deinit(self.allocator);
+    }
+
+    /// シグナルハンドラをデフォルトに復元
+    fn restoreSignalHandlers(_: *Terminal) void {
+        const default_act = posix.Sigaction{
+            .handler = .{ .handler = posix.SIG.DFL },
+            .mask = posix.sigemptyset(),
+            .flags = 0,
+        };
+        _ = posix.sigaction(posix.SIG.WINCH, &default_act, null);
+        _ = posix.sigaction(posix.SIG.INT, &default_act, null);
+        _ = posix.sigaction(posix.SIG.TERM, &default_act, null);
+        _ = posix.sigaction(posix.SIG.HUP, &default_act, null);
+        _ = posix.sigaction(posix.SIG.QUIT, &default_act, null);
     }
 
     fn enableRawMode(self: *Terminal) !void {
@@ -165,9 +180,10 @@ pub const Terminal = struct {
 
     fn getWindowSize(self: *Terminal) void {
         var ws: posix.winsize = undefined;
-        const stdout: std.fs.File = .{ .handle = posix.STDOUT_FILENO };
 
-        const result = posix.system.ioctl(stdout.handle, posix.system.T.IOCGWINSZ, @intFromPtr(&ws));
+        // tty_fdを使用してウィンドウサイズを取得
+        // パイプ入力時も/dev/ttyから正しいサイズを取得できる
+        const result = posix.system.ioctl(self.tty_fd, posix.system.T.IOCGWINSZ, @intFromPtr(&ws));
         if (result == 0) {
             self.width = ws.col;
             self.height = ws.row;

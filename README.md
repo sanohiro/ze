@@ -40,7 +40,7 @@ Just start typing.
   Pipe buffers or selections to external commands and back.
 
 - **Small, single binary**
-  Under 500KB, no dependencies. Easy to deploy anywhere.
+  Under 600KB, no dependencies. Easy to deploy anywhere.
 
 ---
 

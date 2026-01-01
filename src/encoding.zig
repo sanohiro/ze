@@ -21,6 +21,7 @@
 const std = @import("std");
 const config = @import("config");
 const unicode = @import("unicode");
+const jis_kanji_table = @import("jis_kanji_table");
 
 /// サポートするエンコーディング
 pub const Encoding = enum {
@@ -913,38 +914,9 @@ fn jisToUnicode(ku: u8, ten: u8) ?u21 {
     return null;
 }
 
-/// 漢字テーブル検索（主要な漢字のみ）
+/// 漢字テーブル検索（JIS X 0208 完全テーブル使用）
 fn lookupKanji(ku: u8, ten: u8) ?u21 {
-    // 16区1点から順にインデックス計算
-    const base_ku: usize = 16;
-    if (ku < base_ku or ku > 84) return null;
-
-    const idx = (@as(usize, ku - base_ku) * 94) + @as(usize, ten - 1);
-
-    // 主要な漢字テーブル（よく使われる漢字を優先）
-    // 完全なテーブルは約6000文字必要
-    const kanji_table = [_]u21{
-        // 16区: 亜唖娃阿哀愛挨姶逢葵茜穐悪握渥旭葦芦鯵梓圧斡扱宛姐虻飴絢綾鮎或粟袷安庵按暗案闇鞍杏...
-        0x4E9C, 0x5516, 0x5A03, 0x963F, 0x54C0, 0x611B, 0x6328, 0x59F6, // 亜唖娃阿哀愛挨姶
-        0x9022, 0x8475, 0x831C, 0x7A50, 0x60AA, 0x63E1, 0x6E25, 0x65ED, // 逢葵茜穐悪握渥旭
-        0x8466, 0x82A6, 0x9BC9, 0x6893, 0x5727, 0x65A1, 0x6271, 0x5B9B, // 葦芦鯵梓圧斡扱宛
-        0x59D0, 0x867B, 0x98F4, 0x7D62, 0x7DBE, 0x9B8E, 0x6216, 0x7C9F, // 姐虻飴絢綾鮎或粟
-        0x88B7, 0x5B89, 0x5EB5, 0x6309, 0x6697, 0x6848, 0x95C7, 0x978D, // 袷安庵按暗案闇鞍
-        0x674F, 0x4EE5, 0x4F0A, 0x4F4D, 0x4F9D, 0x5049, 0x56F2, 0x5937, // 杏以伊位依偉囲夷
-        0x59D4, 0x5A01, 0x5C09, 0x60DF, 0x610F, 0x6170, 0x6613, 0x6905, // 委威尉惟意慰易椅
-        0x70BA, 0x754F, 0x7570, 0x79FB, 0x7DAD, 0x7DEF, 0x80C3, 0x840E, // 為畏異移維緯胃萎
-        0x8863, 0x8B02, 0x9055, 0x907A, 0x533B, 0x4E95, 0x4EA5, 0x57DF, // 衣謂違遺医井亥域
-        0x80B2, 0x90C1, 0x78EF, 0x4E00, 0x58F1, 0x6EA2, 0x9038, 0x7A32, // 育郁磯一壱溢逸稲
-        0x8328, 0x828B, 0x9C2F, 0x5141, 0x5370, 0x54BD, 0x54E1, 0x56E0, // 茨芋鰯允印咽員因
-        0x59FB, 0x5F15, 0x98F2, 0x6DEB, 0x80E4, 0x852D, // 姻引飲淫胤蔭
-    };
-
-    if (idx < kanji_table.len) {
-        return kanji_table[idx];
-    }
-
-    // テーブルにない漢字は null
-    return null;
+    return jis_kanji_table.kanjiJisToUnicode(ku, ten);
 }
 
 // ============================================================================
@@ -1353,111 +1325,10 @@ const KuTen = struct {
     ten: u8,
 };
 
-/// Unicode → 漢字の区点番号（逆引き）
+/// Unicode → 漢字の区点番号（逆引き、JIS X 0208 完全テーブル使用）
 fn unicodeToKanjiKuTen(codepoint: u21) ?KuTen {
-    // 漢字テーブルの逆引き（よく使われる漢字のみ）
-    const kanji_reverse = [_]struct { unicode: u21, ku: u8, ten: u8 }{
-        // 16区の漢字
-        .{ .unicode = 0x4E9C, .ku = 16, .ten = 1 }, // 亜
-        .{ .unicode = 0x5516, .ku = 16, .ten = 2 }, // 唖
-        .{ .unicode = 0x5A03, .ku = 16, .ten = 3 }, // 娃
-        .{ .unicode = 0x963F, .ku = 16, .ten = 4 }, // 阿
-        .{ .unicode = 0x54C0, .ku = 16, .ten = 5 }, // 哀
-        .{ .unicode = 0x611B, .ku = 16, .ten = 6 }, // 愛
-        .{ .unicode = 0x6328, .ku = 16, .ten = 7 }, // 挨
-        .{ .unicode = 0x59F6, .ku = 16, .ten = 8 }, // 姶
-        .{ .unicode = 0x9022, .ku = 16, .ten = 9 }, // 逢
-        .{ .unicode = 0x8475, .ku = 16, .ten = 10 }, // 葵
-        .{ .unicode = 0x831C, .ku = 16, .ten = 11 }, // 茜
-        .{ .unicode = 0x7A50, .ku = 16, .ten = 12 }, // 穐
-        .{ .unicode = 0x60AA, .ku = 16, .ten = 13 }, // 悪
-        .{ .unicode = 0x63E1, .ku = 16, .ten = 14 }, // 握
-        .{ .unicode = 0x6E25, .ku = 16, .ten = 15 }, // 渥
-        .{ .unicode = 0x65ED, .ku = 16, .ten = 16 }, // 旭
-        .{ .unicode = 0x8466, .ku = 16, .ten = 17 }, // 葦
-        .{ .unicode = 0x82A6, .ku = 16, .ten = 18 }, // 芦
-        .{ .unicode = 0x9BC9, .ku = 16, .ten = 19 }, // 鯵
-        .{ .unicode = 0x6893, .ku = 16, .ten = 20 }, // 梓
-        .{ .unicode = 0x5727, .ku = 16, .ten = 21 }, // 圧
-        .{ .unicode = 0x65A1, .ku = 16, .ten = 22 }, // 斡
-        .{ .unicode = 0x6271, .ku = 16, .ten = 23 }, // 扱
-        .{ .unicode = 0x5B9B, .ku = 16, .ten = 24 }, // 宛
-        .{ .unicode = 0x59D0, .ku = 16, .ten = 25 }, // 姐
-        .{ .unicode = 0x867B, .ku = 16, .ten = 26 }, // 虻
-        .{ .unicode = 0x98F4, .ku = 16, .ten = 27 }, // 飴
-        .{ .unicode = 0x7D62, .ku = 16, .ten = 28 }, // 絢
-        .{ .unicode = 0x7DBE, .ku = 16, .ten = 29 }, // 綾
-        .{ .unicode = 0x9B8E, .ku = 16, .ten = 30 }, // 鮎
-        .{ .unicode = 0x6216, .ku = 16, .ten = 31 }, // 或
-        .{ .unicode = 0x7C9F, .ku = 16, .ten = 32 }, // 粟
-        .{ .unicode = 0x88B7, .ku = 16, .ten = 33 }, // 袷
-        .{ .unicode = 0x5B89, .ku = 16, .ten = 34 }, // 安
-        .{ .unicode = 0x5EB5, .ku = 16, .ten = 35 }, // 庵
-        .{ .unicode = 0x6309, .ku = 16, .ten = 36 }, // 按
-        .{ .unicode = 0x6697, .ku = 16, .ten = 37 }, // 暗
-        .{ .unicode = 0x6848, .ku = 16, .ten = 38 }, // 案
-        .{ .unicode = 0x95C7, .ku = 16, .ten = 39 }, // 闇
-        .{ .unicode = 0x978D, .ku = 16, .ten = 40 }, // 鞍
-        .{ .unicode = 0x674F, .ku = 16, .ten = 41 }, // 杏
-        .{ .unicode = 0x4EE5, .ku = 16, .ten = 42 }, // 以
-        .{ .unicode = 0x4F0A, .ku = 16, .ten = 43 }, // 伊
-        .{ .unicode = 0x4F4D, .ku = 16, .ten = 44 }, // 位
-        .{ .unicode = 0x4F9D, .ku = 16, .ten = 45 }, // 依
-        .{ .unicode = 0x5049, .ku = 16, .ten = 46 }, // 偉
-        .{ .unicode = 0x56F2, .ku = 16, .ten = 47 }, // 囲
-        .{ .unicode = 0x5937, .ku = 16, .ten = 48 }, // 夷
-        .{ .unicode = 0x59D4, .ku = 16, .ten = 49 }, // 委
-        .{ .unicode = 0x5A01, .ku = 16, .ten = 50 }, // 威
-        .{ .unicode = 0x5C09, .ku = 16, .ten = 51 }, // 尉
-        .{ .unicode = 0x60DF, .ku = 16, .ten = 52 }, // 惟
-        .{ .unicode = 0x610F, .ku = 16, .ten = 53 }, // 意
-        .{ .unicode = 0x6170, .ku = 16, .ten = 54 }, // 慰
-        .{ .unicode = 0x6613, .ku = 16, .ten = 55 }, // 易
-        .{ .unicode = 0x6905, .ku = 16, .ten = 56 }, // 椅
-        .{ .unicode = 0x70BA, .ku = 16, .ten = 57 }, // 為
-        .{ .unicode = 0x754F, .ku = 16, .ten = 58 }, // 畏
-        .{ .unicode = 0x7570, .ku = 16, .ten = 59 }, // 異
-        .{ .unicode = 0x79FB, .ku = 16, .ten = 60 }, // 移
-        .{ .unicode = 0x7DAD, .ku = 16, .ten = 61 }, // 維
-        .{ .unicode = 0x7DEF, .ku = 16, .ten = 62 }, // 緯
-        .{ .unicode = 0x80C3, .ku = 16, .ten = 63 }, // 胃
-        .{ .unicode = 0x840E, .ku = 16, .ten = 64 }, // 萎
-        .{ .unicode = 0x8863, .ku = 16, .ten = 65 }, // 衣
-        .{ .unicode = 0x8B02, .ku = 16, .ten = 66 }, // 謂
-        .{ .unicode = 0x9055, .ku = 16, .ten = 67 }, // 違
-        .{ .unicode = 0x907A, .ku = 16, .ten = 68 }, // 遺
-        .{ .unicode = 0x533B, .ku = 16, .ten = 69 }, // 医
-        .{ .unicode = 0x4E95, .ku = 16, .ten = 70 }, // 井
-        .{ .unicode = 0x4EA5, .ku = 16, .ten = 71 }, // 亥
-        .{ .unicode = 0x57DF, .ku = 16, .ten = 72 }, // 域
-        .{ .unicode = 0x80B2, .ku = 16, .ten = 73 }, // 育
-        .{ .unicode = 0x90C1, .ku = 16, .ten = 74 }, // 郁
-        .{ .unicode = 0x78EF, .ku = 16, .ten = 75 }, // 磯
-        .{ .unicode = 0x4E00, .ku = 16, .ten = 76 }, // 一
-        .{ .unicode = 0x58F1, .ku = 16, .ten = 77 }, // 壱
-        .{ .unicode = 0x6EA2, .ku = 16, .ten = 78 }, // 溢
-        .{ .unicode = 0x9038, .ku = 16, .ten = 79 }, // 逸
-        .{ .unicode = 0x7A32, .ku = 16, .ten = 80 }, // 稲
-        .{ .unicode = 0x8328, .ku = 16, .ten = 81 }, // 茨
-        .{ .unicode = 0x828B, .ku = 16, .ten = 82 }, // 芋
-        .{ .unicode = 0x9C2F, .ku = 16, .ten = 83 }, // 鰯
-        .{ .unicode = 0x5141, .ku = 16, .ten = 84 }, // 允
-        .{ .unicode = 0x5370, .ku = 16, .ten = 85 }, // 印
-        .{ .unicode = 0x54BD, .ku = 16, .ten = 86 }, // 咽
-        .{ .unicode = 0x54E1, .ku = 16, .ten = 87 }, // 員
-        .{ .unicode = 0x56E0, .ku = 16, .ten = 88 }, // 因
-        .{ .unicode = 0x59FB, .ku = 16, .ten = 89 }, // 姻
-        .{ .unicode = 0x5F15, .ku = 16, .ten = 90 }, // 引
-        .{ .unicode = 0x98F2, .ku = 16, .ten = 91 }, // 飲
-        .{ .unicode = 0x6DEB, .ku = 16, .ten = 92 }, // 淫
-        .{ .unicode = 0x80E4, .ku = 16, .ten = 93 }, // 胤
-        .{ .unicode = 0x852D, .ku = 16, .ten = 94 }, // 蔭
-    };
-
-    for (kanji_reverse) |entry| {
-        if (entry.unicode == codepoint) {
-            return .{ .ku = entry.ku, .ten = entry.ten };
-        }
+    if (jis_kanji_table.unicodeToKanjiKuTen(codepoint)) |result| {
+        return .{ .ku = result.ku, .ten = result.ten };
     }
     return null;
 }

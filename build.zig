@@ -62,7 +62,14 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // encoding <- config, unicode
+    // jis_kanji_table: JIS X 0208 漢字テーブル（依存なし）
+    const jis_kanji_table_mod = b.addModule("jis_kanji_table", .{
+        .root_source_file = b.path("src/jis_kanji_table.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // encoding <- config, unicode, jis_kanji_table
     const encoding_mod = b.addModule("encoding", .{
         .root_source_file = b.path("src/encoding.zig"),
         .target = target,
@@ -70,6 +77,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "config", .module = config_mod },
             .{ .name = "unicode", .module = unicode_mod },
+            .{ .name = "jis_kanji_table", .module = jis_kanji_table_mod },
         },
     });
 
