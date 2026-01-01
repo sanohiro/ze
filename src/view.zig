@@ -1939,7 +1939,12 @@ pub const View = struct {
             const cluster = iter.nextGraphemeCluster() catch break;
             if (cluster == null) break;
             const gc = cluster.?;
-            if (gc.base == '\n') break;
+            // 改行を検出したら、その位置（改行文字の前）を返す
+            if (gc.base == '\n') {
+                const result = @min(start_pos, self.buffer.len());
+                self.setCursorPosCache(result);
+                return result;
+            }
 
             // タブ文字の場合は文脈依存の幅を計算
             const char_width = if (gc.base == '\t')
@@ -2009,7 +2014,14 @@ pub const View = struct {
             const cluster = iter.nextGraphemeCluster() catch break;
             if (cluster == null) break;
             const gc = cluster.?;
-            if (gc.base == '\n') break;
+            // 改行を検出したら、その位置（改行文字の前）を返す
+            if (gc.base == '\n') {
+                return .{
+                    .pos = @min(start_pos, self.buffer.len()),
+                    .prev_width = prev_width,
+                    .prev_byte_pos = prev_byte_pos,
+                };
+            }
 
             // タブ文字の場合は文脈依存の幅を計算
             const char_width = if (gc.base == '\t')
@@ -2059,12 +2071,17 @@ pub const View = struct {
         var display_col: usize = 0;
 
         // カーソル位置まで進む
+        var last_valid_pos = iter.global_pos;
         while (display_col < self.cursor_x) {
             const start_pos = iter.global_pos;
             const cluster = iter.nextGraphemeCluster() catch break;
             if (cluster == null) break;
             const gc = cluster.?;
-            if (gc.base == '\n') break;
+            // 改行を検出したら、その位置（改行文字の前）で終了
+            if (gc.base == '\n') {
+                last_valid_pos = start_pos;
+                break;
+            }
 
             const char_width = if (gc.base == '\t')
                 nextTabStop(display_col, self.getTabWidth()) - display_col
@@ -2072,20 +2089,24 @@ pub const View = struct {
                 gc.width;
 
             display_col += char_width;
+            last_valid_pos = iter.global_pos;
 
             if (display_col > self.cursor_x) {
                 iter.global_pos = start_pos;
+                last_valid_pos = start_pos;
                 break;
             }
         }
 
-        const cursor_pos = iter.global_pos;
+        const cursor_pos = last_valid_pos;
 
         // 次の文字を取得
         if (cursor_pos >= self.buffer.len()) {
             return .{ .pos = cursor_pos, .next_byte_pos = cursor_pos, .next_width = 0, .is_newline = false, .is_eof = true };
         }
 
+        // イテレータをカーソル位置に戻してから次の文字を読む
+        iter.seek(cursor_pos);
         const next_cluster = iter.nextGraphemeCluster() catch {
             return .{ .pos = cursor_pos, .next_byte_pos = cursor_pos, .next_width = 0, .is_newline = false, .is_eof = true };
         };
@@ -2275,7 +2296,11 @@ pub const View = struct {
             const current_pos = iter.global_pos;
             const cluster = iter.nextGraphemeCluster() catch break;
             if (cluster) |gc| {
-                if (gc.base == '\n') break;
+                // 改行を検出したら、その位置（改行文字の前）を返す
+                // iter.global_posは改行を読んだ後なので、current_posを使う
+                if (gc.base == '\n') {
+                    return .{ .width = line_width, .byte_pos = current_pos, .clamped_x = @min(target_x, line_width) };
+                }
 
                 const char_width = if (gc.base == '\t')
                     nextTabStop(line_width, self.getTabWidth()) - line_width
