@@ -1240,31 +1240,9 @@ pub const EditingContext = struct {
         try self.recordDeleteOpOwned(pos, text, capacity, self.cursor);
     }
 
+    /// バッファから指定範囲のテキストを取得
+    /// Buffer.extractTextに委譲
     fn extractText(self: *EditingContext, start: usize, length: usize) ![]const u8 {
-        // 実際にコピー可能なバイト数を事前に計算
-        const actual_length = @min(length, self.buffer.len() -| start);
-        if (actual_length == 0) {
-            return &[_]u8{};
-        }
-
-        var result = try self.allocator.alloc(u8, actual_length);
-        errdefer self.allocator.free(result);
-
-        var iter = PieceIterator.init(self.buffer);
-        iter.seek(start);
-
-        // copyBytes()でスライス単位コピー（50-100倍高速）
-        const copied = iter.copyBytes(result);
-
-        // コピー数がアロケーションと一致することを確認
-        // 事前計算しているので通常は一致するはず
-        if (copied != actual_length) {
-            // 一致しない場合は新しくallocしてコピー（freeサイズ不一致を防ぐ）
-            const final = try self.allocator.alloc(u8, copied);
-            @memcpy(final, result[0..copied]);
-            self.allocator.free(result);
-            return final;
-        }
-        return result;
+        return self.buffer.extractText(self.allocator, start, length);
     }
 };

@@ -1993,33 +1993,11 @@ pub const Editor = struct {
         return false;
     }
 
-    // バッファから指定範囲のテキストを取得（削除前に使用）
-    // PieceIterator.seekを使ってO(pieces + len)で効率的に取得
+    /// バッファから指定範囲のテキストを取得（削除前に使用）
+    /// Buffer.extractTextに委譲（O(pieces + len)で効率的に取得）
     pub fn extractText(self: *Editor, pos: usize, len: usize) ![]u8 {
         const buffer = self.getCurrentBufferContent();
-        const buf_len = buffer.len();
-
-        // posがバッファ末尾を超えている場合は空の配列を返す（アンダーフロー防止）
-        if (pos >= buf_len) {
-            return try self.allocator.alloc(u8, 0);
-        }
-
-        // 実際に読み取れるバイト数を計算（buffer末尾を超えないように）
-        const actual_len = @min(len, buf_len - pos);
-        const result = try self.allocator.alloc(u8, actual_len);
-        errdefer self.allocator.free(result);
-
-        var iter = PieceIterator.init(buffer);
-        iter.seek(pos); // O(pieces)で直接ジャンプ
-
-        // copyBytes()でスライス単位コピー（50-100倍高速）
-        const copied = iter.copyBytes(result);
-        if (copied != actual_len) {
-            // Piece table の不整合が発生した場合
-            return error.BufferInconsistency;
-        }
-
-        return result;
+        return buffer.extractText(self.allocator, pos, len);
     }
 
     /// 再利用可能バッファを使ってテキストを抽出（正規表現検索用）

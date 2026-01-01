@@ -840,12 +840,13 @@ pub const Buffer = struct {
         const should_free_real_path = real_path.ptr != path.ptr;
         defer if (should_free_real_path) self.allocator.free(real_path);
 
-        // PID付きの一時ファイル名（複数インスタンスの競合防止）
+        // PID + タイムスタンプ付きの一時ファイル名（並列保存時の競合防止）
         const pid = if (@import("builtin").os.tag == .linux)
             std.os.linux.getpid()
         else
             std.c.getpid();
-        const tmp_path = try std.fmt.allocPrint(self.allocator, "{s}.{d}.tmp", .{ real_path, pid });
+        const timestamp = @as(u64, @intCast(std.time.nanoTimestamp()));
+        const tmp_path = try std.fmt.allocPrint(self.allocator, "{s}.{d}.{d}.tmp", .{ real_path, pid, timestamp });
         defer self.allocator.free(tmp_path);
 
         // 元のファイルのパーミッションと所有権を取得（存在する場合）
@@ -1614,6 +1615,39 @@ pub const Buffer = struct {
         return result;
     }
 
+    /// 指定範囲のテキストを抽出（境界クランピング付き）
+    /// getRangeと異なり、範囲外アクセスはエラーではなく空スライスを返す
+    /// Undo/Redo操作やテキスト削除前の保存に使用
+    pub fn extractText(self: *const Buffer, allocator: std.mem.Allocator, start: usize, length: usize) ![]u8 {
+        const total = self.len();
+
+        // startがバッファ末尾を超えている場合は空の配列を返す
+        if (start >= total) {
+            return try allocator.alloc(u8, 0);
+        }
+
+        // 実際に読み取れるバイト数を計算（buffer末尾を超えないように）
+        const actual_len = @min(length, total - start);
+        if (actual_len == 0) {
+            return try allocator.alloc(u8, 0);
+        }
+
+        const result = try allocator.alloc(u8, actual_len);
+        errdefer allocator.free(result);
+
+        var iter = PieceIterator.init(self);
+        iter.seek(start);
+
+        // copyBytes()でスライス単位コピー
+        const copied = iter.copyBytes(result);
+        if (copied != actual_len) {
+            // Piece tableの不整合が発生した場合
+            return error.BufferInconsistency;
+        }
+
+        return result;
+    }
+
     // ========================================
     // 検索機能（コピーなし、PieceIterator使用）
     // ========================================
@@ -1636,70 +1670,68 @@ pub const Buffer = struct {
     /// - 1GB/s以上の検索速度を実現
     pub fn searchForward(self: *const Buffer, pattern: []const u8, start_pos: usize) ?SearchMatch {
         if (pattern.len == 0 or start_pos >= self.total_len) return null;
+        if (self.pieces.items.len == 0) return null;
 
-        // piece毎にstd.mem.indexOfを使用（SIMD最適化済み）
-        // piece境界をまたぐマッチにも対応
-        var global_pos: usize = 0;
-        var search_from = start_pos;
+        // findPieceAtで開始位置に直接ジャンプ（キャッシュ活用でO(1)〜O(pieces)）
+        const mutable_self = @constCast(self);
+        const start_info = mutable_self.findPieceAt(start_pos) orelse return null;
 
-        for (self.pieces.items) |piece| {
+        var piece_idx = start_info.piece_idx;
+        var global_pos = start_pos - start_info.offset; // このpieceの開始位置
+
+        while (piece_idx < self.pieces.items.len) {
+            const piece = self.pieces.items[piece_idx];
             const piece_end = global_pos + piece.length;
+            const data = self.getPieceData(piece);
 
-            // このpieceがsearch_fromを含む場合のみ検索
-            if (piece_end > search_from) {
-                const data = self.getPieceData(piece);
+            // piece内の開始位置
+            const start_in_piece = if (global_pos >= start_pos) 0 else start_pos - global_pos;
 
-                // piece内の開始位置
-                const start_in_piece = if (global_pos >= search_from) 0 else search_from - global_pos;
+            // piece内で検索
+            if (std.mem.indexOf(u8, data[start_in_piece..], pattern)) |rel_pos| {
+                const match_pos = global_pos + start_in_piece + rel_pos;
+                return .{ .start = match_pos, .len = pattern.len };
+            }
 
-                // piece内で検索
-                if (std.mem.indexOf(u8, data[start_in_piece..], pattern)) |rel_pos| {
-                    const match_pos = global_pos + start_in_piece + rel_pos;
-                    return .{ .start = match_pos, .len = pattern.len };
-                }
+            // piece境界をまたぐマッチをチェック
+            // パターンがpiece末尾から始まる可能性がある場合
+            if (pattern.len > 1 and piece.length >= 1) {
+                const overlap_start = if (piece.length >= pattern.len - 1)
+                    piece.length - (pattern.len - 1)
+                else
+                    0;
 
-                // piece境界をまたぐマッチをチェック
-                // パターンがpiece末尾から始まる可能性がある場合
-                if (pattern.len > 1 and piece.length >= 1) {
-                    const overlap_start = if (piece.length >= pattern.len - 1)
-                        piece.length - (pattern.len - 1)
-                    else
-                        0;
+                // overlap部分を次のpieceと結合してチェック
+                const overlap_data = data[overlap_start..];
+                if (overlap_data.len > 0 and overlap_data.len < pattern.len) {
+                    // 境界マッチの候補がある場合、バイト単位でチェック
+                    var iter = PieceIterator.init(self);
+                    const check_start = global_pos + overlap_start;
+                    if (check_start >= start_pos) {
+                        iter.seek(check_start);
+                        var match_idx: usize = 0;
+                        var match_start: usize = check_start;
+                        const max_check = pattern.len;
+                        var checked: usize = 0;
 
-                    // overlap部分を次のpieceと結合してチェック
-                    const overlap_data = data[overlap_start..];
-                    if (overlap_data.len > 0 and overlap_data.len < pattern.len) {
-                        // 境界マッチの候補がある場合、バイト単位でチェック
-                        var iter = PieceIterator.init(self);
-                        const check_start = global_pos + overlap_start;
-                        if (check_start >= search_from) {
-                            iter.seek(check_start);
-                            var match_idx: usize = 0;
-                            var match_start: usize = check_start;
-                            const max_check = pattern.len;
-                            var checked: usize = 0;
-
-                            while (checked < max_check) : (checked += 1) {
-                                const byte = iter.next() orelse break;
-                                if (byte == pattern[match_idx]) {
-                                    if (match_idx == 0) match_start = iter.global_pos - 1;
-                                    match_idx += 1;
-                                    if (match_idx == pattern.len) {
-                                        return .{ .start = match_start, .len = pattern.len };
-                                    }
-                                } else {
-                                    break;
+                        while (checked < max_check) : (checked += 1) {
+                            const byte = iter.next() orelse break;
+                            if (byte == pattern[match_idx]) {
+                                if (match_idx == 0) match_start = iter.global_pos - 1;
+                                match_idx += 1;
+                                if (match_idx == pattern.len) {
+                                    return .{ .start = match_start, .len = pattern.len };
                                 }
+                            } else {
+                                break;
                             }
                         }
                     }
                 }
-
-                // 次のpieceからの検索開始位置を更新
-                search_from = piece_end;
             }
 
             global_pos = piece_end;
+            piece_idx += 1;
         }
 
         return null;

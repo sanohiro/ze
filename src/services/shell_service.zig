@@ -490,7 +490,15 @@ pub const ShellService = struct {
             // stdout から1チャンク読み取り
             if (state.child.stdout) |stdout_file| {
                 if (state.stdout_buffer.items.len < config.Shell.MAX_OUTPUT_SIZE) {
-                    const bytes_read: usize = stdout_file.read(&read_buf) catch 0;
+                    const bytes_read: usize = stdout_file.read(&read_buf) catch |err| switch (err) {
+                        error.WouldBlock => 0, // ノンブロッキングで読めるデータがない
+                        else => blk: {
+                            // 真のエラー（EIO、EBADFD等）: パイプを閉じて続行
+                            stdout_file.close();
+                            state.child.stdout = null;
+                            break :blk 0;
+                        },
+                    };
                     if (bytes_read > 0) {
                         any_read = true;
                         const available = config.Shell.MAX_OUTPUT_SIZE - state.stdout_buffer.items.len;
@@ -504,7 +512,7 @@ pub const ShellService = struct {
                     }
                 }
                 // 上限に達したらパイプを閉じる（子プロセスのブロックを防ぐ）
-                if (state.stdout_buffer.items.len >= config.Shell.MAX_OUTPUT_SIZE) {
+                if (state.child.stdout != null and state.stdout_buffer.items.len >= config.Shell.MAX_OUTPUT_SIZE) {
                     state.stdout_truncated = true; // 上限到達時も truncated フラグを設定
                     stdout_file.close();
                     state.child.stdout = null;
@@ -514,7 +522,15 @@ pub const ShellService = struct {
             // stderr から1チャンク読み取り
             if (state.child.stderr) |stderr_file| {
                 if (state.stderr_buffer.items.len < config.Shell.MAX_OUTPUT_SIZE) {
-                    const bytes_read: usize = stderr_file.read(&read_buf) catch 0;
+                    const bytes_read: usize = stderr_file.read(&read_buf) catch |err| switch (err) {
+                        error.WouldBlock => 0, // ノンブロッキングで読めるデータがない
+                        else => blk: {
+                            // 真のエラー（EIO、EBADFD等）: パイプを閉じて続行
+                            stderr_file.close();
+                            state.child.stderr = null;
+                            break :blk 0;
+                        },
+                    };
                     if (bytes_read > 0) {
                         any_read = true;
                         const available = config.Shell.MAX_OUTPUT_SIZE - state.stderr_buffer.items.len;
@@ -528,7 +544,7 @@ pub const ShellService = struct {
                     }
                 }
                 // 上限に達したらパイプを閉じる（子プロセスのブロックを防ぐ）
-                if (state.stderr_buffer.items.len >= config.Shell.MAX_OUTPUT_SIZE) {
+                if (state.child.stderr != null and state.stderr_buffer.items.len >= config.Shell.MAX_OUTPUT_SIZE) {
                     state.stderr_truncated = true; // 上限到達時も truncated フラグを設定
                     stderr_file.close();
                     state.child.stderr = null;
