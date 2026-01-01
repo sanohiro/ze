@@ -12,6 +12,8 @@ on:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 jobs:
   build:
@@ -168,3 +170,79 @@ jobs:
           git add Formula/ze.rb
           git diff --cached --quiet || git commit -m "Update ze to ${VERSION}"
           git push
+
+      - name: Update apt repository
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          if [ -z "${APT_GPG_PRIVATE_KEY}" ]; then
+            echo "APT_GPG_PRIVATE_KEY not set, skipping apt repo update"
+            exit 0
+          fi
+          VERSION="${GITHUB_REF#refs/tags/v}"
+
+          # Import GPG key
+          echo "${APT_GPG_PRIVATE_KEY}" | gpg --batch --import
+
+          # Create apt repo structure
+          mkdir -p apt-repo/pool/main/z/ze
+          mkdir -p apt-repo/dists/stable/main/binary-amd64
+          mkdir -p apt-repo/dists/stable/main/binary-arm64
+
+          # Copy .deb files
+          cp release/ze_amd64.deb apt-repo/pool/main/z/ze/
+          cp release/ze_arm64.deb apt-repo/pool/main/z/ze/
+
+          # Generate Packages files
+          cd apt-repo
+          dpkg-scanpackages --arch amd64 pool/ > dists/stable/main/binary-amd64/Packages
+          dpkg-scanpackages --arch arm64 pool/ > dists/stable/main/binary-arm64/Packages
+          gzip -k dists/stable/main/binary-amd64/Packages
+          gzip -k dists/stable/main/binary-arm64/Packages
+
+          # Generate Release file
+          cat > dists/stable/Release << EOF
+          Origin: ze
+          Label: ze
+          Suite: stable
+          Codename: stable
+          Architectures: amd64 arm64
+          Components: main
+          Description: ze apt repository
+          EOF
+          sed -i 's/^          //' dists/stable/Release
+
+          # Add checksums to Release
+          cd dists/stable
+          echo "MD5Sum:" >> Release
+          for f in main/binary-*/Packages*; do
+            echo " $(md5sum $f | cut -d' ' -f1) $(wc -c < $f) $f" >> Release
+          done
+          echo "SHA256:" >> Release
+          for f in main/binary-*/Packages*; do
+            echo " $(sha256sum $f | cut -d' ' -f1) $(wc -c < $f) $f" >> Release
+          done
+          cd ../..
+
+          # Sign Release file
+          gpg --batch --yes --armor --detach-sign -o dists/stable/Release.gpg dists/stable/Release
+          gpg --batch --yes --armor --clearsign -o dists/stable/InRelease dists/stable/Release
+
+          # Export public key
+          gpg --armor --export > ze.gpg
+
+          # Copy install script
+          cp ../.github/install.sh .
+
+          ls -laR
+
+      - name: Deploy apt repo to GitHub Pages
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        if: env.APT_GPG_PRIVATE_KEY != ''
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./apt-repo
+          publish_branch: gh-pages
+          force_orphan: true
