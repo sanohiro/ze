@@ -1,38 +1,62 @@
 # ze — Zero-latency Editor
 
-Instant startup over SSH. No config files. Just works.
+A tiny, zero-config, Emacs-like terminal editor for fast editing — especially over SSH.
+
+> If Vim feels heavy and nano feels limiting,
+> ze is the middle ground.
 
 [日本語](README.ja.md)
 
 ![ze demo](demo/ze_demo.gif)
 
-Emacs keybindings, mg-like lightness.
-For those who don't want to learn vim, but find nano lacking.
+---
+
+## Why ze?
+
+**ze** is built for situations where you just want to edit text _now_.
+
+- Remote servers over SSH
+- Minimal environments without dotfiles
+- Quick edits where startup time matters
+- Users who like Emacs-style editing, but not Emacs itself
+
+No setup. No plugins. No background jobs.
+Just start typing.
 
 ---
 
-## ze is for you if
+## Key Characteristics
 
-- You want comfortable editing over SSH without configuration
-- Emacs keybindings are in your muscle memory
-- You prefer composing with Unix tools (sort, jq, sed)
-- You're tired of managing dotfiles
+- **Zero configuration**
+  No config files needed. Works out of the box.
 
-## ze is NOT for you if
+- **Instant startup & responsive input**
+  Designed to never pause while you type.
 
-- You need IDE features like completion or LSP
-- You want to customize everything
-- You prefer vim's modal editing
+- **Emacs-like keybindings**
+  Familiar cursor movement and editing commands.
+
+- **Unix-friendly**
+  Pipe buffers or selections to external commands and back.
+
+- **Small, single binary**
+  Under 500KB, no dependencies. Easy to deploy anywhere.
 
 ---
 
-## Features
+## Non-goals
 
-- **Under 500KB** — No dependencies, single binary
-- **Zero-config** — No dotfiles, just copy and use
-- **Emacs-style editing** — Multi-buffer, window splitting, kill ring
-- **Shell integration** — Pipe to sort, jq, awk directly
-- **Full UTF-8 support** — Japanese, emoji, grapheme clusters
+ze is intentionally **not**:
+
+- An IDE
+- A Vim replacement
+- A highly customizable editor
+- Plugin- or LSP-driven
+
+If you need those, there are already excellent tools.
+ze focuses on doing one thing well: **fast, reliable text editing in the terminal**.
+
+---
 
 ## Requirements
 
