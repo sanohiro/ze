@@ -255,7 +255,8 @@ pub const Editor = struct {
 
     pub fn init(allocator: std.mem.Allocator, tty_file: ?std.fs.File) !Editor {
         // ターミナルを先に初期化（サイズ取得のため）
-        var terminal = try Terminal.init(allocator);
+        // パイプ入力時はtty_fileを使用してtermios操作
+        var terminal = try Terminal.init(allocator, tty_file);
         errdefer terminal.deinit(); // 以降の初期化失敗時にターミナルをクリーンアップ
 
         // BufferManagerを初期化し、最初のバッファを作成

@@ -44,9 +44,12 @@ pub const Terminal = struct {
     height: usize,
     buf: std.ArrayList(u8),
     allocator: std.mem.Allocator,
+    tty_fd: posix.fd_t, // 入力用ファイルディスクリプタ（通常はSTDIN、パイプ時は/dev/tty）
 
-    pub fn init(allocator: std.mem.Allocator) !Terminal {
-        const original = try posix.tcgetattr(posix.STDIN_FILENO);
+    pub fn init(allocator: std.mem.Allocator, tty_file: ?std.fs.File) !Terminal {
+        // 入力用FDを決定（tty_fileがあればそれを使用、なければSTDIN）
+        const tty_fd = if (tty_file) |f| f.handle else posix.STDIN_FILENO;
+        const original = try posix.tcgetattr(tty_fd);
 
         // 出力バッファを事前確保（毎フレームのアロケーションを回避）
         var buf = try std.ArrayList(u8).initCapacity(allocator, config.Terminal.OUTPUT_BUFFER_CAPACITY);
@@ -58,6 +61,7 @@ pub const Terminal = struct {
             .height = config.Terminal.DEFAULT_HEIGHT,
             .buf = buf,
             .allocator = allocator,
+            .tty_fd = tty_fd,
         };
 
         try self.enableRawMode();
@@ -152,11 +156,11 @@ pub const Terminal = struct {
         raw.cc[@intFromEnum(posix.V.MIN)] = 0;
         raw.cc[@intFromEnum(posix.V.TIME)] = 1;
 
-        try posix.tcsetattr(posix.STDIN_FILENO, .FLUSH, raw);
+        try posix.tcsetattr(self.tty_fd, .FLUSH, raw);
     }
 
     fn disableRawMode(self: *Terminal) !void {
-        try posix.tcsetattr(posix.STDIN_FILENO, .FLUSH, self.original_termios);
+        try posix.tcsetattr(self.tty_fd, .FLUSH, self.original_termios);
     }
 
     fn getWindowSize(self: *Terminal) void {
