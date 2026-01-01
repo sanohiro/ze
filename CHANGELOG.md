@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.4] - 2026-01-01
+
+### Fixed
+- **Mixed line endings**: Normalize all CR/CRLF to LF regardless of detected type
+  - Previously only converted the detected line ending type, leaving orphaned `\r` in mixed files
+- **Shell pipe blocking**: Read stdout/stderr until WouldBlock instead of fixed 16 iterations
+  - Prevents child process blocking when producing large output quickly
+- **Tab completion truncation**: Increased compgen output limit from 64KB to 256KB
+  - Large $PATH or directory completions no longer silently truncate
+
+### Changed
+- GitHub Actions: workflow_dispatch now correctly handles tag parameter for manual releases
+
 ## [1.3.3] - 2026-01-01
 
 ### Fixed

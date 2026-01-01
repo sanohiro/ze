@@ -219,6 +219,10 @@ pub const Shell = struct {
 
     /// 大きなチャンクサイズ（64KB）
     pub const LARGE_CHUNK_SIZE: usize = 64 * 1024;
+
+    /// Tab補完の最大出力サイズ（256KB）
+    /// 巨大な$PATHやディレクトリでも候補が欠けにくいように余裕を持たせる
+    pub const COMPLETION_MAX_OUTPUT: usize = 256 * 1024;
 };
 
 /// 正規表現関連の定数

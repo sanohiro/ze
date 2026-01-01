@@ -482,9 +482,8 @@ pub const ShellService = struct {
 
         // stdout と stderr を交互に読取（デッドロック防止）
         // 一方のパイプが詰まってもう一方を先に処理する必要がある場合に対応
-        const max_iterations = 16; // 十分な回数を確保
-        var iter_count: usize = 0;
-        while (iter_count < max_iterations) : (iter_count += 1) {
+        // WouldBlockになるまで読み続ける（パイプが詰まって子プロセスがブロックするのを防ぐ）
+        while (true) {
             var any_read = false;
 
             // stdout から1チャンク読み取り
@@ -749,7 +748,7 @@ pub const ShellService = struct {
         const result = std.process.Child.run(.{
             .allocator = self.allocator,
             .argv = &.{ bash_path, "-c", cmd },
-            .max_output_bytes = config.Shell.LARGE_CHUNK_SIZE,
+            .max_output_bytes = config.Shell.COMPLETION_MAX_OUTPUT,
         }) catch return null;
         defer self.allocator.free(result.stdout);
         defer self.allocator.free(result.stderr);

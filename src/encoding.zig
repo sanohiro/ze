@@ -388,35 +388,34 @@ fn guessJapaneseEncoding(content: []const u8) Encoding {
 }
 
 /// 改行コードを正規化（LFに統一）
+/// 混在したCRLF/CR/LFを全てLFに変換する
+/// line_endingパラメータは保存時に元の形式に戻すために使用（正規化処理自体には影響しない）
 pub fn normalizeLineEndings(allocator: std.mem.Allocator, content: []const u8, line_ending: LineEnding) ![]u8 {
-    // LFならそのまま
-    if (line_ending == .LF) {
+    _ = line_ending; // 正規化処理では使用しない（保存時の参考情報として呼び出し元で保持）
+
+    // CR/CRLFが含まれているかチェック（なければコピーだけで済む）
+    const has_cr = std.mem.indexOfScalar(u8, content, '\r') != null;
+    if (!has_cr) {
         return try allocator.dupe(u8, content);
     }
 
+    // CR/CRLFを全てLFに変換
     var result = try std.ArrayList(u8).initCapacity(allocator, content.len);
     errdefer result.deinit(allocator);
 
     var i: usize = 0;
     while (i < content.len) {
-        if (line_ending == .CRLF) {
-            // CRLF → LF
-            if (content[i] == '\r' and i + 1 < content.len and content[i + 1] == '\n') {
-                try result.append(allocator, '\n');
-                i += 2;
+        if (content[i] == '\r') {
+            // CRLF → LF または CR → LF
+            try result.append(allocator, '\n');
+            if (i + 1 < content.len and content[i + 1] == '\n') {
+                i += 2; // CRLFの場合は2バイトスキップ
             } else {
-                try result.append(allocator, content[i]);
-                i += 1;
+                i += 1; // CRのみの場合は1バイトスキップ
             }
-        } else if (line_ending == .CR) {
-            // CR → LF
-            if (content[i] == '\r') {
-                try result.append(allocator, '\n');
-                i += 1;
-            } else {
-                try result.append(allocator, content[i]);
-                i += 1;
-            }
+        } else {
+            try result.append(allocator, content[i]);
+            i += 1;
         }
     }
 
