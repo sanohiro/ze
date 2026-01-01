@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-01-01
+
+### Added
+- **Debian/Ubuntu support**: `.deb` packages now available in GitHub Releases
+  - `ze_amd64.deb` for x86_64
+  - `ze_arm64.deb` for ARM64
+- **apt repository**: One-line install via `curl -fsSL https://sanohiro.github.io/ze/install.sh | sudo sh`
+  - Hosted on GitHub Pages
+  - GPG-signed packages
+  - Automatic updates via `apt upgrade`
+
 ## [1.2.3] - 2026-01-01
 
 ### Fixed
