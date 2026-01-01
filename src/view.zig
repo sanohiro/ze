@@ -1917,54 +1917,11 @@ pub const View = struct {
             }
         }
 
+        // getLineWidthWithBytePosを使用（重複ロジック削減）
         const target_line = self.top_line + self.cursor_y;
-
-        // LineIndexでO(1)行開始位置取得
-        // 無効な場合はEOF（安全側に倒す）
-        const line_start = self.buffer.getLineStart(target_line) orelse {
-            // LineIndexが無効またはtarget_lineが範囲外
-            // EOFを返すことで、編集操作が安全に失敗する
-            return self.buffer.len();
-        };
-
-        // 行内のカーソル位置を計算
-        // cursor_xは表示幅（絵文字=2, 通常文字=1）なので、
-        // 表示幅を累積してcursor_xに到達するバイト位置を探す
-        var iter = PieceIterator.init(self.buffer);
-        iter.seek(line_start);
-
-        var display_col: usize = 0;
-        while (display_col < self.cursor_x) {
-            const start_pos = iter.global_pos;
-            const cluster = iter.nextGraphemeCluster() catch break;
-            if (cluster == null) break;
-            const gc = cluster.?;
-            // 改行を検出したら、その位置（改行文字の前）を返す
-            if (gc.base == '\n') {
-                const result = @min(start_pos, self.buffer.len());
-                self.setCursorPosCache(result);
-                return result;
-            }
-
-            // タブ文字の場合は文脈依存の幅を計算
-            const char_width = if (gc.base == '\t')
-                nextTabStop(display_col, self.getTabWidth()) - display_col
-            else
-                gc.width;
-
-            display_col += char_width;
-
-            // 目標カーソル位置を超えた場合は手前で止まる
-            if (display_col > self.cursor_x) {
-                // イテレータを元の位置に戻す
-                iter.global_pos = start_pos;
-                break;
-            }
-        }
-
-        const result = @min(iter.global_pos, self.buffer.len());
-        self.setCursorPosCache(result);
-        return result;
+        const info = self.getLineWidthWithBytePos(target_line, self.cursor_x);
+        self.setCursorPosCache(info.byte_pos);
+        return info.byte_pos;
     }
 
     /// カーソルバイト位置キャッシュを無効化
@@ -2061,57 +2018,23 @@ pub const View = struct {
     fn getCursorPosWithNextInfo(self: *View) CursorPosWithNextInfo {
         const target_line = self.top_line + self.cursor_y;
 
-        const line_start = self.buffer.getLineStart(target_line) orelse {
-            return .{ .pos = self.buffer.len(), .next_byte_pos = self.buffer.len(), .next_width = 0, .is_newline = false, .is_eof = true };
-        };
-
-        var iter = PieceIterator.init(self.buffer);
-        iter.seek(line_start);
-
-        var display_col: usize = 0;
-
-        // カーソル位置まで進む
-        var last_valid_pos = iter.global_pos;
-        while (display_col < self.cursor_x) {
-            const start_pos = iter.global_pos;
-            const cluster = iter.nextGraphemeCluster() catch break;
-            if (cluster == null) break;
-            const gc = cluster.?;
-            // 改行を検出したら、その位置（改行文字の前）で終了
-            if (gc.base == '\n') {
-                last_valid_pos = start_pos;
-                break;
-            }
-
-            const char_width = if (gc.base == '\t')
-                nextTabStop(display_col, self.getTabWidth()) - display_col
-            else
-                gc.width;
-
-            display_col += char_width;
-            last_valid_pos = iter.global_pos;
-
-            if (display_col > self.cursor_x) {
-                iter.global_pos = start_pos;
-                last_valid_pos = start_pos;
-                break;
-            }
-        }
-
-        const cursor_pos = last_valid_pos;
+        // getLineWidthWithBytePosを使用してカーソル位置を取得（重複削減）
+        const info = self.getLineWidthWithBytePos(target_line, self.cursor_x);
+        const cursor_pos = info.byte_pos;
+        const display_col = info.clamped_x;
 
         // 次の文字を取得
         if (cursor_pos >= self.buffer.len()) {
             return .{ .pos = cursor_pos, .next_byte_pos = cursor_pos, .next_width = 0, .is_newline = false, .is_eof = true };
         }
 
-        // イテレータをカーソル位置に戻してから次の文字を読む
+        var iter = PieceIterator.init(self.buffer);
         iter.seek(cursor_pos);
         const next_cluster = iter.nextGraphemeCluster() catch {
             return .{ .pos = cursor_pos, .next_byte_pos = cursor_pos, .next_width = 0, .is_newline = false, .is_eof = true };
         };
 
-        const next_byte_pos = iter.global_pos; // 次の文字を読んだ後の位置
+        const next_byte_pos = iter.global_pos;
 
         if (next_cluster) |gc| {
             if (gc.base == '\n') {

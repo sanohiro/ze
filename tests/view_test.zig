@@ -490,3 +490,80 @@ test "empty buffer operations" {
 
     try checkCursorPos(&ctx.view, 0, 0, 0);
 }
+
+// ============================================================
+// Empty line tests (lines containing only '\n')
+// ============================================================
+
+test "getCursorBufferPos on empty line" {
+    const allocator = testing.allocator;
+    // "line1\n" + "\n" (空行) + "line3\n"
+    // 位置: 0-5="line1", 5='\n', 6='\n'(空行), 7-11="line3", 12='\n'
+    const content = "line1\n\nline3\n";
+    var ctx = try createTestView(allocator, content);
+    fixBufferPointer(&ctx);
+    defer ctx.deinit();
+
+    // 空行（2行目、インデックス1）に移動
+    ctx.view.moveCursorDown();
+    try checkCursorPos(&ctx.view, 0, 1, 0);
+
+    // 空行のカーソル位置は6（空行の'\n'の位置）であるべき
+    // 7（次の行の開始位置）ではない
+    const pos = ctx.view.getCursorBufferPos();
+    try testing.expectEqual(@as(usize, 6), pos);
+}
+
+test "getLineWidthWithBytePos on empty line" {
+    const allocator = testing.allocator;
+    const content = "line1\n\nline3\n";
+    var ctx = try createTestView(allocator, content);
+    fixBufferPointer(&ctx);
+    defer ctx.deinit();
+
+    // 空行（インデックス1）の情報を取得
+    const info = ctx.view.getLineWidthWithBytePos(1, 0);
+
+    // 空行の幅は0
+    try testing.expectEqual(@as(usize, 0), info.width);
+    // バイト位置は6（'\n'の位置）
+    try testing.expectEqual(@as(usize, 6), info.byte_pos);
+    // clamped_xは0
+    try testing.expectEqual(@as(usize, 0), info.clamped_x);
+}
+
+test "cursor movement across empty line" {
+    const allocator = testing.allocator;
+    const content = "line1\n\nline3\n";
+    var ctx = try createTestView(allocator, content);
+    fixBufferPointer(&ctx);
+    defer ctx.deinit();
+
+    // 1行目から空行を経由して3行目へ移動
+    ctx.view.moveCursorDown(); // 空行へ
+    try testing.expectEqual(@as(usize, 6), ctx.view.getCursorBufferPos());
+
+    ctx.view.moveCursorDown(); // 3行目へ
+    try testing.expectEqual(@as(usize, 7), ctx.view.getCursorBufferPos());
+
+    // 戻る
+    ctx.view.moveCursorUp(); // 空行へ
+    try testing.expectEqual(@as(usize, 6), ctx.view.getCursorBufferPos());
+}
+
+test "cursor right on empty line moves to next line" {
+    const allocator = testing.allocator;
+    const content = "line1\n\nline3\n";
+    var ctx = try createTestView(allocator, content);
+    fixBufferPointer(&ctx);
+    defer ctx.deinit();
+
+    // 空行に移動
+    ctx.view.moveCursorDown();
+    try testing.expectEqual(@as(usize, 6), ctx.view.getCursorBufferPos());
+
+    // 空行で右に移動すると次の行に移動
+    ctx.view.moveCursorRight();
+    // cursor_yが2になる（3行目）
+    try testing.expectEqual(@as(usize, 2), ctx.view.cursor_y);
+}
