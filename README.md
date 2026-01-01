@@ -73,6 +73,18 @@ brew tap sanohiro/ze
 brew install ze
 ```
 
+### Debian/Ubuntu
+
+```bash
+# For x86_64
+wget https://github.com/sanohiro/ze/releases/latest/download/ze_amd64.deb
+sudo apt install ./ze_amd64.deb
+
+# For ARM64
+wget https://github.com/sanohiro/ze/releases/latest/download/ze_arm64.deb
+sudo apt install ./ze_arm64.deb
+```
+
 ### Pre-built binaries
 
 Download from [Releases](https://github.com/sanohiro/ze/releases) and place in your PATH.

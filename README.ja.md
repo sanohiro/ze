@@ -73,6 +73,18 @@ brew tap sanohiro/ze
 brew install ze
 ```
 
+### Debian/Ubuntu
+
+```bash
+# x86_64の場合
+wget https://github.com/sanohiro/ze/releases/latest/download/ze_amd64.deb
+sudo apt install ./ze_amd64.deb
+
+# ARM64の場合
+wget https://github.com/sanohiro/ze/releases/latest/download/ze_arm64.deb
+sudo apt install ./ze_arm64.deb
+```
+
 ### ビルド済みバイナリ
 
 [Releases](https://github.com/sanohiro/ze/releases) からダウンロードしてパスを通す。

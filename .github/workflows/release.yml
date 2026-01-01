@@ -78,10 +78,51 @@ jobs:
           find artifacts -name "*.tar.gz" -exec cp {} release/ \;
           ls -la release/
 
+      - name: Build .deb packages
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+
+          # amd64 .deb
+          mkdir -p deb-amd64/DEBIAN deb-amd64/usr/bin
+          tar -xzf release/ze-linux-x86_64.tar.gz -C deb-amd64/usr/bin/
+          chmod 755 deb-amd64/usr/bin/ze
+          cat > deb-amd64/DEBIAN/control << EOF
+          Package: ze
+          Version: ${VERSION}
+          Section: editors
+          Priority: optional
+          Architecture: amd64
+          Maintainer: sanohiro <sanohiro@users.noreply.github.com>
+          Description: Zero-latency Editor
+           A tiny, zero-config, Emacs-like terminal editor for fast editing.
+          EOF
+          # Remove leading spaces (heredoc indentation)
+          sed -i 's/^          //' deb-amd64/DEBIAN/control
+          dpkg-deb --build deb-amd64 release/ze_amd64.deb
+
+          # arm64 .deb
+          mkdir -p deb-arm64/DEBIAN deb-arm64/usr/bin
+          tar -xzf release/ze-linux-aarch64.tar.gz -C deb-arm64/usr/bin/
+          chmod 755 deb-arm64/usr/bin/ze
+          cat > deb-arm64/DEBIAN/control << EOF
+          Package: ze
+          Version: ${VERSION}
+          Section: editors
+          Priority: optional
+          Architecture: arm64
+          Maintainer: sanohiro <sanohiro@users.noreply.github.com>
+          Description: Zero-latency Editor
+           A tiny, zero-config, Emacs-like terminal editor for fast editing.
+          EOF
+          sed -i 's/^          //' deb-arm64/DEBIAN/control
+          dpkg-deb --build deb-arm64 release/ze_arm64.deb
+
+          ls -la release/
+
       - name: Generate checksums
         run: |
           cd release
-          sha256sum *.tar.gz > checksums.txt
+          sha256sum *.tar.gz *.deb > checksums.txt
           cat checksums.txt
 
       - name: Generate Homebrew formula
