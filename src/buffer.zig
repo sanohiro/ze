@@ -836,13 +836,11 @@ pub const Buffer = struct {
         const raw_content = try file.readToEndAlloc(allocator, stat.size);
         defer allocator.free(raw_content);
 
-        if (encoding.isBinaryContent(raw_content)) {
-            return error.BinaryFile;
-        }
-
+        // detectEncodingが内部でisBinaryContentをチェックするので、
+        // 別途のチェックは不要（二度読み排除）
         const detected = encoding.detectEncoding(raw_content);
         if (detected.encoding == .Unknown) {
-            return error.UnsupportedEncoding;
+            return error.BinaryFile;
         }
 
         // UTF-8に変換
@@ -938,24 +936,33 @@ pub const Buffer = struct {
                     try utf8_content.appendSlice(self.allocator, self.getPieceData(piece));
                 }
 
-                // Step 2: 改行コード変換（LF → CRLF/CR）
-                const line_converted = try encoding.convertLineEndings(
-                    self.allocator,
-                    utf8_content.items,
-                    self.detected_line_ending,
-                );
-                defer self.allocator.free(line_converted);
+                // Step 2: 改行コードとエンコーディング変換
+                // LFモードの場合は改行変換不要、直接エンコーディング変換（メモリ節約）
+                if (self.detected_line_ending == .LF) {
+                    const encoded = try encoding.convertFromUtf8(
+                        self.allocator,
+                        utf8_content.items,
+                        self.detected_encoding,
+                    );
+                    defer self.allocator.free(encoded);
+                    try file.writeAll(encoded);
+                } else {
+                    // CRLF/CRモードは改行変換が必要
+                    const line_converted = try encoding.convertLineEndings(
+                        self.allocator,
+                        utf8_content.items,
+                        self.detected_line_ending,
+                    );
+                    defer self.allocator.free(line_converted);
 
-                // Step 3: エンコーディング変換
-                const encoded = try encoding.convertFromUtf8(
-                    self.allocator,
-                    line_converted,
-                    self.detected_encoding,
-                );
-                defer self.allocator.free(encoded);
-
-                // Step 4: ファイルに書き込み
-                try file.writeAll(encoded);
+                    const encoded = try encoding.convertFromUtf8(
+                        self.allocator,
+                        line_converted,
+                        self.detected_encoding,
+                    );
+                    defer self.allocator.free(encoded);
+                    try file.writeAll(encoded);
+                }
             } else {
                 // UTF-8/UTF-8_BOM: Zig 0.15の新I/O API
                 // バッファを提供してシステムコール回数を削減
