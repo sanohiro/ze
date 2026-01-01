@@ -75,27 +75,16 @@ brew install ze
 
 ### Debian/Ubuntu
 
-#### Option 1: Direct .deb install (recommended)
-
-No repositories, no auto-updates. Install once, update when you want.
-
-```bash
-# For x86_64
-wget https://github.com/sanohiro/ze/releases/latest/download/ze_amd64.deb
-sudo apt install ./ze_amd64.deb
-
-# For ARM64
-wget https://github.com/sanohiro/ze/releases/latest/download/ze_arm64.deb
-sudo apt install ./ze_arm64.deb
-```
-
-#### Option 2: apt repository
-
-For users who prefer apt-based updates.
-
 ```bash
 curl -fsSL https://sanohiro.github.io/ze/install.sh | sudo sh
 sudo apt install ze
+```
+
+Or download `.deb` directly from [Releases](https://github.com/sanohiro/ze/releases):
+
+```bash
+wget https://github.com/sanohiro/ze/releases/latest/download/ze_amd64.deb
+sudo apt install ./ze_amd64.deb
 ```
 
 ### Pre-built binaries
