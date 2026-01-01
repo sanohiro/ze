@@ -81,8 +81,15 @@ jobs:
           ls -la release/
 
       - name: Build .deb packages
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
         run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
+          # workflow_dispatchの場合はinput.tagを使用、それ以外はGITHUB_REFから取得
+          if [ -n "${INPUT_TAG}" ]; then
+            VERSION="${INPUT_TAG#v}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          fi
 
           # amd64 .deb
           mkdir -p deb-amd64/DEBIAN deb-amd64/usr/bin
@@ -128,8 +135,15 @@ jobs:
           cat checksums.txt
 
       - name: Generate Homebrew formula
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
         run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
+          # workflow_dispatchの場合はinput.tagを使用、それ以外はGITHUB_REFから取得
+          if [ -n "${INPUT_TAG}" ]; then
+            VERSION="${INPUT_TAG#v}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          fi
           cd release
           SHA_MACOS_ARM=$(sha256sum ze-macos-aarch64.tar.gz | cut -d' ' -f1)
           SHA_MACOS_INTEL=$(sha256sum ze-macos-x86_64.tar.gz | cut -d' ' -f1)
