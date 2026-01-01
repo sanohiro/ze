@@ -4,8 +4,8 @@ const posix = std.posix;
 /// ターミナル状態をリセットして終了
 fn resetAndExit(code: u8) noreturn {
     const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
-    stdout.writeAll("\x1b[?1000l\x1b[?1003l\x1b[?1006l") catch {}; // マウス無効化
-    stdout.writeAll("\x1b[?25h") catch {}; // カーソル表示
+    // 代替画面から抜ける + マウス無効化 + カーソル表示
+    stdout.writeAll("\x1b[?1049l\x1b[?1000l\x1b[?1003l\x1b[?1006l\x1b[?25h") catch {};
     std.process.exit(code);
 }
 
@@ -237,8 +237,8 @@ pub fn main() !void {
         // エラーで早期returnしてもターミナルをリセット
         defer {
             const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
-            stdout.writeAll("\x1b[?1000l\x1b[?1003l\x1b[?1006l") catch {};
-            stdout.writeAll("\x1b[?25h") catch {};
+            // 代替画面から抜ける + マウス無効化 + カーソル表示
+            stdout.writeAll("\x1b[?1049l\x1b[?1000l\x1b[?1003l\x1b[?1006l\x1b[?25h") catch {};
         }
 
         std.debug.print("Child process started: pid={}\n\n", .{pid});

@@ -59,9 +59,9 @@ should_run_category() {
     return 1
 }
 
-# 終了時にターミナル状態をリセット（マウスモード無効化、カーソル表示）
+# 終了時にターミナル状態をリセット（代替画面終了、マウスモード無効化、カーソル表示）
 cleanup() {
-    printf '\e[?1000l\e[?1003l\e[?1006l\e[?25h'
+    printf '\e[?1049l\e[?1000l\e[?1003l\e[?1006l\e[?25h'
 }
 trap cleanup EXIT
 
