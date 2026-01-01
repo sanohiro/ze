@@ -405,8 +405,10 @@ test "dirty flag management" {
     ctx.view.markFullRedraw();
     try testing.expect(ctx.view.needsRedraw());
 
-    // クリア
+    // クリア（コンテンツ用）
     ctx.view.clearDirty();
+    // status_bar_dirtyも個別にクリア（描画後に自動クリアされる想定）
+    ctx.view.status_bar_dirty = false;
     try testing.expect(!ctx.view.needsRedraw());
 
     // 特定の行をダーティにマーク

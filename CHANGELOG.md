@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] - 2026-01-01
+
+### Fixed
+- Shell command input delay: Fixed ~0.5 second delay where characters appeared late while cursor moved immediately in M-| shell command mode
+  - `setError()` and `clearError()` now set `status_bar_dirty` instead of `needs_full_redraw` for immediate status bar updates
+  - `needsRedraw()` now includes `status_bar_dirty` check to trigger speculative rendering
+
 ## [1.2.2] - 2025-12-31
 
 ### Refactored

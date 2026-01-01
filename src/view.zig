@@ -494,7 +494,7 @@ pub const View = struct {
         @memcpy(self.error_msg_buf[0..len], msg[0..len]);
         self.error_msg_len = len;
         // ステータスバーを再描画するためにdirtyをマーク
-        self.needs_full_redraw = true;
+        self.status_bar_dirty = true;
     }
 
     // エラーメッセージを取得
@@ -508,7 +508,7 @@ pub const View = struct {
         if (self.error_msg_len > 0) {
             self.error_msg_len = 0;
             // ステータスバーを再描画するためにdirtyをマーク
-            self.needs_full_redraw = true;
+            self.status_bar_dirty = true;
         }
     }
 
@@ -722,7 +722,7 @@ pub const View = struct {
 
     /// 再描画が必要かどうか
     pub fn needsRedraw(self: *const View) bool {
-        return self.needs_full_redraw or self.dirty_start != null or self.scroll_delta != 0;
+        return self.needs_full_redraw or self.dirty_start != null or self.scroll_delta != 0 or self.status_bar_dirty;
     }
 
     /// ブロックコメント状態の計算（キャッシュ付き）
