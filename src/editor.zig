@@ -2573,7 +2573,11 @@ pub const Editor = struct {
                     },
                     's' => {
                         const buffer_state = self.getCurrentBuffer();
-                        if (buffer_state.file.filename == null) {
+                        // ファイル名がない、または[stdin]の場合はファイル名入力を促す
+                        const needs_filename = buffer_state.file.filename == null or
+                            (buffer_state.file.filename != null and
+                            std.mem.eql(u8, buffer_state.file.filename.?, "[stdin]"));
+                        if (needs_filename) {
                             self.mode = .filename_input;
                             self.quit_after_save = false;
                             self.minibuffer.clear();
