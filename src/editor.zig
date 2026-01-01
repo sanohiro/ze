@@ -250,7 +250,10 @@ pub const Editor = struct {
     // キーマップ
     keymap: Keymap, // キーバインド設定（ランタイム変更可能）
 
-    pub fn init(allocator: std.mem.Allocator) !Editor {
+    // 入力ソース（stdin以外からの入力用、例: パイプ入力時の/dev/tty）
+    tty_file: ?std.fs.File,
+
+    pub fn init(allocator: std.mem.Allocator, tty_file: ?std.fs.File) !Editor {
         // ターミナルを先に初期化（サイズ取得のため）
         var terminal = try Terminal.init(allocator);
         errdefer terminal.deinit(); // 以降の初期化失敗時にターミナルをクリーンアップ
@@ -302,9 +305,41 @@ pub const Editor = struct {
             .search_chunk_buffer = null,
             .search_chunk_capacity = 0,
             .keymap = try Keymap.init(allocator),
+            .tty_file = tty_file,
         };
 
         return editor;
+    }
+
+    /// メモリ上のコンテンツをバッファに読み込む（stdin入力用）
+    pub fn loadFromMemory(self: *Editor, content: []const u8, name: []const u8) !void {
+        const buffer_state = self.getCurrentBuffer();
+        const view = self.getCurrentView();
+
+        // 新しいバッファを作成
+        var new_buffer = try Buffer.loadFromSlice(self.allocator, content);
+        errdefer new_buffer.deinit();
+
+        // ファイル名を複製
+        const new_filename = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(new_filename);
+
+        // 古いバッファを解放して新しいバッファで上書き
+        buffer_state.editing_ctx.buffer.deinit();
+        buffer_state.editing_ctx.buffer.* = new_buffer;
+
+        // ファイル名を設定
+        buffer_state.setFilenameOwned(new_filename);
+
+        // Undo/Redoスタックをクリア
+        buffer_state.editing_ctx.clearUndoHistory();
+        buffer_state.editing_ctx.modified = false; // 読み込み直後は未変更
+
+        // ビューをリセット
+        view.top_line = 0;
+        view.top_col = 0;
+        view.cursor_x = 0;
+        view.cursor_y = 0;
     }
 
     pub fn deinit(self: *Editor) void {
@@ -1887,13 +1922,14 @@ pub const Editor = struct {
     ///
     /// running が false になるまで繰り返し（C-x C-c で終了）
     pub fn run(self: *Editor) !void {
-        const stdin: std.fs.File = .{ .handle = std.posix.STDIN_FILENO };
+        // 入力ソースを決定（tty_fileがあればそれを使用、なければstdin）
+        const input_file = if (self.tty_file) |tty| tty else std.fs.File{ .handle = std.posix.STDIN_FILENO };
         // バッファ付き入力リーダー（ペースト時等の大量入力でシステムコールを削減）
-        var input_reader = input.InputReader.init(stdin);
+        var input_reader = input.InputReader.init(input_file);
 
         // 効率的なI/O待機（epoll/kqueue）
         // ポーリングではなくイベント駆動で、入力待機中はCPUを消費しない
-        var poll = poller.Poller.init(std.posix.STDIN_FILENO) catch {
+        var poll = poller.Poller.init(input_file.handle) catch {
             // Poller初期化失敗: 従来のVTIMEポーリングにフォールバック
             return self.mainLoop(&input_reader, null);
         };

@@ -9,6 +9,15 @@ const version = build_options.version;
 const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
 const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
 
+/// stdinがパイプかどうかを判定
+fn isStdinPipe() bool {
+    const stdin_handle = std.posix.STDIN_FILENO;
+    const stat = std.posix.fstat(stdin_handle) catch return false;
+    // S_IFIFO (named pipe) または S_IFREG (regular file) の場合はパイプとみなす
+    const mode = stat.mode & std.posix.S.IFMT;
+    return mode == std.posix.S.IFIFO or mode == std.posix.S.IFREG;
+}
+
 /// stderr にエラーメッセージを出力
 fn writeError(comptime fmt: []const u8, args: anytype) void {
     var buf: [512]u8 = undefined;
@@ -21,6 +30,7 @@ fn printHelp() void {
         \\ze - Zig Editor / Zero-latency Editor
         \\
         \\Usage: ze [options] [file]
+        \\       command | ze
         \\
         \\Options:
         \\  -R         Read-only mode (view mode)
@@ -28,9 +38,11 @@ fn printHelp() void {
         \\  --version  Show version
         \\
         \\Examples:
-        \\  ze file.txt    Open a file
-        \\  ze -R log.txt  View a file (read-only)
-        \\  ze             Start with empty buffer
+        \\  ze file.txt        Open a file
+        \\  ze -R log.txt      View a file (read-only)
+        \\  ze                 Start with empty buffer
+        \\  cat file | ze      Edit piped content
+        \\  git diff | ze      View diff in editor
         \\
     ) catch {};
 }
@@ -115,6 +127,39 @@ fn mainImpl() !u8 {
         }
     }
 
+    // stdinがパイプの場合、内容を読み込む
+    var stdin_content: ?[]u8 = null;
+    var tty_file: ?std.fs.File = null;
+    defer if (stdin_content) |content| allocator.free(content);
+    defer if (tty_file) |f| f.close();
+
+    if (isStdinPipe()) {
+        // パイプからの入力を全て読み込む（最大64MB）
+        const stdin: std.fs.File = .{ .handle = std.posix.STDIN_FILENO };
+        stdin_content = stdin.readToEndAlloc(allocator, 64 * 1024 * 1024) catch |err| {
+            writeError("Error reading from stdin: {}\n", .{err});
+            return EXIT_IO_ERROR;
+        };
+
+        // バイナリチェック
+        if (stdin_content) |content| {
+            if (content.len > 0) {
+                const check_len = @min(content.len, 8192);
+                const result = encoding.detectEncoding(content[0..check_len]);
+                if (result.encoding == .Unknown) {
+                    writeError("Error: stdin contains binary data\n", .{});
+                    return EXIT_IO_ERROR;
+                }
+            }
+        }
+
+        // キーボード入力用に/dev/ttyを開く
+        tty_file = std.fs.openFileAbsolute("/dev/tty", .{ .mode = .read_only }) catch {
+            writeError("Error: cannot open /dev/tty for keyboard input\n", .{});
+            return EXIT_IO_ERROR;
+        };
+    }
+
     // バイナリファイルチェック（Editor.init前に実行）
     // ターミナルを代替スクリーンに入れる前にエラーを表示するため
     if (checked_filename) |filename| {
@@ -124,10 +169,15 @@ fn mainImpl() !u8 {
         };
     }
 
-    var editor = try Editor.init(allocator);
+    var editor = try Editor.init(allocator, tty_file);
     defer editor.deinit();
 
-    if (checked_filename) |filename| {
+    // stdinからの入力がある場合、バッファに読み込む
+    if (stdin_content) |content| {
+        if (content.len > 0) {
+            try editor.loadFromMemory(content, "[stdin]");
+        }
+    } else if (checked_filename) |filename| {
         // ファイルを開く
         editor.loadFile(filename) catch |err| {
             if (err == error.BinaryFile) {

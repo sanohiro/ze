@@ -717,6 +717,48 @@ pub const Buffer = struct {
         };
     }
 
+    /// メモリ上のスライスからBufferを作成（stdin入力用）
+    /// UTF-8として扱い、必要に応じて正規化（CRLF→LF等）
+    pub fn loadFromSlice(allocator: std.mem.Allocator, content: []const u8) !Buffer {
+        if (content.len == 0) {
+            return loadFromFileEmpty(allocator);
+        }
+
+        // エンコーディングと改行コードを検出
+        const check_len = @min(content.len, 8192);
+        const detected = encoding.detectEncoding(content[0..check_len]);
+
+        // バイナリファイルチェック
+        if (detected.encoding == .Unknown) {
+            return error.BinaryFile;
+        }
+
+        // UTF-8 + LF の場合 → コンテンツをコピーして使用
+        if (detected.encoding == .UTF8 and detected.line_ending == .LF) {
+            const copied = try allocator.dupe(u8, content);
+            return createBufferFromContent(allocator, copied, .LF, .UTF8, 0);
+        }
+
+        // UTF-8でCRLF/CRの場合 → LFに正規化
+        if (detected.encoding == .UTF8) {
+            const normalized = try encoding.normalizeLineEndings(allocator, content, detected.line_ending);
+            return createBufferFromContent(allocator, normalized, detected.line_ending, .UTF8, 0);
+        }
+
+        // 非UTF-8エンコーディング → UTF-8に変換
+        const utf8_content = try encoding.convertToUtf8(allocator, content, detected.encoding);
+        errdefer allocator.free(utf8_content);
+
+        // 改行コードを正規化
+        if (detected.line_ending != .LF) {
+            const normalized = try encoding.normalizeLineEndings(allocator, utf8_content, detected.line_ending);
+            allocator.free(utf8_content);
+            return createBufferFromContent(allocator, normalized, detected.line_ending, detected.encoding, 0);
+        }
+
+        return createBufferFromContent(allocator, utf8_content, detected.line_ending, detected.encoding, 0);
+    }
+
     /// UTF-8正規化済みコンテンツからBufferを作成（共通処理）
     fn createBufferFromContent(
         allocator: std.mem.Allocator,
