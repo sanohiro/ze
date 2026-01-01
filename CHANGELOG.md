@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.3] - 2026-01-01
+
+### Fixed
+- **Pipe input scroll issue**: Reset scroll region before entering alternate screen
+  - Fixes terminal scroll becoming active when piping from curl (progress output was corrupting scroll region)
+- **stdin buffer save**: Prompt for filename when saving `[stdin]` buffer with C-x C-s
+- **Terminal reset**: Add alternate screen exit sequence (`?1049l`) to test harness cleanup
+  - Prevents terminal state corruption after interrupted tests
+
+### Changed
+- Test harness: O_NONBLOCK now cross-platform (macOS 0x0004, Linux 0x800)
+- Integration tests: Added expected value verification for Query Replace tests
+
+### Performance
+- Non-UTF-8 save: Optimized memory usage and deduplicated binary check
+
+### Refactored
+- Code quality improvements: `hasContent()`, `trimCr()` helpers, consolidated patterns
+
 ## [1.3.2] - 2026-01-01
 
 ### Added
