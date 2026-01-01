@@ -670,8 +670,13 @@ pub fn indentRegion(e: *Editor) !void {
     buffer_state.editing_ctx.modified = true;
     e.markCurrentBufferDirty(start_line, end_line);
 
-    // インデント後は選択範囲をクリア（バイト位置がずれるため）
-    e.getCurrentWindow().mark_pos = null;
+    // 選択範囲を再設定（連続操作のため）
+    if (e.getCurrentWindow().mark_pos != null) {
+        const new_start = buffer.getLineStart(start_line) orelse 0;
+        const new_end = if (buffer.getLineRange(end_line)) |r| r.end else buffer.len();
+        e.getCurrentWindow().mark_pos = new_start;
+        e.setCursorToPos(new_end);
+    }
 }
 
 /// 選択範囲または現在行をアンインデント
@@ -748,8 +753,13 @@ pub fn unindentRegion(e: *Editor) !void {
         e.markCurrentBufferDirty(start_line, end_line);
     }
 
-    // アンインデント後は選択範囲をクリア（バイト位置がずれるため）
-    e.getCurrentWindow().mark_pos = null;
+    // 選択範囲を再設定（連続操作のため）
+    if (e.getCurrentWindow().mark_pos != null) {
+        const new_start = buffer.getLineStart(start_line) orelse 0;
+        const new_end = if (buffer.getLineRange(end_line)) |r| r.end else buffer.len();
+        e.getCurrentWindow().mark_pos = new_start;
+        e.setCursorToPos(new_end);
+    }
 }
 
 /// 全選択（C-x h）：バッファの先頭にマークを設定し、終端にカーソルを移動
