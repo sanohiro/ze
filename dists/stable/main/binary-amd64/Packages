@@ -1,0 +1,14 @@
+Package: ze
+Version: 1.3.5
+Architecture: amd64
+Maintainer: sanohiro <sanohiro@users.noreply.github.com>
+Filename: pool/main/z/ze/ze_amd64.deb
+Size: 224934
+MD5sum: 6741a1ba677c1aa13680797dd6ef0018
+SHA1: 32ec24fa872f826be6676eaff9c10b0d405e0c54
+SHA256: 0b428ac6e76b0fc5a394d56eee156fbaef2c63e963c0187d299f74deb46d7de7
+Section: editors
+Priority: optional
+Description: Zero-latency Editor
+ A tiny, zero-config, Emacs-like terminal editor for fast editing.
+
