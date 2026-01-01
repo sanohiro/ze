@@ -155,12 +155,18 @@ jobs:
       - name: Update Homebrew tap
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
         run: |
           if [ -z "${HOMEBREW_TAP_TOKEN}" ]; then
             echo "HOMEBREW_TAP_TOKEN not set, skipping Homebrew tap update"
             exit 0
           fi
-          VERSION="${GITHUB_REF#refs/tags/v}"
+          # workflow_dispatchの場合はinput.tagを使用、それ以外はGITHUB_REFから取得
+          if [ -n "${INPUT_TAG}" ]; then
+            VERSION="${INPUT_TAG#v}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          fi
           git clone https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/sanohiro/homebrew-ze.git
           mkdir -p homebrew-ze/Formula
           cp release/ze.rb homebrew-ze/Formula/
@@ -174,12 +180,18 @@ jobs:
       - name: Update apt repository
         env:
           APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
         run: |
           if [ -z "${APT_GPG_PRIVATE_KEY}" ]; then
             echo "APT_GPG_PRIVATE_KEY not set, skipping apt repo update"
             exit 0
           fi
-          VERSION="${GITHUB_REF#refs/tags/v}"
+          # workflow_dispatchの場合はinput.tagを使用、それ以外はGITHUB_REFから取得
+          if [ -n "${INPUT_TAG}" ]; then
+            VERSION="${INPUT_TAG#v}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          fi
 
           # Import GPG key
           echo "${APT_GPG_PRIVATE_KEY}" | gpg --batch --import
