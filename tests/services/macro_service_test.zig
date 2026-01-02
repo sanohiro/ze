@@ -63,30 +63,6 @@ test "empty recording preserves previous macro" {
     try testing.expectEqual(input.Key{ .char = 'x' }, second_macro.?[0]);
 }
 
-test "cancel recording" {
-    var service = MacroService.init(testing.allocator);
-    defer service.deinit();
-
-    // 最初のマクロを記録
-    service.startRecording();
-    try service.recordKey(.{ .char = 'a' });
-    service.stopRecording();
-
-    // 新しい記録を開始してキャンセル
-    service.startRecording();
-    try service.recordKey(.{ .char = 'b' });
-    try service.recordKey(.{ .char = 'c' });
-    service.cancelRecording();
-
-    try testing.expect(!service.isRecording());
-
-    // 前のマクロが保持されていることを確認
-    const macro = service.getLastMacro();
-    try testing.expect(macro != null);
-    try testing.expectEqual(@as(usize, 1), macro.?.len);
-    try testing.expectEqual(input.Key{ .char = 'a' }, macro.?[0]);
-}
-
 test "recording not started when playing" {
     var service = MacroService.init(testing.allocator);
     defer service.deinit();

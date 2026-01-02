@@ -165,33 +165,6 @@ test "BufferManager - hasUnsavedChanges" {
 }
 
 // ============================================================
-// Buffer access tests
-// ============================================================
-
-test "BufferState - getBuffer returns editing context buffer" {
-    var bm = BufferManager.init(testing.allocator);
-    defer bm.deinit();
-
-    const buf_state = try bm.createBuffer();
-
-    // getBuffer()とediting_ctx.bufferは同じ
-    const buffer_via_getter = buf_state.getBuffer();
-    const buffer_via_ctx = buf_state.editing_ctx.buffer;
-    try testing.expect(buffer_via_getter == buffer_via_ctx);
-}
-
-test "BufferState - buffer() shorthand" {
-    var bm = BufferManager.init(testing.allocator);
-    defer bm.deinit();
-
-    const buf_state = try bm.createBuffer();
-
-    // getBuffer()メソッドでアクセスできる
-    const buffer = buf_state.getBuffer();
-    try testing.expect(buffer == buf_state.editing_ctx.buffer);
-}
-
-// ============================================================
 // Iterator tests
 // ============================================================
 
@@ -221,25 +194,6 @@ test "BufferManager - getFirst" {
     const first = bm.getFirst();
     try testing.expect(first != null);
     try testing.expectEqual(buf1.id, first.?.id);
-}
-
-// ============================================================
-// Buffer names tests
-// ============================================================
-
-test "BufferManager - getBufferNames" {
-    var bm = BufferManager.init(testing.allocator);
-    defer bm.deinit();
-
-    _ = try bm.createBuffer();
-    _ = try bm.createBuffer();
-
-    const names = try bm.getBufferNames(testing.allocator);
-    defer testing.allocator.free(names);
-
-    try testing.expectEqual(@as(usize, 2), names.len);
-    try testing.expectEqualStrings("*scratch*", names[0]);
-    try testing.expectEqualStrings("*scratch*", names[1]);
 }
 
 // ============================================================

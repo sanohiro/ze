@@ -1090,34 +1090,6 @@ pub const Buffer = struct {
         return null;
     }
 
-    /// 指定位置からコードポイントをデコード（イテレータなし）
-    pub fn decodeCodepointAt(self: *const Buffer, pos: usize) ?u21 {
-        const first_byte = self.getByteAt(pos) orelse return null;
-
-        // ASCII
-        if (unicode.isAsciiByte(first_byte)) {
-            return first_byte; // u8→u21 自動昇格
-        }
-
-        // UTF-8のバイト数を判定
-        const byte_len = std.unicode.utf8ByteSequenceLength(first_byte) catch return null;
-
-        if (byte_len == 1) {
-            return first_byte; // u8→u21 自動昇格
-        }
-
-        // マルチバイト文字を読み取る
-        var bytes: [4]u8 = undefined;
-        bytes[0] = first_byte;
-
-        var i: usize = 1;
-        while (i < byte_len) : (i += 1) {
-            bytes[i] = self.getByteAt(pos + i) orelse return null;
-        }
-
-        return std.unicode.utf8Decode(bytes[0..byte_len]) catch null;
-    }
-
     /// UTF-8文字の先頭バイト位置を探す（後方移動用）
     pub fn findUtf8CharStart(self: *const Buffer, pos: usize) usize {
         if (pos == 0) return 0;

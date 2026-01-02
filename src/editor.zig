@@ -120,11 +120,6 @@ pub const KillRing = struct {
         }
         return null;
     }
-
-    /// 内容をクリア（メモリは保持）
-    pub fn clear(self: *KillRing) void {
-        self.len = 0;
-    }
 };
 
 /// エディタの状態遷移を管理するモード

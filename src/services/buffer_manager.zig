@@ -90,14 +90,6 @@ pub const BufferState = struct {
     allocator: std.mem.Allocator,
 
     // === 後方互換性のためのプロパティアクセサ ===
-    // 段階的移行のため、従来のAPIを維持
-    // buffer フィールドはBufferへのポインタとして公開（getBuffer経由）
-
-    /// バッファへの直接アクセス（EditingContext経由）
-    pub fn getBuffer(self: *BufferState) *Buffer {
-        return self.editing_ctx.buffer;
-    }
-
     /// 変更フラグ（EditingContext経由）
     pub fn isModified(self: *const BufferState) bool {
         return self.editing_ctx.modified;
@@ -300,14 +292,5 @@ pub const BufferManager = struct {
             return self.buffers.items[0];
         }
         return null;
-    }
-
-    /// バッファ名のリストを取得（補完用）
-    pub fn getBufferNames(self: *Self, allocator: std.mem.Allocator) ![][]const u8 {
-        var names = try allocator.alloc([]const u8, self.buffers.items.len);
-        for (self.buffers.items, 0..) |buffer, i| {
-            names[i] = buffer.getName();
-        }
-        return names;
     }
 };

@@ -75,12 +75,6 @@ pub const MacroService = struct {
         self.last_macro = new_macro;
     }
 
-    /// 記録をキャンセル
-    pub fn cancelRecording(self: *Self) void {
-        self.is_recording = false;
-        self.recording.clearRetainingCapacity();
-    }
-
     /// 最後に記録したマクロを取得
     pub inline fn getLastMacro(self: *const Self) ?[]const input.Key {
         return self.last_macro;
