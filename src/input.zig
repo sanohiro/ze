@@ -376,6 +376,22 @@ pub fn readKeyFromReader(reader: *InputReader) !?Key {
             return Key{ .ctrl_alt = '/' };
         }
 
+        // SS3シーケンス（ESC O）- 一部ターミナルの矢印キー・ファンクションキー
+        // 注: application cursor keys mode 等で使用される
+        if (first_byte == 'O') {
+            const third_byte = try reader.readByte() orelse return Key{ .alt = 'O' };
+            return switch (third_byte) {
+                'A' => Key.arrow_up,
+                'B' => Key.arrow_down,
+                'C' => Key.arrow_right,
+                'D' => Key.arrow_left,
+                'H' => Key.home,
+                'F' => Key.end_key,
+                'P', 'Q', 'R', 'S' => null, // F1-F4（未サポート、無視）
+                else => Key{ .alt = 'O' }, // 不明なシーケンスはAlt+Oとして扱う
+            };
+        }
+
         // Alt+印刷可能ASCII文字（ESC + 文字）
         if (first_byte >= 0x20 and first_byte < 0x7F and first_byte != '[') {
             return Key{ .alt = first_byte };

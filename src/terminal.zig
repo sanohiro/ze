@@ -316,9 +316,4 @@ pub const Terminal = struct {
             try self.buf.appendSlice(self.allocator, str);
         }
     }
-
-    /// 行の末尾までクリア
-    pub fn clearToEndOfLine(self: *Terminal) !void {
-        try self.buf.appendSlice(self.allocator, config.ANSI.CLEAR_LINE);
-    }
 };
