@@ -48,6 +48,9 @@ pub const ChangeListener = *const fn (event: ChangeEvent, context: ?*anyopaque) 
 /// Undo/Redo用の編集操作
 const EditOp = enum { insert, delete };
 
+/// 大規模挿入のしきい値（これ以上はデータを保存しない）
+const LARGE_INSERT_THRESHOLD: usize = 1024 * 1024; // 1MB
+
 /// Undo/Redoエントリ
 const UndoEntry = struct {
     op: EditOp,
@@ -60,12 +63,25 @@ const UndoEntry = struct {
     groupable: bool = true,
     /// Undoグループ識別子（nullは非グループ、同じIDは一括undo）
     group_id: ?u32 = null,
+    /// 大規模挿入用: データ未保存時の実際の長さ（0ならdataを使用）
+    /// これが非ゼロの場合、redoは不可（データが保存されていない）
+    actual_len: usize = 0,
 
     /// データメモリを解放
     fn freeData(self: *const UndoEntry, allocator: std.mem.Allocator) void {
         if (self.data_capacity > 0) {
             allocator.free(self.data.ptr[0..self.data_capacity]);
         }
+    }
+
+    /// 操作の実際の長さを取得（大規模挿入対応）
+    inline fn getLength(self: *const UndoEntry) usize {
+        return if (self.actual_len > 0) self.actual_len else self.data.len;
+    }
+
+    /// データが保存されているか（redoに必要）
+    inline fn hasData(self: *const UndoEntry) bool {
+        return self.actual_len == 0;
     }
 
     /// データ末尾に追加（償却O(1)）
@@ -828,10 +844,11 @@ pub const EditingContext = struct {
             first_cursor = entry.cursor_before;
             last_position = entry.position;
             last_op = entry.op;
-            last_len = entry.data.len;
+            last_len = entry.getLength(); // 大規模挿入対応
 
             switch (entry.op) {
-                .insert => try self.buffer.delete(entry.position, entry.data.len),
+                // 挿入のundo: getLength()で実際の長さを取得（大規模挿入対応）
+                .insert => try self.buffer.delete(entry.position, entry.getLength()),
                 .delete => try self.buffer.insertSlice(entry.position, entry.data),
             }
             self.invalidatePrevGraphemeCache(); // バッファ変更でキャッシュ無効化
@@ -886,15 +903,22 @@ pub const EditingContext = struct {
                 if (current.group_id != group_id) break;
             }
 
+            // 大規模挿入のredo不可チェック（データが保存されていない場合）
+            if (current.op == .insert and !current.hasData()) {
+                // redoできない大規模挿入 → スキップしてスタックから削除
+                _ = self.redo_stack.pop();
+                continue;
+            }
+
             const entry = self.redo_stack.pop().?;
             last_cursor = entry.cursor_after;
             last_position = entry.position;
             last_op = entry.op;
-            last_len = entry.data.len;
+            last_len = entry.getLength(); // 大規模挿入対応
 
             switch (entry.op) {
                 .insert => try self.buffer.insertSlice(entry.position, entry.data),
-                .delete => try self.buffer.delete(entry.position, entry.data.len),
+                .delete => try self.buffer.delete(entry.position, entry.getLength()),
             }
             self.invalidatePrevGraphemeCache(); // バッファ変更でキャッシュ無効化
 
@@ -1017,17 +1041,34 @@ pub const EditingContext = struct {
         self.last_record_time = now;
 
         self.clearRedoStack();
-        const data_copy = try self.allocator.alloc(u8, text.len);
-        @memcpy(data_copy, text);
-        try self.undo_stack.append(self.allocator, .{
-            .op = .insert,
-            .position = pos,
-            .data = data_copy,
-            .data_capacity = text.len,
-            .cursor_before = cursor_pos_before,
-            .cursor_after = pos + text.len,
-            .group_id = self.current_group_id,
-        });
+
+        // 大規模挿入の最適化: 1MB以上はデータを保存せず長さのみ記録
+        // これによりメモリ消費を抑えるが、redoは不可になる
+        if (text.len >= LARGE_INSERT_THRESHOLD) {
+            try self.undo_stack.append(self.allocator, .{
+                .op = .insert,
+                .position = pos,
+                .data = &.{}, // 空スライス（データ未保存）
+                .data_capacity = 0,
+                .cursor_before = cursor_pos_before,
+                .cursor_after = pos + text.len,
+                .group_id = self.current_group_id,
+                .groupable = false, // 大規模挿入はグループ化不可
+                .actual_len = text.len, // 実際の長さを別途記録
+            });
+        } else {
+            const data_copy = try self.allocator.alloc(u8, text.len);
+            @memcpy(data_copy, text);
+            try self.undo_stack.append(self.allocator, .{
+                .op = .insert,
+                .position = pos,
+                .data = data_copy,
+                .data_capacity = text.len,
+                .cursor_before = cursor_pos_before,
+                .cursor_after = pos + text.len,
+                .group_id = self.current_group_id,
+            });
+        }
         self.modified = true;
     }
 

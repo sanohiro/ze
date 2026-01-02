@@ -155,12 +155,13 @@ pub fn detectEncoding(content: []const u8) DetectionResult {
 
 /// 改行コードを検出（LF/CRLF/CR）
 /// 最適化: 先頭8KBをサンプリング。改行が見つからない場合は最大64KBまで拡張
+/// 64KBでも見つからない場合（minified JSONなど長大な1行）はファイル全体をスキャン
 /// 混在改行コードがある場合は優先順位: CRLF > LF > CR で判定
 pub fn detectLineEnding(content: []const u8) LineEnding {
     // 初期サンプリングサイズ: 8KB
     const initial_sample_size: usize = 8 * 1024;
-    // 最大サンプリングサイズ: 64KB（巨大な1行の場合のフォールバック）
-    const max_sample_size: usize = 64 * 1024;
+    // 中間サンプリングサイズ: 64KB
+    const mid_sample_size: usize = 64 * 1024;
 
     var has_crlf = false;
     var has_lf = false;
@@ -189,9 +190,16 @@ pub fn detectLineEnding(content: []const u8) LineEnding {
         }
         i += 1;
 
-        // 改行が見つからないまま初期サンプルを使い切った場合、範囲を拡張
+        // 改行が見つからないまま現在の範囲を使い切った場合、範囲を拡張
         if (i >= sample_end and !found_any_newline and sample_end < content.len) {
-            sample_end = @min(content.len, max_sample_size);
+            // 64KBまでは段階的に拡張、その後はファイル全体をスキャン
+            if (sample_end < mid_sample_size) {
+                sample_end = @min(content.len, mid_sample_size);
+            } else {
+                // 64KBでも見つからない場合はファイル全体をスキャン
+                // （minified JSON等の長大な1行ファイル対応）
+                sample_end = content.len;
+            }
         }
     }
 

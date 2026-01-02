@@ -3531,7 +3531,15 @@ pub const Editor = struct {
             else
                 @min(buf_len, if (first_chunk) search_pos else search_pos + overlap);
             const chunk_len = chunk_end - chunk_start;
-            if (chunk_len == 0) break;
+
+            // chunk_len == 0 の場合: バッファ境界にいるのでwrap-around処理へ
+            if (chunk_len == 0) {
+                if (wrapped) break; // 既にwrap済みなら終了
+                wrapped = true;
+                first_chunk = false;
+                search_pos = if (forward) 0 else buf_len;
+                continue;
+            }
 
             // 再利用バッファで抽出
             const content = try self.extractTextReusable(chunk_start, chunk_len);
