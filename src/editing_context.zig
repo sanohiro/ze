@@ -42,9 +42,6 @@ pub const ChangeEvent = struct {
     line_end: ?usize, // 影響を受ける終了行（nullは末尾まで）
 };
 
-/// 変更を通知するためのコールバック型
-pub const ChangeListener = *const fn (event: ChangeEvent, context: ?*anyopaque) void;
-
 /// Undo/Redo用の編集操作
 const EditOp = enum { insert, delete };
 
@@ -147,9 +144,6 @@ pub const EditingContext = struct {
     // セーブポイント（保存時のundo_stackの長さ）
     savepoint: ?usize,
 
-    // 変更リスナー
-    listeners: std.ArrayList(ListenerEntry),
-
     // Undoグループ管理
     current_group_id: ?u32 = null, // 現在アクティブなグループID
     next_group_id: u32 = 1, // 次に使うグループID
@@ -163,11 +157,6 @@ pub const EditingContext = struct {
     prev_grapheme_cache_cursor: usize = 0, // キャッシュ時のカーソル位置
     prev_grapheme_cache_start: usize = 0, // 前のグラフェムの開始位置
     prev_grapheme_cache_len: usize = 0, // 前のグラフェムのバイト長
-
-    const ListenerEntry = struct {
-        callback: ChangeListener,
-        context: ?*anyopaque,
-    };
 
     /// セーブポイントと比較してmodifiedフラグを更新
     fn updateModifiedFlag(self: *EditingContext) void {
@@ -261,7 +250,6 @@ pub const EditingContext = struct {
             .redo_stack = .{},
             .modified = false,
             .savepoint = 0, // 初期状態はセーブポイント0
-            .listeners = .{},
         };
         return ctx;
     }
@@ -284,9 +272,6 @@ pub const EditingContext = struct {
         }
         self.redo_stack.deinit(self.allocator);
 
-        // リスナー解放
-        self.listeners.deinit(self.allocator);
-
         // バッファ解放（所有している場合）
         if (self.owns_buffer) {
             self.buffer.deinit();
@@ -297,13 +282,11 @@ pub const EditingContext = struct {
     }
 
     // ========================================
-    // 変更通知
+    // 変更通知（将来の拡張用、現在は何もしない）
     // ========================================
 
-    fn notifyChange(self: *EditingContext, event: ChangeEvent) void {
-        for (self.listeners.items) |entry| {
-            entry.callback(event, entry.context);
-        }
+    fn notifyChange(_: *EditingContext, _: ChangeEvent) void {
+        // 将来リスナー機構を実装する際に使用
     }
 
     // ========================================
