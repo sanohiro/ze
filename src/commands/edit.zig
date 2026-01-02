@@ -581,63 +581,6 @@ pub fn setMark(e: *Editor) !void {
 // 行操作
 // ========================================
 
-/// 行の複製 (duplicate-line)
-pub fn duplicateLine(e: *Editor) !void {
-    if (e.isReadOnly()) return;
-    const buffer_state = e.getCurrentBuffer();
-    const buffer = e.getCurrentBufferContent();
-    const view = e.getCurrentView();
-    const current_line = e.getCurrentLine();
-
-    // 現在の行の開始・終了位置を取得
-    const line_start = buffer.getLineStart(current_line) orelse return;
-    const line_end = buffer.findNextLineFromPos(line_start);
-
-    // 行の内容を取得（改行を含む）
-    const line_len = line_end - line_start;
-    if (line_len == 0) return;
-
-    const line_content = try e.extractText(line_start, line_len);
-    defer e.allocator.free(line_content);
-
-    // 改行後に挿入（または行末に改行+内容を挿入）
-    const insert_pos = line_end;
-    var to_insert: []const u8 = undefined;
-    var allocated = false;
-
-    if (line_end < buffer.len()) {
-        // 改行がある場合はそのまま挿入
-        to_insert = line_content;
-    } else {
-        // ファイル末尾の場合
-        // 行内容が既に改行で終わっているかチェック
-        if (line_len > 0 and line_content[line_len - 1] == '\n') {
-            // 改行で終わっている場合はそのまま挿入
-            to_insert = line_content;
-        } else {
-            // 改行で終わっていない場合は先頭に改行を追加
-            const with_newline = try e.allocator.alloc(u8, line_len + 1);
-            with_newline[0] = '\n';
-            @memcpy(with_newline[1..], line_content);
-            to_insert = with_newline;
-            allocated = true;
-        }
-    }
-    defer if (allocated) e.allocator.free(to_insert);
-
-    try buffer.insertSlice(insert_pos, to_insert);
-    // 挿入後のロールバック用errdefer（recordInsertが失敗した場合）
-    errdefer buffer.delete(insert_pos, to_insert.len) catch {};
-    try e.recordInsert(insert_pos, to_insert, view.getCursorBufferPos());
-
-    buffer_state.editing_ctx.modified = true;
-    // duplicateLineは行数が増えるため全画面再描画が必要
-    e.markCurrentBufferFullRedraw();
-
-    // カーソルを複製した行に移動
-    view.moveCursorDown();
-}
-
 /// 選択範囲または現在行をインデント
 pub fn indentRegion(e: *Editor) !void {
     if (e.isReadOnly()) return;

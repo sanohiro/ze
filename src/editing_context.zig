@@ -609,12 +609,6 @@ pub const EditingContext = struct {
         try self.insert(&buf);
     }
 
-    pub fn insertCodepoint(self: *EditingContext, codepoint: u21) !void {
-        var buf: [4]u8 = undefined;
-        const byte_len = std.unicode.utf8Encode(codepoint, &buf) catch return error.InvalidUtf8;
-        try self.insert(buf[0..byte_len]);
-    }
-
     // ========================================
     // 削除操作
     // ========================================
@@ -719,35 +713,6 @@ pub const EditingContext = struct {
         }
     }
 
-    pub fn duplicateLine(self: *EditingContext) !void {
-        const line = self.getCursorLine();
-        const line_start = self.buffer.getLineStart(line) orelse return;
-        const line_end = self.buffer.findNextLineFromPos(line_start);
-        const line_len = line_end - line_start;
-
-        if (line_len == 0) return;
-
-        const content = try self.extractText(line_start, line_len);
-        defer self.allocator.free(content);
-
-        // 行末に挿入
-        const old_cursor = self.cursor;
-        self.cursor = line_end;
-
-        const at_eof = line_end >= self.buffer.len();
-        if (at_eof) {
-            // ファイル末尾なら改行を追加してから
-            try self.insertChar('\n');
-            try self.insert(content);
-        } else {
-            try self.insert(content);
-        }
-
-        // カーソルを次の行の同じ位置に
-        // EOF時は追加した改行分の+1が必要
-        self.cursor = old_cursor + line_len + @as(usize, if (at_eof) 1 else 0);
-    }
-
     // ========================================
     // 選択範囲操作
     // ========================================
@@ -792,18 +757,6 @@ pub const EditingContext = struct {
     pub fn yank(self: *EditingContext) !void {
         const text = self.kill_ring orelse return;
         try self.insert(text);
-    }
-
-    pub fn selectAll(self: *EditingContext) void {
-        self.mark = 0;
-        self.cursor = self.buffer.len();
-        self.notifyChange(.{
-            .change_type = .selection_change,
-            .position = self.cursor,
-            .length = 0,
-            .line = 0,
-            .line_end = null,
-        });
     }
 
     // ========================================
