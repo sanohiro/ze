@@ -1941,6 +1941,8 @@ pub const Editor = struct {
 
     /// メインループ（Pollerの有無で動作を切り替え）
     fn mainLoop(self: *Editor, input_reader: *input.InputReader, poll: ?*poller.Poller) !void {
+        // Pollerが致命的エラー（EBADF等）を返した場合、VTIMEフォールバックに移行
+        var poller_disabled = false;
         while (self.running) {
             // 終了シグナルチェック
             if (self.terminal.checkTerminate()) break;
@@ -1974,9 +1976,13 @@ pub const Editor = struct {
 
             // 入力を待機（Pollerがある場合はイベント駆動、なければVTIMEポーリング）
             if (poll) |p| {
-                // 重要: InputReaderのバッファにデータがあればkqueueをスキップ
-                // （バッファリングにより、カーネルバッファは空でもデータが残っている可能性がある）
-                if (!input_reader.hasData()) {
+                // Pollerが致命的エラーで無効化された場合はスキップ
+                if (poller_disabled) {
+                    // VTIMEフォールバック: 何もしない（VTIMEで入力を待つ）
+                } else if (!input_reader.hasData()) {
+                    // 重要: InputReaderのバッファにデータがあればkqueueをスキップ
+                    // （バッファリングにより、カーネルバッファは空でもデータが残っている可能性がある）
+
                     // 動的タイムアウト: シェル実行中は短く（スピナー更新を速く）
                     const wait_timeout: u32 = if (self.mode == .shell_running)
                         25 // シェル実行中: 25ms（スピナー4fps）
@@ -1987,6 +1993,11 @@ pub const Editor = struct {
                     const poll_result = p.wait(wait_timeout);
                     if (poll_result == .signal) {
                         // SIGWINCH等のシグナル: ループ先頭に戻ってリサイズチェック
+                        continue;
+                    }
+                    if (poll_result == .fatal_error) {
+                        // 致命的エラー（EBADF/EINVAL等）: Pollerを無効化してVTIMEフォールバック
+                        poller_disabled = true;
                         continue;
                     }
                     // タイムアウトでも入力チェックは行う（VTIMEモードで読み取り可能な場合がある）

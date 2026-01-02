@@ -286,6 +286,7 @@ pub const History = struct {
         defer self.allocator.free(lock_path);
 
         // ロックファイルを作成/オープンして排他ロックを取得
+        // 注: ロックファイルは削除しない（削除するとinode が変わり排他制御が壊れる）
         const lock_file = std.fs.cwd().createFile(lock_path, .{ .mode = 0o600 }) catch {
             // ロックファイル作成失敗時は従来通り保存を試みる
             return self.saveWithoutLock(path, ze_dir);

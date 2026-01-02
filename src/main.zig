@@ -69,16 +69,18 @@ const EXIT_USAGE_ERROR: u8 = 2;
 
 /// ファイルがバイナリかどうかを事前チェック（Editor.init前に呼び出し）
 /// ターミナルを代替スクリーンに入れる前にエラーを表示するため
-fn checkBinaryFile(path: []const u8) error{BinaryFile}!void {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
-        // ファイルが開けない場合は新規ファイルとして扱う（バイナリではない）
-        return;
+fn checkBinaryFile(path: []const u8) !void {
+    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+        // ファイルが存在しない場合は新規ファイルとして扱う（バイナリではない）
+        if (err == error.FileNotFound) return;
+        // 権限エラー等はそのまま伝搬（代替スクリーン前にエラー表示）
+        return err;
     };
     defer file.close();
 
     // 最初の8KBを読み取ってバイナリ判定
     var buf: [8192]u8 = undefined;
-    const bytes_read = file.read(&buf) catch return;
+    const bytes_read = file.read(&buf) catch |err| return err;
     if (bytes_read == 0) return; // 空ファイル
 
     const content = buf[0..bytes_read];
@@ -178,8 +180,12 @@ fn mainImpl() !u8 {
     // バイナリファイルチェック（Editor.init前に実行）
     // ターミナルを代替スクリーンに入れる前にエラーを表示するため
     if (checked_filename) |filename| {
-        checkBinaryFile(filename) catch {
-            writeError("Error: cannot open binary file: {s}\n", .{filename});
+        checkBinaryFile(filename) catch |err| {
+            if (err == error.BinaryFile) {
+                writeError("Error: cannot open binary file: {s}\n", .{filename});
+            } else {
+                writeError("Error: cannot open file '{s}': {}\n", .{ filename, err });
+            }
             return EXIT_IO_ERROR;
         };
     }

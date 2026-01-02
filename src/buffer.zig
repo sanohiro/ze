@@ -760,6 +760,7 @@ pub const Buffer = struct {
     }
 
     /// UTF-8正規化済みコンテンツからBufferを作成（共通処理）
+    /// 注: normalizedの所有権を取得する。失敗時はnormalizedを解放する。
     fn createBufferFromContent(
         allocator: std.mem.Allocator,
         normalized: []const u8,
@@ -767,6 +768,9 @@ pub const Buffer = struct {
         detected_encoding: encoding.Encoding,
         file_mtime: i128,
     ) !Buffer {
+        // 所有権を取得するため、失敗時は解放が必要
+        errdefer allocator.free(normalized);
+
         var add_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
         errdefer add_buffer.deinit(allocator);
 

@@ -24,6 +24,7 @@ pub const PollResult = enum {
     ready, // 入力準備完了
     timeout, // タイムアウト
     signal, // シグナル割り込み（再試行すべき）
+    fatal_error, // 致命的エラー（EBADF等）：Poller無効化すべき
 };
 
 /// プラットフォーム固有のPoller実装
@@ -104,6 +105,11 @@ pub const KqueuePoller = struct {
                 // シグナル割り込み: リトライすべき（SIGWINCHなど）
                 return .signal;
             }
+            if (err == .BADF or err == .INVAL) {
+                // 致命的エラー: kqueue fd が無効（EBADF）または不正な引数（EINVAL）
+                // Pollerを無効化してVTIMEフォールバックに移行すべき
+                return .fatal_error;
+            }
             // その他のエラーはタイムアウト扱い
             return .timeout;
         }
@@ -158,6 +164,11 @@ pub const EpollPoller = struct {
             const err = posix.errno(signed_result);
             if (err == .INTR) {
                 return .signal;
+            }
+            if (err == .BADF or err == .INVAL) {
+                // 致命的エラー: epoll fd が無効（EBADF）または不正な引数（EINVAL）
+                // Pollerを無効化してVTIMEフォールバックに移行すべき
+                return .fatal_error;
             }
             return .timeout;
         }

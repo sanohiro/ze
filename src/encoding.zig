@@ -154,33 +154,45 @@ pub fn detectEncoding(content: []const u8) DetectionResult {
 }
 
 /// 改行コードを検出（LF/CRLF/CR）
-/// 最適化: 先頭8KBのみサンプリング（大きなファイルで高速化）
+/// 最適化: 先頭8KBをサンプリング。改行が見つからない場合は最大64KBまで拡張
 /// 混在改行コードがある場合は優先順位: CRLF > LF > CR で判定
 pub fn detectLineEnding(content: []const u8) LineEnding {
-    // サンプリングサイズ: 8KB（十分な改行を含む可能性が高い）
-    const sample_size: usize = 8 * 1024;
-    const sample = content[0..@min(content.len, sample_size)];
+    // 初期サンプリングサイズ: 8KB
+    const initial_sample_size: usize = 8 * 1024;
+    // 最大サンプリングサイズ: 64KB（巨大な1行の場合のフォールバック）
+    const max_sample_size: usize = 64 * 1024;
 
     var has_crlf = false;
     var has_lf = false;
     var has_cr = false;
+    var found_any_newline = false;
 
+    // まず初期サンプルサイズで検索
+    var sample_end: usize = @min(content.len, initial_sample_size);
     var i: usize = 0;
-    while (i < sample.len) {
-        if (sample[i] == '\r') {
-            if (i + 1 < sample.len and sample[i + 1] == '\n') {
+
+    while (i < sample_end) {
+        if (content[i] == '\r') {
+            found_any_newline = true;
+            if (i + 1 < content.len and content[i + 1] == '\n') {
                 has_crlf = true;
-                i += 2; // \r\n両方をスキップ
+                i += 2;
                 continue;
             } else {
                 has_cr = true;
                 i += 1;
                 continue;
             }
-        } else if (sample[i] == '\n') {
+        } else if (content[i] == '\n') {
+            found_any_newline = true;
             has_lf = true;
         }
         i += 1;
+
+        // 改行が見つからないまま初期サンプルを使い切った場合、範囲を拡張
+        if (i >= sample_end and !found_any_newline and sample_end < content.len) {
+            sample_end = @min(content.len, max_sample_size);
+        }
     }
 
     // 優先順位: CRLF > LF > CR
