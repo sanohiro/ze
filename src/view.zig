@@ -990,55 +990,102 @@ pub const View = struct {
             return self.applyRegexHighlight(line, cursor_in_content, content_start);
         }
 
-        // リテラルモード: content_start以降で最初のマッチを探す
-        const first_match = findSkippingAnsi(line, content_start, search_str) orelse return line;
+        // リテラルモード: visible_textとvisible_to_rawを構築（正規表現と同じ手法でO(n)化）
+        // これにより、複数マッチ時のfindSkippingAnsi繰り返し呼び出しを回避
+        try self.buildVisibleText(line, content_start);
+
+        if (self.regex_visible_text.items.len == 0) return line;
+
+        // visible_textに対して単純な文字列検索（ANSI考慮不要）
+        const first_match_vis = std.mem.indexOf(u8, self.regex_visible_text.items, search_str) orelse return line;
 
         // マッチがあるのでバッファを使用
         self.highlighted_line.clearRetainingCapacity();
 
-        // 検索パターンの表示幅を計算（カーソル位置比較用）
-        const search_display_width = stringDisplayWidth(search_str);
+        // 元の行位置にマッピングしてハイライトを適用
+        var visible_pos: usize = 0;
+        var last_raw_pos: usize = 0;
 
-        // content_startからfirst_matchまでの表示幅を計算
-        const first_visible_pos = countDisplayWidth(line, content_start, first_match);
+        // 最初のマッチを処理
+        var match_start_vis = first_match_vis;
+        var match_end_vis = first_match_vis + search_str.len;
+        if (match_end_vis > self.regex_visible_to_raw.items.len) {
+            match_end_vis = self.regex_visible_to_raw.items.len - 1;
+        }
+        var match_start_raw = self.regex_visible_to_raw.items[match_start_vis];
+        var match_end_raw = self.regex_visible_to_raw.items[match_end_vis];
 
-        // 最初のマッチ前の部分をコピー（行番号部分を含む）
-        try self.highlighted_line.appendSlice(self.allocator, line[0..first_match]);
-        // カーソル位置を含むマッチかどうかで色を変える（表示幅で比較）
-        // カーソルはマッチ終端に置かれる: (start, end] の範囲で判定（開始を除外、終端を含む）
-        const is_current = if (cursor_in_content) |cursor| cursor > first_visible_pos and cursor <= first_visible_pos + search_display_width else false;
+        // マッチ前の部分をコピー
+        try self.highlighted_line.appendSlice(self.allocator, line[0..match_start_raw]);
+        // カーソル位置を含むマッチかどうかで色を変える（可視位置で比較）
+        const is_current = if (cursor_in_content) |cursor| cursor > match_start_vis and cursor <= match_end_vis else false;
         const hl = getHighlightColors(is_current);
         try self.highlighted_line.appendSlice(self.allocator, hl.start);
-        // 境界チェック: ANSIシーケンスを含む場合でも安全にスライス
-        const first_match_end = @min(first_match + search_str.len, line.len);
-        try self.highlighted_line.appendSlice(self.allocator, line[first_match..first_match_end]);
+        try self.highlighted_line.appendSlice(self.allocator, line[match_start_raw..match_end_raw]);
         try self.highlighted_line.appendSlice(self.allocator, hl.end);
-        var pos: usize = first_match_end;
 
-        // 残りのマッチを処理
-        while (pos < line.len) {
-            if (findSkippingAnsi(line, pos, search_str)) |match_pos| {
+        visible_pos = match_end_vis;
+        last_raw_pos = match_end_raw;
+
+        // 残りのマッチを処理（上限付き）
+        var match_count: usize = 1;
+        while (visible_pos < self.regex_visible_text.items.len and match_count < config.View.MAX_MATCHES_PER_LINE) {
+            if (std.mem.indexOf(u8, self.regex_visible_text.items[visible_pos..], search_str)) |rel_match| {
+                match_count += 1;
+                match_start_vis = visible_pos + rel_match;
+                match_end_vis = match_start_vis + search_str.len;
+                if (match_end_vis > self.regex_visible_to_raw.items.len) {
+                    match_end_vis = self.regex_visible_to_raw.items.len - 1;
+                }
+                match_start_raw = self.regex_visible_to_raw.items[match_start_vis];
+                match_end_raw = self.regex_visible_to_raw.items[match_end_vis];
+
                 // マッチ前の部分をコピー
-                try self.highlighted_line.appendSlice(self.allocator, line[pos..match_pos]);
-                // マッチの表示幅位置を計算
-                const visible_pos = countDisplayWidth(line, content_start, match_pos);
-                // カーソル位置を含むマッチかどうかで色を変える（表示幅で比較）
-                // カーソルはマッチ終端に置かれる: (start, end] の範囲で判定（開始を除外、終端を含む）
-                const is_cur = if (cursor_in_content) |cursor| cursor > visible_pos and cursor <= visible_pos + search_display_width else false;
+                try self.highlighted_line.appendSlice(self.allocator, line[last_raw_pos..match_start_raw]);
+                // カーソル位置を含むマッチかどうかで色を変える（可視位置で比較）
+                const is_cur = if (cursor_in_content) |cursor| cursor > match_start_vis and cursor <= match_end_vis else false;
                 const hl_cur = getHighlightColors(is_cur);
                 try self.highlighted_line.appendSlice(self.allocator, hl_cur.start);
-                // 境界チェック: ANSIシーケンスを含む場合でも安全にスライス
-                const match_end = @min(match_pos + search_str.len, line.len);
-                try self.highlighted_line.appendSlice(self.allocator, line[match_pos..match_end]);
+                try self.highlighted_line.appendSlice(self.allocator, line[match_start_raw..match_end_raw]);
                 try self.highlighted_line.appendSlice(self.allocator, hl_cur.end);
-                pos = match_end;
+
+                visible_pos = match_end_vis;
+                last_raw_pos = match_end_raw;
             } else {
-                // これ以上マッチなし：残りをコピー
-                try self.highlighted_line.appendSlice(self.allocator, line[pos..]);
                 break;
             }
         }
+
+        // 残りをコピー
+        if (last_raw_pos < line.len) {
+            try self.highlighted_line.appendSlice(self.allocator, line[last_raw_pos..]);
+        }
+
         return self.highlighted_line.items;
+    }
+
+    /// ANSIエスケープを除いた可視テキストと位置マッピングを構築
+    /// リテラル検索と正規表現検索の両方で使用
+    fn buildVisibleText(self: *View, line: []const u8, content_start: usize) !void {
+        self.regex_visible_text.clearRetainingCapacity();
+        try self.regex_visible_text.ensureTotalCapacity(self.allocator, line.len);
+        self.regex_visible_to_raw.clearRetainingCapacity();
+        try self.regex_visible_to_raw.ensureTotalCapacity(self.allocator, line.len + 1);
+
+        var raw_pos: usize = content_start;
+        while (raw_pos < line.len) {
+            // ANSIエスケープシーケンスをスキップ
+            if (skipAnsiSequence(line, raw_pos)) |new_pos| {
+                raw_pos = new_pos;
+            } else {
+                // 可視文字を追加
+                self.regex_visible_to_raw.appendAssumeCapacity(raw_pos);
+                self.regex_visible_text.appendAssumeCapacity(line[raw_pos]);
+                raw_pos += 1;
+            }
+        }
+        // 終端位置を追加（マッチ末尾の計算用）
+        self.regex_visible_to_raw.appendAssumeCapacity(line.len);
     }
 
     /// content_startからend_posまでの表示幅を計算（ANSIエスケープを除く、UTF-8の表示幅を考慮）
@@ -1086,29 +1133,8 @@ pub const View = struct {
         // コンパイル済み正規表現がなければ元を返す
         var re = self.compiled_highlight_regex orelse return line;
 
-        // ANSIエスケープを除いた可視テキストと位置マッピングを構築
-        // regex_visible_to_raw[i] = 可視位置iに対応する元の行の開始位置
-        // content_start以降のみを検索対象とする（行番号部分をスキップ）
-        self.regex_visible_text.clearRetainingCapacity();
-        try self.regex_visible_text.ensureTotalCapacity(self.allocator, line.len);
-        self.regex_visible_to_raw.clearRetainingCapacity();
-        try self.regex_visible_to_raw.ensureTotalCapacity(self.allocator, line.len + 1);
-
-        // content_start以降から処理開始（行番号部分をスキップ）
-        var raw_pos: usize = content_start;
-        while (raw_pos < line.len) {
-            // ANSIエスケープシーケンスをスキップ
-            if (skipAnsiSequence(line, raw_pos)) |new_pos| {
-                raw_pos = new_pos;
-            } else {
-                // 可視文字を追加
-                self.regex_visible_to_raw.appendAssumeCapacity(raw_pos);
-                self.regex_visible_text.appendAssumeCapacity(line[raw_pos]);
-                raw_pos += 1;
-            }
-        }
-        // 終端位置を追加（マッチ末尾の計算用）
-        self.regex_visible_to_raw.appendAssumeCapacity(line.len);
+        // ANSIエスケープを除いた可視テキストと位置マッピングを構築（共通関数を使用）
+        try self.buildVisibleText(line, content_start);
 
         if (self.regex_visible_text.items.len == 0) return line;
 
