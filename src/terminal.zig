@@ -73,8 +73,8 @@ pub const Terminal = struct {
         // ウィンドウサイズに基づいてバッファ容量を確保（再アロケーション削減）
         // 1セルあたり約12バイト（UTF-8文字 + ANSIシーケンス）を想定
         const estimated_capacity = @as(usize, self.width) * @as(usize, self.height) * 12;
-        if (estimated_capacity > buf.capacity) {
-            try buf.ensureTotalCapacity(allocator, estimated_capacity);
+        if (estimated_capacity > self.buf.capacity) {
+            try self.buf.ensureTotalCapacity(allocator, estimated_capacity);
         }
 
         // シグナルハンドラを設定
