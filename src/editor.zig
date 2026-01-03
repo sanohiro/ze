@@ -1610,8 +1610,7 @@ pub const Editor = struct {
 
         // 古いファイル名を解放して新しいファイル名を設定（filename_normalizedもリセット）
         buffer_state.file.setFilenameOwned(new_filename);
-        // 正規化パスをキャッシュ更新
-        buffer_state.file.filename_normalized = std.fs.cwd().realpathAlloc(self.allocator, path) catch null;
+        // 正規化パスは遅延初期化: findByFilename()で必要時に計算
 
         // Undo/Redoスタックをクリア
         buffer_state.editing_ctx.clearUndoHistory();
@@ -2003,12 +2002,12 @@ pub const Editor = struct {
                 }
             }
 
-            // キー入力を処理（バッチ処理で高速タイピング対応）
-            // バッファに複数キーがあれば一度に処理（最大10キー）
-            const MAX_KEYS_PER_FRAME = 10;
+            // キー入力を処理（バッチ処理で高速タイピング/ペースト対応）
+            // バッファが空になるまで全キーを処理（制限なし）
             var keys_processed: usize = 0;
-            while (keys_processed < MAX_KEYS_PER_FRAME) : (keys_processed += 1) {
+            while (true) {
                 if (try input.readKeyFromReader(input_reader)) |key| {
+                    keys_processed += 1;
                     // ミニバッファモード中はプロンプトを維持
                     if (!self.isMinibufferMode()) {
                         self.getCurrentView().clearError();
@@ -2401,10 +2400,8 @@ pub const Editor = struct {
 
             new_buffer.editing_ctx.buffer.deinit();
             new_buffer.editing_ctx.buffer.* = loaded_buffer;
-            // ファイル名を設定（filename_normalizedもリセット）
+            // ファイル名を設定（filename_normalizedは遅延初期化）
             new_buffer.file.setFilenameOwned(filename_copy);
-            // 正規化パスをキャッシュ
-            new_buffer.file.filename_normalized = std.fs.cwd().realpathAlloc(self.allocator, filename_copy) catch null;
             new_buffer.editing_ctx.modified = false;
 
             const file = std.fs.cwd().openFile(filename_copy, .{}) catch null;

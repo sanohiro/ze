@@ -2,6 +2,28 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 絶対禁止事項（最重要）
+
+### git checkout / git revert / git reset の禁止
+
+**絶対に `git checkout -- .` や `git revert` や `git reset --hard` を実行するな。**
+
+- 未コミットの変更には**前回セッションの重要な最適化**が含まれている可能性がある
+- セッション間で変更が引き継がれるため、安易なリバートで**数時間分の作業が消える**
+- 「壊れたから戻す」は**絶対にダメ**。壊れた部分だけを修正しろ
+- git stash も危険。stash drop で消える可能性がある
+
+**問題が起きた場合の正しい対処:**
+1. エラーメッセージを読んで、**壊れた箇所だけ**を特定
+2. その箇所のみを手動で修正
+3. 他の変更は**絶対に触るな**
+
+**過去の失敗**: `git checkout -- .` で以下が消失した
+- cached_line_count（O(1)行数取得）
+- updateForInsert/updateForDelete（LineIndexインクリメンタル更新）
+- line_analysis_cache（analyzeLine結果キャッシュ）
+- その他多数の最適化
+
 ## Project Overview
 
 **ze** (Zig Editor / Zero-latency Editor) は、mgとUnix哲学に影響を受けた、高速で最小限のテキストエディタです。Zigで実装され、Emacsキーバインディングとシェル統合を特徴とします。

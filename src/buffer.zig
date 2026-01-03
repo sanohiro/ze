@@ -49,6 +49,34 @@ fn getCurrentGid() std.posix.gid_t {
     }
 }
 
+/// SIMD最適化された改行カウント
+/// 32バイト単位でベクトル処理し、大きなファイルで高速
+fn countNewlinesSIMD(data: []const u8) usize {
+    const Vec = @Vector(32, u8);
+    const newline_vec: Vec = @splat('\n');
+    const ones: Vec = @splat(1);
+    const zeros: Vec = @splat(0);
+
+    var count: usize = 0;
+    var i: usize = 0;
+
+    // 32バイト単位でSIMD処理
+    while (i + 32 <= data.len) : (i += 32) {
+        const chunk: Vec = data[i..][0..32].*;
+        const matches = chunk == newline_vec;
+        // boolベクトルを0/1のu8ベクトルに変換してから合計
+        const mask = @select(u8, matches, ones, zeros);
+        count += @reduce(.Add, mask);
+    }
+
+    // 残りをスカラー処理
+    while (i < data.len) : (i += 1) {
+        if (data[i] == '\n') count += 1;
+    }
+
+    return count;
+}
+
 /// ピースのソース（元ファイル or 追加バッファ）
 pub const PieceSource = enum {
     original, // 元のファイル内容
@@ -480,6 +508,85 @@ pub const LineIndex = struct {
         self.valid_until_pos = buffer.total_len;
     }
 
+    /// 挿入時のインクリメンタル更新（O(改行数 + 影響行数)）
+    /// 再スキャンなしで行インデックスを更新する
+    pub fn updateForInsert(self: *LineIndex, pos: usize, text: []const u8) !void {
+        if (!self.valid) return; // 無効なら何もしない
+
+        // posより後の全エントリにテキスト長を加算
+        for (self.line_starts.items) |*line_start| {
+            if (line_start.* > pos) {
+                line_start.* += text.len;
+            }
+        }
+
+        // 挿入テキスト内の改行位置を検出して追加
+        var new_lines: std.ArrayList(usize) = .{};
+        defer new_lines.deinit(self.allocator);
+
+        var i: usize = 0;
+        while (std.mem.indexOfScalar(u8, text[i..], '\n')) |rel| {
+            const newline_pos = pos + i + rel;
+            try new_lines.append(self.allocator, newline_pos + 1); // 改行の次が行開始
+            i += rel + 1;
+        }
+
+        if (new_lines.items.len > 0) {
+            // 挿入位置に対応するインデックスを見つける
+            var insert_idx: usize = self.line_starts.items.len;
+            for (self.line_starts.items, 0..) |line_start, idx| {
+                if (line_start > pos) {
+                    insert_idx = idx;
+                    break;
+                }
+            }
+
+            // 新しい行をその位置に挿入
+            try self.line_starts.insertSlice(self.allocator, insert_idx, new_lines.items);
+        }
+
+        self.valid_until_pos += text.len;
+    }
+
+    /// 削除時のインクリメンタル更新（O(削除行数 + 影響行数)）
+    /// 再スキャンなしで行インデックスを更新する
+    pub fn updateForDelete(self: *LineIndex, pos: usize, count: usize, deleted_newlines: usize) void {
+        if (!self.valid) return; // 無効なら何もしない
+
+        const end_pos = pos + count;
+
+        // 削除範囲内の行エントリを削除
+        if (deleted_newlines > 0) {
+            var write_idx: usize = 0;
+            for (self.line_starts.items) |line_start| {
+                if (line_start <= pos or line_start > end_pos) {
+                    // 範囲外: 保持（pos以降は調整が必要）
+                    if (line_start > end_pos) {
+                        self.line_starts.items[write_idx] = line_start - count;
+                    } else {
+                        self.line_starts.items[write_idx] = line_start;
+                    }
+                    write_idx += 1;
+                }
+                // 範囲内の行は削除（スキップ）
+            }
+            self.line_starts.shrinkRetainingCapacity(write_idx);
+        } else {
+            // 改行削除なし: 位置の調整のみ
+            for (self.line_starts.items) |*line_start| {
+                if (line_start.* > end_pos) {
+                    line_start.* -= count;
+                }
+            }
+        }
+
+        if (self.valid_until_pos >= count) {
+            self.valid_until_pos -= count;
+        } else {
+            self.valid_until_pos = 0;
+        }
+    }
+
     pub fn getLineStart(self: *const LineIndex, line_num: usize) ?usize {
         if (!self.valid or line_num >= self.line_starts.items.len) return null;
         return self.line_starts.items[line_num];
@@ -538,6 +645,13 @@ pub const Buffer = struct {
     last_access_piece_idx: usize, // 直近アクセスしたPieceのインデックス
     last_access_piece_start: usize, // そのPieceの開始位置
 
+    // 変更カウンタ（キャッシュ無効化用）
+    // 編集操作ごとにインクリメント、View等がキャッシュ有効性を判定
+    modification_count: usize,
+
+    // 行数キャッシュ（O(1)でlineCount取得）
+    // 挿入/削除時に改行差分で更新されるため、LineIndex.rebuildを待たない
+    cached_line_count: usize,
 
     pub fn init(allocator: std.mem.Allocator) !Buffer {
         // 空のArrayListで初期化（遅延アロケーション）
@@ -560,6 +674,8 @@ pub const Buffer = struct {
             .last_insert_time = 0,
             .last_access_piece_idx = 0,
             .last_access_piece_start = 0,
+            .modification_count = 0,
+            .cached_line_count = 1, // 空バッファは1行
         };
     }
 
@@ -662,6 +778,8 @@ pub const Buffer = struct {
                     .last_insert_time = 0,
                     .last_access_piece_idx = 0,
                     .last_access_piece_start = 0,
+                    .modification_count = 0,
+                    .cached_line_count = countNewlinesSIMD(mapped) + 1,
                 };
 
                 // 初期状態：originalファイル全体を指す1つのpiece
@@ -714,6 +832,8 @@ pub const Buffer = struct {
             .last_insert_time = 0,
             .last_access_piece_idx = 0,
             .last_access_piece_start = 0,
+            .modification_count = 0,
+            .cached_line_count = 1, // 空バッファは1行
         };
     }
 
@@ -808,6 +928,8 @@ pub const Buffer = struct {
             .last_insert_time = 0,
             .last_access_piece_idx = 0,
             .last_access_piece_start = 0,
+            .modification_count = 0,
+            .cached_line_count = countNewlinesSIMD(normalized) + 1,
         };
 
         if (normalized.len > 0) {
@@ -818,7 +940,8 @@ pub const Buffer = struct {
             });
         }
 
-        try self.line_index.rebuild(&self);
+        // LineIndexは遅延初期化: getLineStart()で自動rebuildされる
+        // ここでrebuild()を呼ばないことで起動時間を短縮
         return self;
     }
 
@@ -1194,6 +1317,12 @@ pub const Buffer = struct {
         self.last_access_piece_idx = 0;
         self.last_access_piece_start = 0;
 
+        // 変更カウンタをインクリメント（キャッシュ無効化用）
+        self.modification_count +%= 1;
+
+        // 行数キャッシュを更新（挿入テキスト内の改行数を加算）
+        self.cached_line_count += countNewlinesSIMD(text);
+
         const now = std.time.nanoTimestamp();
 
         // 【Piece統合チェック】
@@ -1215,7 +1344,7 @@ pub const Buffer = struct {
                     self.total_len += text.len;
                     self.last_insert_end = pos + text.len;
                     self.last_insert_time = now;
-                    self.line_index.invalidateFrom(pos);
+                    try self.line_index.updateForInsert(pos, text);
                     return;
                 }
             }
@@ -1241,7 +1370,7 @@ pub const Buffer = struct {
             self.last_insert_end = pos + text.len;
             self.last_insert_piece_idx = 0;
             self.last_insert_time = now;
-            self.line_index.invalidateFrom(pos);
+            try self.line_index.updateForInsert(pos, text);
             return;
         }
 
@@ -1253,7 +1382,7 @@ pub const Buffer = struct {
             self.last_insert_end = pos + text.len;
             self.last_insert_piece_idx = self.pieces.items.len - 1;
             self.last_insert_time = now;
-            self.line_index.invalidateFrom(pos);
+            try self.line_index.updateForInsert(pos, text);
             return;
         }
 
@@ -1269,7 +1398,7 @@ pub const Buffer = struct {
             self.last_insert_end = pos + text.len;
             self.last_insert_piece_idx = self.pieces.items.len - 1;
             self.last_insert_time = now;
-            self.line_index.invalidateFrom(pos);
+            try self.line_index.updateForInsert(pos, text);
             return;
         };
 
@@ -1282,7 +1411,7 @@ pub const Buffer = struct {
             self.last_insert_end = pos + text.len;
             self.last_insert_piece_idx = location.piece_idx;
             self.last_insert_time = now;
-            self.line_index.invalidateFrom(pos);
+            try self.line_index.updateForInsert(pos, text);
             return;
         }
 
@@ -1292,7 +1421,7 @@ pub const Buffer = struct {
             self.last_insert_end = pos + text.len;
             self.last_insert_piece_idx = location.piece_idx + 1;
             self.last_insert_time = now;
-            self.line_index.invalidateFrom(pos);
+            try self.line_index.updateForInsert(pos, text);
             return;
         }
 
@@ -1323,7 +1452,7 @@ pub const Buffer = struct {
         self.last_insert_end = pos + text.len;
         self.last_insert_piece_idx = location.piece_idx + 1; // new_pieceの位置
         self.last_insert_time = now;
-        self.line_index.invalidateFrom(pos);
+        try self.line_index.updateForInsert(pos, text);
     }
 
     /// 指定位置から指定バイト数を削除
@@ -1356,6 +1485,22 @@ pub const Buffer = struct {
         const actual_count = @min(count, self.total_len - pos);
         if (actual_count == 0) return;
 
+        // 変更カウンタをインクリメント（キャッシュ無効化用）
+        self.modification_count +%= 1;
+
+        // 行数キャッシュを更新（削除範囲内の改行数を減算）
+        var newlines_deleted: usize = 0;
+        var iter = PieceIterator.init(self);
+        iter.seek(pos);
+        var remaining = actual_count;
+        while (remaining > 0) {
+            if (iter.next()) |ch| {
+                if (ch == '\n') newlines_deleted += 1;
+                remaining -= 1;
+            } else break;
+        }
+        self.cached_line_count -= newlines_deleted;
+
         const end_pos = pos + actual_count;
 
         // 削除開始位置と終了位置のpieceを見つける
@@ -1373,7 +1518,7 @@ pub const Buffer = struct {
             // piece全体を削除
             if (start_loc.offset == 0 and end_loc.offset == piece.length) {
                 _ = self.pieces.orderedRemove(start_loc.piece_idx);
-                self.line_index.invalidateFrom(pos);
+                self.line_index.updateForDelete(pos, actual_count, newlines_deleted);
                 return;
             }
 
@@ -1384,7 +1529,7 @@ pub const Buffer = struct {
                     .start = piece.start + actual_count,
                     .length = piece.length - actual_count,
                 };
-                self.line_index.invalidateFrom(pos);
+                self.line_index.updateForDelete(pos, actual_count, newlines_deleted);
                 return;
             }
 
@@ -1395,7 +1540,7 @@ pub const Buffer = struct {
                     .start = piece.start,
                     .length = start_loc.offset,
                 };
-                self.line_index.invalidateFrom(pos);
+                self.line_index.updateForDelete(pos, actual_count, newlines_deleted);
                 return;
             }
 
@@ -1419,7 +1564,7 @@ pub const Buffer = struct {
             _ = self.pieces.orderedRemove(start_loc.piece_idx);
             self.pieces.insertAssumeCapacity(start_loc.piece_idx, right_piece);
             self.pieces.insertAssumeCapacity(start_loc.piece_idx, left_piece);
-            self.line_index.invalidateFrom(pos);
+            self.line_index.updateForDelete(pos, actual_count, newlines_deleted);
             return;
         }
 
@@ -1461,26 +1606,13 @@ pub const Buffer = struct {
                 i -= 1;
             }
         }
-        self.line_index.invalidateFrom(pos);
+        self.line_index.updateForDelete(pos, actual_count, newlines_deleted);
     }
 
-    // LineIndexを使った行数取得（自動rebuild）
-    pub fn lineCount(self: *Buffer) usize {
-        // LineIndexが無効なら再構築
-        if (!self.line_index.valid) {
-            self.line_index.rebuild(self) catch {
-                // rebuild失敗時はフルスキャンにフォールバック
-                if (self.len() == 0 or self.pieces.items.len == 0) return 1;
-                var count: usize = 1;
-                var iter = PieceIterator.init(self);
-                while (iter.next()) |ch| {
-                    if (ch == '\n') count += 1;
-                }
-                return count;
-            };
-        }
-
-        return self.line_index.lineCount();
+    // 行数取得（O(1)：キャッシュを直接返す）
+    // 挿入/削除時に改行差分で更新されるため、LineIndex.rebuildを待たない
+    pub fn lineCount(self: *const Buffer) usize {
+        return self.cached_line_count;
     }
 
     // LineIndexを使った行開始位置取得（自動rebuild）

@@ -173,8 +173,8 @@ pub const BufferManager = struct {
 
         // ファイル名を設定
         buffer_state.file.filename = try self.allocator.dupe(u8, path);
-        // 正規化パスをキャッシュ（検索高速化用）
-        buffer_state.file.filename_normalized = std.fs.cwd().realpathAlloc(self.allocator, path) catch null;
+        // 正規化パスは遅延初期化: findByFilename()で必要時に計算
+        // NFS等での起動時間短縮のため、ここではrealpathを呼ばない
 
         // ファイルのmtimeを取得（Buffer.loadFromFileで既に取得済みなので再オープン不要）
         buffer_state.file.mtime = new_buffer.loaded_mtime;
@@ -210,6 +210,12 @@ pub const BufferManager = struct {
         defer self.allocator.free(normalized_input);
 
         for (self.buffers.items) |buffer| {
+            // filename_normalizedが未計算なら遅延初期化
+            if (buffer.file.filename_normalized == null) {
+                if (buffer.file.filename) |buf_filename| {
+                    buffer.file.filename_normalized = std.fs.cwd().realpathAlloc(self.allocator, buf_filename) catch null;
+                }
+            }
             if (buffer.file.filename_normalized) |buf_norm| {
                 if (std.mem.eql(u8, normalized_input, buf_norm)) {
                     return buffer;

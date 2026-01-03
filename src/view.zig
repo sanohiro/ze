@@ -35,6 +35,25 @@ const unicode = @import("unicode");
 const ANSI = config.ANSI;
 const ASCII = config.ASCII;
 
+/// ブロックコメント状態キャッシュエントリ
+const BlockStateEntry = struct {
+    line_num: usize, // 行番号
+    in_block: bool, // その行の開始時点でブロックコメント内か
+};
+
+/// ブロックコメント状態キャッシュサイズ（スクロール時の近傍行検索用）
+const BLOCK_STATE_CACHE_SIZE: usize = 64;
+
+/// LineAnalysisキャッシュエントリ（描画済み行のコメントスパンを保持）
+const AnalysisCacheEntry = struct {
+    line_num: usize,
+    in_block: bool, // 入力パラメータ（結果に影響）
+    analysis: syntax.LanguageDef.LineAnalysis,
+};
+
+/// LineAnalysisキャッシュサイズ（画面内の行数程度）
+const ANALYSIS_CACHE_SIZE: usize = 64;
+
 /// ANSIエスケープシーケンス(\x1b[...m)をスキップして次の位置を返す
 /// シーケンスでなければnullを返す
 inline fn skipAnsiSequence(line: []const u8, pos: usize) ?usize {
@@ -194,6 +213,12 @@ const AnsiFlags = struct {
     has_invert: bool,
 };
 
+/// expandLineWithHighlightsの戻り値（列位置とANSIフラグを同時に返す）
+const ExpandResult = struct {
+    col: usize,
+    flags: AnsiFlags,
+};
+
 fn detectAnsiCodes(line: []const u8, content_start: usize) AnsiFlags {
     if (content_start >= line.len) return .{ .has_gray = false, .has_invert = false };
     const content = line[content_start..];
@@ -280,8 +305,17 @@ pub const View = struct {
 
     // === キャッシュ ===
     cached_line_num_width: usize, // 行番号の表示幅
-    cached_block_state: ?bool, // ブロックコメント状態
-    cached_block_top_line: usize, // キャッシュが有効な行
+
+    // ブロックコメント状態キャッシュ（複数行対応）
+    // 各エントリは (行番号, in_block状態) のペア
+    // スクロール時に近傍の行から状態を取得可能
+    block_state_cache: [BLOCK_STATE_CACHE_SIZE]?BlockStateEntry,
+    block_state_cache_mod_count: usize, // キャッシュ有効時のbuffer.modification_count
+
+    // LineAnalysisキャッシュ（コメントスパン結果を保持）
+    // 同じ行を再描画する際に解析をスキップ
+    analysis_cache: [ANALYSIS_CACHE_SIZE]?AnalysisCacheEntry,
+
     cached_cursor_byte_pos: ?usize, // カーソル展開位置キャッシュ：バイト位置
     cached_cursor_expanded_pos: usize, // カーソル展開位置キャッシュ：展開後位置
     block_comment_temp_buf: std.ArrayList(u8), // ブロックコメント解析用一時バッファ（再利用）
@@ -334,8 +368,9 @@ pub const View = struct {
             .tab_width = null, // 言語デフォルトを使用
             .indent_style = null, // 言語デフォルトを使用
             .show_line_numbers = config.Editor.SHOW_LINE_NUMBERS, // デフォルト設定
-            .cached_block_state = null, // キャッシュ無効
-            .cached_block_top_line = 0,
+            .block_state_cache = .{null} ** BLOCK_STATE_CACHE_SIZE,
+            .block_state_cache_mod_count = 0,
+            .analysis_cache = .{null} ** ANALYSIS_CACHE_SIZE,
             .cached_cursor_byte_pos = null, // キャッシュ無効
             .cached_cursor_expanded_pos = 0,
             .block_comment_temp_buf = .{}, // 遅延初期化
@@ -628,19 +663,8 @@ pub const View = struct {
             self.dirty_end = null;
         }
 
-        // ブロックコメントキャッシュの無効化
-        // ブロックコメントがない言語ではキャッシュ不要、無効化もスキップ
-        if (self.language.block_comment != null) {
-            if (self.cached_block_state != null) {
-                if (start_line <= self.cached_block_top_line) {
-                    // 変更がキャッシュ行以前：cached_block_stateは無効
-                    // 同じ行の編集でも /* や */ が追加/削除された可能性があるため
-                    self.cached_block_state = null;
-                }
-                // start_line > cached_block_top_line の場合：
-                //   キャッシュ行より後の編集は、キャッシュ自体に影響しない
-            }
-        }
+        // ブロックコメントキャッシュの無効化はcomputeBlockCommentState内で
+        // buffer.modification_count を使って自動的に行われる
 
         // 行幅キャッシュの無効化（変更された行範囲）
         if (end_line) |e| {
@@ -743,22 +767,37 @@ pub const View = struct {
         // ブロックコメントがない言語なら常にfalse
         if (self.language.block_comment == null) return false;
 
-        // キャッシュヒット: 同じ行の状態がキャッシュされている
-        if (self.cached_block_state) |cached_state| {
-            if (self.cached_block_top_line == target_line) {
-                return cached_state;
+        // modification_countが変わったらキャッシュ無効化
+        if (self.block_state_cache_mod_count != self.buffer.modification_count) {
+            self.block_state_cache = .{null} ** BLOCK_STATE_CACHE_SIZE;
+            self.block_state_cache_mod_count = self.buffer.modification_count;
+        }
+
+        // キャッシュから最も近いエントリを検索（target_line以下で最大のもの）
+        var best_line: usize = 0;
+        var best_in_block: bool = false;
+        var best_found = false;
+
+        for (self.block_state_cache) |entry_opt| {
+            if (entry_opt) |entry| {
+                if (entry.line_num == target_line) {
+                    // 完全一致：即座に返す
+                    return entry.in_block;
+                }
+                if (entry.line_num < target_line and (!best_found or entry.line_num > best_line)) {
+                    best_line = entry.line_num;
+                    best_in_block = entry.in_block;
+                    best_found = true;
+                }
             }
         }
 
-        // キャッシュからスタートできるか確認（キャッシュ行 <= target_line の場合のみ）
+        // スキャン開始位置と状態を決定
         var start_line: usize = 0;
         var in_block: bool = false;
-        if (self.cached_block_state) |cached_state| {
-            if (self.cached_block_top_line < target_line) {
-                // キャッシュ位置からスキャン開始
-                start_line = self.cached_block_top_line;
-                in_block = cached_state;
-            }
+        if (best_found) {
+            start_line = best_line;
+            in_block = best_in_block;
         }
 
         // start_lineからtarget_lineまでスキャン
@@ -784,13 +823,54 @@ pub const View = struct {
             // 行を解析
             const analysis = self.language.analyzeLine(self.block_comment_temp_buf.items, in_block);
             in_block = analysis.ends_in_block;
+
+            // 中間結果もキャッシュ（次回のスクロール時に活用）
+            const cache_idx = (current_line + 1) % BLOCK_STATE_CACHE_SIZE;
+            self.block_state_cache[cache_idx] = .{
+                .line_num = current_line + 1,
+                .in_block = in_block,
+            };
         }
 
-        // キャッシュを更新
-        self.cached_block_state = in_block;
-        self.cached_block_top_line = target_line;
+        // 最終結果をキャッシュ
+        const cache_idx = target_line % BLOCK_STATE_CACHE_SIZE;
+        self.block_state_cache[cache_idx] = .{
+            .line_num = target_line,
+            .in_block = in_block,
+        };
 
         return in_block;
+    }
+
+    /// LineAnalysisをキャッシュから取得または計算
+    /// modification_countが変わったらキャッシュ全体を無効化
+    fn getOrComputeAnalysis(self: *View, line_num: usize, line_content: []const u8, in_block: bool) syntax.LanguageDef.LineAnalysis {
+        // modification_countが変わったらキャッシュ無効化（block_state_cacheと同期）
+        if (self.block_state_cache_mod_count != self.buffer.modification_count) {
+            // block_state_cacheは computeBlockCommentState で無効化される
+            // analysis_cacheもここで無効化
+            self.analysis_cache = .{null} ** ANALYSIS_CACHE_SIZE;
+        }
+
+        // キャッシュからルックアップ
+        const cache_idx = line_num % ANALYSIS_CACHE_SIZE;
+        if (self.analysis_cache[cache_idx]) |entry| {
+            if (entry.line_num == line_num and entry.in_block == in_block) {
+                return entry.analysis;
+            }
+        }
+
+        // キャッシュミス: 解析を実行
+        const analysis = self.language.analyzeLine(line_content, in_block);
+
+        // キャッシュに保存
+        self.analysis_cache[cache_idx] = .{
+            .line_num = line_num,
+            .in_block = in_block,
+            .analysis = analysis,
+        };
+
+        return analysis;
     }
 
     /// ANSIエスケープシーケンス(\x1b[...m)をスキップ
@@ -1112,7 +1192,7 @@ pub const View = struct {
     ///
     /// 【display_width最適化】
     /// 事前計算されたdisplay_widthを受け取ることで、padToWidth()での重複計算を回避。
-    fn renderLineDiff(self: *View, term: *Terminal, new_line: []const u8, screen_row: usize, abs_row: usize, viewport_x: usize, viewport_width: usize, display_width: usize) !void {
+    fn renderLineDiff(self: *View, term: *Terminal, new_line: []const u8, screen_row: usize, abs_row: usize, viewport_x: usize, viewport_width: usize, display_width: usize, new_flags_opt: ?AnsiFlags) !void {
         if (screen_row < self.prev_screen.items.len) {
             const old_line = self.prev_screen.items[screen_row].items;
 
@@ -1152,8 +1232,9 @@ pub const View = struct {
             // シンタックスハイライト（ANSIエスケープ）の変化をチェック
             // コメント色のANSIコードがある場合は行全体を再描画（差分描画ではカラーが正しく適用されない）
             // 1回の走査でグレーと反転を同時検出（4回→2回に削減）
+            // new_flags_optが渡されていれば再計算不要（expandLineWithHighlightsで既に検出済み）
             const old_flags = detectAnsiCodes(old_line, line_num_byte_end);
-            const new_flags = detectAnsiCodes(new_line, line_num_byte_end);
+            const new_flags = new_flags_opt orelse detectAnsiCodes(new_line, line_num_byte_end);
             // グレーまたは反転がある場合は行全体を再描画（差分描画だとカラーが途切れる問題を回避）
             if (old_flags.has_gray or new_flags.has_gray or old_flags.has_invert or new_flags.has_invert) {
                 // 内容が異なる場合のみ再描画
@@ -1319,6 +1400,7 @@ pub const View = struct {
     }
 
     /// タブ展開と水平スクロール処理（ハイライト適用）
+    /// 戻り値にANSIフラグを含めることで、renderLineDiffでの再走査を回避
     fn expandLineWithHighlights(
         self: *View,
         line_buffer: []const u8,
@@ -1326,9 +1408,11 @@ pub const View = struct {
         selection: SelectionBounds,
         viewport_width: usize,
         line_num_width: usize,
-    ) !usize {
+    ) !ExpandResult {
         var byte_idx: usize = 0;
         var col: usize = 0;
+        var emitted_gray = false;
+        var emitted_invert = false;
         const visible_width = if (viewport_width > line_num_width) viewport_width - line_num_width else 1;
         const visible_end = self.top_col + visible_width;
         const tab_width = self.getTabWidth();
@@ -1339,21 +1423,26 @@ pub const View = struct {
         var current_span_idx: usize = 0;
         var current_span: ?syntax.LanguageDef.CommentSpan = if (has_spans) analysis.spans[0] else null;
 
-        // 選択範囲追跡
+        // 選択範囲追跡（ループ外で事前計算）
+        const has_valid_selection = selection.has_selection and selection.start != null and selection.end != null;
+        const sel_start = if (has_valid_selection) selection.start.? else 0;
+        const sel_end = if (has_valid_selection) selection.end.? else 0;
         var in_selection = false;
 
         while (byte_idx < line_buffer.len and col < visible_end) {
-            // 選択範囲チェック
-            if (selection.has_selection and selection.start != null and selection.end != null) {
-                if (!in_selection and byte_idx >= selection.start.? and byte_idx < selection.end.?) {
+            // 選択範囲チェック（事前計算済みの値を使用）
+            if (has_valid_selection) {
+                if (!in_selection and byte_idx >= sel_start and byte_idx < sel_end) {
                     try self.expanded_line.appendSlice(self.allocator, ANSI.INVERT);
+                    emitted_invert = true;
                     in_selection = true;
                 }
-                if (in_selection and byte_idx >= selection.end.?) {
+                if (in_selection and byte_idx >= sel_end) {
                     try self.expanded_line.appendSlice(self.allocator, ANSI.INVERT_OFF);
                     // コメント内の場合はグレーを再適用
                     if (in_comment) {
                         try self.expanded_line.appendSlice(self.allocator, ANSI.GRAY);
+                        emitted_gray = true;
                     }
                     in_selection = false;
                 }
@@ -1364,6 +1453,7 @@ pub const View = struct {
                 if (current_span) |span| {
                     if (!in_comment and byte_idx == span.start) {
                         try self.expanded_line.appendSlice(self.allocator, ANSI.GRAY);
+                        emitted_gray = true;
                         in_comment = true;
                     }
                     if (in_comment) {
@@ -1373,6 +1463,7 @@ pub const View = struct {
                                 // 選択範囲内の場合は反転を維持
                                 if (in_selection) {
                                     try self.expanded_line.appendSlice(self.allocator, ANSI.INVERT);
+                                    emitted_invert = true;
                                 }
                                 in_comment = false;
                                 current_span_idx += 1;
@@ -1411,12 +1502,14 @@ pub const View = struct {
                     // 制御文字は2文字幅（^X形式）なので、両方収まるか確認
                     if (col >= self.top_col and col + 2 <= visible_end) {
                         try self.expanded_line.appendSlice(self.allocator, ANSI.GRAY);
+                        emitted_gray = true;
                         const ctrl = if (ch == ASCII.DEL) [2]u8{ '^', '?' } else renderControlChar(ch);
                         try self.expanded_line.appendSlice(self.allocator, &ctrl);
                         try self.expanded_line.appendSlice(self.allocator, ANSI.FG_RESET);
                         // 選択範囲内の場合は反転を再適用
                         if (in_selection) {
                             try self.expanded_line.appendSlice(self.allocator, ANSI.INVERT);
+                            emitted_invert = true;
                         }
                     }
                     byte_idx += 1;
@@ -1459,7 +1552,10 @@ pub const View = struct {
             try self.expanded_line.appendSlice(self.allocator, ANSI.RESET);
         }
 
-        return col;
+        return .{
+            .col = col,
+            .flags = .{ .has_gray = emitted_gray, .has_invert = emitted_invert },
+        };
     }
 
     /// カーソル位置の展開後位置を計算（キャッシュ対応）
@@ -1530,9 +1626,9 @@ pub const View = struct {
         // 1. 行データを読み取る
         const positions = try readLineData(iter, line_buffer, self.allocator);
 
-        // 2. コメント解析
+        // 2. コメント解析（キャッシュ活用）
         const analysis = if (self.language.hasComments() or in_block)
-            self.language.analyzeLine(line_buffer.items, in_block)
+            self.getOrComputeAnalysis(file_line, line_buffer.items, in_block)
         else
             syntax.LanguageDef.LineAnalysis.init();
 
@@ -1545,7 +1641,7 @@ pub const View = struct {
 
         // 5. タブ展開とハイライト適用
         const line_num_width = self.getLineNumberWidth();
-        const col = try self.expandLineWithHighlights(line_buffer.items, analysis, selection, viewport_width, line_num_width);
+        const expand_result = try self.expandLineWithHighlights(line_buffer.items, analysis, selection, viewport_width, line_num_width);
 
         // 6. カーソル位置計算と検索ハイライト
         const tab_width = self.getTabWidth();
@@ -1555,9 +1651,9 @@ pub const View = struct {
         // 7. 表示幅計算と差分描画
         const visible_width = if (viewport_width > line_num_width) viewport_width - line_num_width else 1;
         const visible_end = self.top_col + visible_width;
-        const content_visible = if (col > self.top_col) @min(col, visible_end) - self.top_col else 0;
+        const content_visible = if (expand_result.col > self.top_col) @min(expand_result.col, visible_end) - self.top_col else 0;
         const final_display_width = line_num_width + content_visible;
-        try self.renderLineDiff(term, new_line, screen_row, abs_row, viewport_x, viewport_width, final_display_width);
+        try self.renderLineDiff(term, new_line, screen_row, abs_row, viewport_x, viewport_width, final_display_width, expand_result.flags);
 
         return analysis.ends_in_block;
     }
@@ -1746,8 +1842,12 @@ pub const View = struct {
 
             // キャッシュを更新: 最後に描画した行の次の行の状態を保持
             // これにより、次のレンダリングでスキャン範囲を削減
-            self.cached_block_state = in_block;
-            self.cached_block_top_line = last_rendered_file_line + 1;
+            const next_line = last_rendered_file_line + 1;
+            const cache_idx = next_line % BLOCK_STATE_CACHE_SIZE;
+            self.block_state_cache[cache_idx] = .{
+                .line_num = next_line,
+                .in_block = in_block,
+            };
 
             self.clearDirty();
         } else if (self.dirty_start) |start| {
@@ -1785,8 +1885,12 @@ pub const View = struct {
                 }
 
                 // キャッシュを更新: 描画した最後の行の次の行の状態を保持
-                self.cached_block_state = in_block;
-                self.cached_block_top_line = last_rendered_file_line + 1;
+                const next_line = last_rendered_file_line + 1;
+                const cache_idx = next_line % BLOCK_STATE_CACHE_SIZE;
+                self.block_state_cache[cache_idx] = .{
+                    .line_num = next_line,
+                    .in_block = in_block,
+                };
             }
 
             self.clearDirty();
