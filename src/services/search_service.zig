@@ -74,6 +74,8 @@ pub const SearchService = struct {
     }
 
     /// LRUキャッシュから正規表現を取得（必要に応じてコンパイル）
+    /// 注意: 返されるポインタはキャッシュエビクション時に無効化される可能性があるため、
+    /// 即座に使用し、保存しないこと。次のgetCompiledRegex呼び出し前に使用を完了すること。
     fn getCompiledRegex(self: *Self, pattern: []const u8) ?*regex.Regex {
         self.cache_counter +%= 1;
 

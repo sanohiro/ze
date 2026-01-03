@@ -279,7 +279,8 @@ fn parseCSISequence(reader: *InputReader, buf: []u8) !?Key {
             }
 
             // チルダ終端（ESC [ N ~）
-            if (buf[idx] == '~') {
+            // バッファ境界チェック: ループ終了後にidx == buf.lenの可能性がある
+            if (idx < buf.len and buf[idx] == '~') {
                 return switch (num) {
                     1, 7 => Key.home,
                     2 => Key.insert,
@@ -309,29 +310,29 @@ fn parseCSISequence(reader: *InputReader, buf: []u8) !?Key {
                 if (num == 1) {
                     return try parseModifiedArrowKey(buf, reader);
                 }
-                // ESC [ 5 ; 2 ~ (Shift+PageUp)
-                if (num == 5) {
+                // ESC [ 5 ; 2 ~ (Shift+PageUp) - バッファ境界チェック
+                if (num == 5 and idx + 3 <= buf.len) {
                     const n4 = try reader.readBytes(buf[idx + 1 ..][0..2]);
                     if (n4 >= 2 and buf[idx + 1] == '2' and buf[idx + 2] == '~') {
                         return Key.shift_page_up;
                     }
                 }
-                // ESC [ 6 ; 2 ~ (Shift+PageDown)
-                if (num == 6) {
+                // ESC [ 6 ; 2 ~ (Shift+PageDown) - バッファ境界チェック
+                if (num == 6 and idx + 3 <= buf.len) {
                     const n4 = try reader.readBytes(buf[idx + 1 ..][0..2]);
                     if (n4 >= 2 and buf[idx + 1] == '2' and buf[idx + 2] == '~') {
                         return Key.shift_page_down;
                     }
                 }
-                // ESC [ 3 ; 3 ~ (Alt+Delete)
-                if (num == 3) {
+                // ESC [ 3 ; 3 ~ (Alt+Delete) - バッファ境界チェック
+                if (num == 3 and idx + 3 <= buf.len) {
                     const n4 = try reader.readBytes(buf[idx + 1 ..][0..2]);
                     if (n4 >= 2 and buf[idx + 1] == '3' and buf[idx + 2] == '~') {
                         return Key.alt_delete;
                     }
                 }
-                // ESC [ 27 ; ... (Ctrl+Tab系)
-                if (num == 27) {
+                // ESC [ 27 ; ... (Ctrl+Tab系) - バッファ境界チェック
+                if (num == 27 and idx + 6 <= buf.len) {
                     const n4 = try reader.readBytes(buf[idx + 1 ..][0..5]);
                     if (n4 >= 5 and buf[idx + 2] == ';' and buf[idx + 3] == '9' and buf[idx + 4] == '~') {
                         if (buf[idx + 1] == '5') return Key.ctrl_tab;

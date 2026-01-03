@@ -70,6 +70,19 @@ fn getSelectedLineRange(e: *Editor) struct { start_line: usize, end_line: usize 
     return .{ .start_line = current, .end_line = current };
 }
 
+/// 行操作後の選択範囲を再設定
+/// indent/unindent等の連続操作のため、編集後も選択範囲を維持する
+fn restoreSelectionAfterLineOp(e: *Editor, start_line: usize, end_line: usize) void {
+    const window = e.getCurrentWindow();
+    if (window.mark_pos == null) return;
+
+    const buffer = e.getCurrentBufferContent();
+    const new_start = buffer.getLineStart(start_line) orelse 0;
+    const new_end = if (buffer.getLineRange(end_line)) |r| r.end else buffer.len();
+    window.mark_pos = new_start;
+    e.setCursorToPos(new_end);
+}
+
 // ========================================
 // 基本編集コマンド
 // ========================================
@@ -312,6 +325,8 @@ pub fn joinLine(e: *Editor) !void {
     }
 
     const line_start = buffer.getLineStart(current_line) orelse return;
+    // line_startが0の場合は結合不可（前の行末が存在しない）
+    if (line_start == 0) return;
 
     var iter = PieceIterator.init(buffer);
     iter.seek(line_start);
@@ -615,14 +630,7 @@ pub fn indentRegion(e: *Editor) !void {
 
     buffer_state.editing_ctx.modified = true;
     e.markCurrentBufferDirty(start_line, end_line);
-
-    // 選択範囲を再設定（連続操作のため）
-    if (e.getCurrentWindow().mark_pos != null) {
-        const new_start = buffer.getLineStart(start_line) orelse 0;
-        const new_end = if (buffer.getLineRange(end_line)) |r| r.end else buffer.len();
-        e.getCurrentWindow().mark_pos = new_start;
-        e.setCursorToPos(new_end);
-    }
+    restoreSelectionAfterLineOp(e, start_line, end_line);
 }
 
 /// 選択範囲または現在行をアンインデント
@@ -676,17 +684,19 @@ pub fn unindentRegion(e: *Editor) !void {
 
         if (spaces_to_remove > 0) {
             // スタックバッファを使用（タブ幅は最大でもINDENT_BUF_SIZEなのでヒープアロケーション不要）
+            // 安全のため上限をクランプ
+            const clamped_remove = @min(spaces_to_remove, config.Editor.INDENT_BUF_SIZE);
             var stack_buf: [config.Editor.INDENT_BUF_SIZE]u8 = undefined;
             const deleted = blk: {
                 // イテレータを再利用（seek()キャッシュにより高速）
                 iter.seek(line_start);
-                for (0..spaces_to_remove) |i| {
+                for (0..clamped_remove) |i| {
                     stack_buf[i] = iter.next() orelse break;
                 }
-                break :blk stack_buf[0..spaces_to_remove];
+                break :blk stack_buf[0..clamped_remove];
             };
 
-            try buffer.delete(line_start, spaces_to_remove);
+            try buffer.delete(line_start, clamped_remove);
             // 削除後のロールバック用errdefer（recordDeleteが失敗した場合）
             errdefer buffer.insertSlice(line_start, deleted) catch {};
             try e.recordDelete(line_start, deleted, view.getCursorBufferPos());
@@ -698,14 +708,7 @@ pub fn unindentRegion(e: *Editor) !void {
         buffer_state.editing_ctx.modified = true;
         e.markCurrentBufferDirty(start_line, end_line);
     }
-
-    // 選択範囲を再設定（連続操作のため）
-    if (e.getCurrentWindow().mark_pos != null) {
-        const new_start = buffer.getLineStart(start_line) orelse 0;
-        const new_end = if (buffer.getLineRange(end_line)) |r| r.end else buffer.len();
-        e.getCurrentWindow().mark_pos = new_start;
-        e.setCursorToPos(new_end);
-    }
+    restoreSelectionAfterLineOp(e, start_line, end_line);
 }
 
 /// 全選択（C-x h）：バッファの先頭にマークを設定し、終端にカーソルを移動

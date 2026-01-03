@@ -62,6 +62,8 @@ pub const CommandState = struct {
     stdout_truncated: bool, // 出力が10MB制限で切り詰められた
     stderr_truncated: bool,
     nonblock_configured: bool, // NONBLOCKフラグ設定済み（遅延設定用）
+    streaming_mode: bool, // ストリーミングモード（呼び出し側がstdinに書き込む）
+    stdin_eof_sent: bool, // stdinのEOFが送信済み
 };
 
 /// シェルコマンド実行結果
@@ -86,22 +88,18 @@ pub const ShellService = struct {
 
     const Self = @This();
 
-    /// バッファサイズ制限付きで読み取り（ノンブロッキング対応）
-    /// handle_would_block: trueならWouldBlockを特別処理、falseなら全エラーでbreak
+    /// バッファサイズ制限付きで読み取り
+    /// 全てのエラー（WouldBlock含む）でループを終了
     /// 戻り値: trueなら制限に達して切り詰めた
     fn readWithLimit(
         allocator: std.mem.Allocator,
         file: std.fs.File,
         buffer: *std.ArrayListUnmanaged(u8),
         read_buf: []u8,
-        handle_would_block: bool,
     ) !bool {
         var truncated = false;
         while (buffer.items.len < config.Shell.MAX_OUTPUT_SIZE) {
-            const bytes_read = file.read(read_buf) catch |err| {
-                if (handle_would_block and err == error.WouldBlock) break;
-                break;
-            };
+            const bytes_read = file.read(read_buf) catch break;
             if (bytes_read == 0) break;
             const available = config.Shell.MAX_OUTPUT_SIZE - buffer.items.len;
             const to_append = @min(bytes_read, available);
@@ -446,6 +444,8 @@ pub const ShellService = struct {
         state.stdout_truncated = false;
         state.stderr_truncated = false;
         state.nonblock_configured = false; // NONBLOCKは初回poll()で遅延設定
+        state.streaming_mode = false;
+        state.stdin_eof_sent = false;
 
         try state.child.spawn();
 
@@ -458,6 +458,118 @@ pub const ShellService = struct {
         }
 
         self.state = state;
+    }
+
+    /// ストリーミングモードでシェルコマンドを開始
+    /// 呼び出し側がwriteStdinChunk()でstdinにデータを書き込み、closeStdin()で終了する
+    pub fn startStreaming(self: *Self, cmd_input: []const u8) !void {
+        if (cmd_input.len == 0) return error.EmptyCommand;
+
+        const parsed = parseCommand(cmd_input);
+        if (parsed.command.len == 0) return error.NoCommand;
+
+        // 遅延初期化: bashパスとaliasesパスを検索（初回のみ）
+        self.ensurePathsInitialized();
+
+        // 既存の状態をクリア（リーク防止）
+        if (self.state) |old_state| {
+            self.cleanupState(old_state);
+            self.state = null;
+        }
+
+        // bash + alias を使うかどうか判定
+        const use_bash_aliases = self.bash_path != null and self.aliases_path != null;
+
+        // 状態を作成
+        const state = try self.allocator.create(CommandState);
+        errdefer self.allocator.destroy(state);
+
+        // 子プロセスを起動
+        const actual_command: []const u8 = if (use_bash_aliases) blk: {
+            const quoted_path = try shellQuote(self.allocator, self.aliases_path.?);
+            defer self.allocator.free(quoted_path);
+            const quoted_cmd = try shellQuote(self.allocator, parsed.command);
+            defer self.allocator.free(quoted_cmd);
+            const wrapped = try std.fmt.allocPrint(self.allocator, "shopt -s expand_aliases; . {s}; eval {s}", .{ quoted_path, quoted_cmd });
+            const argv = [_][]const u8{ self.bash_path.?, "-c", wrapped };
+            state.child = std.process.Child.init(&argv, self.allocator);
+            break :blk wrapped;
+        } else blk: {
+            const command_copy = try self.allocator.dupe(u8, parsed.command);
+            const sh_path = self.sh_path orelse "/bin/sh";
+            const argv = [_][]const u8{ sh_path, "-c", command_copy };
+            state.child = std.process.Child.init(&argv, self.allocator);
+            break :blk command_copy;
+        };
+        errdefer self.allocator.free(actual_command);
+
+        // ストリーミングモードでは常にPipe
+        state.child.stdin_behavior = .Pipe;
+        state.child.stdout_behavior = .Pipe;
+        state.child.stderr_behavior = .Pipe;
+        state.input_source = parsed.input_source;
+        state.output_dest = parsed.output_dest;
+        state.stdin_data = null;
+        state.stdin_allocated = false;
+        state.stdin_write_pos = 0;
+        state.command = actual_command;
+        state.stdout_buffer = .{};
+        state.stderr_buffer = .{};
+        state.child_reaped = false;
+        state.exit_status = null;
+        state.stdout_truncated = false;
+        state.stderr_truncated = false;
+        state.nonblock_configured = false;
+        state.streaming_mode = true;
+        state.stdin_eof_sent = false;
+
+        try state.child.spawn();
+
+        self.state = state;
+    }
+
+    /// ストリーミングモード: stdinにチャンクを書き込む
+    /// 戻り値: 書き込んだバイト数（WouldBlockの場合は0）
+    pub fn writeStdinChunk(self: *Self, data: []const u8) !usize {
+        const state = self.state orelse return error.NotRunning;
+        if (!state.streaming_mode) return error.NotStreamingMode;
+        if (state.stdin_eof_sent) return error.StdinClosed;
+
+        const stdin_file = state.child.stdin orelse return error.StdinClosed;
+
+        // NONBLOCKを設定（初回のみ）
+        if (!state.nonblock_configured) {
+            state.nonblock_configured = true;
+            const nonblock_flag: usize = @as(u32, @bitCast(std.posix.O{ .NONBLOCK = true }));
+            const flags = std.posix.fcntl(stdin_file.handle, std.posix.F.GETFL, 0) catch 0;
+            _ = std.posix.fcntl(stdin_file.handle, std.posix.F.SETFL, flags | nonblock_flag) catch {};
+            // stdout/stderrも同時にNONBLOCK設定
+            if (state.child.stdout) |stdout_file| {
+                const sflags = std.posix.fcntl(stdout_file.handle, std.posix.F.GETFL, 0) catch 0;
+                _ = std.posix.fcntl(stdout_file.handle, std.posix.F.SETFL, sflags | nonblock_flag) catch {};
+            }
+            if (state.child.stderr) |stderr_file| {
+                const eflags = std.posix.fcntl(stderr_file.handle, std.posix.F.GETFL, 0) catch 0;
+                _ = std.posix.fcntl(stderr_file.handle, std.posix.F.SETFL, eflags | nonblock_flag) catch {};
+            }
+        }
+
+        return stdin_file.write(data) catch |err| switch (err) {
+            error.WouldBlock => 0,
+            else => err,
+        };
+    }
+
+    /// ストリーミングモード: stdinを閉じる（EOF送信）
+    pub fn closeStdin(self: *Self) void {
+        const state = self.state orelse return;
+        if (state.stdin_eof_sent) return;
+
+        state.stdin_eof_sent = true;
+        if (state.child.stdin) |stdin| {
+            stdin.close();
+            state.child.stdin = null;
+        }
     }
 
     /// シェルコマンドの完了をポーリング
@@ -622,12 +734,12 @@ pub const ShellService = struct {
 
         // 残りのデータを読み取る（上限チェック付き、ブロッキング）
         if (state.child.stdout) |stdout_file| {
-            if (try readWithLimit(self.allocator, stdout_file, &state.stdout_buffer, &read_buf, false)) {
+            if (try readWithLimit(self.allocator, stdout_file, &state.stdout_buffer, &read_buf)) {
                 state.stdout_truncated = true;
             }
         }
         if (state.child.stderr) |stderr_file| {
-            if (try readWithLimit(self.allocator, stderr_file, &state.stderr_buffer, &read_buf, false)) {
+            if (try readWithLimit(self.allocator, stderr_file, &state.stderr_buffer, &read_buf)) {
                 state.stderr_truncated = true;
             }
         }

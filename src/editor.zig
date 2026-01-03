@@ -242,6 +242,13 @@ pub const Editor = struct {
     search_chunk_buffer: ?[]u8,
     search_chunk_capacity: usize,
 
+    // シェルコマンドストリーミング状態（メモリ効率化）
+    streaming_range: ?struct {
+        start: usize, // 読み取り開始位置
+        end: usize, // 読み取り終了位置
+        current_pos: usize, // 現在の読み取り位置
+    },
+
     // キーマップ
     keymap: Keymap, // キーバインド設定（ランタイム変更可能）
 
@@ -300,6 +307,7 @@ pub const Editor = struct {
             .paste_buffer = std.ArrayList(u8){},
             .search_chunk_buffer = null,
             .search_chunk_capacity = 0,
+            .streaming_range = null,
             .keymap = try Keymap.init(allocator),
             .tty_file = tty_file,
         };
@@ -2235,7 +2243,11 @@ pub const Editor = struct {
         // スクロールが発生した場合のみ再描画をマーク
         // カーソル移動だけなら再描画不要（カーソルはrenderAllWindowsで別途描画される）
         if (needs_vertical_scroll) {
-            const scroll_amount: i32 = @intCast(@as(i64, @intCast(view.top_line)) - @as(i64, @intCast(old_top_line)));
+            // オーバーフロー安全なスクロール量計算
+            const scroll_amount: i32 = if (view.top_line >= old_top_line)
+                @intCast(@min(view.top_line - old_top_line, std.math.maxInt(i32)))
+            else
+                -@as(i32, @intCast(@min(old_top_line - view.top_line, std.math.maxInt(i32))));
             view.markScroll(scroll_amount);
         } else if (needs_horizontal_scroll) {
             view.markHorizontalScroll();
@@ -3766,69 +3778,93 @@ pub const Editor = struct {
             return;
         }
 
-        // 入力データを取得
-        var stdin_data: ?[]const u8 = null;
-        var stdin_allocated = false;
-
+        // 入力データの範囲を計算
         const window = self.window_manager.getCurrentWindow();
-
-        switch (parsed.input_source) {
-            .selection => {
+        const range: ?struct { start: usize, end: usize } = switch (parsed.input_source) {
+            .selection => blk: {
                 // 選択範囲（マークがあれば）
                 if (window.mark_pos) |mark| {
                     const cursor_pos = self.getCurrentView().getCursorBufferPos();
                     const sel_start = @min(mark, cursor_pos);
                     const sel_end = @max(mark, cursor_pos);
                     if (sel_end > sel_start) {
-                        stdin_data = try self.getCurrentBufferContent().getRange(self.allocator, sel_start, sel_end - sel_start);
-                        stdin_allocated = true;
+                        break :blk .{ .start = sel_start, .end = sel_end };
                     }
                 }
-                // 選択なければ stdin は空
+                break :blk null;
             },
-            .buffer_all => {
+            .buffer_all => blk: {
                 // バッファ全体
                 const total_len = self.getCurrentBufferContent().total_len;
                 if (total_len > 0) {
-                    stdin_data = try self.getCurrentBufferContent().getRange(self.allocator, 0, total_len);
-                    stdin_allocated = true;
+                    break :blk .{ .start = 0, .end = total_len };
                 }
+                break :blk null;
             },
-            .current_line => {
+            .current_line => blk: {
                 // 現在行
                 const line_num = self.getCurrentView().top_line + self.getCurrentView().cursor_y;
-                var buffer = self.getCurrentBufferContent();
-                // 行が存在しない場合（バッファ末尾より下）はstdin空のまま
+                const buffer = self.getCurrentBufferContent();
                 if (buffer.getLineStart(line_num)) |line_start| {
                     const next_line_start = buffer.getLineStart(line_num + 1);
                     const line_end = if (next_line_start) |ns| ns else buffer.total_len;
                     if (line_end > line_start) {
-                        stdin_data = try buffer.getRange(self.allocator, line_start, line_end - line_start);
-                        stdin_allocated = true;
+                        break :blk .{ .start = line_start, .end = line_end };
                     }
                 }
-                // getLineStartがnullの場合、stdin_dataはnullのまま（空入力）
+                break :blk null;
             },
-        }
-
-        // ShellServiceにコマンド実行を委譲
-        self.shell_service.start(cmd_input, stdin_data, stdin_allocated) catch |err| {
-            // エラー時は入力データを解放
-            if (stdin_allocated) {
-                if (stdin_data) |data| {
-                    self.allocator.free(data);
-                }
-            }
-            switch (err) {
-                error.EmptyCommand, error.NoCommand => {
-                    self.getCurrentView().setError(config.Messages.NO_COMMAND_SPECIFIED);
-                },
-                else => {
-                    self.getCurrentView().setError(config.Messages.COMMAND_START_FAILED);
-                },
-            }
-            return;
         };
+
+        // 入力データのサイズに応じてストリーミングモードか通常モードを選択
+        // 64KB以上の場合はストリーミングモードでメモリ効率化
+        const STREAMING_THRESHOLD: usize = 64 * 1024;
+        const use_streaming = if (range) |r| (r.end - r.start) >= STREAMING_THRESHOLD else false;
+
+        if (use_streaming) {
+            // ストリーミングモード: Bufferから直接チャンクを読み取りながらパイプに書き込む
+            self.shell_service.startStreaming(cmd_input) catch |err| {
+                switch (err) {
+                    error.EmptyCommand => self.getCurrentView().setError(config.Messages.NO_COMMAND_SPECIFIED),
+                    error.NoCommand => self.getCurrentView().setError(config.Messages.NO_COMMAND_SPECIFIED),
+                    else => self.getCurrentView().setError(config.Messages.COMMAND_START_FAILED),
+                }
+                return;
+            };
+            // ストリーミング範囲を設定（pollShellCommandで使用）
+            self.streaming_range = .{
+                .start = range.?.start,
+                .end = range.?.end,
+                .current_pos = range.?.start,
+            };
+        } else {
+            // 通常モード: 小さなデータはgetRange()で複製
+            var stdin_data: ?[]const u8 = null;
+            var stdin_allocated = false;
+
+            if (range) |r| {
+                stdin_data = try self.getCurrentBufferContent().getRange(self.allocator, r.start, r.end - r.start);
+                stdin_allocated = true;
+            }
+
+            self.shell_service.start(cmd_input, stdin_data, stdin_allocated) catch |err| {
+                // エラー時は入力データを解放
+                if (stdin_allocated) {
+                    if (stdin_data) |data| {
+                        self.allocator.free(data);
+                    }
+                }
+                switch (err) {
+                    error.EmptyCommand, error.NoCommand => {
+                        self.getCurrentView().setError(config.Messages.NO_COMMAND_SPECIFIED);
+                    },
+                    else => {
+                        self.getCurrentView().setError(config.Messages.COMMAND_START_FAILED);
+                    },
+                }
+                return;
+            };
+        }
 
         self.mode = .shell_running;
         self.getCurrentView().setError(config.Messages.SHELL_RUNNING);
@@ -3836,6 +3872,39 @@ pub const Editor = struct {
 
     /// シェルコマンドの完了をポーリング
     fn pollShellCommand(self: *Editor) !void {
+        // ストリーミングモード: Bufferから直接チャンクを読み取ってパイプに書き込む
+        if (self.streaming_range) |*range| {
+            const buffer = self.getCurrentBufferContent();
+            const remaining = range.end - range.current_pos;
+            if (remaining > 0) {
+                // チャンクサイズ（16KB）で読み取り
+                const chunk_size = @min(remaining, 16 * 1024);
+                const chunk = buffer.getRange(self.allocator, range.current_pos, chunk_size) catch {
+                    // メモリ不足時はストリーミングを中止
+                    self.shell_service.closeStdin();
+                    self.streaming_range = null;
+                    return;
+                };
+                defer self.allocator.free(chunk);
+
+                // パイプに書き込み
+                const written = self.shell_service.writeStdinChunk(chunk) catch {
+                    // パイプエラー時はストリーミングを中止
+                    self.shell_service.closeStdin();
+                    self.streaming_range = null;
+                    return;
+                };
+
+                range.current_pos += written;
+
+                // WouldBlock（written=0）でもループを抜けてUIを更新
+            } else {
+                // 全データを送信完了、stdinを閉じる
+                self.shell_service.closeStdin();
+                self.streaming_range = null;
+            }
+        }
+
         // ShellServiceにポーリングを委譲
         if (try self.shell_service.poll()) |result| {
             // コマンド完了 - 結果を処理
@@ -3865,12 +3934,20 @@ pub const Editor = struct {
 
     /// シェルコマンドのエラーをチェックしてメッセージ表示
     /// exit_status が非0なら true を返す（呼び出し側は return すべき）
-    fn checkShellError(self: *Editor, exit_status: ?u32, extra_msg: []const u8, truncated_suffix: []const u8) bool {
+    fn checkShellError(self: *Editor, exit_status: ?u32, stderr: []const u8, extra_msg: []const u8, truncated_suffix: []const u8) bool {
         if (exit_status) |status| {
             if (status != 0) {
-                var msg_buf: [128]u8 = undefined;
-                const msg = std.fmt.bufPrint(&msg_buf, "Command failed (exit {d}){s}{s}", .{ status, extra_msg, truncated_suffix }) catch "Command failed";
-                self.getCurrentView().setError(msg);
+                // エラー時でもstderrがあればCommand bufferに保存（エラーメッセージを見られるように）
+                if (stderr.len > 0) {
+                    self.appendStderrToCommandBuffer(stderr) catch {};
+                    var msg_buf: [128]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&msg_buf, "Command failed (exit {d}, C-x ` to view stderr){s}{s}", .{ status, extra_msg, truncated_suffix }) catch "Command failed";
+                    self.getCurrentView().setError(msg);
+                } else {
+                    var msg_buf: [128]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&msg_buf, "Command failed (exit {d}){s}{s}", .{ status, extra_msg, truncated_suffix }) catch "Command failed";
+                    self.getCurrentView().setError(msg);
+                }
                 return true;
             }
         }
@@ -4015,7 +4092,7 @@ pub const Editor = struct {
             },
             .replace, .insert => {
                 // コマンドが失敗した場合は置換/挿入しない
-                if (self.checkShellError(exit_status, ", buffer unchanged", truncated_suffix)) return;
+                if (self.checkShellError(exit_status, stderr, ", buffer unchanged", truncated_suffix)) return;
                 // 読み取り専用バッファでは置換/挿入を禁止
                 if (self.isReadOnly()) {
                     self.getCurrentView().setError(config.Messages.BUFFER_READONLY);
@@ -4073,7 +4150,7 @@ pub const Editor = struct {
             },
             .new_buffer => {
                 // コマンドが失敗した場合は新規バッファを作成しない
-                if (self.checkShellError(exit_status, "", truncated_suffix)) return;
+                if (self.checkShellError(exit_status, stderr, "", truncated_suffix)) return;
                 // 新規バッファに出力
                 if (stdout.len > 0) {
                     const new_buffer = try self.createNewBuffer();
@@ -4107,6 +4184,7 @@ pub const Editor = struct {
     }
 
     /// stderrをCommand bufferに追記（replace/insert/new_buffer用）
+    /// Command bufferのViewをdirtyにして再描画を保証する
     fn appendStderrToCommandBuffer(self: *Editor, stderr: []const u8) !void {
         const cmd_buffer = try self.getOrCreateCommandBuffer();
 
@@ -4125,6 +4203,12 @@ pub const Editor = struct {
 
         // modifiedフラグをクリア（コマンド出力は再生成可能）
         cmd_buffer.editing_ctx.modified = false;
+
+        // Command bufferを表示しているViewをdirtyにして再描画を保証
+        self.markAllViewsDirtyForBuffer(cmd_buffer.id, 0, null);
+
+        // Command bufferウィンドウが開いていなければ開く（ユーザーがすぐ見られるように）
+        _ = self.openCommandBufferWindow() catch {};
     }
 
     // ========================================
