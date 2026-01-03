@@ -143,6 +143,12 @@ pub const View = struct {
     pub const LINE_WIDTH_CACHE_SIZE: usize = 128;
     /// 1行あたりの最大ハイライトマッチ数
     pub const MAX_MATCHES_PER_LINE: usize = 100;
+    /// 行バッファの初期容量（UTF-8テキスト用、viewport_width * 4程度）
+    pub const LINE_BUFFER_INITIAL_CAPACITY: usize = 512;
+    /// 展開済み行バッファの初期容量（タブ展開 + ANSIコード用）
+    pub const EXPANDED_LINE_INITIAL_CAPACITY: usize = 2048;
+    /// ハイライト済み行バッファの初期容量
+    pub const HIGHLIGHTED_LINE_INITIAL_CAPACITY: usize = 4096;
 };
 
 /// 検索関連の定数
@@ -213,6 +219,10 @@ pub const Input = struct {
 pub const Buffer = struct {
     /// searchBackward用スタックバッファの最大piece数
     pub const MAX_PIECES_STACK_BUFFER: usize = 256;
+
+    /// add_buffer（追加バッファ）の初期容量
+    /// 連続入力時のアロケーション回数を削減するため、起動時に事前確保
+    pub const ADD_BUFFER_INITIAL_CAPACITY: usize = 64 * 1024; // 64KB
 };
 
 /// シェル関連の定数

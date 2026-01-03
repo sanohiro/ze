@@ -357,8 +357,14 @@ pub const View = struct {
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, buffer: *Buffer) !View {
-        // 空のArrayListで初期化（遅延アロケーション）
-        // 初回レンダリング時に自動的に拡張される
+        // レンダリング用バッファを事前確保（初回フレームのアロケーション削減）
+        var line_buffer = try std.ArrayList(u8).initCapacity(allocator, config.View.LINE_BUFFER_INITIAL_CAPACITY);
+        errdefer line_buffer.deinit(allocator);
+        var expanded_line = try std.ArrayList(u8).initCapacity(allocator, config.View.EXPANDED_LINE_INITIAL_CAPACITY);
+        errdefer expanded_line.deinit(allocator);
+        var highlighted_line = try std.ArrayList(u8).initCapacity(allocator, config.View.HIGHLIGHTED_LINE_INITIAL_CAPACITY);
+        errdefer highlighted_line.deinit(allocator);
+
         return View{
             .buffer = buffer,
             .top_line = 0,
@@ -371,7 +377,7 @@ pub const View = struct {
             .dirty_end = null,
             .needs_full_redraw = true,
             .status_bar_dirty = true,
-            .line_buffer = .{},
+            .line_buffer = line_buffer,
             .error_msg_buf = undefined,
             .error_msg_len = 0,
             .prev_screen = .{},
@@ -397,8 +403,8 @@ pub const View = struct {
             .cursor_byte_pos_cache_y = 0,
             .cursor_byte_pos_cache_top_line = 0,
             .cursor_prev_cache = null, // カーソル移動キャッシュ無効
-            .expanded_line = .{},
-            .highlighted_line = .{},
+            .expanded_line = expanded_line,
+            .highlighted_line = highlighted_line,
             .regex_visible_text = .{},
             .regex_visible_to_raw = .{},
             .prev_top_line = 0, // スクロール追跡用

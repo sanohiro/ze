@@ -751,7 +751,7 @@ pub const Buffer = struct {
                 var mmap_kept = false;
                 errdefer if (!mmap_kept) std.posix.munmap(mapped_ptr[0..file_size]);
 
-                var add_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
+                var add_buffer = try std.ArrayList(u8).initCapacity(allocator, config.Buffer.ADD_BUFFER_INITIAL_CAPACITY);
                 errdefer add_buffer.deinit(allocator);
 
                 var pieces = try std.ArrayList(Piece).initCapacity(allocator, 0);
@@ -808,7 +808,7 @@ pub const Buffer = struct {
 
     /// 空ファイル用の初期化
     fn loadFromFileEmpty(allocator: std.mem.Allocator) !Buffer {
-        var add_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
+        var add_buffer = try std.ArrayList(u8).initCapacity(allocator, config.Buffer.ADD_BUFFER_INITIAL_CAPACITY);
         errdefer add_buffer.deinit(allocator);
 
         var pieces = try std.ArrayList(Piece).initCapacity(allocator, 0);
@@ -901,7 +901,7 @@ pub const Buffer = struct {
         // 所有権を取得するため、失敗時は解放が必要
         errdefer allocator.free(normalized);
 
-        var add_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
+        var add_buffer = try std.ArrayList(u8).initCapacity(allocator, config.Buffer.ADD_BUFFER_INITIAL_CAPACITY);
         errdefer add_buffer.deinit(allocator);
 
         var pieces = try std.ArrayList(Piece).initCapacity(allocator, 0);
