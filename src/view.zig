@@ -445,9 +445,30 @@ pub const View = struct {
     pub fn setViewport(self: *View, width: usize, height: usize) void {
         self.viewport_width = width;
         self.viewport_height = height;
+
+        // prev_screenを事前確保（レンダリング中のアロケーションを回避）
+        // ステータスバー分を除いた行数を確保
+        const needed_lines = height -| 1;
+        self.ensurePrevScreenCapacity(needed_lines, width) catch {};
+
         // カーソルがビューポート外にならないよう制約
         self.constrainCursor();
         self.markFullRedraw();
+    }
+
+    /// prev_screenの容量を事前確保（バッファプール化）
+    /// レンダリング中のアロケーションを最小化
+    fn ensurePrevScreenCapacity(self: *View, lines: usize, width_hint: usize) !void {
+        // 必要な行数分のArrayListを確保
+        const line_capacity = width_hint * 4; // UTF-8 + ANSIエスケープ用に4倍
+        while (self.prev_screen.items.len < lines) {
+            const new_line = try std.ArrayList(u8).initCapacity(self.allocator, line_capacity);
+            try self.prev_screen.append(self.allocator, new_line);
+        }
+        // 既存の行も容量を確保
+        for (self.prev_screen.items) |*line| {
+            try line.ensureTotalCapacity(self.allocator, line_capacity);
+        }
     }
 
     /// カーソルをビューポート内に制約
