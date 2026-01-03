@@ -212,7 +212,7 @@ pub fn detectLineEnding(content: []const u8) LineEnding {
 
 /// Valid UTF-8判定
 /// RFC 3629準拠: オーバーロングエンコーディング、サロゲート範囲、無効な範囲を拒否
-fn isValidUtf8(content: []const u8) bool {
+pub fn isValidUtf8(content: []const u8) bool {
     var i: usize = 0;
     while (i < content.len) {
         const byte = content[i];

@@ -191,18 +191,6 @@ pub const LanguageDef = struct {
         return result;
     }
 
-    /// 行内のコメント開始位置を検出（文字列リテラルをスキップ）- 後方互換
-    /// 戻り値: コメントが始まるバイト位置、またはnull（コメントなし）
-    pub fn findCommentStart(self: *const LanguageDef, line: []const u8) ?usize {
-        const analysis = self.analyzeLine(line, false);
-        if (analysis.span_count > 0) {
-            if (analysis.spans[0]) |span| {
-                return span.start;
-            }
-        }
-        return null;
-    }
-
     /// 指定された行が全体がコメント行かどうかを判定（行頭判定）
     pub fn isCommentLine(self: *const LanguageDef, line: []const u8) bool {
         // 行頭の空白をスキップ

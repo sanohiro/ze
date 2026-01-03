@@ -31,10 +31,80 @@ pub const HistoryType = enum {
     search, // C-s/C-r 検索
 };
 
+/// リングバッファ - 先頭削除がO(1)
+/// 論理インデックス0が最古、len-1が最新
+const HistoryRingBuffer = struct {
+    items: [MAX_HISTORY_SIZE]?[]const u8 = [_]?[]const u8{null} ** MAX_HISTORY_SIZE,
+    head: usize = 0, // 最古のエントリの物理インデックス
+    len: usize = 0, // 現在のエントリ数
+
+    /// 論理インデックスから物理インデックスへ変換
+    inline fn physicalIndex(self: *const HistoryRingBuffer, logical: usize) usize {
+        return (self.head + logical) % MAX_HISTORY_SIZE;
+    }
+
+    /// 論理インデックスでアクセス (0が最古、len-1が最新)
+    pub fn get(self: *const HistoryRingBuffer, index: usize) ?[]const u8 {
+        if (index >= self.len) return null;
+        return self.items[self.physicalIndex(index)];
+    }
+
+    /// 末尾に追加、満杯なら最古を削除してその値を返す
+    pub fn push(self: *HistoryRingBuffer, item: []const u8) ?[]const u8 {
+        var old: ?[]const u8 = null;
+        if (self.len == MAX_HISTORY_SIZE) {
+            // 満杯：最古を削除
+            old = self.items[self.head];
+            self.items[self.head] = null;
+            self.head = (self.head + 1) % MAX_HISTORY_SIZE;
+        } else {
+            self.len += 1;
+        }
+        // 新しいアイテムを末尾に追加
+        const tail = self.physicalIndex(self.len - 1);
+        self.items[tail] = item;
+        return old;
+    }
+
+    /// 先頭に挿入（マージ用）、満杯なら最新を削除してその値を返す
+    pub fn pushFront(self: *HistoryRingBuffer, item: []const u8) ?[]const u8 {
+        var old: ?[]const u8 = null;
+        if (self.len == MAX_HISTORY_SIZE) {
+            // 満杯：最新（末尾）を削除
+            const tail = self.physicalIndex(self.len - 1);
+            old = self.items[tail];
+            self.items[tail] = null;
+        } else {
+            self.len += 1;
+        }
+        // headを1つ前に移動して挿入
+        self.head = if (self.head == 0) MAX_HISTORY_SIZE - 1 else self.head - 1;
+        self.items[self.head] = item;
+        return old;
+    }
+
+    /// 全エントリを順番にイテレート（最古→最新）
+    pub fn iterator(self: *const HistoryRingBuffer) Iterator {
+        return .{ .ring = self, .index = 0 };
+    }
+
+    const Iterator = struct {
+        ring: *const HistoryRingBuffer,
+        index: usize,
+
+        pub fn next(self: *Iterator) ?[]const u8 {
+            if (self.index >= self.ring.len) return null;
+            const item = self.ring.get(self.index);
+            self.index += 1;
+            return item;
+        }
+    };
+};
+
 /// 履歴管理
 pub const History = struct {
     allocator: std.mem.Allocator,
-    entries: std.ArrayList([]const u8),
+    ring: HistoryRingBuffer,
     current_index: ?usize, // ナビゲーション中のインデックス（nullは履歴モード外）
     temp_input: ?[]const u8, // ナビゲーション開始前の入力を保持
     filter_prefix: ?[]const u8, // プレフィックスフィルタ（入力中の文字列にマッチする履歴のみ表示）
@@ -44,8 +114,7 @@ pub const History = struct {
     pub fn init(allocator: std.mem.Allocator) History {
         return .{
             .allocator = allocator,
-            // 空のArrayListを正しく初期化
-            .entries = .{},
+            .ring = .{},
             .current_index = null,
             .temp_input = null,
             .filter_prefix = null,
@@ -55,10 +124,10 @@ pub const History = struct {
     }
 
     pub fn deinit(self: *History) void {
-        for (self.entries.items) |entry| {
+        var iter = self.ring.iterator();
+        while (iter.next()) |entry| {
             self.allocator.free(entry);
         }
-        self.entries.deinit(self.allocator);
         self.clearNavState();
     }
 
@@ -68,20 +137,16 @@ pub const History = struct {
         if (entry.len == 0) return;
 
         // 直前と同じなら追加しない（連続重複排除）
-        if (self.entries.items.len > 0) {
-            const last = self.entries.items[self.entries.items.len - 1];
+        if (self.ring.len > 0) {
+            const last = self.ring.get(self.ring.len - 1) orelse unreachable;
             if (std.mem.eql(u8, last, entry)) return;
         }
 
-        // 最大数を超えたら古いエントリを削除
-        if (self.entries.items.len >= MAX_HISTORY_SIZE) {
-            const old = self.entries.orderedRemove(0);
+        // エントリを複製して追加（満杯なら古いエントリが自動削除される）
+        const duped = try self.allocator.dupe(u8, entry);
+        if (self.ring.push(duped)) |old| {
             self.allocator.free(old);
         }
-
-        // エントリを複製して追加
-        const duped = try self.allocator.dupe(u8, entry);
-        try self.entries.append(self.allocator, duped);
 
         // 変更フラグを設定
         self.modified = true;
@@ -130,30 +195,32 @@ pub const History = struct {
 
     /// 前の履歴（C-p / Up）- プレフィックスフィルタ対応
     pub fn prev(self: *History) ?[]const u8 {
-        if (self.entries.items.len == 0) return null;
+        if (self.ring.len == 0) return null;
 
         // 開始位置を決定
         var start_idx: usize = undefined;
         if (self.current_index) |idx| {
             if (idx == 0) {
                 // 最古のエントリにいる場合、そのエントリがマッチするなら返す
-                if (self.matchesPrefix(self.entries.items[0])) {
-                    return self.entries.items[0];
+                if (self.ring.get(0)) |entry| {
+                    if (self.matchesPrefix(entry)) return entry;
                 }
                 return null;
             }
             start_idx = idx - 1;
         } else {
             // 履歴モード開始：最新から検索
-            start_idx = self.entries.items.len - 1;
+            start_idx = self.ring.len - 1;
         }
 
         // マッチするエントリを後方検索
         var i: usize = start_idx;
         while (true) {
-            if (self.matchesPrefix(self.entries.items[i])) {
-                self.current_index = i;
-                return self.entries.items[i];
+            if (self.ring.get(i)) |entry| {
+                if (self.matchesPrefix(entry)) {
+                    self.current_index = i;
+                    return entry;
+                }
             }
             if (i == 0) break;
             i -= 1;
@@ -161,8 +228,8 @@ pub const History = struct {
 
         // マッチするエントリがない場合、現在のエントリがマッチするなら返す
         if (self.current_index) |idx| {
-            if (self.matchesPrefix(self.entries.items[idx])) {
-                return self.entries.items[idx];
+            if (self.ring.get(idx)) |entry| {
+                if (self.matchesPrefix(entry)) return entry;
             }
         }
 
@@ -175,10 +242,12 @@ pub const History = struct {
 
         // マッチするエントリを前方検索
         var i = idx + 1;
-        while (i < self.entries.items.len) : (i += 1) {
-            if (self.matchesPrefix(self.entries.items[i])) {
-                self.current_index = i;
-                return self.entries.items[i];
+        while (i < self.ring.len) : (i += 1) {
+            if (self.ring.get(i)) |entry| {
+                if (self.matchesPrefix(entry)) {
+                    self.current_index = i;
+                    return entry;
+                }
             }
         }
 
@@ -244,20 +313,16 @@ pub const History = struct {
         defer self.allocator.free(content);
         const bytes_read = try file.readAll(content);
 
-        // 行ごとに分割して追加
+        // 行ごとに分割して追加（リングバッファがMAX_HISTORY_SIZEを自動で管理）
         var iter = std.mem.splitScalar(u8, content[0..bytes_read], '\n');
         while (iter.next()) |raw_line| {
             const line = trimCr(raw_line);
             if (line.len > 0) {
                 const duped = try self.allocator.dupe(u8, line);
-                try self.entries.append(self.allocator, duped);
+                if (self.ring.push(duped)) |old| {
+                    self.allocator.free(old);
+                }
             }
-        }
-
-        // MAX_HISTORY_SIZEを超えた古いエントリを削除
-        while (self.entries.items.len > MAX_HISTORY_SIZE) {
-            const old = self.entries.orderedRemove(0);
-            self.allocator.free(old);
         }
     }
 
@@ -347,25 +412,23 @@ pub const History = struct {
         // 現在のエントリをセットに変換（高速検索用）
         var current_set = std.StringHashMap(void).init(self.allocator);
         defer current_set.deinit();
-        for (self.entries.items) |entry| {
+        var ring_iter = self.ring.iterator();
+        while (ring_iter.next()) |entry| {
             try current_set.put(entry, {});
         }
 
-        // ファイルのエントリで、現在のリストにないものを先頭に挿入
-        // （古いものが先頭、新しいものが末尾の順序を維持）
-        var insert_count: usize = 0;
-        for (file_entries.items) |file_entry| {
+        // ファイルのエントリで、現在のリストにないものを先頭に挿入（逆順でpushFront）
+        // （古いものが先頭、新しいものが末尾の順序を維持するため、逆順に挿入）
+        var i = file_entries.items.len;
+        while (i > 0) {
+            i -= 1;
+            const file_entry = file_entries.items[i];
             if (!current_set.contains(file_entry)) {
                 const duped = try self.allocator.dupe(u8, file_entry);
-                try self.entries.insert(self.allocator, insert_count, duped);
-                insert_count += 1;
+                if (self.ring.pushFront(duped)) |old| {
+                    self.allocator.free(old);
+                }
             }
-        }
-
-        // MAX_HISTORY_SIZEを超えた古いエントリを削除
-        while (self.entries.items.len > MAX_HISTORY_SIZE) {
-            const old = self.entries.orderedRemove(0);
-            self.allocator.free(old);
         }
     }
 
@@ -382,7 +445,8 @@ pub const History = struct {
             std.fs.cwd().deleteFile(tmp_path) catch {};
         }
 
-        for (self.entries.items) |entry| {
+        var iter = self.ring.iterator();
+        while (iter.next()) |entry| {
             try file.writeAll(entry);
             try file.writeAll("\n");
         }

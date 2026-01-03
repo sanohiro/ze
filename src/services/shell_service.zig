@@ -19,6 +19,11 @@ const LazyHistory = history_mod.LazyHistory;
 const config = @import("config");
 const unicode = @import("unicode");
 
+/// シェル構文上の空白文字（スペースとタブ）を判定
+inline fn isShellWhitespace(c: u8) bool {
+    return c == ' ' or c == '\t';
+}
+
 /// シェルコマンド出力先
 pub const OutputDest = enum {
     command_buffer, // Command Bufferに表示（デフォルト）
@@ -300,8 +305,8 @@ pub const ShellService = struct {
         var cmd_start: usize = 0;
         var cmd_end: usize = cmd.len;
 
-        // 先頭の空白をスキップ
-        while (cmd_start < cmd.len and cmd[cmd_start] == ' ') : (cmd_start += 1) {}
+        // 先頭の空白をスキップ（スペースとタブ）
+        while (cmd_start < cmd.len and isShellWhitespace(cmd[cmd_start])) : (cmd_start += 1) {}
 
         // プレフィックス解析（引用符内でない場合のみ）
         // 注意: 先頭位置なのでisPositionInsideQuotesは常にfalseだが、
@@ -311,18 +316,18 @@ pub const ShellService = struct {
                 // "% " または "%|" の場合のみバッファ全体プレフィックス
                 // '%foo' のようにクォートされている場合は通常コマンド
                 const next_idx = cmd_start + 1;
-                if (next_idx >= cmd.len or cmd[next_idx] == ' ' or cmd[next_idx] == '|') {
+                if (next_idx >= cmd.len or isShellWhitespace(cmd[next_idx]) or cmd[next_idx] == '|') {
                     input_source = .buffer_all;
                     cmd_start += 1;
-                    while (cmd_start < cmd.len and cmd[cmd_start] == ' ') : (cmd_start += 1) {}
+                    while (cmd_start < cmd.len and isShellWhitespace(cmd[cmd_start])) : (cmd_start += 1) {}
                 }
             } else if (cmd[cmd_start] == '.') {
                 // ". " または ".|" の場合のみ現在行プレフィックス（"./cmd" は通常コマンド）
                 const next_idx = cmd_start + 1;
-                if (next_idx >= cmd.len or cmd[next_idx] == ' ' or cmd[next_idx] == '|') {
+                if (next_idx >= cmd.len or isShellWhitespace(cmd[next_idx]) or cmd[next_idx] == '|') {
                     input_source = .current_line;
                     cmd_start += 1;
-                    while (cmd_start < cmd.len and cmd[cmd_start] == ' ') : (cmd_start += 1) {}
+                    while (cmd_start < cmd.len and isShellWhitespace(cmd[cmd_start])) : (cmd_start += 1) {}
                 }
             }
         }
@@ -330,25 +335,25 @@ pub const ShellService = struct {
         // パイプ記号 '|' をスキップ
         if (cmd_start < cmd.len and cmd[cmd_start] == '|') {
             cmd_start += 1;
-            while (cmd_start < cmd.len and cmd[cmd_start] == ' ') : (cmd_start += 1) {}
+            while (cmd_start < cmd.len and isShellWhitespace(cmd[cmd_start])) : (cmd_start += 1) {}
         }
 
         // サフィックス解析（末尾から、引用符を考慮）
         // 重要: サフィックスはコマンドとスペースで区切られている必要がある
         // 例: "sort >" は有効、"grep -n>out" は無効（シェルのリダイレクト構文）
         if (cmd_end > cmd_start) {
-            while (cmd_end > cmd_start and cmd[cmd_end - 1] == ' ') : (cmd_end -= 1) {}
+            while (cmd_end > cmd_start and isShellWhitespace(cmd[cmd_end - 1])) : (cmd_end -= 1) {}
 
             // 引用符の外にあるサフィックスのみ解釈
             // サフィックスの開始位置が引用符内かどうかをチェック
             if (cmd_end > cmd_start) {
-                if (cmd_end >= 3 and cmd[cmd_end - 2] == 'n' and cmd[cmd_end - 1] == '>' and cmd[cmd_end - 3] == ' ') {
+                if (cmd_end >= 3 and cmd[cmd_end - 2] == 'n' and cmd[cmd_end - 1] == '>' and isShellWhitespace(cmd[cmd_end - 3])) {
                     // " n>" の場合のみ新規バッファとして解釈
                     if (!isPositionInsideQuotes(cmd, cmd_end - 2)) {
                         output_dest = .new_buffer;
                         cmd_end -= 2;
                     }
-                } else if (cmd_end >= 3 and cmd[cmd_end - 2] == '+' and cmd[cmd_end - 1] == '>' and cmd[cmd_end - 3] == ' ') {
+                } else if (cmd_end >= 3 and cmd[cmd_end - 2] == '+' and cmd[cmd_end - 1] == '>' and isShellWhitespace(cmd[cmd_end - 3])) {
                     // " +>" の場合のみ挿入として解釈
                     if (!isPositionInsideQuotes(cmd, cmd_end - 2)) {
                         output_dest = .insert;
@@ -357,7 +362,7 @@ pub const ShellService = struct {
                 } else if (cmd[cmd_end - 1] == '>') {
                     // " >" の場合のみ置換として解釈
                     if (!isPositionInsideQuotes(cmd, cmd_end - 1)) {
-                        if (cmd_end >= 2 and cmd[cmd_end - 2] == ' ') {
+                        if (cmd_end >= 2 and isShellWhitespace(cmd[cmd_end - 2])) {
                             output_dest = .replace;
                             cmd_end -= 1;
                         }
@@ -365,7 +370,7 @@ pub const ShellService = struct {
                 }
             }
 
-            while (cmd_end > cmd_start and cmd[cmd_end - 1] == ' ') : (cmd_end -= 1) {}
+            while (cmd_end > cmd_start and isShellWhitespace(cmd[cmd_end - 1])) : (cmd_end -= 1) {}
         }
 
         return .{

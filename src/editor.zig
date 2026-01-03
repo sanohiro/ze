@@ -325,7 +325,7 @@ pub const Editor = struct {
         buffer_state.editing_ctx.buffer.* = new_buffer;
 
         // ファイル名を設定
-        buffer_state.setFilenameOwned(new_filename);
+        buffer_state.file.setFilenameOwned(new_filename);
 
         // Undo/Redoスタックをクリア
         buffer_state.editing_ctx.clearUndoHistory();
@@ -429,7 +429,8 @@ pub const Editor = struct {
     /// ウィンドウのViewを指定バッファ用に設定（言語検出とビューポート設定）
     /// 注意: Viewは呼び出し側で事前にセットしておくこと
     fn setupWindowView(window: *Window, buffer_state: *BufferState) void {
-        const content_preview = buffer_state.editing_ctx.buffer.getContentPreview(512);
+        var preview_buf: [512]u8 = undefined;
+        const content_preview = buffer_state.editing_ctx.buffer.getContentPreview(&preview_buf);
         window.view.detectLanguage(buffer_state.file.filename, content_preview);
         window.view.setViewport(window.width, window.height);
     }
@@ -789,7 +790,7 @@ pub const Editor = struct {
                 // pending_filenameをbuffer_state.file.filenameに設定
                 if (self.pending_filename) |pending| {
                     const buffer_state = self.getCurrentBuffer();
-                    buffer_state.setFilename(pending) catch {
+                    buffer_state.file.setFilename(pending) catch {
                         self.getCurrentView().setError(config.Messages.MEMORY_ALLOCATION_FAILED);
                         self.clearPendingFilename();
                         self.mode = .normal;
@@ -1608,7 +1609,7 @@ pub const Editor = struct {
         view.cursor_y = 0;
 
         // 古いファイル名を解放して新しいファイル名を設定（filename_normalizedもリセット）
-        buffer_state.setFilenameOwned(new_filename);
+        buffer_state.file.setFilenameOwned(new_filename);
         // 正規化パスをキャッシュ更新
         buffer_state.file.filename_normalized = std.fs.cwd().realpathAlloc(self.allocator, path) catch null;
 
@@ -1617,7 +1618,8 @@ pub const Editor = struct {
         buffer_state.editing_ctx.modified = false;
 
         // 言語検出（ファイル名とコンテンツ先頭から判定）
-        const content_preview = buffer_state.editing_ctx.buffer.getContentPreview(512);
+        var preview_buf: [512]u8 = undefined;
+        const content_preview = buffer_state.editing_ctx.buffer.getContentPreview(&preview_buf);
         view.detectLanguage(path, content_preview);
 
         // ファイルの最終更新時刻を記録（Buffer.loadFromFileで既に取得済みなので再オープン不要）
@@ -1656,7 +1658,9 @@ pub const Editor = struct {
             }
 
             const save_warning = try buffer_state.editing_ctx.buffer.saveToFile(path);
-            buffer_state.markSaved(); // 保存時点を記録
+            // 保存時点を記録
+            buffer_state.editing_ctx.modified = false;
+            buffer_state.editing_ctx.savepoint = buffer_state.editing_ctx.undo_stack.items.len;
 
             // 保存後に新しい mtime を記録
             const file = try std.fs.cwd().openFile(path, .{});
@@ -2336,7 +2340,7 @@ pub const Editor = struct {
             self.getCurrentView().setError("File exists. Overwrite? (y)es (n)o");
         } else {
             // ファイルが存在しないか、同じファイルなら直接保存
-            try buffer_state.setFilename(new_filename);
+            try buffer_state.file.setFilename(new_filename);
             self.clearInputBuffer();
             try self.saveFile();
             self.resetToNormal();
@@ -2366,7 +2370,7 @@ pub const Editor = struct {
                 self.allocator.free(filename_copy);
                 if (err == error.FileNotFound) {
                     // ファイルが存在しない場合は新規ファイルとして扱う
-                    new_buffer.setFilename(filename) catch |e| {
+                    new_buffer.file.setFilename(filename) catch |e| {
                         _ = self.closeBuffer(new_buffer.id) catch {};
                         return e;
                     };
@@ -2398,7 +2402,7 @@ pub const Editor = struct {
             new_buffer.editing_ctx.buffer.deinit();
             new_buffer.editing_ctx.buffer.* = loaded_buffer;
             // ファイル名を設定（filename_normalizedもリセット）
-            new_buffer.setFilenameOwned(filename_copy);
+            new_buffer.file.setFilenameOwned(filename_copy);
             // 正規化パスをキャッシュ
             new_buffer.file.filename_normalized = std.fs.cwd().realpathAlloc(self.allocator, filename_copy) catch null;
             new_buffer.editing_ctx.modified = false;
@@ -4059,26 +4063,71 @@ pub const Editor = struct {
                         replace_info.clear_mark,
                     );
                 }
+
+                // stderrがある場合はCommand bufferに追記して警告表示
+                if (stderr.len > 0) {
+                    try self.appendStderrToCommandBuffer(stderr);
+                    var msg_buf: [128]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&msg_buf, "Done with stderr (C-x ` to view){s}", .{truncated_suffix}) catch "Done with stderr";
+                    self.getCurrentView().setError(msg);
+                } else if (truncated) {
+                    self.getCurrentView().setError("Warning: output truncated (10MB limit)");
+                }
             },
             .new_buffer => {
                 // コマンドが失敗した場合は新規バッファを作成しない
                 if (self.checkShellError(exit_status, "", truncated_suffix)) return;
-                // 新規バッファに出力（stdoutのみ、stderrはdisplayモードで確認）
+                // 新規バッファに出力
                 if (stdout.len > 0) {
                     const new_buffer = try self.createNewBuffer();
                     try new_buffer.editing_ctx.buffer.insertSlice(0, stdout);
                     try self.switchToBuffer(new_buffer.id);
-                    // truncatedの場合は警告を表示
-                    if (truncated) {
+
+                    // stderrがある場合はCommand bufferに追記して警告表示
+                    if (stderr.len > 0) {
+                        try self.appendStderrToCommandBuffer(stderr);
+                        var msg_buf: [128]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&msg_buf, "Done with stderr (C-x ` to view){s}", .{truncated_suffix}) catch "Done with stderr";
+                        self.getCurrentView().setError(msg);
+                    } else if (truncated) {
                         self.getCurrentView().setError("Warning: output truncated (10MB limit)");
                     }
                 } else {
-                    var msg_buf: [64]u8 = undefined;
-                    const msg = std.fmt.bufPrint(&msg_buf, "(no output){s}", .{truncated_suffix}) catch "(no output)";
-                    self.getCurrentView().setError(msg);
+                    // stdoutが空でもstderrがあればCommand bufferに表示
+                    if (stderr.len > 0) {
+                        try self.appendStderrToCommandBuffer(stderr);
+                        var msg_buf: [128]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&msg_buf, "stderr only (C-x ` to view){s}", .{truncated_suffix}) catch "stderr only";
+                        self.getCurrentView().setError(msg);
+                    } else {
+                        var msg_buf: [64]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&msg_buf, "(no output){s}", .{truncated_suffix}) catch "(no output)";
+                        self.getCurrentView().setError(msg);
+                    }
                 }
             },
         }
+    }
+
+    /// stderrをCommand bufferに追記（replace/insert/new_buffer用）
+    fn appendStderrToCommandBuffer(self: *Editor, stderr: []const u8) !void {
+        const cmd_buffer = try self.getOrCreateCommandBuffer();
+
+        // 既存内容の末尾にstderrを追記
+        var insert_pos = cmd_buffer.editing_ctx.buffer.total_len;
+
+        // セパレータを追加（既存内容がある場合）
+        if (insert_pos > 0) {
+            const separator = "\n--- stderr ---\n";
+            cmd_buffer.editing_ctx.buffer.insertSlice(insert_pos, separator) catch {};
+            insert_pos += separator.len;
+        }
+
+        // stderrを挿入
+        cmd_buffer.editing_ctx.buffer.insertSlice(insert_pos, stderr) catch {};
+
+        // modifiedフラグをクリア（コマンド出力は再生成可能）
+        cmd_buffer.editing_ctx.modified = false;
     }
 
     // ========================================

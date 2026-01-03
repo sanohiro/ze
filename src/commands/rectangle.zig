@@ -217,6 +217,8 @@ pub fn killRectangle(e: *Editor) !void {
     const buffer = e.getCurrentBufferContent();
     const buffer_state = e.getCurrentBuffer();
     const editing_ctx = buffer_state.editing_ctx;
+    // UNDO用にビューから現在のカーソル位置を取得
+    const cursor_before = e.getCurrentView().getCursorBufferPos();
 
     cleanupRectangleRing(e);
 
@@ -290,7 +292,6 @@ pub fn killRectangle(e: *Editor) !void {
     }
 
     // 下から上に削除（位置がずれないように）
-    const cursor_before = editing_ctx.cursor;
     var i = delete_infos.items.len;
     while (i > 0) {
         i -= 1;
@@ -329,7 +330,7 @@ pub fn yankRectangle(e: *Editor) !void {
         return;
     }
 
-    // 現在のカーソル位置を取得
+    // 現在のカーソル位置を取得（UNDO用にも使用）
     const cursor_pos = e.getCurrentView().getCursorBufferPos();
     const buffer = e.getCurrentBufferContent();
     const buffer_state = e.getCurrentBuffer();
@@ -337,7 +338,7 @@ pub fn yankRectangle(e: *Editor) !void {
     const tab_width: u8 = e.getCurrentView().getTabWidth();
     const cursor_line = buffer.findLineByPos(cursor_pos);
     const cursor_col = buffer.findColumnByPosWithTabWidth(cursor_pos, tab_width);
-    const cursor_before = editing_ctx.cursor;
+    const cursor_before = cursor_pos; // ビューのカーソル位置をUNDO用に使用
 
     // 挿入情報を収集（上から下に挿入するため、位置調整が必要）
     const InsertInfo = struct {

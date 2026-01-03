@@ -239,7 +239,8 @@ fn cmdRevert(e: *Editor) !void {
     e.getCurrentView().buffer = buffer_state.editing_ctx.buffer;
 
     // 言語検出を再実行（ファイル内容が変わった可能性があるため）
-    const content_preview = buffer_state.editing_ctx.buffer.getContentPreview(512);
+    var preview_buf: [512]u8 = undefined;
+    const content_preview = buffer_state.editing_ctx.buffer.getContentPreview(&preview_buf);
     e.getCurrentView().detectLanguage(buffer_state.file.filename, content_preview);
 
     // カーソルを先頭に

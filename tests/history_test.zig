@@ -17,11 +17,11 @@ test "history basic operations" {
     try history.add("grep foo");
     try history.add("cat bar");
 
-    try testing.expectEqual(@as(usize, 3), history.entries.items.len);
+    try testing.expectEqual(@as(usize, 3), history.ring.len);
 
     // 連続重複は追加されない
     try history.add("cat bar");
-    try testing.expectEqual(@as(usize, 3), history.entries.items.len);
+    try testing.expectEqual(@as(usize, 3), history.ring.len);
 
     // ナビゲーション（空文字列で全履歴を表示）
     try history.startNavigation("");
@@ -114,11 +114,11 @@ test "empty entry not added" {
 
     // 空文字列は追加されない
     try history.add("");
-    try testing.expectEqual(@as(usize, 0), history.entries.items.len);
+    try testing.expectEqual(@as(usize, 0), history.ring.len);
 
     try history.add("valid");
     try history.add("");
-    try testing.expectEqual(@as(usize, 1), history.entries.items.len);
+    try testing.expectEqual(@as(usize, 1), history.ring.len);
 }
 
 test "max history size limit" {
@@ -137,10 +137,10 @@ test "max history size limit" {
     }
 
     // 最大数を超えない
-    try testing.expectEqual(MAX_HISTORY_SIZE, history.entries.items.len);
+    try testing.expectEqual(MAX_HISTORY_SIZE, history.ring.len);
 
     // 最古のエントリは削除されている（entry0〜entry9は消えている）
-    const oldest = history.entries.items[0];
+    const oldest = history.ring.get(0).?;
     try testing.expect(!std.mem.startsWith(u8, oldest, "entry0"));
     try testing.expect(!std.mem.startsWith(u8, oldest, "entry9"));
 }
@@ -202,11 +202,11 @@ test "consecutive duplicates not added" {
     try history.add("cmd1");
     try history.add("cmd1"); // 重複
     try history.add("cmd1"); // 重複
-    try testing.expectEqual(@as(usize, 1), history.entries.items.len);
+    try testing.expectEqual(@as(usize, 1), history.ring.len);
 
     try history.add("cmd2");
     try history.add("cmd1"); // cmd2の後なので追加される
-    try testing.expectEqual(@as(usize, 3), history.entries.items.len);
+    try testing.expectEqual(@as(usize, 3), history.ring.len);
 }
 
 test "navigation preserves temp input on multiple calls" {

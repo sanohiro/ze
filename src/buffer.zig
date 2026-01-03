@@ -725,8 +725,18 @@ pub const Buffer = struct {
         }
 
         // エンコーディングと改行コードを検出
-        const check_len = @min(content.len, 8192);
-        const detected = encoding.detectEncoding(content[0..check_len]);
+        // 先頭8KBでサンプリングし、UTF-8と判定された場合は全体を再検証
+        const sample_len = @min(content.len, 8192);
+        var detected = encoding.detectEncoding(content[0..sample_len]);
+
+        // サンプルがUTF-8と判定された場合、全体を検証（途中からShift_JIS等になる可能性）
+        if ((detected.encoding == .UTF8 or detected.encoding == .UTF8_BOM) and content.len > sample_len) {
+            // 全体のUTF-8検証（エンコーディングが途中で変わるケースを検出）
+            if (!encoding.isValidUtf8(content)) {
+                // UTF-8として無効 → 日本語エンコーディングを再検出
+                detected = encoding.detectEncoding(content);
+            }
+        }
 
         // バイナリファイルチェック
         if (detected.encoding == .Unknown) {
@@ -1968,13 +1978,22 @@ pub const Buffer = struct {
     }
 
     /// バッファの先頭からmax_lenバイトのプレビューを取得（言語検出用）
-    /// 内部バッファへの直接参照を返すのでアロケーションなし
-    /// ただし、ファイルが追加バッファを跨ぐ場合はnullを返す
-    pub fn getContentPreview(self: *const Buffer, max_len: usize) ?[]const u8 {
+    /// 複数pieceを跨ぐ場合は提供されたバッファに連結する
+    /// outには連結されたデータが書き込まれ、実際に書き込まれたスライスを返す
+    /// バッファが空の場合はnullを返す
+    pub fn getContentPreview(self: *const Buffer, out: []u8) ?[]const u8 {
         if (self.pieces.items.len == 0) return null;
 
-        const first_piece = self.pieces.items[0];
-        const data = self.getPieceData(first_piece);
-        return data[0..@min(data.len, max_len)];
+        var written: usize = 0;
+        for (self.pieces.items) |piece| {
+            const data = self.getPieceData(piece);
+            const to_copy = @min(data.len, out.len - written);
+            if (to_copy == 0) break;
+            @memcpy(out[written..][0..to_copy], data[0..to_copy]);
+            written += to_copy;
+            if (written >= out.len) break;
+        }
+
+        return if (written > 0) out[0..written] else null;
     }
 };

@@ -1813,15 +1813,6 @@ pub const View = struct {
         return .{ .row = viewport_y + self.cursor_y, .col = viewport_x + screen_cursor_x };
     }
 
-    /// 従来のrender（後方互換性のため）- 全画面レンダリング
-    pub fn render(self: *View, term: *Terminal, modified: bool, readonly: bool, overwrite: bool, line_ending: anytype, file_encoding: encoding.Encoding, filename: ?[]const u8) !void {
-        try self.renderInBounds(term, 0, 0, term.width, term.height, true, modified, readonly, overwrite, line_ending, file_encoding, filename);
-    }
-
-    pub fn renderStatusBar(self: *View, term: *Terminal, modified: bool, readonly: bool, overwrite: bool, line_ending: anytype, file_encoding: encoding.Encoding, filename: ?[]const u8) !void {
-        try self.renderStatusBarAt(term, 0, term.height - 1, term.width, modified, readonly, overwrite, line_ending, file_encoding, filename);
-    }
-
     /// 指定行にステータスバーを描画
     /// 新デザイン: " *filename                          L42 C8  UTF-8(LF)  Zig"
     pub fn renderStatusBarAt(self: *View, term: *Terminal, viewport_x: usize, row: usize, viewport_width: usize, modified: bool, readonly: bool, overwrite: bool, line_ending: anytype, file_encoding: encoding.Encoding, filename: ?[]const u8) !void {

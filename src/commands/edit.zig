@@ -411,10 +411,13 @@ pub fn toggleComment(e: *Editor) !void {
 
     if (is_comment) {
         // コメント開始位置を取得（言語定義がない場合もフォールバック）
-        const comment_start = if (view.language.line_comment != null)
-            view.language.findCommentStart(line_content) orelse return
-        else
-            findCommentStartWithPrefix(line_content, line_comment) orelse return;
+        const comment_start = if (view.language.line_comment != null) blk: {
+            const analysis = view.language.analyzeLine(line_content, false);
+            break :blk if (analysis.span_count > 0 and analysis.spans[0] != null)
+                analysis.spans[0].?.start
+            else
+                return;
+        } else findCommentStartWithPrefix(line_content, line_comment) orelse return;
         const comment_pos = line_start + comment_start;
 
         var delete_len: usize = line_comment.len;

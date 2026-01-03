@@ -89,19 +89,6 @@ pub const BufferState = struct {
     file: FileMetadata, // ファイルメタデータ
     allocator: std.mem.Allocator,
 
-    // === 後方互換性のためのプロパティアクセサ ===
-    /// 変更フラグ（EditingContext経由）
-    pub fn isModified(self: *const BufferState) bool {
-        return self.editing_ctx.modified;
-    }
-
-    /// 現在の状態を保存済みとしてマーク
-    pub fn markSaved(self: *BufferState) void {
-        self.editing_ctx.modified = false;
-        // セーブポイントを記録（現在のundo_stackの長さ）
-        self.editing_ctx.savepoint = self.editing_ctx.undo_stack.items.len;
-    }
-
     pub fn init(allocator: std.mem.Allocator, id: usize) !*BufferState {
         const self = try allocator.create(BufferState);
         errdefer allocator.destroy(self);
@@ -116,28 +103,6 @@ pub const BufferState = struct {
             .allocator = allocator,
         };
         return self;
-    }
-
-    // === 後方互換性のためのFileMetadata委譲 ===
-
-    /// バッファ名を取得（FileMetadataに委譲）
-    pub fn getName(self: *const BufferState) []const u8 {
-        return self.file.getName();
-    }
-
-    /// フルパスを取得（FileMetadataに委譲）
-    pub fn getPath(self: *const BufferState) ?[]const u8 {
-        return self.file.getPath();
-    }
-
-    /// ファイル名を設定（FileMetadataに委譲）
-    pub fn setFilename(self: *BufferState, new_filename: []const u8) !void {
-        try self.file.setFilename(new_filename);
-    }
-
-    /// ファイル名の所有権を受け取って設定（FileMetadataに委譲）
-    pub fn setFilenameOwned(self: *BufferState, new_filename: []const u8) void {
-        self.file.setFilenameOwned(new_filename);
     }
 
     pub fn deinit(self: *BufferState) void {
@@ -269,7 +234,7 @@ pub const BufferManager = struct {
     /// 未保存の変更があるバッファがあるか
     pub fn hasUnsavedChanges(self: *const Self) bool {
         for (self.buffers.items) |buffer| {
-            if (buffer.isModified()) {
+            if (buffer.editing_ctx.modified) {
                 return true;
             }
         }

@@ -44,7 +44,7 @@ test "BufferState - getName" {
     defer bm.deinit();
 
     const buffer = try bm.createBuffer();
-    try testing.expectEqualStrings("*scratch*", buffer.getName());
+    try testing.expectEqualStrings("*scratch*", buffer.file.getName());
 }
 
 // ============================================================
@@ -122,15 +122,15 @@ test "BufferManager - delete middle buffer" {
 // Modified state tests
 // ============================================================
 
-test "BufferState - isModified initially false" {
+test "BufferState - modified initially false" {
     var bm = BufferManager.init(testing.allocator);
     defer bm.deinit();
 
     const buffer = try bm.createBuffer();
-    try testing.expect(!buffer.isModified());
+    try testing.expect(!buffer.editing_ctx.modified);
 }
 
-test "BufferState - markSaved clears modified" {
+test "BufferState - modified cleared after save" {
     var bm = BufferManager.init(testing.allocator);
     defer bm.deinit();
 
@@ -138,11 +138,12 @@ test "BufferState - markSaved clears modified" {
 
     // バッファを変更
     try buffer.editing_ctx.insert("test");
-    try testing.expect(buffer.isModified());
+    try testing.expect(buffer.editing_ctx.modified);
 
     // 保存済みとしてマーク
-    buffer.markSaved();
-    try testing.expect(!buffer.isModified());
+    buffer.editing_ctx.modified = false;
+    buffer.editing_ctx.savepoint = buffer.editing_ctx.undo_stack.items.len;
+    try testing.expect(!buffer.editing_ctx.modified);
 }
 
 test "BufferManager - hasUnsavedChanges" {
@@ -160,7 +161,8 @@ test "BufferManager - hasUnsavedChanges" {
     try testing.expect(bm.hasUnsavedChanges());
 
     // 保存済みにする
-    buf2.markSaved();
+    buf2.editing_ctx.modified = false;
+    buf2.editing_ctx.savepoint = buf2.editing_ctx.undo_stack.items.len;
     try testing.expect(!bm.hasUnsavedChanges());
 }
 
@@ -205,7 +207,7 @@ test "BufferState - getPath returns null for scratch buffer" {
     defer bm.deinit();
 
     const buffer = try bm.createBuffer();
-    try testing.expect(buffer.getPath() == null);
+    try testing.expect(buffer.file.getPath() == null);
 }
 
 // ============================================================
