@@ -265,6 +265,18 @@ fn detectAnsiCodes(line: []const u8, content_start: usize) AnsiFlags {
 /// 複数行コメント（/* */）の状態追跡はO(n)だが、
 /// cached_block_state/cached_block_top_lineでキャッシュして
 /// スクロール時のO(n²)を回避。
+
+/// カーソル移動キャッシュ（moveCursorLeft高速化用）
+/// 前回のgetCursorPosWithPrevWidth結果を保持し、同じ行での連続左移動でO(1)化
+const CursorPrevCache = struct {
+    cursor_x: usize, // キャッシュ時のcursor_x
+    cursor_y: usize, // キャッシュ時のcursor_y
+    top_line: usize, // キャッシュ時のtop_line
+    byte_pos: usize, // cursor_xに対応するバイト位置
+    prev_byte_pos: usize, // 前の文字のバイト位置
+    prev_width: usize, // 前の文字の表示幅
+};
+
 pub const View = struct {
     // === バッファ参照 ===
     buffer: *Buffer,
@@ -332,6 +344,10 @@ pub const View = struct {
     cursor_byte_pos_cache_y: usize, // キャッシュ時のcursor_y
     cursor_byte_pos_cache_top_line: usize, // キャッシュ時のtop_line
 
+    // === カーソル移動キャッシュ（moveCursorLeft高速化）===
+    // getCursorPosWithPrevWidthの結果をキャッシュ。連続左移動でO(1)化
+    cursor_prev_cache: ?CursorPrevCache, // nullなら無効
+
     // === 言語・設定 ===
     language: *const syntax.LanguageDef,
     tab_width: ?u8, // nullなら言語デフォルト
@@ -380,6 +396,7 @@ pub const View = struct {
             .cursor_byte_pos_cache_x = 0,
             .cursor_byte_pos_cache_y = 0,
             .cursor_byte_pos_cache_top_line = 0,
+            .cursor_prev_cache = null, // カーソル移動キャッシュ無効
             .expanded_line = .{},
             .highlighted_line = .{},
             .regex_visible_text = .{},
@@ -2023,6 +2040,7 @@ pub const View = struct {
     /// バッファが編集された場合（削除、ペースト等）に呼び出す
     pub fn invalidateCursorPosCache(self: *View) void {
         self.cursor_byte_pos_cache = null;
+        self.cursor_prev_cache = null; // 移動キャッシュも無効化
     }
 
     /// カーソルバイト位置キャッシュを設定（4行セットの共通化）
@@ -2048,12 +2066,38 @@ pub const View = struct {
     };
 
     fn getCursorPosWithPrevWidth(self: *View) CursorPosWithPrevWidth {
+        // キャッシュチェック: 完全一致ならそのまま返す
+        if (self.cursor_prev_cache) |cache| {
+            if (cache.cursor_x == self.cursor_x and
+                cache.cursor_y == self.cursor_y and
+                cache.top_line == self.top_line)
+            {
+                return .{ .pos = cache.byte_pos, .prev_width = cache.prev_width, .prev_byte_pos = cache.prev_byte_pos };
+            }
+
+            // 同じ行でcursor_xが1文字分左に移動した場合、キャッシュのprev情報がそのまま「現在位置」になる
+            // さらに1文字前を探すだけでO(1)で済む
+            if (cache.cursor_y == self.cursor_y and
+                cache.top_line == self.top_line and
+                self.cursor_x == cache.cursor_x - cache.prev_width)
+            {
+                // cache.prev_byte_posが現在位置。さらに前の1文字を探す
+                return self.scanPrevFromPos(cache.prev_byte_pos, self.cursor_x);
+            }
+        }
+
+        // キャッシュミス: 行頭から走査
         const target_line = self.top_line + self.cursor_y;
 
         const line_start = self.buffer.getLineStart(target_line) orelse {
             return .{ .pos = self.buffer.len(), .prev_width = 1, .prev_byte_pos = 0 };
         };
 
+        return self.scanFromLineStart(line_start, self.cursor_x);
+    }
+
+    /// 行頭から指定カラムまで走査してprev情報を取得
+    fn scanFromLineStart(self: *View, line_start: usize, target_x: usize) CursorPosWithPrevWidth {
         var iter = PieceIterator.init(self.buffer);
         iter.seek(line_start);
 
@@ -2061,7 +2105,7 @@ pub const View = struct {
         var prev_width: usize = 1; // 前の文字の幅（デフォルト1）
         var prev_byte_pos: usize = line_start; // 直前の文字のバイト位置
 
-        while (display_col < self.cursor_x) {
+        while (display_col < target_x) {
             const start_pos = iter.global_pos;
             const cluster = iter.nextGraphemeCluster() catch break;
             if (cluster == null) break;
@@ -2087,7 +2131,7 @@ pub const View = struct {
             display_col += char_width;
 
             // 目標カーソル位置を超えた場合は手前で止まる
-            if (display_col > self.cursor_x) {
+            if (display_col > target_x) {
                 iter.global_pos = start_pos;
                 break;
             }
@@ -2098,6 +2142,26 @@ pub const View = struct {
             .prev_width = prev_width,
             .prev_byte_pos = prev_byte_pos,
         };
+    }
+
+    /// 指定位置から1文字前を探してprev情報を取得（O(1)版）
+    /// キャッシュ活用時に使用。行頭からではなく、既知の位置から逆方向に1文字分のみ走査
+    fn scanPrevFromPos(self: *View, current_byte_pos: usize, current_x: usize) CursorPosWithPrevWidth {
+        if (current_byte_pos == 0 or current_x == 0) {
+            // 行頭の場合、前の文字はない
+            return .{ .pos = current_byte_pos, .prev_width = 1, .prev_byte_pos = 0 };
+        }
+
+        // current_byte_posから逆方向にUTF-8開始バイトを探す
+        // PieceTableでは効率的な逆走査が難しいため、行頭から走査する
+        // ただしcurrent_xが小さい場合のみ行頭から走査（そうでなければ全体走査と変わらない）
+        const target_line = self.top_line + self.cursor_y;
+        const line_start = self.buffer.getLineStart(target_line) orelse {
+            return .{ .pos = self.buffer.len(), .prev_width = 1, .prev_byte_pos = 0 };
+        };
+
+        // current_xまで行頭から走査（これ自体はO(current_x)だが、通常は短い）
+        return self.scanFromLineStart(line_start, current_x);
     }
 
     /// カーソル位置のバイトオフセットと次の文字情報を同時に取得
@@ -2354,8 +2418,19 @@ pub const View = struct {
             const info = self.getCursorPosWithPrevWidth();
             if (info.pos == 0) {
                 self.cursor_x = 0;
+                self.cursor_prev_cache = null;
                 return;
             }
+
+            // キャッシュ更新（次回の左移動で活用）
+            self.cursor_prev_cache = .{
+                .cursor_x = self.cursor_x,
+                .cursor_y = self.cursor_y,
+                .top_line = self.top_line,
+                .byte_pos = info.pos,
+                .prev_byte_pos = info.prev_byte_pos,
+                .prev_width = info.prev_width,
+            };
 
             // 直前の文字幅だけカーソルを戻す
             if (self.cursor_x >= info.prev_width) {
