@@ -145,6 +145,17 @@ pub const PieceIterator = struct {
         return null;
     }
 
+    /// 現在位置のバイトを取得（イテレータを進めない）
+    pub inline fn peekByte(self: *const PieceIterator) ?u8 {
+        if (self.piece_idx >= self.buffer.pieces.items.len) return null;
+        const piece = self.buffer.pieces.items[self.piece_idx];
+        if (self.piece_offset >= piece.length) return null;
+        return switch (piece.source) {
+            .original => self.buffer.original[piece.start + self.piece_offset],
+            .add => self.buffer.add_buffer.items[piece.start + self.piece_offset],
+        };
+    }
+
     // UTF-8文字を取得（バイト単位のnextを使って構築）
     pub fn nextCodepoint(self: *PieceIterator) !?u21 {
         const first_byte = self.next() orelse return null;
@@ -288,6 +299,140 @@ pub const PieceIterator = struct {
             }
         }
         return pos; // 見つからなければ元の位置を返す
+    }
+
+    /// 1バイト後方に移動して、その位置のバイトを返す
+    /// カーソル左移動時の高速化に使用
+    /// 戻り値: 後方に移動した位置のバイト（バッファ先頭の場合はnull）
+    pub inline fn prev(self: *PieceIterator) ?u8 {
+        // 先頭にいる場合
+        if (self.global_pos == 0) return null;
+
+        // piece_offsetが0より大きければ、同じpiece内で後退
+        if (self.piece_offset > 0) {
+            self.piece_offset -= 1;
+            self.global_pos -= 1;
+            const piece = self.buffer.pieces.items[self.piece_idx];
+            return switch (piece.source) {
+                .original => self.buffer.original[piece.start + self.piece_offset],
+                .add => self.buffer.add_buffer.items[piece.start + self.piece_offset],
+            };
+        }
+
+        // 前のpieceに移動
+        if (self.piece_idx == 0) return null;
+        self.piece_idx -= 1;
+        const prev_piece = self.buffer.pieces.items[self.piece_idx];
+        self.piece_offset = prev_piece.length - 1;
+        self.global_pos -= 1;
+        return switch (prev_piece.source) {
+            .original => self.buffer.original[prev_piece.start + self.piece_offset],
+            .add => self.buffer.add_buffer.items[prev_piece.start + self.piece_offset],
+        };
+    }
+
+    /// 1コードポイント後方に移動して、そのコードポイントを返す
+    /// UTF-8の可変長を考慮して後方走査
+    /// 戻り値: 後方に移動した位置のコードポイント（バッファ先頭の場合はnull）
+    pub fn prevCodepoint(self: *PieceIterator) !?u21 {
+        const last_byte = self.prev() orelse return null;
+
+        // ASCIIの場合は1バイト
+        if (unicode.isAsciiByte(last_byte)) {
+            return last_byte;
+        }
+
+        // UTF-8 continuation byteなら、先頭バイトまで戻る
+        if (unicode.isUtf8Continuation(last_byte)) {
+            // 先頭バイトを探す（最大3バイト追加で戻る）
+            var bytes: [4]u8 = undefined;
+            var byte_count: usize = 1;
+            bytes[3] = last_byte;
+
+            while (byte_count < 4) : (byte_count += 1) {
+                const b = self.prev() orelse break;
+                bytes[3 - byte_count] = b;
+                if (!unicode.isUtf8Continuation(b)) {
+                    // 先頭バイト発見
+                    break;
+                }
+            }
+
+            // デコード
+            const start_idx = 4 - byte_count - 1;
+            const len = std.unicode.utf8ByteSequenceLength(bytes[start_idx]) catch {
+                // 不正なUTF-8: 1バイト進めて戻す
+                _ = self.next();
+                return error.InvalidUtf8;
+            };
+            return std.unicode.utf8Decode(bytes[start_idx..][0..len]) catch error.InvalidUtf8;
+        }
+
+        // 先頭バイト（continuation以外）
+        const len = std.unicode.utf8ByteSequenceLength(last_byte) catch return error.InvalidUtf8;
+        if (len == 1) {
+            return last_byte;
+        }
+
+        // マルチバイト文字の先頭: 残りを読んでデコード
+        var bytes: [4]u8 = undefined;
+        bytes[0] = last_byte;
+        const saved = self.saveState();
+        _ = self.next(); // 現在位置を1バイト進める
+
+        var i: usize = 1;
+        while (i < len) : (i += 1) {
+            bytes[i] = self.next() orelse {
+                self.restoreState(saved);
+                return error.InvalidUtf8;
+            };
+        }
+
+        // 位置を戻す（先頭バイトの位置に）
+        self.restoreState(saved);
+
+        return std.unicode.utf8Decode(bytes[0..len]) catch error.InvalidUtf8;
+    }
+
+    /// 1グラフェムクラスタ後方に移動
+    /// カーソル左移動で正確な文字単位を処理するために使用
+    /// 戻り値: グラフェムクラスタ情報（バッファ先頭の場合はnull）
+    /// - base: 先頭コードポイント（表示幅計算に使用）
+    /// - width: 表示幅（端末上のセル数）
+    /// - byte_len: UTF-8バイト長
+    pub fn prevGraphemeCluster(self: *PieceIterator) !?struct { base: u21, width: usize, byte_len: usize } {
+        if (self.global_pos == 0) return null;
+
+        const end_pos = self.global_pos;
+
+        // 最後のコードポイントを取得（後方に移動）
+        const last_cp = try self.prevCodepoint() orelse return null;
+        var base_cp = last_cp;
+
+        // Grapheme break判定: 後方へ走査
+        // breakが発生するまで戻り続ける
+        while (self.global_pos > 0) {
+            const saved = self.saveState();
+            const prev_cp = try self.prevCodepoint() orelse break;
+
+            // Grapheme breakを確認（prev_cpとbase_cpの間）
+            var state = unicode.State{};
+            if (unicode.graphemeBreak(prev_cp, base_cp, &state)) {
+                // Break発生: savedの位置（base_cpの先頭）がグラフェムの境界
+                self.restoreState(saved);
+                break;
+            }
+
+            // 継続: prev_cpもグラフェムの一部、そのまま位置を維持
+            base_cp = prev_cp;
+            // DON'T restore - we're now at the start of prev_cp
+        }
+
+        return .{
+            .base = base_cp,
+            .width = unicode.displayWidth(base_cp),
+            .byte_len = end_pos - self.global_pos,
+        };
     }
 
     /// 次のグラフェムクラスタを読み取る
