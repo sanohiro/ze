@@ -1071,7 +1071,7 @@ pub const Editor = struct {
             .isearch_backward,
             .query_replace_input_search,
             .query_replace_input_replacement,
-            .query_replace_confirm,
+            // .query_replace_confirm は単一キー(y/n/!)待ちなのでカーソル表示不要
             .shell_command,
             .mx_command,
             .mx_key_describe,
@@ -3649,7 +3649,8 @@ pub const Editor = struct {
         if (self.is_regex_replace) {
             // 正規表現置換（C-M-%）- 共通ヘルパーを使用
             if (try self.searchRegexChunked(search, actual_start, true, false)) |match| {
-                self.setCursorToPos(match.pos);
+                // マッチ終端にカーソルを置く（ハイライトの「現在のマッチ」判定のため）
+                self.setCursorToPos(match.pos + match.len);
                 self.replace_current_pos = match.pos;
                 self.replace_match_len = match.len;
                 return true;
@@ -3657,7 +3658,8 @@ pub const Editor = struct {
         } else {
             // リテラル置換（M-%）- コピーなしのBuffer直接検索
             if (self.search_service.searchBuffer(buffer, search, actual_start, true, false)) |match| {
-                self.setCursorToPos(match.start);
+                // マッチ終端にカーソルを置く（ハイライトの「現在のマッチ」判定のため）
+                self.setCursorToPos(match.start + match.len);
                 self.replace_current_pos = match.start;
                 self.replace_match_len = match.len;
                 return true;
