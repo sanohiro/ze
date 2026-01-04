@@ -4,6 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 絶対禁止事項（最重要）
 
+### 勝手なリリースの禁止
+
+**ユーザーから明示的にリリース指示があるまで、絶対にリリース（タグ作成・プッシュ）するな。**
+
+- コード修正が完了しても、リリースはユーザーの判断
+- 「リリースして」「バージョンアップして」等の明確な指示を待て
+- CHANGELOGやbuild.zig.zonの更新も、リリース指示があってから
+
 ### git checkout / git revert / git reset の禁止
 
 **絶対に `git checkout -- .` や `git revert` や `git reset --hard` を実行するな。**
