@@ -123,6 +123,54 @@ fn cleanupRectangleRing(e: *Editor) void {
     }
 }
 
+/// ArrayListに空文字列を追加（エラー時はメモリを解放）
+fn appendEmptyString(allocator: std.mem.Allocator, list: *std.ArrayList([]const u8)) !void {
+    const empty_str = try allocator.dupe(u8, "");
+    list.append(allocator, empty_str) catch |err| {
+        allocator.free(empty_str);
+        return err;
+    };
+}
+
+/// ArrayListにテキストを追加（エラー時はメモリを解放）
+fn appendOwnedText(allocator: std.mem.Allocator, list: *std.ArrayList([]const u8), text: []const u8) !void {
+    list.append(allocator, text) catch |err| {
+        allocator.free(text);
+        return err;
+    };
+}
+
+/// rect_ringのクリーンアップ（errdefer用）
+fn cleanupRectRing(allocator: std.mem.Allocator, ring: *std.ArrayList([]const u8)) void {
+    for (ring.items) |line| {
+        allocator.free(line);
+    }
+    ring.deinit(allocator);
+}
+
+/// 削除情報の型
+const DeleteInfo = struct {
+    pos: usize,
+    len: usize,
+    text: []const u8,
+};
+
+/// delete_infosのクリーンアップ（defer用）
+fn cleanupDeleteInfos(allocator: std.mem.Allocator, infos: *std.ArrayList(DeleteInfo)) void {
+    for (infos.items) |info_item| {
+        allocator.free(info_item.text);
+    }
+    infos.deinit(allocator);
+}
+
+/// 削除情報を追加（エラー時はメモリを解放）
+fn appendDeleteInfo(allocator: std.mem.Allocator, list: *std.ArrayList(DeleteInfo), pos: usize, len: usize, text: []const u8) !void {
+    list.append(allocator, .{ .pos = pos, .len = len, .text = text }) catch |err| {
+        allocator.free(text);
+        return err;
+    };
+}
+
 /// 矩形領域の範囲情報を取得する共通関数
 fn getRectangleInfo(e: *Editor, tab_width: u8) ?RectangleInfo {
     const window = e.getCurrentWindow();
@@ -162,12 +210,7 @@ pub fn copyRectangle(e: *Editor) !void {
 
     // 新しい rectangle_ring を作成
     var rect_ring: std.ArrayList([]const u8) = .{};
-    errdefer {
-        for (rect_ring.items) |line| {
-            e.allocator.free(line);
-        }
-        rect_ring.deinit(e.allocator);
-    }
+    errdefer cleanupRectRing(e.allocator, &rect_ring);
 
     // イテレータを1つ作成して全行で再利用（seek()キャッシュにより高速化）
     var iter = PieceIterator.init(buffer);
@@ -178,28 +221,17 @@ pub fn copyRectangle(e: *Editor) !void {
     while (line_num <= info.end_line) : (line_num += 1) {
         const bounds = getLineBounds(buffer, line_num) orelse {
             // 行が取得できない場合も空文字列を追加
-            const empty_str = try e.allocator.dupe(u8, "");
-            rect_ring.append(e.allocator, empty_str) catch |err| {
-                e.allocator.free(empty_str);
-                return err;
-            };
+            try appendEmptyString(e.allocator, &rect_ring);
             continue;
         };
         const byte_range = getColumnByteRangeReusing(&iter, bounds, info.left_col, info.right_col, tab_width);
 
         if (byte_range.end > byte_range.start) {
             const line_text = try extractBytesReusing(e.allocator, &iter, byte_range.start, byte_range.end);
-            rect_ring.append(e.allocator, line_text) catch |err| {
-                e.allocator.free(line_text);
-                return err;
-            };
+            try appendOwnedText(e.allocator, &rect_ring, line_text);
         } else {
             // 短い行は空文字列を追加（行数を維持）
-            const empty_str = try e.allocator.dupe(u8, "");
-            rect_ring.append(e.allocator, empty_str) catch |err| {
-                e.allocator.free(empty_str);
-                return err;
-            };
+            try appendEmptyString(e.allocator, &rect_ring);
         }
     }
 
@@ -224,26 +256,11 @@ pub fn killRectangle(e: *Editor) !void {
 
     // 新しい rectangle_ring を作成
     var rect_ring: std.ArrayList([]const u8) = .{};
-    errdefer {
-        for (rect_ring.items) |line| {
-            e.allocator.free(line);
-        }
-        rect_ring.deinit(e.allocator);
-    }
+    errdefer cleanupRectRing(e.allocator, &rect_ring);
 
     // 削除情報を一時保存（下から削除するため）
-    const DeleteInfo = struct {
-        pos: usize,
-        len: usize,
-        text: []const u8,
-    };
     var delete_infos: std.ArrayList(DeleteInfo) = .{};
-    defer {
-        for (delete_infos.items) |info_item| {
-            e.allocator.free(info_item.text);
-        }
-        delete_infos.deinit(e.allocator);
-    }
+    defer cleanupDeleteInfos(e.allocator, &delete_infos);
 
     // イテレータを1つ作成して全行で再利用（seek()キャッシュにより高速化）
     var iter = PieceIterator.init(buffer);
@@ -254,11 +271,7 @@ pub fn killRectangle(e: *Editor) !void {
     while (line_num <= info.end_line) : (line_num += 1) {
         const bounds = getLineBounds(buffer, line_num) orelse {
             // 行が取得できない場合も空文字列を追加（削除はしない）
-            const empty_str = try e.allocator.dupe(u8, "");
-            rect_ring.append(e.allocator, empty_str) catch |err| {
-                e.allocator.free(empty_str);
-                return err;
-            };
+            try appendEmptyString(e.allocator, &rect_ring);
             continue;
         };
         const byte_range = getColumnByteRangeReusing(&iter, bounds, info.left_col, info.right_col, tab_width);
@@ -266,28 +279,14 @@ pub fn killRectangle(e: *Editor) !void {
         if (byte_range.end > byte_range.start) {
             // テキストを抽出してrect_ringに追加
             const line_text = try extractBytesReusing(e.allocator, &iter, byte_range.start, byte_range.end);
-            rect_ring.append(e.allocator, line_text) catch |err| {
-                e.allocator.free(line_text);
-                return err;
-            };
+            try appendOwnedText(e.allocator, &rect_ring, line_text);
 
             // 削除情報を保存（テキストのコピーを作成）
             const text_copy = try e.allocator.dupe(u8, line_text);
-            delete_infos.append(e.allocator, .{
-                .pos = byte_range.start,
-                .len = byte_range.end - byte_range.start,
-                .text = text_copy,
-            }) catch |err| {
-                e.allocator.free(text_copy);
-                return err;
-            };
+            try appendDeleteInfo(e.allocator, &delete_infos, byte_range.start, byte_range.end - byte_range.start, text_copy);
         } else {
             // 短い行は空文字列を追加（削除はしない）
-            const empty_str = try e.allocator.dupe(u8, "");
-            rect_ring.append(e.allocator, empty_str) catch |err| {
-                e.allocator.free(empty_str);
-                return err;
-            };
+            try appendEmptyString(e.allocator, &rect_ring);
         }
     }
 

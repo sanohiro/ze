@@ -1231,10 +1231,11 @@ pub const Editor = struct {
     /// "Query replace (regexp) <search> with: " の表示幅を返す
     fn calculateReplacementPromptWidth(self: *Editor) usize {
         const prefix = config.QueryReplace.getPrefix(self.is_regex_replace);
+        const prefix_width = stringDisplayWidth(prefix);
         if (self.replace_search) |search| {
-            return prefix.len + stringDisplayWidth(search) + 7; // " with: " = 7
+            return prefix_width + stringDisplayWidth(search) + 7; // " with: " = 7
         } else {
-            return prefix.len + 6; // "with: " = 6
+            return prefix_width + 6; // "with: " = 6
         }
     }
 
@@ -2760,7 +2761,7 @@ pub const Editor = struct {
         if (key == .alt and key.alt == 'r') {
             self.is_regex_replace = !self.is_regex_replace;
             const prompt = config.QueryReplace.getPrompt(self.is_regex_replace);
-            self.prompt_prefix_len = prompt.len;
+            self.prompt_prefix_len = stringDisplayWidth(prompt);
             self.setPrompt("{s}{s}", .{ prompt, self.minibuffer.getContent() });
             // ハイライトを更新
             const content = self.minibuffer.getContent();
@@ -2770,7 +2771,7 @@ pub const Editor = struct {
             return true;
         }
         const prompt = config.QueryReplace.getPrompt(self.is_regex_replace);
-        self.prompt_prefix_len = prompt.len;
+        self.prompt_prefix_len = stringDisplayWidth(prompt);
         try self.processMinibufferKeyWithPrompt(key, prompt);
         // インクリメンタルハイライト
         const content = self.minibuffer.getContent();
@@ -2848,7 +2849,9 @@ pub const Editor = struct {
     fn handleQueryReplaceConfirmKey(self: *Editor, key: input.Key) !bool {
         switch (key) {
             .char => |c| try self.handleReplaceConfirmChar(c),
-            .codepoint => |cp| try self.handleReplaceConfirmChar(unicode.normalizeFullwidth(cp)),
+            // 他の確認モード（quit_confirm, kill_buffer_confirm等）と統一
+            // normalizeFullwidthは使用しない（toAsciiCharで十分）
+            .codepoint => |cp| try self.handleReplaceConfirmChar(cp),
             .ctrl => |c| {
                 if (c == 'g') {
                     self.finishReplace(); // 統一的にfinishReplaceを使用
