@@ -2780,10 +2780,12 @@ pub const Editor = struct {
         const prompt = config.QueryReplace.getPrompt(self.is_regex_replace);
         self.prompt_prefix_len = stringDisplayWidth(prompt);
         try self.processMinibufferKeyWithPrompt(key, prompt);
-        // インクリメンタルハイライト
+        // インクリメンタルハイライト＆カーソル移動（通常検索と同様）
         const content = self.minibuffer.getContent();
         if (content.len > 0) {
             self.getCurrentView().setSearchHighlightEx(content, self.is_regex_replace);
+            // 最初のマッチにカーソルを移動（現在のマッチとして黄色ハイライト）
+            _ = self.findNextMatch(content, 0) catch {};
         } else {
             self.getCurrentView().setSearchHighlight(null);
         }
