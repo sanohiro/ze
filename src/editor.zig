@@ -2024,8 +2024,8 @@ pub const Editor = struct {
             while (true) {
                 if (try input.readKeyFromReader(input_reader)) |key| {
                     keys_processed += 1;
-                    // ミニバッファモード中はプロンプトを維持
-                    if (!self.isMinibufferMode()) {
+                    // ミニバッファモード中、または確認待ちモード中はプロンプトを維持
+                    if (!self.isMinibufferMode() and self.mode != .query_replace_confirm) {
                         self.getCurrentView().clearError();
                     }
                     self.processKey(key) catch |err| {
