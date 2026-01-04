@@ -197,9 +197,9 @@ pub fn killLine(e: *Editor) !void {
     if (delete_len == 0) return;
 
     if (try deleteRangeCommon(e, pos, delete_len, pos)) |deleted| {
-        // kill ringに保存（KillRingの再利用バッファにコピー）
+        // kill ringに保存しクリップボードにもコピー
         defer e.allocator.free(deleted);
-        try e.kill_ring.store(deleted);
+        try e.storeToKillRing(deleted);
     }
 }
 
@@ -280,9 +280,9 @@ pub fn killRegion(e: *Editor) !void {
 
     const deleted = try deleteRangeCommon(e, region.start, region.len, e.getCurrentView().getCursorBufferPos()) orelse return;
 
-    // kill ringに保存（KillRingの再利用バッファにコピー）
+    // kill ringに保存しクリップボードにもコピー
     defer e.allocator.free(deleted);
-    try e.kill_ring.store(deleted);
+    try e.storeToKillRing(deleted);
 
     e.setCursorToPos(region.start);
     window.mark_pos = null;
@@ -297,10 +297,10 @@ pub fn copyRegion(e: *Editor) !void {
         return;
     };
 
-    // 新しいテキストを先に取得してkill ringに保存
+    // 新しいテキストを先に取得してkill ringに保存しクリップボードにもコピー
     const new_text = try e.extractText(region.start, region.len);
     defer e.allocator.free(new_text);
-    try e.kill_ring.store(new_text);
+    try e.storeToKillRing(new_text);
 
     window.mark_pos = null;
 
@@ -568,10 +568,9 @@ pub fn deleteWord(e: *Editor) !void {
 
     // deleteRangeCommon内でmarkDirtyForTextが呼ばれる
     if (try deleteRangeCommon(e, start_pos, end_pos - start_pos, start_pos)) |deleted| {
-        // Emacsのkill-wordと同様、削除したテキストをkill ringに保存
-        // deferでfreeし、storeでkill ringにコピー
+        // Emacsのkill-wordと同様、削除したテキストをkill ringに保存しクリップボードにもコピー
         defer e.allocator.free(deleted);
-        try e.kill_ring.store(deleted);
+        try e.storeToKillRing(deleted);
     }
 }
 

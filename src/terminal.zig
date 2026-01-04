@@ -283,6 +283,43 @@ pub const Terminal = struct {
         self.buf.clearRetainingCapacity();
     }
 
+    /// OSC 52でシステムクリップボードにテキストをコピー
+    /// iTerm2, kitty, alacritty等の多くのターミナルでサポート
+    pub fn copyToClipboard(self: *Terminal, text: []const u8) !void {
+        // 大きすぎるテキストは切り詰め（Base64で約4/3倍になるため）
+        const max_size = 100000; // 100KB制限
+        const actual_text = if (text.len > max_size) text[0..max_size] else text;
+
+        // Base64エンコード
+        const encoder = std.base64.standard.Encoder;
+        const encoded_len = encoder.calcSize(actual_text.len);
+
+        // OSC 52シーケンス: \x1b]52;c;<base64>\x07
+        // ヘッダー7バイト + Base64 + 終端1バイト
+        const total_len = 7 + encoded_len + 1;
+        const buf = try self.allocator.alloc(u8, total_len);
+        defer self.allocator.free(buf);
+
+        // ヘッダー: ESC ] 52 ; c ;
+        buf[0] = 0x1b;
+        buf[1] = ']';
+        buf[2] = '5';
+        buf[3] = '2';
+        buf[4] = ';';
+        buf[5] = 'c';
+        buf[6] = ';';
+
+        // Base64エンコード
+        _ = encoder.encode(buf[7 .. 7 + encoded_len], actual_text);
+
+        // 終端: BEL
+        buf[total_len - 1] = 0x07;
+
+        // 即座に出力（バッファリングせずに直接送信）
+        const stdout: std.fs.File = .{ .handle = posix.STDOUT_FILENO };
+        try stdout.writeAll(buf);
+    }
+
     // ============================================================================
     // 効率的なスクロール（差分描画の最適化）
     // ============================================================================

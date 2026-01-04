@@ -2153,6 +2153,13 @@ pub const Editor = struct {
         try buffer_state.editing_ctx.recordDeleteOp(pos, text, cursor_pos_before_edit);
     }
 
+    /// kill ringに保存し、OSC 52でシステムクリップボードにもコピー
+    pub fn storeToKillRing(self: *Editor, text: []const u8) !void {
+        try self.kill_ring.store(text);
+        // OSC 52でシステムクリップボードにコピー（エラーは無視）
+        self.terminal.copyToClipboard(text) catch {};
+    }
+
     /// 置換操作を記録（deleteとinsertを1つの原子的な操作として）
     fn recordReplace(self: *Editor, pos: usize, old_text: []const u8, new_text: []const u8, cursor_pos_before_edit: usize) !void {
         const buffer_state = self.getCurrentBuffer();
