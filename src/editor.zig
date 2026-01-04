@@ -4150,6 +4150,9 @@ pub const Editor = struct {
                     self.getCurrentView().setError(msg);
                 } else if (truncated) {
                     self.getCurrentView().setError("Warning: output truncated (10MB limit)");
+                } else {
+                    // 正常完了時もメッセージをクリア（Running...が残らないように）
+                    self.getCurrentView().clearError();
                 }
             },
             .new_buffer => {
@@ -4169,6 +4172,9 @@ pub const Editor = struct {
                         self.getCurrentView().setError(msg);
                     } else if (truncated) {
                         self.getCurrentView().setError("Warning: output truncated (10MB limit)");
+                    } else {
+                        // 正常完了時もメッセージをクリア
+                        self.getCurrentView().clearError();
                     }
                 } else {
                     // stdoutが空でもstderrがあればCommand bufferに表示
