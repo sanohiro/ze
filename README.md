@@ -199,7 +199,7 @@ ze uses Emacs-style keybindings. `C-` means Ctrl, `M-` means Alt/Option.
 | `M-%` | Query replace |
 | `M-\|` | Shell command |
 | `C-Space` | Start selection |
-| `C-w` / `M-w` / `C-y` | Cut/copy/paste |
+| `C-w` / `M-w` / `C-y` | Cut/copy/paste (+ OSC 52 clipboard) |
 | `C-x 2` / `C-x 3` | Split window (horizontal/vertical) |
 | `C-x b` | Switch buffer |
 | `C-x C-s` | Save |
@@ -234,6 +234,12 @@ ze highlights comments only. This is intentional:
 ---
 
 ## Features
+
+### Clipboard Integration
+
+- Uses **OSC 52** escape sequence to copy to system clipboard
+- Cut (`C-w`) and copy (`M-w`) automatically send text to clipboard
+- Works with iTerm2, kitty, alacritty, WezTerm, and most modern terminals
 
 ### Encoding
 
@@ -271,6 +277,7 @@ ze highlights comments only. This is intentional:
 - Comment/indent settings for 48 languages
 - Keyboard macros (`C-x (` / `)` / `e`)
 - In-app help (`M-?`)
+- OSC 52 clipboard integration
 
 ---
 

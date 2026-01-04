@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-01-04
+
+### Added
+- **OSC 52 clipboard integration**: Cut (`C-w`) and copy (`M-w`) automatically copy to system clipboard
+  - Works with iTerm2, kitty, alacritty, WezTerm, and most modern terminals
+  - No configuration required
+- PieceIterator backward traversal functions for buffer navigation
+
+### Fixed
+- Shell command status: "Running..." message now clears after command completes
+- Speculative render skip on exit: Prevents unnecessary rendering during shutdown
+- Rectangle undo: Fixed undo behavior for rectangle operations
+- Shell stderr: Fixed stderr output handling in shell integration
+- Multiple bug fixes reported by Codex analysis
+
+### Performance
+- **Startup optimization**: Pre-allocated buffers reduce allocations during initialization
+- **Rendering optimization**: Pre-allocated prev_screen buffer eliminates per-frame allocations
+- **Cursor movement**: O(1) moveCursorLeft via caching
+- **Search optimization**: Shared visible_text mapping for literal search
+- Overall improvements to startup, input handling, and drawing
+
+### Refactored
+- Consolidated duplicate code (encoding.zig UTF-16 conversion, shell_service.zig pipe reading)
+- Removed unused listeners mechanism
+- Code consistency improvements and DRY violations fixed
+- Quality improvements across codebase
+
 ## [1.3.5] - 2026-01-01
 
 ### Fixed

@@ -52,6 +52,8 @@ Moving without Shift clears the selection.
 | `Tab` / `S-Tab` | Indent/unindent |
 | `M-;` | Toggle comment |
 
+**Note:** Cut/copy (`C-w`/`M-w`) automatically copies to system clipboard via OSC 52 (iTerm2, kitty, alacritty, etc.).
+
 ## File
 
 | Key | Action |
