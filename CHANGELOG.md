@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.2] - 2026-01-04
+
+### Fixed
+- `getRange`: Fixed crash when requesting zero-length range (safe allocation for free())
+- `findByFilename`: Fixed path normalization for unsaved files (prevents duplicate buffers)
+- `loadFromMemory`: Added language detection for piped input (`cat file | ze`)
+- `replaceRangeWithShellOutput`: Fixed false positive modified flag when no changes occur
+- `saveToFile`: Fixed orphaned .tmp files when rename fails (disk full, permission errors)
+
+### Performance
+- Shell streaming: Replaced heap allocations with stack buffer (eliminates 16KB alloc/free cycles)
+
 ## [1.4.1] - 2026-01-04
 
 ### Fixed

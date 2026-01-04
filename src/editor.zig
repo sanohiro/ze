@@ -339,6 +339,11 @@ pub const Editor = struct {
         buffer_state.editing_ctx.clearUndoHistory();
         buffer_state.editing_ctx.modified = false; // 読み込み直後は未変更
 
+        // 言語検出（loadFileと同様にファイル名とコンテンツから検出）
+        var preview_buf: [512]u8 = undefined;
+        const content_preview = buffer_state.editing_ctx.buffer.getContentPreview(&preview_buf);
+        view.detectLanguage(name, content_preview);
+
         // ビューをリセット
         view.top_line = 0;
         view.top_col = 0;
@@ -3908,15 +3913,15 @@ pub const Editor = struct {
             const buffer = self.getCurrentBufferContent();
             const remaining = range.end - range.current_pos;
             if (remaining > 0) {
-                // チャンクサイズ（16KB）で読み取り
-                const chunk_size = @min(remaining, 16 * 1024);
-                const chunk = buffer.getRange(self.allocator, range.current_pos, chunk_size) catch {
-                    // メモリ不足時はストリーミングを中止
-                    self.shell_service.closeStdin();
-                    self.streaming_range = null;
-                    return;
-                };
-                defer self.allocator.free(chunk);
+                // 固定サイズのスタックバッファを使用（ヒープアロケーションを回避）
+                var chunk_buffer: [16 * 1024]u8 = undefined;
+                const chunk_size = @min(remaining, chunk_buffer.len);
+
+                // PieceIteratorを使って直接コピー
+                var iter = buffer_mod.PieceIterator.init(buffer);
+                iter.seek(range.current_pos);
+                const bytes_copied = iter.copyBytes(chunk_buffer[0..chunk_size]);
+                const chunk = chunk_buffer[0..bytes_copied];
 
                 // パイプに書き込み
                 const written = self.shell_service.writeStdinChunk(chunk) catch {
@@ -3990,6 +3995,7 @@ pub const Editor = struct {
     fn replaceRangeWithShellOutput(self: *Editor, start: usize, length: usize, content: []const u8, cursor_after: ?usize, clear_mark: bool) !void {
         const buf = self.getCurrentBufferContent();
         const cursor_pos = self.getCurrentView().getCursorBufferPos();
+        var actually_changed = false;
 
         // 既存コンテンツを削除（undo記録付き）
         if (length > 0) {
@@ -3997,19 +4003,23 @@ pub const Editor = struct {
             defer self.allocator.free(old);
             try buf.delete(start, length);
             try self.recordDelete(start, old, cursor_pos);
+            actually_changed = true;
         }
 
         // 新しいコンテンツを挿入（undo記録付き）
         if (content.len > 0) {
             try buf.insertSlice(start, content);
             try self.recordInsert(start, content, cursor_pos);
+            actually_changed = true;
         }
 
-        // 状態更新
-        self.getCurrentBuffer().editing_ctx.modified = true;
+        // 状態更新（実際に変更があった場合のみ）
+        if (actually_changed) {
+            self.getCurrentBuffer().editing_ctx.modified = true;
+            if (clear_mark) self.window_manager.getCurrentWindow().mark_pos = null;
+            self.markAllViewsFullRedrawForBuffer(self.getCurrentBuffer().id);
+        }
         if (cursor_after) |pos| self.setCursorToPos(pos);
-        if (clear_mark) self.window_manager.getCurrentWindow().mark_pos = null;
-        self.markAllViewsFullRedrawForBuffer(self.getCurrentBuffer().id);
     }
 
     /// シェル実行結果を処理

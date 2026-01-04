@@ -1285,7 +1285,11 @@ pub const Buffer = struct {
         }
 
         // 成功したら rename で置き換え（アトミック操作）
-        try std.fs.cwd().rename(tmp_path, real_path);
+        std.fs.cwd().rename(tmp_path, real_path) catch |err| {
+            // rename失敗時は一時ファイルを削除してからエラーを返す
+            std.fs.cwd().deleteFile(tmp_path) catch {};
+            return err;
+        };
 
         // ディレクトリをfsyncして、renameの耐久性を保証
         // （クラッシュ時にディレクトリエントリが確実に永続化されるように）
@@ -1902,7 +1906,8 @@ pub const Buffer = struct {
     // 最適化: スライス単位でmemcpyを使用（バイト単位ループより大幅に高速）
     pub fn getRange(self: *const Buffer, allocator: std.mem.Allocator, start: usize, length: usize) ![]u8 {
         if (length == 0) {
-            return &[_]u8{};
+            // 長さ0でもallocatorから確保して返す（呼び出し側がfree()しても安全）
+            return try allocator.alloc(u8, 0);
         }
 
         // 境界チェック: 範囲がバッファサイズを超えていないか確認

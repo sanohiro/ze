@@ -205,15 +205,22 @@ pub const BufferManager = struct {
             }
         }
 
-        // 見つからなければ正規化パスで比較（ファイルシステムアクセスが必要）
-        const normalized_input = std.fs.cwd().realpathAlloc(self.allocator, filename) catch return null;
+        // パスを正規化して比較
+        // 1. まずrealpathを試す（ファイルが存在する場合の正規化）
+        // 2. 失敗した場合はpath.resolveで論理的に正規化（新規ファイル対応）
+        const normalized_input = std.fs.cwd().realpathAlloc(self.allocator, filename) catch blk: {
+            // ファイルが存在しない場合は論理的にパスを正規化
+            break :blk std.fs.path.resolve(self.allocator, &.{filename}) catch return null;
+        };
         defer self.allocator.free(normalized_input);
 
         for (self.buffers.items) |buffer| {
             // filename_normalizedが未計算なら遅延初期化
             if (buffer.file.filename_normalized == null) {
                 if (buffer.file.filename) |buf_filename| {
-                    buffer.file.filename_normalized = std.fs.cwd().realpathAlloc(self.allocator, buf_filename) catch null;
+                    // まずrealpathを試し、失敗したらpath.resolveを使う
+                    buffer.file.filename_normalized = std.fs.cwd().realpathAlloc(self.allocator, buf_filename) catch
+                        std.fs.path.resolve(self.allocator, &.{buf_filename}) catch null;
                 }
             }
             if (buffer.file.filename_normalized) |buf_norm| {
