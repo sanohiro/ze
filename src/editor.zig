@@ -849,6 +849,8 @@ pub const Editor = struct {
         if (!found) {
             self.finishReplace();
         } else {
+            // ハイライトを更新（次のマッチを黄色で表示）
+            self.getCurrentView().setSearchHighlightEx(search, self.is_regex_replace);
             self.getCurrentView().setError(config.Messages.REPLACE_PROMPT);
         }
     }
@@ -2815,14 +2817,21 @@ pub const Editor = struct {
             self.minibuffer.clear();
 
             if (self.replace_search) |search| {
-                const found = try self.findNextMatch(search, self.getCurrentView().getCursorBufferPos());
-                if (found) {
+                // インクリメンタル検索で既にマッチが見つかっている場合はそれを使用
+                if (self.replace_current_pos != null) {
                     self.mode = .query_replace_confirm;
                     self.setPrompt("Replace? (y)es (n)ext (!)all (q)uit", .{});
                 } else {
-                    self.mode = .normal;
-                    self.getCurrentView().setSearchHighlight(null);
-                    self.getCurrentView().setError("No match found");
+                    // マッチが見つかっていない場合は検索
+                    const found = try self.findNextMatch(search, 0);
+                    if (found) {
+                        self.mode = .query_replace_confirm;
+                        self.setPrompt("Replace? (y)es (n)ext (!)all (q)uit", .{});
+                    } else {
+                        self.mode = .normal;
+                        self.getCurrentView().setSearchHighlight(null);
+                        self.getCurrentView().setError("No match found");
+                    }
                 }
             } else {
                 self.mode = .normal;
