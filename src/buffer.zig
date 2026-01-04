@@ -1423,6 +1423,10 @@ pub const Buffer = struct {
 
         // EOF境界（pos == buffer.len()）の場合は最後のpieceの末尾を返す
         if (pos == current_pos) {
+            // 空バッファの場合（pieces.len == 0）
+            if (self.pieces.items.len == 0) {
+                return null;
+            }
             const last_idx = self.pieces.items.len - 1;
             const last_piece = self.pieces.items[last_idx];
             // キャッシュを更新
@@ -1470,7 +1474,10 @@ pub const Buffer = struct {
         self.modification_count +%= 1;
 
         // 行数キャッシュを更新（挿入テキスト内の改行数を加算）
-        self.cached_line_count += countNewlinesSIMD(text);
+        // エラー時にロールバックするためerrdeferを設定
+        const newline_count = countNewlinesSIMD(text);
+        self.cached_line_count += newline_count;
+        errdefer self.cached_line_count -= newline_count;
 
         const now = std.time.nanoTimestamp();
 
@@ -1744,10 +1751,12 @@ pub const Buffer = struct {
 
         // 削除範囲を計算（降順で削除して後続インデックスがずれないように）
         const first_to_remove = if (remove_start) start_loc.piece_idx else start_loc.piece_idx + 1;
-        const last_to_remove = if (remove_end) end_loc.piece_idx else end_loc.piece_idx - 1;
+        // end_loc.piece_idx == 0 かつ remove_end == false の場合のアンダーフロー防止
+        const last_to_remove: usize = if (remove_end) end_loc.piece_idx else if (end_loc.piece_idx == 0) 0 else end_loc.piece_idx - 1;
+        const should_remove = remove_end or end_loc.piece_idx > 0;
 
         // 削除実行（降順で削除、オーバーフロー防止）
-        if (last_to_remove >= first_to_remove) {
+        if (should_remove and last_to_remove >= first_to_remove) {
             var i = last_to_remove;
             while (true) {
                 _ = self.pieces.orderedRemove(i);

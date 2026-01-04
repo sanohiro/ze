@@ -1036,7 +1036,12 @@ pub const View = struct {
         // 最初のマッチを処理
         var match_start_vis = first_match_vis;
         var match_end_vis = first_match_vis + search_str.len;
-        if (match_end_vis > self.regex_visible_to_raw.items.len) {
+        // 境界チェック: match_start_visおよびmatch_end_visがitems範囲内か確認
+        if (self.regex_visible_to_raw.items.len == 0) return line;
+        if (match_start_vis >= self.regex_visible_to_raw.items.len) {
+            match_start_vis = self.regex_visible_to_raw.items.len - 1;
+        }
+        if (match_end_vis >= self.regex_visible_to_raw.items.len) {
             match_end_vis = self.regex_visible_to_raw.items.len - 1;
         }
         var match_start_raw = self.regex_visible_to_raw.items[match_start_vis];
@@ -1061,7 +1066,9 @@ pub const View = struct {
                 match_count += 1;
                 match_start_vis = visible_pos + rel_match;
                 match_end_vis = match_start_vis + search_str.len;
-                if (match_end_vis > self.regex_visible_to_raw.items.len) {
+                // 境界チェック
+                if (match_start_vis >= self.regex_visible_to_raw.items.len) break;
+                if (match_end_vis >= self.regex_visible_to_raw.items.len) {
                     match_end_vis = self.regex_visible_to_raw.items.len - 1;
                 }
                 match_start_raw = self.regex_visible_to_raw.items[match_start_vis];

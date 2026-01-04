@@ -141,7 +141,9 @@ pub fn backwardWord(e: *Editor) !void {
     const look_back = start_pos - scan_start;
     var chunk: [chunk_size + 4]u8 = undefined; // 最大4バイトの追加に対応
     var chunk_len: usize = 0;
-    while (chunk_len < look_back) {
+    // バッファオーバーフロー防止: look_backとchunk.lenの小さい方まで読み込む
+    const max_read = @min(look_back, chunk.len);
+    while (chunk_len < max_read) {
         if (iter.next()) |byte| {
             chunk[chunk_len] = byte;
             chunk_len += 1;
@@ -218,6 +220,9 @@ pub fn backwardWord(e: *Editor) !void {
                 chunk_len += 1;
             } else break;
         }
+
+        // チャンクが空なら終了（無限ループ防止）
+        if (chunk_len == 0) break;
 
         // 新しいチャンクを後方から処理
         i = chunk_len;

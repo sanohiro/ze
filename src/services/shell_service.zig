@@ -235,12 +235,13 @@ pub const ShellService = struct {
 
         // タイムアウト付きでwait
         const start_time = std.time.milliTimestamp();
-        const timeout_ns: i64 = @as(i64, timeout_ms) * std.time.ns_per_ms;
 
         while (true) {
             const elapsed = std.time.milliTimestamp() - start_time;
             if (elapsed >= timeout_ms) {
-                // タイムアウト: 子プロセスをキル
+                // タイムアウト: パイプを閉じてから子プロセスをキル
+                if (child.stdout) |stdout| stdout.close();
+                if (child.stderr) |stderr| stderr.close();
                 _ = child.kill() catch {};
                 _ = child.wait() catch {};
                 return error.Timeout;
@@ -288,7 +289,6 @@ pub const ShellService = struct {
                 .stderr = try stderr_list.toOwnedSlice(self.allocator),
             };
         }
-        _ = timeout_ns;
     }
 
     /// シェル用にパスをクォート（シングルクォート使用）

@@ -125,6 +125,10 @@ pub const LanguageDef = struct {
                     result.ends_in_block = true;
                     return result;
                 }
+            } else {
+                // ブロックコメント定義がないのにin_block=trueは矛盾状態
+                // 安全のためリセット
+                currently_in_block = false;
             }
         }
 
