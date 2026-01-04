@@ -860,7 +860,9 @@ pub const Editor = struct {
 
     /// 置換確認モードの文字処理
     fn handleReplaceConfirmChar(self: *Editor, cp: u21) !void {
-        const c = unicode.toAsciiChar(cp);
+        // 全角文字を半角に正規化してからASCIIに変換
+        const normalized = unicode.normalizeFullwidth(cp);
+        const c = unicode.toAsciiChar(normalized);
         const search = self.replace_search orelse {
             self.mode = .normal;
             self.getCurrentView().setError(config.Messages.NO_SEARCH_STRING);
@@ -2867,17 +2869,19 @@ pub const Editor = struct {
     }
 
     /// Query Replace: 確認モード
+    /// y/n/!/q/C-g以外のキーは無視
     fn handleQueryReplaceConfirmKey(self: *Editor, key: input.Key) !bool {
         switch (key) {
             .char => |c| try self.handleReplaceConfirmChar(c),
-            // 他の確認モード（quit_confirm, kill_buffer_confirm等）と統一
-            // normalizeFullwidthは使用しない（toAsciiCharで十分）
+            // 全角文字も受け付ける（ｙｎ！等）
             .codepoint => |cp| try self.handleReplaceConfirmChar(cp),
             .ctrl => |c| {
                 if (c == 'g') {
-                    self.finishReplace(); // 統一的にfinishReplaceを使用
+                    self.finishReplace();
                 }
+                // C-g以外のCtrlキーは無視
             },
+            // その他のキー（矢印、Escなど）は無視
             else => {},
         }
         return true;
