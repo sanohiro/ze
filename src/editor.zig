@@ -648,11 +648,14 @@ pub const Editor = struct {
         const prompt = config.QueryReplace.getPrompt(self.is_regex_replace);
         const prompt_base = prompt[0 .. prompt.len - 2]; // ": "を除去
 
-        // 前回の値があればデフォルトとして表示
+        // 前回の値があればデフォルトとして表示し、ハイライトも設定
         if (self.replace_search) |prev| {
             self.setPrompt("{s} (default {s}): ", .{ prompt_base, prev });
             // " (default ": 10文字 + "): ": 3文字 + 1(末尾調整) = 14
             self.prompt_prefix_len = prompt_base.len + 14 + stringDisplayWidth(prev);
+            // 前回のパターンでハイライト表示し、最初のマッチにカーソルを移動
+            self.getCurrentView().setSearchHighlightEx(prev, self.is_regex_replace);
+            _ = self.findNextMatch(prev, 0) catch {};
         } else {
             self.prompt_prefix_len = prompt.len;
             self.setPrompt("{s}", .{prompt});
