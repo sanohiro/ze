@@ -147,7 +147,12 @@ pub const ShellService = struct {
             },
         };
 
-        if (bytes_read == 0) return false;
+        if (bytes_read == 0) {
+            // EOF: パイプを閉じて無駄なread()ループを防ぐ
+            file.close();
+            file_ptr.* = null;
+            return false;
+        }
 
         const available = config.Shell.MAX_OUTPUT_SIZE - buffer.items.len;
         const to_append = @min(bytes_read, available);
@@ -212,6 +217,78 @@ pub const ShellService = struct {
                 }
             }
         }
+    }
+
+    /// タイムアウト付きでコマンドを実行（UIフリーズ防止）
+    /// timeout_ms: ミリ秒単位のタイムアウト
+    const RunResult = struct {
+        stdout: []u8,
+        stderr: []u8,
+    };
+
+    fn runWithTimeout(self: *Self, argv: []const []const u8, timeout_ms: u32) !RunResult {
+        var child = std.process.Child.init(argv, self.allocator);
+        child.stdout_behavior = .Pipe;
+        child.stderr_behavior = .Pipe;
+
+        try child.spawn();
+
+        // タイムアウト付きでwait
+        const start_time = std.time.milliTimestamp();
+        const timeout_ns: i64 = @as(i64, timeout_ms) * std.time.ns_per_ms;
+
+        while (true) {
+            const elapsed = std.time.milliTimestamp() - start_time;
+            if (elapsed >= timeout_ms) {
+                // タイムアウト: 子プロセスをキル
+                _ = child.kill() catch {};
+                _ = child.wait() catch {};
+                return error.Timeout;
+            }
+
+            // 完了チェック（ノンブロッキング）
+            const term = child.wait() catch |err| {
+                if (err == error.WouldBlock) {
+                    // まだ完了していない、少し待つ
+                    std.Thread.sleep(10 * std.time.ns_per_ms);
+                    continue;
+                }
+                return err;
+            };
+            _ = term;
+
+            // 完了した、出力を読み取り
+            var stdout_list: std.ArrayListUnmanaged(u8) = .{};
+            errdefer stdout_list.deinit(self.allocator);
+            var stderr_list: std.ArrayListUnmanaged(u8) = .{};
+            errdefer stderr_list.deinit(self.allocator);
+
+            if (child.stdout) |stdout_pipe| {
+                var buf: [4096]u8 = undefined;
+                while (true) {
+                    const n = stdout_pipe.read(&buf) catch break;
+                    if (n == 0) break;
+                    try stdout_list.appendSlice(self.allocator, buf[0..n]);
+                    if (stdout_list.items.len >= config.Shell.COMPLETION_MAX_OUTPUT) break;
+                }
+            }
+
+            if (child.stderr) |stderr_pipe| {
+                var buf: [1024]u8 = undefined;
+                while (true) {
+                    const n = stderr_pipe.read(&buf) catch break;
+                    if (n == 0) break;
+                    try stderr_list.appendSlice(self.allocator, buf[0..n]);
+                    if (stderr_list.items.len >= 4096) break;
+                }
+            }
+
+            return .{
+                .stdout = try stdout_list.toOwnedSlice(self.allocator),
+                .stderr = try stderr_list.toOwnedSlice(self.allocator),
+            };
+        }
+        _ = timeout_ns;
     }
 
     /// シェル用にパスをクォート（シングルクォート使用）
@@ -430,10 +507,8 @@ pub const ShellService = struct {
     }
 
     /// シェルコマンドを非同期で開始
-    pub fn start(self: *Self, cmd_input: []const u8, stdin_data: ?[]const u8, stdin_allocated: bool) !void {
-        if (cmd_input.len == 0) return error.EmptyCommand;
-
-        const parsed = parseCommand(cmd_input);
+    /// parsedは呼び出し元でparseCommand()した結果を渡す（二重パース防止）
+    pub fn start(self: *Self, parsed: ParsedCommand, stdin_data: ?[]const u8, stdin_allocated: bool) !void {
         if (parsed.command.len == 0) return error.NoCommand;
 
         // 遅延初期化: bashパスとaliasesパスを検索（初回のみ）
@@ -513,10 +588,8 @@ pub const ShellService = struct {
 
     /// ストリーミングモードでシェルコマンドを開始
     /// 呼び出し側がwriteStdinChunk()でstdinにデータを書き込み、closeStdin()で終了する
-    pub fn startStreaming(self: *Self, cmd_input: []const u8) !void {
-        if (cmd_input.len == 0) return error.EmptyCommand;
-
-        const parsed = parseCommand(cmd_input);
+    /// parsedは呼び出し元でparseCommand()した結果を渡す（二重パース防止）
+    pub fn startStreaming(self: *Self, parsed: ParsedCommand) !void {
         if (parsed.command.len == 0) return error.NoCommand;
 
         // 遅延初期化: bashパスとaliasesパスを検索（初回のみ）
@@ -832,6 +905,7 @@ pub const ShellService = struct {
     /// bashのcompgenを使って補完候補を取得
     /// input: シェルコマンド入力全体
     /// 戻り値: 補完結果（呼び出し側でdeinit()する必要あり）
+    /// 注意: 500msタイムアウトでUIフリーズを防止
     pub fn getCompletions(self: *Self, input: []const u8) !?CompletionResult {
         // 入力から最後のトークンを取得
         const token = getLastToken(input);
@@ -856,12 +930,8 @@ pub const ShellService = struct {
         self.ensurePathsInitialized();
         const bash_path = self.bash_path orelse return null;
 
-        // compgenを実行
-        const result = std.process.Child.run(.{
-            .allocator = self.allocator,
-            .argv = &.{ bash_path, "-c", cmd },
-            .max_output_bytes = config.Shell.COMPLETION_MAX_OUTPUT,
-        }) catch return null;
+        // タイムアウト付きでcompgenを実行（UIフリーズ防止）
+        const result = self.runWithTimeout(&.{ bash_path, "-c", cmd }, 500) catch return null;
         defer self.allocator.free(result.stdout);
         defer self.allocator.free(result.stderr);
 

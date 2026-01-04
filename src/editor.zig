@@ -247,6 +247,7 @@ pub const Editor = struct {
         start: usize, // 読み取り開始位置
         end: usize, // 読み取り終了位置
         current_pos: usize, // 現在の読み取り位置
+        iter: ?buffer_mod.PieceIterator, // イテレータを保持してO(n²)を回避
     },
 
     // キーマップ
@@ -3859,9 +3860,8 @@ pub const Editor = struct {
 
         if (use_streaming) {
             // ストリーミングモード: Bufferから直接チャンクを読み取りながらパイプに書き込む
-            self.shell_service.startStreaming(cmd_input) catch |err| {
+            self.shell_service.startStreaming(parsed) catch |err| {
                 switch (err) {
-                    error.EmptyCommand => self.getCurrentView().setError(config.Messages.NO_COMMAND_SPECIFIED),
                     error.NoCommand => self.getCurrentView().setError(config.Messages.NO_COMMAND_SPECIFIED),
                     else => self.getCurrentView().setError(config.Messages.COMMAND_START_FAILED),
                 }
@@ -3872,6 +3872,7 @@ pub const Editor = struct {
                 .start = range.?.start,
                 .end = range.?.end,
                 .current_pos = range.?.start,
+                .iter = null, // 初回のpollで初期化
             };
         } else {
             // 通常モード: 小さなデータはgetRange()で複製
@@ -3883,7 +3884,7 @@ pub const Editor = struct {
                 stdin_allocated = true;
             }
 
-            self.shell_service.start(cmd_input, stdin_data, stdin_allocated) catch |err| {
+            self.shell_service.start(parsed, stdin_data, stdin_allocated) catch |err| {
                 // エラー時は入力データを解放
                 if (stdin_allocated) {
                     if (stdin_data) |data| {
@@ -3891,7 +3892,7 @@ pub const Editor = struct {
                     }
                 }
                 switch (err) {
-                    error.EmptyCommand, error.NoCommand => {
+                    error.NoCommand => {
                         self.getCurrentView().setError(config.Messages.NO_COMMAND_SPECIFIED);
                     },
                     else => {
@@ -3917,10 +3918,13 @@ pub const Editor = struct {
                 var chunk_buffer: [16 * 1024]u8 = undefined;
                 const chunk_size = @min(remaining, chunk_buffer.len);
 
-                // PieceIteratorを使って直接コピー
-                var iter = buffer_mod.PieceIterator.init(buffer);
-                iter.seek(range.current_pos);
-                const bytes_copied = iter.copyBytes(chunk_buffer[0..chunk_size]);
+                // PieceIteratorを使い回してO(n²)を回避
+                // 初回はinit+seek、2回目以降は前回の位置から継続
+                if (range.iter == null) {
+                    range.iter = buffer_mod.PieceIterator.init(buffer);
+                    range.iter.?.seek(range.current_pos);
+                }
+                const bytes_copied = range.iter.?.copyBytes(chunk_buffer[0..chunk_size]);
                 const chunk = chunk_buffer[0..bytes_copied];
 
                 // パイプに書き込み

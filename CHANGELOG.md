@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.3] - 2026-01-04
+
+### Fixed
+- Shell service: Removed redundant command parsing (was parsing twice per command)
+- Shell service: Fixed EOF handling in readFromPipe (close fd to prevent busy loop)
+
+### Performance
+- Shell streaming: PieceIterator reuse for O(n) instead of O(n²) on large data
+- Tab completion: Added 500ms timeout to prevent UI freeze on slow filesystems
+
 ## [1.4.2] - 2026-01-04
 
 ### Fixed
