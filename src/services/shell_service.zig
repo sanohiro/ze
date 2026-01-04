@@ -118,6 +118,57 @@ pub const ShellService = struct {
         return truncated;
     }
 
+    /// パイプから1チャンク読み取る共通処理
+    /// 戻り値: データを読み取った場合はtrue
+    fn readFromPipe(
+        self: *Self,
+        state: *CommandState,
+        file_ptr: *?std.fs.File,
+        buffer: *std.ArrayListUnmanaged(u8),
+        truncated: *bool,
+        read_buf: []u8,
+    ) !bool {
+        const file = file_ptr.* orelse return false;
+        if (buffer.items.len >= config.Shell.MAX_OUTPUT_SIZE) {
+            // 上限到達時はパイプを閉じる
+            truncated.* = true;
+            file.close();
+            file_ptr.* = null;
+            return false;
+        }
+
+        const bytes_read: usize = file.read(read_buf) catch |err| switch (err) {
+            error.WouldBlock => return false, // ノンブロッキングで読めるデータがない
+            else => {
+                // 真のエラー（EIO、EBADFD等）: パイプを閉じて続行
+                file.close();
+                file_ptr.* = null;
+                return false;
+            },
+        };
+
+        if (bytes_read == 0) return false;
+
+        const available = config.Shell.MAX_OUTPUT_SIZE - buffer.items.len;
+        const to_append = @min(bytes_read, available);
+        if (to_append > 0) {
+            try buffer.appendSlice(self.allocator, read_buf[0..to_append]);
+        }
+        if (to_append < bytes_read) {
+            truncated.* = true;
+        }
+
+        // 上限に達したらパイプを閉じる
+        if (buffer.items.len >= config.Shell.MAX_OUTPUT_SIZE) {
+            truncated.* = true;
+            file.close();
+            file_ptr.* = null;
+        }
+
+        _ = state; // 将来的な拡張用
+        return true;
+    }
+
     pub fn init(allocator: std.mem.Allocator) Self {
         // 履歴とパス検索は遅延初期化（起動高速化）
         return .{
@@ -604,68 +655,12 @@ pub const ShellService = struct {
             var any_read = false;
 
             // stdout から1チャンク読み取り
-            if (state.child.stdout) |stdout_file| {
-                if (state.stdout_buffer.items.len < config.Shell.MAX_OUTPUT_SIZE) {
-                    const bytes_read: usize = stdout_file.read(&read_buf) catch |err| switch (err) {
-                        error.WouldBlock => 0, // ノンブロッキングで読めるデータがない
-                        else => blk: {
-                            // 真のエラー（EIO、EBADFD等）: パイプを閉じて続行
-                            stdout_file.close();
-                            state.child.stdout = null;
-                            break :blk 0;
-                        },
-                    };
-                    if (bytes_read > 0) {
-                        any_read = true;
-                        const available = config.Shell.MAX_OUTPUT_SIZE - state.stdout_buffer.items.len;
-                        const to_append = @min(bytes_read, available);
-                        if (to_append > 0) {
-                            try state.stdout_buffer.appendSlice(self.allocator, read_buf[0..to_append]);
-                        }
-                        if (to_append < bytes_read) {
-                            state.stdout_truncated = true;
-                        }
-                    }
-                }
-                // 上限に達したらパイプを閉じる（子プロセスのブロックを防ぐ）
-                if (state.child.stdout != null and state.stdout_buffer.items.len >= config.Shell.MAX_OUTPUT_SIZE) {
-                    state.stdout_truncated = true; // 上限到達時も truncated フラグを設定
-                    stdout_file.close();
-                    state.child.stdout = null;
-                }
-            }
+            const stdout_result = try self.readFromPipe(state, &state.child.stdout, &state.stdout_buffer, &state.stdout_truncated, &read_buf);
+            if (stdout_result) any_read = true;
 
             // stderr から1チャンク読み取り
-            if (state.child.stderr) |stderr_file| {
-                if (state.stderr_buffer.items.len < config.Shell.MAX_OUTPUT_SIZE) {
-                    const bytes_read: usize = stderr_file.read(&read_buf) catch |err| switch (err) {
-                        error.WouldBlock => 0, // ノンブロッキングで読めるデータがない
-                        else => blk: {
-                            // 真のエラー（EIO、EBADFD等）: パイプを閉じて続行
-                            stderr_file.close();
-                            state.child.stderr = null;
-                            break :blk 0;
-                        },
-                    };
-                    if (bytes_read > 0) {
-                        any_read = true;
-                        const available = config.Shell.MAX_OUTPUT_SIZE - state.stderr_buffer.items.len;
-                        const to_append = @min(bytes_read, available);
-                        if (to_append > 0) {
-                            try state.stderr_buffer.appendSlice(self.allocator, read_buf[0..to_append]);
-                        }
-                        if (to_append < bytes_read) {
-                            state.stderr_truncated = true;
-                        }
-                    }
-                }
-                // 上限に達したらパイプを閉じる（子プロセスのブロックを防ぐ）
-                if (state.child.stderr != null and state.stderr_buffer.items.len >= config.Shell.MAX_OUTPUT_SIZE) {
-                    state.stderr_truncated = true; // 上限到達時も truncated フラグを設定
-                    stderr_file.close();
-                    state.child.stderr = null;
-                }
-            }
+            const stderr_result = try self.readFromPipe(state, &state.child.stderr, &state.stderr_buffer, &state.stderr_truncated, &read_buf);
+            if (stderr_result) any_read = true;
 
             if (!any_read) break;
         }
