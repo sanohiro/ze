@@ -2032,7 +2032,8 @@ pub const Editor = struct {
             // 【投機的即時レンダリング】キー処理後に変更があれば即座に再描画
             // 従来: render → wait → process → (次フレームで) render (16ms遅延)
             // 改善: render → wait → process → render (即座、0ms遅延)
-            if (keys_processed > 0 and self.anyWindowNeedsRedraw()) {
+            // 注意: running=falseの場合はスキップ（終了処理中に余計な描画をしない）
+            if (self.running and keys_processed > 0 and self.anyWindowNeedsRedraw()) {
                 self.clampCursorPosition();
                 try self.renderAllWindows();
             }
