@@ -689,16 +689,25 @@ pub fn unindentRegion(e: *Editor) !void {
             // 安全のため上限をクランプ
             const clamped_remove = @min(spaces_to_remove, config.Editor.INDENT_BUF_SIZE);
             var stack_buf: [config.Editor.INDENT_BUF_SIZE]u8 = undefined;
+            // 実際に読み取ったバイト数を追跡
+            var actual_read: usize = 0;
             const deleted = blk: {
                 // イテレータを再利用（seek()キャッシュにより高速）
                 iter.seek(line_start);
-                for (0..clamped_remove) |i| {
-                    stack_buf[i] = iter.next() orelse break;
+                for (0..clamped_remove) |_| {
+                    if (iter.next()) |byte| {
+                        stack_buf[actual_read] = byte;
+                        actual_read += 1;
+                    } else {
+                        break;
+                    }
                 }
-                break :blk stack_buf[0..clamped_remove];
+                break :blk stack_buf[0..actual_read];
             };
+            // 実際に読み取れたバイトがない場合はスキップ
+            if (actual_read == 0) continue;
 
-            try buffer.delete(line_start, clamped_remove);
+            try buffer.delete(line_start, actual_read);
             // 削除後のロールバック用errdefer（recordDeleteが失敗した場合）
             errdefer buffer.insertSlice(line_start, deleted) catch {};
             try e.recordDelete(line_start, deleted, view.getCursorBufferPos());

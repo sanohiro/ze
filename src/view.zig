@@ -1044,8 +1044,12 @@ pub const View = struct {
         if (match_end_vis >= self.regex_visible_to_raw.items.len) {
             match_end_vis = self.regex_visible_to_raw.items.len - 1;
         }
+        // match_start_vis > match_end_vis の場合はハイライトをスキップ
+        if (match_start_vis > match_end_vis) return line;
         var match_start_raw = self.regex_visible_to_raw.items[match_start_vis];
         var match_end_raw = self.regex_visible_to_raw.items[match_end_vis];
+        // match_start_raw > match_end_raw の場合もスキップ
+        if (match_start_raw > match_end_raw) return line;
 
         // マッチ前の部分をコピー
         try self.highlighted_line.appendSlice(self.allocator, line[0..match_start_raw]);
@@ -1071,8 +1075,12 @@ pub const View = struct {
                 if (match_end_vis >= self.regex_visible_to_raw.items.len) {
                     match_end_vis = self.regex_visible_to_raw.items.len - 1;
                 }
+                // match_start_vis > match_end_vis の場合はスキップ
+                if (match_start_vis > match_end_vis) break;
                 match_start_raw = self.regex_visible_to_raw.items[match_start_vis];
                 match_end_raw = self.regex_visible_to_raw.items[match_end_vis];
+                // スライス範囲チェック: raw位置が逆転している場合はスキップ
+                if (match_start_raw > match_end_raw or last_raw_pos > match_start_raw) break;
 
                 // マッチ前の部分をコピー
                 try self.highlighted_line.appendSlice(self.allocator, line[last_raw_pos..match_start_raw]);

@@ -308,8 +308,8 @@ fn parseCSISequence(reader: *InputReader, buf: []u8) !?Key {
                 };
             }
 
-            // セミコロン区切りのパラメータ
-            if (buf[idx] == ';') {
+            // セミコロン区切りのパラメータ（バッファ境界チェック必須）
+            if (idx < buf.len and buf[idx] == ';') {
                 // ESC [ 1 ; <modifier> <key>
                 if (num == 1) {
                     return try parseModifiedArrowKey(buf, reader);
