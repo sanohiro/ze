@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.4] - 2026-01-05
+
+### Fixed
+- **Vertical split scroll bug**: Terminal scroll optimization now disabled for non-full-width windows
+  - Fixes issue where scrolling one window in a vertical split (C-x 3) would affect the other window
+  - Terminal scroll regions only control rows, not columns
+- Boundary value checks and error handling improvements
+
+### Refactored
+- Extracted KillRing from editor.zig to services/kill_ring.zig
+
 ## [1.4.3] - 2026-01-04
 
 ### Fixed
