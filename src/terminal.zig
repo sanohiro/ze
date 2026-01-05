@@ -288,7 +288,11 @@ pub const Terminal = struct {
 
     /// OSC 52でシステムクリップボードにテキストをコピー
     /// iTerm2, kitty, alacritty等の多くのターミナルでサポート
-    /// tmux内ではtmuxのネイティブOSC 52サポートを使用（set -s set-clipboard on が必要）
+    ///
+    /// tmux内ではDCSパススルーを使用:
+    /// - $TMUX環境変数がセットされている場合
+    /// - $TERMが"screen"で始まる場合（SSHセッション内で$TMUXが引き継がれない対策）
+    /// tmuxの設定が必要: set -g allow-passthrough on
     pub fn copyToClipboard(self: *Terminal, text: []const u8) !void {
         // 大きすぎるテキストは切り詰め（Base64で約4/3倍になるため）
         const max_size = 100000; // 100KB制限
@@ -298,27 +302,74 @@ pub const Terminal = struct {
         const encoder = std.base64.standard.Encoder;
         const encoded_len = encoder.calcSize(actual_text.len);
 
+        // tmuxパススルーが必要か検出
+        // - $TMUX がセットされている
+        // - または $TERM が "screen" で始まる（tmux内のSSHセッションでは$TMUXが引き継がれないため）
+        const needs_tmux_passthrough = blk: {
+            if (std.posix.getenv("TMUX")) |_| break :blk true;
+            if (std.posix.getenv("TERM")) |term| {
+                if (term.len >= 6 and std.mem.eql(u8, term[0..6], "screen")) break :blk true;
+            }
+            break :blk false;
+        };
+
         // OSC 52シーケンス: \x1b]52;c;<base64>\x07
-        // tmux 3.3+ではネイティブOSC 52をサポート（set -s set-clipboard on）
-        const total_len = 7 + encoded_len + 1; // ESC ] 52 ; c ; <base64> BEL
+        // tmuxパススルー: \x1bPtmux;\x1b<OSC52>\x1b\\
+        const osc52_len = 7 + encoded_len + 1; // ESC ] 52 ; c ; <base64> BEL
+        const total_len = if (needs_tmux_passthrough)
+            2 + 5 + 1 + osc52_len + 2 // ESC P tmux ; ESC <osc52> ESC \
+        else
+            osc52_len;
 
         const buf = try self.allocator.alloc(u8, total_len);
         defer self.allocator.free(buf);
 
+        var pos: usize = 0;
+
+        if (needs_tmux_passthrough) {
+            // DCS (Device Control String) 開始: ESC P tmux ;
+            buf[pos] = 0x1b;
+            pos += 1;
+            buf[pos] = 'P';
+            pos += 1;
+            @memcpy(buf[pos .. pos + 5], "tmux;");
+            pos += 5;
+            // 内側のESCを追加（tmuxパススルー仕様）
+            buf[pos] = 0x1b;
+            pos += 1;
+        }
+
         // OSC 52: ESC ] 52 ; c ; <base64> BEL
-        buf[0] = 0x1b;
-        buf[1] = ']';
-        buf[2] = '5';
-        buf[3] = '2';
-        buf[4] = ';';
-        buf[5] = 'c';
-        buf[6] = ';';
+        buf[pos] = 0x1b;
+        pos += 1;
+        buf[pos] = ']';
+        pos += 1;
+        buf[pos] = '5';
+        pos += 1;
+        buf[pos] = '2';
+        pos += 1;
+        buf[pos] = ';';
+        pos += 1;
+        buf[pos] = 'c';
+        pos += 1;
+        buf[pos] = ';';
+        pos += 1;
 
         // Base64エンコード
-        _ = encoder.encode(buf[7 .. 7 + encoded_len], actual_text);
+        _ = encoder.encode(buf[pos .. pos + encoded_len], actual_text);
+        pos += encoded_len;
 
         // 終端: BEL
-        buf[total_len - 1] = 0x07;
+        buf[pos] = 0x07;
+        pos += 1;
+
+        if (needs_tmux_passthrough) {
+            // DCS終端: ESC \
+            buf[pos] = 0x1b;
+            pos += 1;
+            buf[pos] = '\\';
+            pos += 1;
+        }
 
         // 即座に出力（バッファリングせずに直接送信）
         const stdout: std.fs.File = .{ .handle = posix.STDOUT_FILENO };

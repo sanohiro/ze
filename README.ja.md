@@ -240,6 +240,7 @@ zeはコメントのみをハイライトします。これは意図的な設計
 - **OSC 52** エスケープシーケンスでシステムクリップボードにコピー
 - カット (`C-w`) とコピー (`M-w`) で自動的にクリップボードに転送
 - iTerm2, kitty, alacritty, WezTerm等の主要ターミナルで動作
+- **tmux**: `.tmux.conf` に `set -g allow-passthrough on` を追加
 
 ### エンコーディング
 

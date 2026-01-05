@@ -49,9 +49,16 @@ const ColumnSeekResult = struct {
 fn advanceToColumn(iter: *PieceIterator, line_end: usize, start_col: usize, target_col: usize, tab_width: usize) ColumnSeekResult {
     var current_col = start_col;
     while (iter.global_pos < line_end and current_col < target_col) {
+        const start_pos = iter.global_pos;
         const gc = iter.nextGraphemeCluster() catch break;
         if (gc) |cluster| {
-            current_col += getCharWidth(cluster.base, cluster.width, current_col, tab_width);
+            const char_width = getCharWidth(cluster.base, cluster.width, current_col, tab_width);
+            // 全角文字がtarget_colをまたぐ場合は手前で止まる
+            if (current_col + char_width > target_col) {
+                iter.global_pos = start_pos;
+                break;
+            }
+            current_col += char_width;
         } else break;
     }
     return .{ .byte_pos = iter.global_pos, .reached_col = current_col };

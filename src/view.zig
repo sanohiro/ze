@@ -1578,6 +1578,7 @@ pub const View = struct {
                 } else if (ch < ASCII.PRINTABLE_MIN or ch == ASCII.DEL) {
                     // 制御文字は2文字幅（^X形式）なので、両方収まるか確認
                     if (col >= self.top_col and col + 2 <= visible_end) {
+                        // 文字全体がビューポート内に収まる
                         try self.expanded_line.appendSlice(self.allocator, ANSI.GRAY);
                         emitted_gray = true;
                         const ctrl = if (ch == ASCII.DEL) [2]u8{ '^', '?' } else renderControlChar(ch);
@@ -1587,6 +1588,19 @@ pub const View = struct {
                         if (in_selection) {
                             try self.expanded_line.appendSlice(self.allocator, ANSI.INVERT);
                             emitted_invert = true;
+                        }
+                    } else if (col < self.top_col and col + 2 > self.top_col) {
+                        // 左端で切れる場合: はみ出した分（右半分）をスペースで埋める
+                        const overhang = col + 2 - self.top_col;
+                        const fill_width = @min(overhang, visible_end - self.top_col);
+                        for (0..fill_width) |_| {
+                            try self.expanded_line.append(self.allocator, ' ');
+                        }
+                    } else if (col >= self.top_col and col < visible_end) {
+                        // 右端で切れる場合: 残り幅分のスペースで埋める（選択状態を維持）
+                        const remaining_width = visible_end - col;
+                        for (0..remaining_width) |_| {
+                            try self.expanded_line.append(self.allocator, ' ');
                         }
                     }
                     byte_idx += 1;
@@ -1602,7 +1616,9 @@ pub const View = struct {
                 // UTF-8処理
                 const remaining = line_buffer[byte_idx..];
                 if (unicode.nextGraphemeCluster(remaining)) |cluster| {
-                    if (col >= self.top_col) {
+                    // 全角文字がウィンドウ境界をまたぐ場合はスペースで埋める
+                    if (col >= self.top_col and col + cluster.display_width <= visible_end) {
+                        // 文字全体がビューポート内に収まる
                         if (cluster.byte_len == 3 and
                             remaining[0] == config.UTF8.FULLWIDTH_SPACE[0] and
                             remaining[1] == config.UTF8.FULLWIDTH_SPACE[1] and
@@ -1611,6 +1627,19 @@ pub const View = struct {
                             try self.expanded_line.appendSlice(self.allocator, FULLWIDTH_SPACE_VISUAL);
                         } else {
                             try self.expanded_line.appendSlice(self.allocator, line_buffer[byte_idx .. byte_idx + cluster.byte_len]);
+                        }
+                    } else if (col < self.top_col and col + cluster.display_width > self.top_col) {
+                        // 左端で切れる場合: はみ出した分（右半分）をスペースで埋める
+                        const overhang = col + cluster.display_width - self.top_col;
+                        const fill_width = @min(overhang, visible_end - self.top_col);
+                        for (0..fill_width) |_| {
+                            try self.expanded_line.append(self.allocator, ' ');
+                        }
+                    } else if (col >= self.top_col and col < visible_end) {
+                        // 右端で切れる場合: 残り幅分のスペースで埋める（選択状態を維持）
+                        const remaining_width = visible_end - col;
+                        for (0..remaining_width) |_| {
+                            try self.expanded_line.append(self.allocator, ' ');
                         }
                     }
                     byte_idx += cluster.byte_len;
@@ -2191,16 +2220,16 @@ pub const View = struct {
             else
                 gc.width;
 
-            // 現在の文字の幅と位置を記録
-            prev_width = char_width;
-            prev_byte_pos = start_pos;
-            display_col += char_width;
-
-            // 目標カーソル位置を超えた場合は手前で止まる
-            if (display_col > target_x) {
+            // 目標カーソル位置を超える場合は手前で止まる（prev_width/prev_byte_posは更新しない）
+            if (display_col + char_width > target_x) {
                 iter.global_pos = start_pos;
                 break;
             }
+
+            // 現在の文字の幅と位置を記録（次の文字の「前の文字」情報となる）
+            prev_width = char_width;
+            prev_byte_pos = start_pos;
+            display_col += char_width;
         }
 
         return .{
@@ -2458,7 +2487,8 @@ pub const View = struct {
                 // target_xに到達したら早期終了（残りのスキャン不要）
                 if (line_width + char_width > target_x) {
                     // target_xはこの文字の途中なので、この文字の開始位置を返す
-                    return .{ .width = line_width + char_width, .byte_pos = current_pos, .clamped_x = target_x };
+                    // clamped_xは文字の開始位置にクランプ（全角文字の途中にカーソルを置かない）
+                    return .{ .width = line_width + char_width, .byte_pos = current_pos, .clamped_x = line_width };
                 }
 
                 line_width += char_width;

@@ -240,6 +240,7 @@ ze highlights comments only. This is intentional:
 - Uses **OSC 52** escape sequence to copy to system clipboard
 - Cut (`C-w`) and copy (`M-w`) automatically send text to clipboard
 - Works with iTerm2, kitty, alacritty, WezTerm, and most modern terminals
+- **tmux**: Add `set -g allow-passthrough on` to your `.tmux.conf`
 
 ### Encoding
 

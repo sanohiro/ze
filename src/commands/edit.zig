@@ -133,10 +133,12 @@ pub fn backspace(e: *Editor) !void {
 
     var char_base: u21 = 0;
     var char_len: usize = pos - char_start; // デフォルト
+    var char_width: usize = 1; // grapheme clusterの表示幅
 
     if (iter.nextGraphemeCluster() catch null) |gc| {
         char_base = gc.base;
         char_len = gc.byte_len;
+        char_width = gc.width;
     }
 
     // deleteRangeCommonで削除
@@ -151,7 +153,7 @@ pub fn backspace(e: *Editor) !void {
     if (is_tab or is_newline) {
         e.setCursorToPos(char_start);
     } else {
-        const char_width = unicode.displayWidth(char_base);
+        // grapheme clusterの表示幅を使用（結合文字やZWJシーケンスを正しく処理）
         if (view.cursor_x >= char_width) {
             view.cursor_x -= char_width;
             if (view.cursor_x < view.top_col) {
@@ -543,8 +545,9 @@ pub fn deleteWord(e: *Editor) !void {
     var in_word = false;
     var word_type: ?unicode.CharType = null;
 
-    while (iter.nextCodepoint() catch null) |cp| {
-        const current_type = unicode.getCharType(cp);
+    // grapheme clusterを使って複合文字（絵文字など）を正しく処理
+    while (iter.nextGraphemeCluster() catch null) |gc| {
+        const current_type = unicode.getCharType(gc.base);
 
         if (current_type == .space) {
             if (in_word) {

@@ -2788,21 +2788,16 @@ pub const Editor = struct {
             self.minibuffer.clear();
 
             if (self.replace_search) |search| {
-                // インクリメンタル検索で既にマッチが見つかっている場合はそれを使用
-                if (self.replace_current_pos != null) {
+                // 常に最終パターンでマッチを検索（インクリメンタル検索中の部分マッチは無効）
+                // replace_current_posは部分パターン（例："n"）のマッチで設定されている可能性があるため
+                const found = try self.findNextMatch(search, 0);
+                if (found) {
                     self.mode = .query_replace_confirm;
                     self.setPrompt("Replace? (y)es (n)ext (!)all (q)uit", .{});
                 } else {
-                    // マッチが見つかっていない場合は検索
-                    const found = try self.findNextMatch(search, 0);
-                    if (found) {
-                        self.mode = .query_replace_confirm;
-                        self.setPrompt("Replace? (y)es (n)ext (!)all (q)uit", .{});
-                    } else {
-                        self.mode = .normal;
-                        self.getCurrentView().setSearchHighlight(null);
-                        self.getCurrentView().setError("No match found");
-                    }
+                    self.mode = .normal;
+                    self.getCurrentView().setSearchHighlight(null);
+                    self.getCurrentView().setError("No match found");
                 }
             } else {
                 self.mode = .normal;
@@ -3426,8 +3421,7 @@ pub const Editor = struct {
 
             // カーソル移動（タブは特別扱い）
             const char_width: usize = if (codepoint == '\t') blk: {
-                const tab_width = view.getTabWidth();
-                const next_tab_stop = (view.cursor_x / tab_width + 1) * tab_width;
+                const next_tab_stop = View.nextTabStop(view.cursor_x, view.getTabWidth());
                 const width = next_tab_stop - view.cursor_x;
                 view.cursor_x = next_tab_stop;
                 break :blk width;
