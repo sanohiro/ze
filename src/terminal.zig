@@ -85,10 +85,11 @@ pub const Terminal = struct {
         // ブラケットペーストモードを有効化（ペースト時にまとめて挿入）
         // 注: マウスモードは無効（ターミナルでのテキスト選択・コピーを優先）
         const stdout: std.fs.File = .{ .handle = posix.STDOUT_FILENO };
+        // ウィンドウタイトルを保存（xterm title stack: push）
         // スクロール領域をリセットしてから代替画面に入る
         // （パイプ入力時に前のプロセスの出力で壊れた状態をクリア）
         // 注: RESET_SCROLL_REGIONはカーソルを(1,1)に移動するため、保存/復元が必要
-        stdout.writeAll(config.ANSI.SAVE_CURSOR ++ config.ANSI.RESET_SCROLL_REGION ++ config.ANSI.RESTORE_CURSOR ++ config.ANSI.ENTER_ALT_SCREEN ++ config.ANSI.ENABLE_BRACKETED_PASTE) catch {};
+        stdout.writeAll("\x1b[22;0t" ++ config.ANSI.SAVE_CURSOR ++ config.ANSI.RESET_SCROLL_REGION ++ config.ANSI.RESTORE_CURSOR ++ config.ANSI.ENTER_ALT_SCREEN ++ config.ANSI.ENABLE_BRACKETED_PASTE) catch {};
 
         return self;
     }
@@ -131,6 +132,8 @@ pub const Terminal = struct {
         self.write(config.ANSI.DISABLE_BRACKETED_PASTE) catch {};
         // カーソルを表示
         self.showCursor() catch {};
+        // ウィンドウタイトルを復元（xterm title stack: pop）
+        self.write("\x1b[23;0t") catch {};
         // 代替画面バッファを終了（元の画面に戻る）
         self.write(config.ANSI.EXIT_ALT_SCREEN) catch {};
         self.flush() catch {};
@@ -285,7 +288,7 @@ pub const Terminal = struct {
 
     /// OSC 52でシステムクリップボードにテキストをコピー
     /// iTerm2, kitty, alacritty等の多くのターミナルでサポート
-    /// tmux内で実行された場合はパススルーシーケンスで包む
+    /// tmux内ではtmuxのネイティブOSC 52サポートを使用（set -s set-clipboard on が必要）
     pub fn copyToClipboard(self: *Terminal, text: []const u8) !void {
         // 大きすぎるテキストは切り詰め（Base64で約4/3倍になるため）
         const max_size = 100000; // 100KB制限
@@ -295,58 +298,27 @@ pub const Terminal = struct {
         const encoder = std.base64.standard.Encoder;
         const encoded_len = encoder.calcSize(actual_text.len);
 
-        // tmux内かチェック（$TMUX環境変数の存在で判定）
-        const in_tmux = std.posix.getenv("TMUX") != null;
-
         // OSC 52シーケンス: \x1b]52;c;<base64>\x07
-        // tmuxパススルー: \x1bPtmux;\x1b + OSC52(ESCをエスケープ) + \x1b\\
-        const osc52_len = 7 + encoded_len + 1; // ESC ] 52 ; c ; <base64> BEL
-        const total_len = if (in_tmux)
-            7 + 1 + osc52_len + 2 // ESC P tmux ; ESC + OSC52 + ESC \
-        else
-            osc52_len;
+        // tmux 3.3+ではネイティブOSC 52をサポート（set -s set-clipboard on）
+        const total_len = 7 + encoded_len + 1; // ESC ] 52 ; c ; <base64> BEL
 
         const buf = try self.allocator.alloc(u8, total_len);
         defer self.allocator.free(buf);
 
-        var pos: usize = 0;
-
-        if (in_tmux) {
-            // tmuxパススルー開始: ESC P tmux ; ESC
-            buf[pos] = 0x1b;
-            buf[pos + 1] = 'P';
-            buf[pos + 2] = 't';
-            buf[pos + 3] = 'm';
-            buf[pos + 4] = 'u';
-            buf[pos + 5] = 'x';
-            buf[pos + 6] = ';';
-            buf[pos + 7] = 0x1b; // ESCをエスケープ
-            pos += 8;
-        }
-
         // OSC 52: ESC ] 52 ; c ; <base64> BEL
-        buf[pos] = 0x1b;
-        buf[pos + 1] = ']';
-        buf[pos + 2] = '5';
-        buf[pos + 3] = '2';
-        buf[pos + 4] = ';';
-        buf[pos + 5] = 'c';
-        buf[pos + 6] = ';';
-        pos += 7;
+        buf[0] = 0x1b;
+        buf[1] = ']';
+        buf[2] = '5';
+        buf[3] = '2';
+        buf[4] = ';';
+        buf[5] = 'c';
+        buf[6] = ';';
 
         // Base64エンコード
-        _ = encoder.encode(buf[pos .. pos + encoded_len], actual_text);
-        pos += encoded_len;
+        _ = encoder.encode(buf[7 .. 7 + encoded_len], actual_text);
 
         // 終端: BEL
-        buf[pos] = 0x07;
-        pos += 1;
-
-        if (in_tmux) {
-            // tmuxパススルー終了: ESC \
-            buf[pos] = 0x1b;
-            buf[pos + 1] = '\\';
-        }
+        buf[total_len - 1] = 0x07;
 
         // 即座に出力（バッファリングせずに直接送信）
         const stdout: std.fs.File = .{ .handle = posix.STDOUT_FILENO };
