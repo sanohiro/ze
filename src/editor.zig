@@ -37,6 +37,8 @@ const unicode = @import("unicode");
 
 // サービス
 const poller = @import("poller");
+const history_mod = @import("history");
+const LazyHistory = history_mod.LazyHistory;
 
 const Minibuffer = @import("minibuffer").Minibuffer;
 const SearchService = @import("search_service").SearchService;
@@ -87,6 +89,7 @@ const EditorMode = enum {
     macro_repeat, // マクロ再生後の連打待機（eで再実行）
     exit_confirm, // M-x exit: 終了確認中（y/nを待つ）
     overwrite_confirm, // ファイル上書き確認中（y/nを待つ）
+    recent_files, // 最近開いたファイル選択中（C-x C-r）
 };
 
 /// シェルコマンドの非同期実行状態
@@ -166,6 +169,7 @@ pub const Editor = struct {
     shell_service: ShellService, // シェルコマンド実行サービス（履歴含む）
     search_service: SearchService, // 検索サービス（履歴含む）
     macro_service: MacroService, // キーボードマクロサービス
+    file_history: LazyHistory, // 最近開いたファイル履歴
 
     // UI状態
     spinner_frame: u8, // シェル実行中のスピナーフレーム
@@ -239,6 +243,7 @@ pub const Editor = struct {
             .shell_service = ShellService.init(allocator),
             .search_service = SearchService.init(allocator),
             .macro_service = MacroService.init(allocator),
+            .file_history = LazyHistory.init(allocator, .file),
             .spinner_frame = 0,
             .overwrite_mode = false,
             .completion_shown = false,
@@ -346,6 +351,7 @@ pub const Editor = struct {
         self.shell_service.deinit();
         self.search_service.deinit();
         self.macro_service.deinit();
+        self.file_history.deinit();
     }
 
     // ========================================
@@ -481,6 +487,24 @@ pub const Editor = struct {
     /// エラーを表示（anyerror対応）
     fn showError(self: *Editor, err: anyerror) void {
         self.getCurrentView().setError(@errorName(err));
+    }
+
+    /// フォーカス復帰時にファイルの外部変更をチェック
+    fn checkExternalModification(self: *Editor) void {
+        const buffer_state = self.getCurrentBuffer();
+        const file_path = buffer_state.file.getPath() orelse return;
+        const saved_mtime = buffer_state.file.mtime orelse return;
+
+        // ファイルのmtimeを取得
+        const stat = std.fs.cwd().statFile(file_path) catch return;
+        const current_mtime = stat.mtime;
+
+        // mtimeが変わっていたら通知
+        if (current_mtime != saved_mtime) {
+            self.getCurrentView().setError("File changed on disk");
+            // mtimeを更新（次回のチェックで再通知しないため）
+            buffer_state.file.mtime = current_mtime;
+        }
     }
 
     /// ミニバッファ入力をキャンセルしてnormalモードに戻る
@@ -644,11 +668,40 @@ pub const Editor = struct {
             (if (forward) config.Messages.ISEARCH_FORWARD else config.Messages.ISEARCH_BACKWARD);
     }
 
-    /// I-searchプロンプトを更新（ミニバッファ内容付き）
+    /// I-searchプロンプトを更新（ミニバッファ内容付き、マッチ数表示）
     fn updateIsearchPrompt(self: *Editor, forward: bool) void {
         const prefix = self.getIsearchPrefix(forward);
         self.prompt_prefix_len = stringDisplayWidth(prefix);
-        self.setPrompt("{s}{s}", .{ prefix, self.minibuffer.getContent() });
+
+        const search_str = self.minibuffer.getContent();
+        if (search_str.len == 0 or self.is_regex_search) {
+            // 検索文字列なし、または正規表現モード（カウントが重いので省略）
+            self.setPrompt("{s}{s}", .{ prefix, search_str });
+            return;
+        }
+
+        // リテラル検索のみマッチ数をカウント（パフォーマンス制限: 最大1000件）
+        const buffer = self.getCurrentBufferContent();
+        const cursor_pos = self.getCurrentView().getCursorBufferPos();
+        const match_info = buffer.countMatches(search_str, 1000, cursor_pos);
+
+        if (match_info.total == 0) {
+            self.setPrompt("{s}{s} [no match]", .{ prefix, search_str });
+        } else if (match_info.total >= 1000) {
+            // 1000件以上の場合
+            if (match_info.current_index) |idx| {
+                self.setPrompt("{s}{s} [{d} of 999+]", .{ prefix, search_str, idx });
+            } else {
+                self.setPrompt("{s}{s} [999+]", .{ prefix, search_str });
+            }
+        } else {
+            // Emacs風: [3 of 10]
+            if (match_info.current_index) |idx| {
+                self.setPrompt("{s}{s} [{d} of {d}]", .{ prefix, search_str, idx, match_info.total });
+            } else {
+                self.setPrompt("{s}{s} [{d}]", .{ prefix, search_str, match_info.total });
+            }
+        }
     }
 
     /// I-searchハイライトを更新
@@ -659,6 +712,19 @@ pub const Editor = struct {
         } else {
             self.getCurrentView().setSearchHighlight(null);
         }
+    }
+
+    /// 最近開いたファイルプロンプトを更新
+    fn updateRecentFilesPrompt(self: *Editor) void {
+        // 現在選択中のファイル名を表示
+        if (self.file_history.history.current_index) |_| {
+            if (self.file_history.history.ring.get(self.file_history.history.current_index.?)) |path| {
+                self.setPrompt("Recent files: {s}", .{path});
+                return;
+            }
+        }
+        // ナビゲーション開始前、または履歴が空の場合
+        self.getCurrentView().setError("Recent files: (use Up/Down to navigate, Enter to open)");
     }
 
     /// last_searchを更新（古い値があれば解放）
@@ -881,8 +947,7 @@ pub const Editor = struct {
         const len = std.unicode.utf8Encode(cp, &buf) catch return;
         try self.minibuffer.insertAtCursor(buf[0..len]);
 
-        // プロンプトとハイライトを更新
-        self.updateIsearchPrompt(is_forward);
+        // ハイライトを更新
         self.updateIsearchHighlight();
 
         // 検索開始位置からやり直す（パターンが変わったので最初から検索）
@@ -892,6 +957,9 @@ pub const Editor = struct {
             }
             try self.performSearch(is_forward, false);
         }
+
+        // 検索後にプロンプト更新（マッチ位置を反映）
+        self.updateIsearchPrompt(is_forward);
     }
 
     /// 新しいバッファを作成（BufferManager経由）
@@ -1585,6 +1653,9 @@ pub const Editor = struct {
         // ファイルの最終更新時刻を記録（Buffer.loadFromFileで既に取得済みなので再オープン不要）
         buffer_state.file.mtime = buffer_state.editing_ctx.buffer.loaded_mtime;
 
+        // ファイル履歴に追加
+        self.file_history.add(path) catch {};
+
         // Loadingメッセージをクリア
         view.clearError();
     }
@@ -1858,6 +1929,7 @@ pub const Editor = struct {
         // ミニバッファモード中は別途カーソル位置を調整するのでここでは表示しない
         if (has_active and !self.isMinibufferMode()) {
             try self.terminal.moveCursor(active_cursor_row, active_cursor_col);
+            try self.terminal.setCursorBlock(); // 通常編集時はブロックカーソル
             try self.terminal.showCursor();
         }
 
@@ -1950,6 +2022,7 @@ pub const Editor = struct {
                 // 現在のウィンドウのステータスバー行（ウィンドウの最下行）
                 const status_row = window.y + window.height - 1;
                 try self.terminal.moveCursor(status_row, cursor_col);
+                try self.terminal.setCursorBar(); // ミニバッファ入力時はバーカーソル
                 try self.terminal.showCursor();
                 try self.terminal.flush();
             }
@@ -2440,6 +2513,66 @@ pub const Editor = struct {
         return true;
     }
 
+    /// 最近開いたファイル選択モード（C-x C-r）
+    fn handleRecentFilesKey(self: *Editor, key: input.Key) !bool {
+        switch (key) {
+            .ctrl => |c| {
+                if (c == 'g') {
+                    // キャンセル
+                    self.file_history.resetNavigation();
+                    self.resetToNormal();
+                    return true;
+                }
+                if (c == 'p' or c == 'n') {
+                    // C-p/C-n: 履歴ナビゲーション
+                    const entry = if (c == 'p') self.file_history.prev() else self.file_history.next();
+                    if (entry != null) {
+                        self.updateRecentFilesPrompt();
+                    }
+                    return true;
+                }
+            },
+            .arrow_up, .arrow_down => {
+                // 上下キー: 履歴ナビゲーション
+                const entry = if (key == .arrow_up) self.file_history.prev() else self.file_history.next();
+                if (entry != null) {
+                    self.updateRecentFilesPrompt();
+                }
+                return true;
+            },
+            .enter => {
+                // 選択中のファイルを開く
+                if (self.file_history.history.current_index) |idx| {
+                    if (self.file_history.history.ring.get(idx)) |path| {
+                        const path_copy = self.allocator.dupe(u8, path) catch {
+                            self.getCurrentView().setError("Memory allocation failed");
+                            self.file_history.resetNavigation();
+                            self.resetToNormal();
+                            return true;
+                        };
+                        defer self.allocator.free(path_copy);
+                        self.file_history.resetNavigation();
+                        self.resetToNormal();
+                        self.loadFile(path_copy) catch |err| {
+                            self.showError(err);
+                        };
+                        return true;
+                    }
+                }
+                self.getCurrentView().setError("No file selected");
+                self.file_history.resetNavigation();
+                self.resetToNormal();
+                return true;
+            },
+            else => {
+                // その他のキーはキャンセル
+                self.file_history.resetNavigation();
+                self.resetToNormal();
+            },
+        }
+        return true;
+    }
+
     /// インクリメンタルサーチモード（C-s / C-r）
     fn handleIsearchKey(self: *Editor, key: input.Key, is_forward: bool) !bool {
         switch (key) {
@@ -2457,12 +2590,14 @@ pub const Editor = struct {
                         if (self.minibuffer.hasContent()) {
                             self.getCurrentView().setSearchHighlightEx(self.minibuffer.getContent(), self.is_regex_search);
                             try self.performSearch(true, true);
+                            self.updateIsearchPrompt(true); // マッチ位置更新
                         }
                     },
                     'r' => {
                         if (self.minibuffer.hasContent()) {
                             self.getCurrentView().setSearchHighlightEx(self.minibuffer.getContent(), self.is_regex_search);
                             try self.performSearch(false, true);
+                            self.updateIsearchPrompt(false); // マッチ位置更新
                         }
                     },
                     'p' => try self.navigateSearchHistory(true, is_forward),
@@ -2510,6 +2645,7 @@ pub const Editor = struct {
                         if (self.minibuffer.hasContent()) {
                             self.getCurrentView().setSearchHighlightEx(self.minibuffer.getContent(), self.is_regex_search);
                             try self.performSearch(true, true);
+                            self.updateIsearchPrompt(true); // マッチ位置更新
                         }
                     },
                     'r' => {
@@ -2517,6 +2653,7 @@ pub const Editor = struct {
                         if (self.minibuffer.hasContent()) {
                             self.getCurrentView().setSearchHighlightEx(self.minibuffer.getContent(), self.is_regex_search);
                             try self.performSearch(false, true);
+                            self.updateIsearchPrompt(false); // マッチ位置更新
                         }
                     },
                     else => {},
@@ -2528,7 +2665,6 @@ pub const Editor = struct {
                 if (self.minibuffer.hasContent()) {
                     self.minibuffer.moveToEnd();
                     self.minibuffer.backspace();
-                    self.updateIsearchPrompt(is_forward);
                     self.updateIsearchHighlight();
                     if (self.search_start_pos) |start_pos| {
                         self.setCursorToPos(start_pos);
@@ -2536,6 +2672,8 @@ pub const Editor = struct {
                     if (self.minibuffer.hasContent()) {
                         try self.performSearch(is_forward, false);
                     }
+                    // 検索後にプロンプト更新（マッチ位置を反映）
+                    self.updateIsearchPrompt(is_forward);
                 }
             },
             .enter => {
@@ -2603,6 +2741,13 @@ pub const Editor = struct {
                         const new_buffer = try self.createNewBuffer();
                         try self.switchToBuffer(new_buffer.id);
                         self.getCurrentView().setError("New buffer");
+                    },
+                    'r' => {
+                        // 最近開いたファイル (C-x C-r)
+                        self.mode = .recent_files;
+                        self.clearInputBuffer();
+                        try self.file_history.startNavigation("");
+                        self.updateRecentFilesPrompt();
                     },
                     'c' => {
                         var modified_count: usize = 0;
@@ -3232,6 +3377,15 @@ pub const Editor = struct {
                 }
                 return;
             },
+            .focus_in => {
+                // フォーカス復帰時にファイルの外部変更をチェック
+                self.checkExternalModification();
+                return;
+            },
+            .focus_out => {
+                // フォーカスアウト時は何もしない（将来の拡張用）
+                return;
+            },
             else => {},
         }
 
@@ -3263,6 +3417,10 @@ pub const Editor = struct {
             },
             .buffer_switch_input => {
                 _ = try self.handleBufferSwitchInputKey(key);
+                return;
+            },
+            .recent_files => {
+                _ = try self.handleRecentFilesKey(key);
                 return;
             },
             .isearch_forward => {

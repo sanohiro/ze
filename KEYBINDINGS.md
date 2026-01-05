@@ -60,6 +60,7 @@ Moving without Shift clears the selection.
 |-----|--------|
 | `C-x C-n` | New buffer |
 | `C-x C-f` | Open file |
+| `C-x C-r` | Recent files (Up/Down to navigate, Enter to open) |
 | `C-x C-s` | Save |
 | `C-x C-w` | Save as |
 | `C-x C-c` | Quit |
@@ -187,3 +188,4 @@ ze stores history in `~/.ze/`:
 
 - `shell_history` — M-| command history
 - `search_history` — C-s/C-r search history
+- `file_history` — C-x C-r recent files

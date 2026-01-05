@@ -2268,6 +2268,43 @@ pub const Buffer = struct {
         return null;
     }
 
+    /// マッチ数カウント結果
+    pub const MatchCountResult = struct {
+        total: usize, // 総マッチ数
+        current_index: ?usize, // 現在位置のマッチインデックス（1-based、なければnull）
+    };
+
+    /// パターンの総マッチ数と現在位置のインデックスをカウント
+    /// max_count: 最大カウント数（パフォーマンス制限、0で無制限）
+    /// cursor_pos: カーソル位置（現在マッチのインデックス計算用）
+    pub fn countMatches(self: *const Buffer, pattern: []const u8, max_count: usize, cursor_pos: usize) MatchCountResult {
+        var result = MatchCountResult{ .total = 0, .current_index = null };
+        if (pattern.len == 0 or self.total_len == 0) return result;
+
+        var search_pos: usize = 0;
+        const limit = if (max_count == 0) std.math.maxInt(usize) else max_count;
+
+        while (result.total < limit) {
+            const match = self.searchForward(pattern, search_pos) orelse break;
+
+            result.total += 1;
+
+            // カーソル位置がマッチ範囲内または直後にある場合、このマッチが「現在」
+            // Emacs風: 前方検索はマッチ終端にカーソルがあるので、match.start + match.len == cursor_pos
+            if (result.current_index == null) {
+                if (cursor_pos >= match.start and cursor_pos <= match.start + match.len) {
+                    result.current_index = result.total; // 1-based
+                }
+            }
+
+            // 次の検索位置（空マッチ防止のため最低1バイト進める）
+            search_pos = match.start + @max(match.len, 1);
+            if (search_pos >= self.total_len) break;
+        }
+
+        return result;
+    }
+
     /// バッファの先頭からmax_lenバイトのプレビューを取得（言語検出用）
     /// 複数pieceを跨ぐ場合は提供されたバッファに連結する
     /// outには連結されたデータが書き込まれ、実際に書き込まれたスライスを返す

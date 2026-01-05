@@ -1563,8 +1563,22 @@ pub const View = struct {
                         const visible_stop = if (tab_end <= visible_end) tab_end else visible_end;
                         const visible_spaces = visible_stop - visible_start;
 
-                        const spaces8: []const u8 = "        ";
+                        // タブの先頭位置が見える場合は » を表示
                         var remaining = visible_spaces;
+                        if (tab_start >= self.top_col and remaining > 0) {
+                            try self.expanded_line.appendSlice(self.allocator, ANSI.GRAY);
+                            emitted_gray = true;
+                            try self.expanded_line.appendSlice(self.allocator, &config.UTF8.TAB_CHAR);
+                            try self.expanded_line.appendSlice(self.allocator, ANSI.FG_RESET);
+                            // 選択範囲内の場合は反転を再適用
+                            if (in_selection) {
+                                try self.expanded_line.appendSlice(self.allocator, ANSI.INVERT);
+                                emitted_invert = true;
+                            }
+                            remaining -= 1;
+                        }
+                        // 残りはスペースで埋める
+                        const spaces8: []const u8 = "        ";
                         while (remaining >= 8) {
                             try self.expanded_line.appendSlice(self.allocator, spaces8);
                             remaining -= 8;

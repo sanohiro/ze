@@ -210,6 +210,9 @@ pub fn main() !void {
 
         _ = setenv("TERM", "xterm-256color", 1);
 
+        // 親プロセスの環境変数を継承（HOME等が必要）
+        const envp = std.c.environ;
+
         if (filename) |f| {
             // ファイル指定あり - filenameをnull終端にコピー
             var fname_buf: [512]u8 = undefined;
@@ -219,14 +222,12 @@ pub fn main() !void {
             const fname_z: [*:0]const u8 = @ptrCast(fname_buf[0..f.len :0]);
 
             const argv = [_:null]?[*:0]const u8{ ze_path_z, fname_z, null };
-            const envp = [_:null]?[*:0]const u8{null};
-            const err = posix.execveZ(ze_path_z, &argv, &envp);
+            const err = posix.execveZ(ze_path_z, &argv, envp);
             std.debug.print("execve failed: {}\n", .{err});
         } else {
             // ファイル指定なし
             const argv = [_:null]?[*:0]const u8{ ze_path_z, null };
-            const envp = [_:null]?[*:0]const u8{null};
-            const err = posix.execveZ(ze_path_z, &argv, &envp);
+            const err = posix.execveZ(ze_path_z, &argv, envp);
             std.debug.print("execve failed: {}\n", .{err});
         }
         posix.exit(1);

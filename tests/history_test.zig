@@ -191,7 +191,7 @@ test "navigation without startNavigation" {
     try testing.expect(n == null);
 }
 
-test "consecutive duplicates not added" {
+test "duplicates are moved to end (MRU behavior)" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -200,13 +200,17 @@ test "consecutive duplicates not added" {
     defer history.deinit();
 
     try history.add("cmd1");
-    try history.add("cmd1"); // 重複
-    try history.add("cmd1"); // 重複
+    try history.add("cmd1"); // 重複（既存を削除して末尾に再追加）
+    try history.add("cmd1"); // 重複（既存を削除して末尾に再追加）
     try testing.expectEqual(@as(usize, 1), history.ring.len);
 
-    try history.add("cmd2");
-    try history.add("cmd1"); // cmd2の後なので追加される
-    try testing.expectEqual(@as(usize, 3), history.ring.len);
+    try history.add("cmd2"); // [cmd1, cmd2]
+    try testing.expectEqual(@as(usize, 2), history.ring.len);
+
+    try history.add("cmd1"); // cmd1を末尾に移動 → [cmd2, cmd1]
+    try testing.expectEqual(@as(usize, 2), history.ring.len);
+    try testing.expectEqualStrings("cmd2", history.ring.get(0).?);
+    try testing.expectEqualStrings("cmd1", history.ring.get(1).?);
 }
 
 test "navigation preserves temp input on multiple calls" {

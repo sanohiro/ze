@@ -79,11 +79,25 @@ pub const ANSI = struct {
     /// 背景色リセット
     pub const BG_RESET = "\x1b[49m";
 
+    // === カーソル形状 (DECSCUSR) ===
+    /// ブロックカーソル（点滅なし）
+    pub const CURSOR_BLOCK = "\x1b[2 q";
+    /// バーカーソル（点滅なし）
+    pub const CURSOR_BAR = "\x1b[6 q";
+    /// デフォルトカーソル（ターミナル設定に戻す）
+    pub const CURSOR_DEFAULT = "\x1b[0 q";
+
     // === Synchronized Output (DEC Private Mode 2026) ===
     /// 同期更新開始（BSU: Begin Synchronized Update）
     pub const BEGIN_SYNC = "\x1b[?2026h";
     /// 同期更新終了（ESU: End Synchronized Update）
     pub const END_SYNC = "\x1b[?2026l";
+
+    // === Focus Events (DEC Private Mode 1004) ===
+    /// フォーカスイベント報告を有効化
+    pub const ENABLE_FOCUS_EVENTS = "\x1b[?1004h";
+    /// フォーカスイベント報告を無効化
+    pub const DISABLE_FOCUS_EVENTS = "\x1b[?1004l";
 };
 
 /// ASCII関連の定数
@@ -123,6 +137,8 @@ pub const UTF8 = struct {
     // === 特殊文字 ===
     /// 全角スペース (U+3000) の UTF-8 バイト列
     pub const FULLWIDTH_SPACE = [_]u8{ 0xE3, 0x80, 0x80 };
+    /// タブ表示文字 » (U+00BB) の UTF-8 バイト列
+    pub const TAB_CHAR = [_]u8{ 0xC2, 0xBB };
 };
 
 /// BOM (Byte Order Mark) 定数

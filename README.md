@@ -279,6 +279,7 @@ ze highlights comments only. This is intentional:
 - Keyboard macros (`C-x (` / `)` / `e`)
 - In-app help (`M-?`)
 - OSC 52 clipboard integration
+- Recent files history (`C-x C-r`)
 
 ---
 

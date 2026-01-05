@@ -29,6 +29,7 @@ pub const MAX_HISTORY_SIZE: usize = 100;
 pub const HistoryType = enum {
     shell, // M-| シェルコマンド
     search, // C-s/C-r 検索
+    file, // 最近開いたファイル
 };
 
 /// リングバッファ - 先頭削除がO(1)
@@ -83,6 +84,28 @@ const HistoryRingBuffer = struct {
         return old;
     }
 
+    /// 指定論理インデックスのエントリを削除し、その値を返す
+    /// 後続のエントリを前にシフトする
+    pub fn removeAt(self: *HistoryRingBuffer, logical_index: usize) ?[]const u8 {
+        if (logical_index >= self.len) return null;
+
+        const removed = self.items[self.physicalIndex(logical_index)];
+
+        // 削除位置より後のエントリを前にシフト
+        var i = logical_index;
+        while (i + 1 < self.len) : (i += 1) {
+            const curr = self.physicalIndex(i);
+            const next = self.physicalIndex(i + 1);
+            self.items[curr] = self.items[next];
+        }
+
+        // 末尾をnullに
+        self.items[self.physicalIndex(self.len - 1)] = null;
+        self.len -= 1;
+
+        return removed;
+    }
+
     /// 全エントリを順番にイテレート（最古→最新）
     pub fn iterator(self: *const HistoryRingBuffer) Iterator {
         return .{ .ring = self, .index = 0 };
@@ -132,14 +155,25 @@ pub const History = struct {
     }
 
     /// 履歴にエントリを追加
+    /// 既存の同じエントリがあれば削除してから末尾に追加（MRU順序を維持）
     pub fn add(self: *History, entry: []const u8) !void {
         // 空文字列は追加しない
         if (entry.len == 0) return;
 
-        // 直前と同じなら追加しない（連続重複排除）
-        if (self.ring.len > 0) {
-            const last = self.ring.get(self.ring.len - 1) orelse unreachable;
-            if (std.mem.eql(u8, last, entry)) return;
+        // 既存の同じエントリを検索して削除（MRU: 最近使用したものを末尾に移動）
+        var i: usize = 0;
+        while (i < self.ring.len) {
+            if (self.ring.get(i)) |existing| {
+                if (std.mem.eql(u8, existing, entry)) {
+                    // 既存エントリを削除（メモリ解放）
+                    if (self.ring.removeAt(i)) |removed| {
+                        self.allocator.free(removed);
+                    }
+                    // インデックスは進めない（シフトされるため）
+                    continue;
+                }
+            }
+            i += 1;
         }
 
         // エントリを複製して追加（満杯なら古いエントリが自動削除される）
@@ -276,6 +310,7 @@ pub const History = struct {
         const filename = switch (history_type) {
             .shell => "shell_history",
             .search => "search_history",
+            .file => "file_history",
         };
         return std.fmt.allocPrint(allocator, "{s}/.ze/{s}", .{ home, filename }) catch null;
     }
@@ -283,7 +318,11 @@ pub const History = struct {
     /// ファイルから履歴を読み込み
     /// HOME未設定時は何もせずに正常終了（履歴は空のまま）
     pub fn load(self: *History, history_type: HistoryType) !void {
-        const path = getHistoryPath(self.allocator, history_type) orelse return;
+        const path = getHistoryPath(self.allocator, history_type) orelse {
+            // HOME未設定時でもloaded=trueをセット（save時の判定で必要）
+            self.loaded = true;
+            return;
+        };
         defer self.allocator.free(path);
 
         // 読み込み試行したことをマーク（ファイルが存在しなくてもtrue）

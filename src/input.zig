@@ -192,6 +192,8 @@ pub const Key = union(enum) {
     ctrl_shift_tab,
     paste_start, // ブラケットペーストモード開始 (ESC[200~)
     paste_end, // ブラケットペーストモード終了 (ESC[201~)
+    focus_in, // フォーカスイン (ESC[I)
+    focus_out, // フォーカスアウト (ESC[O)
     // ファンクションキー
     f5,
     f6,
@@ -250,6 +252,8 @@ fn parseCSISequence(reader: *InputReader, buf: []u8) !?Key {
         'H' => return Key.home,
         'F' => return Key.end_key,
         'Z' => return Key.shift_tab,
+        'I' => return Key.focus_in, // フォーカスイン (ESC[I)
+        'O' => return Key.focus_out, // フォーカスアウト (ESC[O)
         'M' => {
             // マウスイベント（X10形式）: ESC [ M <button> <x> <y>
             _ = reader.readBytes(buf[3..6]) catch {};

@@ -89,7 +89,8 @@ pub const Terminal = struct {
         // スクロール領域をリセットしてから代替画面に入る
         // （パイプ入力時に前のプロセスの出力で壊れた状態をクリア）
         // 注: RESET_SCROLL_REGIONはカーソルを(1,1)に移動するため、保存/復元が必要
-        stdout.writeAll("\x1b[22;0t" ++ config.ANSI.SAVE_CURSOR ++ config.ANSI.RESET_SCROLL_REGION ++ config.ANSI.RESTORE_CURSOR ++ config.ANSI.ENTER_ALT_SCREEN ++ config.ANSI.ENABLE_BRACKETED_PASTE) catch {};
+        // フォーカスイベント: ウィンドウのフォーカスイン/アウトを検出
+        stdout.writeAll("\x1b[22;0t" ++ config.ANSI.SAVE_CURSOR ++ config.ANSI.RESET_SCROLL_REGION ++ config.ANSI.RESTORE_CURSOR ++ config.ANSI.ENTER_ALT_SCREEN ++ config.ANSI.ENABLE_BRACKETED_PASTE ++ config.ANSI.ENABLE_FOCUS_EVENTS) catch {};
 
         return self;
     }
@@ -130,6 +131,10 @@ pub const Terminal = struct {
     pub fn deinit(self: *Terminal) void {
         // ブラケットペーストモードを無効化
         self.write(config.ANSI.DISABLE_BRACKETED_PASTE) catch {};
+        // フォーカスイベントを無効化
+        self.write(config.ANSI.DISABLE_FOCUS_EVENTS) catch {};
+        // カーソル形状をデフォルトに戻す
+        self.setCursorDefault() catch {};
         // カーソルを表示
         self.showCursor() catch {};
         // ウィンドウタイトルを復元（xterm title stack: pop）
@@ -224,6 +229,21 @@ pub const Terminal = struct {
 
     pub fn showCursor(self: *Terminal) !void {
         try self.buf.appendSlice(self.allocator, config.ANSI.SHOW_CURSOR);
+    }
+
+    /// カーソル形状をブロックに変更
+    pub fn setCursorBlock(self: *Terminal) !void {
+        try self.buf.appendSlice(self.allocator, config.ANSI.CURSOR_BLOCK);
+    }
+
+    /// カーソル形状をバーに変更
+    pub fn setCursorBar(self: *Terminal) !void {
+        try self.buf.appendSlice(self.allocator, config.ANSI.CURSOR_BAR);
+    }
+
+    /// カーソル形状をデフォルトに戻す
+    pub fn setCursorDefault(self: *Terminal) !void {
+        try self.buf.appendSlice(self.allocator, config.ANSI.CURSOR_DEFAULT);
     }
 
     /// カーソル移動（最適化版：スタックバッファで1回のappendSlice）
