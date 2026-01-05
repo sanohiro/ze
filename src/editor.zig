@@ -185,6 +185,10 @@ pub const Editor = struct {
     search_chunk_buffer: ?[]u8,
     search_chunk_capacity: usize,
 
+    // ウィンドウタイトルキャッシュ（変更時のみ更新）
+    last_window_title: [256]u8 = undefined,
+    last_window_title_len: usize = 0,
+
     // シェルコマンドストリーミング状態（メモリ効率化）
     streaming_range: ?struct {
         start: usize, // 読み取り開始位置
@@ -1879,6 +1883,8 @@ pub const Editor = struct {
                 buffer.detected_encoding,
                 buffer_state.file.filename,
             );
+            // ウィンドウタイトルを更新（ウィンドウ切り替え時にも更新が必要）
+            try self.updateWindowTitle();
             // カーソル位置を更新
             const pos = window.view.getCursorScreenPosition(window.x, window.y, window.width);
             try self.terminal.moveCursor(pos.row, pos.col);
@@ -1951,6 +1957,7 @@ pub const Editor = struct {
 
     /// ウィンドウタイトルを更新（OSC 2）
     /// ファイル名と変更状態を表示: "ze - filename.txt *"
+    /// タイトルが前回と同じ場合は送信をスキップ（帯域節約）
     fn updateWindowTitle(self: *Editor) !void {
         const window = self.window_manager.getCurrentWindow();
         const buffer_state = self.findBufferById(window.buffer_id) orelse return;
@@ -1961,6 +1968,14 @@ pub const Editor = struct {
         const filename = buffer_state.file.filename orelse "[New]";
 
         const title = std.fmt.bufPrint(&title_buf, "ze - {s}{s}", .{ filename, modified_indicator }) catch "ze";
+
+        // 前回と同じタイトルなら送信をスキップ
+        const last_title = self.last_window_title[0..self.last_window_title_len];
+        if (std.mem.eql(u8, title, last_title)) return;
+
+        // タイトルをキャッシュして送信
+        @memcpy(self.last_window_title[0..title.len], title);
+        self.last_window_title_len = title.len;
         try self.terminal.setWindowTitle(title);
     }
 
