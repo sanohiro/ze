@@ -1813,10 +1813,16 @@ pub const View = struct {
             // 符号付き→符号なし変換: @abs()を使用（minIntも安全に処理）
             const abs_delta: usize = @abs(self.scroll_delta);
 
+            // ターミナルスクロールは行全体（全列）に影響するため、
+            // 垂直分割（左右並び）のウィンドウでは使用不可
+            // viewport_x > 0 なら左に別ウィンドウあり、
+            // viewport_x + viewport_width < term.width なら右に別ウィンドウあり
+            const is_full_width = (viewport_x == 0 and viewport_x + viewport_width >= term.width);
+
             // スクロール量が画面の半分を超えたら全画面再描画の方が効率的
             if (abs_delta >= max_lines / 2) {
                 self.markFullRedraw();
-            } else if (self.prev_screen.items.len == max_lines) {
+            } else if (self.prev_screen.items.len == max_lines and is_full_width) {
                 // スクロールリージョンを設定（ステータスバーを除外）
                 try term.setScrollRegion(viewport_y, viewport_y + max_lines - 1);
 
