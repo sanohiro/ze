@@ -154,6 +154,13 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // services/kill_ring（依存なし）
+    const kill_ring_mod = b.addModule("kill_ring", .{
+        .root_source_file = b.path("src/services/kill_ring.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // services/search_service <- regex, history, buffer
     const search_service_mod = b.addModule("search_service", .{
         .root_source_file = b.path("src/services/search_service.zig"),
@@ -223,6 +230,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "unicode", .module = unicode_mod },
         .{ .name = "poller", .module = poller_mod },
         .{ .name = "minibuffer", .module = minibuffer_mod },
+        .{ .name = "kill_ring", .module = kill_ring_mod },
         .{ .name = "search_service", .module = search_service_mod },
         .{ .name = "shell_service", .module = shell_service_mod },
         .{ .name = "buffer_manager", .module = buffer_manager_mod },
