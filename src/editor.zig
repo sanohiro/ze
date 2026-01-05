@@ -1816,6 +1816,8 @@ pub const Editor = struct {
         }
 
         // 描画中はカーソルを非表示（ちらつき防止）
+        // Synchronized Output: ティアリング防止（対応ターミナルのみ効果あり）
+        try self.terminal.beginSync();
         try self.terminal.hideCursor();
 
         // アクティブウィンドウの情報を保存（後でカーソル表示に使用）
@@ -1859,7 +1861,11 @@ pub const Editor = struct {
             try self.terminal.showCursor();
         }
 
-        // 全ウィンドウの描画後に一括でflush（複数回のwrite()を避ける）
+        // ウィンドウタイトルを更新（OSC 2）
+        try self.updateWindowTitle();
+
+        // Synchronized Output終了 + 一括flush
+        try self.terminal.endSync();
         try self.terminal.flush();
     }
 
@@ -1869,6 +1875,21 @@ pub const Editor = struct {
         // WindowManagerに委譲
         self.window_manager.updateScreenSize(self.terminal.width, self.terminal.height);
         self.window_manager.recalculateWindowSizes();
+    }
+
+    /// ウィンドウタイトルを更新（OSC 2）
+    /// ファイル名と変更状態を表示: "ze - filename.txt *"
+    fn updateWindowTitle(self: *Editor) !void {
+        const window = self.window_manager.getCurrentWindow();
+        const buffer_state = self.findBufferById(window.buffer_id) orelse return;
+
+        // タイトルを構築: "ze - filename [*]"
+        var title_buf: [256]u8 = undefined;
+        const modified_indicator: []const u8 = if (buffer_state.editing_ctx.modified) " *" else "";
+        const filename = buffer_state.file.filename orelse "[New]";
+
+        const title = std.fmt.bufPrint(&title_buf, "ze - {s}{s}", .{ filename, modified_indicator }) catch "ze";
+        try self.terminal.setWindowTitle(title);
     }
 
     /// メインイベントループ

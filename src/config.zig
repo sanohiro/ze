@@ -78,6 +78,12 @@ pub const ANSI = struct {
     pub const BG_DARK_GRAY = "\x1b[48;5;236m";
     /// 背景色リセット
     pub const BG_RESET = "\x1b[49m";
+
+    // === Synchronized Output (DEC Private Mode 2026) ===
+    /// 同期更新開始（BSU: Begin Synchronized Update）
+    pub const BEGIN_SYNC = "\x1b[?2026h";
+    /// 同期更新終了（ESU: End Synchronized Update）
+    pub const END_SYNC = "\x1b[?2026l";
 };
 
 /// ASCII関連の定数
