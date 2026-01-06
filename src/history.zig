@@ -345,7 +345,7 @@ pub const History = struct {
 
         // ファイル全体を読み込み
         const stat = try file.stat();
-        if (stat.size == 0) return;
+        if (stat.size <= 0) return; // 空ファイルまたは不正なサイズ
         if (stat.size > 1024 * 1024) return error.FileTooLarge; // 1MB上限
 
         const content = try self.allocator.alloc(u8, @intCast(stat.size));
@@ -423,7 +423,7 @@ pub const History = struct {
         defer file.close();
 
         const stat = try file.stat();
-        if (stat.size == 0) return;
+        if (stat.size <= 0) return; // 空ファイルまたは不正なサイズ
         if (stat.size > 1024 * 1024) return; // 1MB上限
 
         const content = try self.allocator.alloc(u8, @intCast(stat.size));
@@ -444,6 +444,7 @@ pub const History = struct {
             const line = trimCr(raw_line);
             if (line.len > 0) {
                 const duped = try self.allocator.dupe(u8, line);
+                errdefer self.allocator.free(duped);
                 try file_entries.append(self.allocator, duped);
             }
         }

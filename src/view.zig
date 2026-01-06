@@ -2764,7 +2764,11 @@ pub const View = struct {
         }
 
         // 実際のスクロール量でマーク（クランプされた場合を考慮）
-        const actual_delta = @as(i32, @intCast(self.top_line)) - @as(i32, @intCast(old_top));
+        // i64で差分を計算し、i32範囲にクランプ（巨大ファイルでのオーバーフロー防止）
+        const new_top: i64 = @intCast(self.top_line);
+        const old_top_i64: i64 = @intCast(old_top);
+        const actual_delta_i64 = new_top - old_top_i64;
+        const actual_delta: i32 = @intCast(std.math.clamp(actual_delta_i64, std.math.minInt(i32), std.math.maxInt(i32)));
         if (actual_delta != 0) {
             self.markScroll(actual_delta);
         }

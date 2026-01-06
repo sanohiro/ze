@@ -473,7 +473,9 @@ fn pageScroll(e: *Editor, direction: enum { up, down }) void {
     }
 
     // スクロール量を計算してmarkScroll（ターミナルスクロール最適化）
-    const scroll_delta: i32 = @intCast(@as(i64, @intCast(view.top_line)) - @as(i64, @intCast(old_top_line)));
+    // i64で差分を計算し、i32範囲にクランプ（巨大ファイルでのオーバーフロー防止）
+    const delta_i64 = @as(i64, @intCast(view.top_line)) - @as(i64, @intCast(old_top_line));
+    const scroll_delta: i32 = @intCast(std.math.clamp(delta_i64, std.math.minInt(i32), std.math.maxInt(i32)));
     if (scroll_delta != 0) {
         view.markScroll(scroll_delta);
     }
