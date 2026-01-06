@@ -275,11 +275,11 @@ pub const SearchService = struct {
     /// Buffer直接検索（コピーなし、リテラル検索専用）
     /// 呼び出し側が既にリテラル検索であることを確認している前提
     /// skip_currentはAPI互換性のためのパラメータ（この検索では不使用）
-    /// - 前方検索: カーソルは既にマッチ終端にあるのでスキップ不要
-    /// - 後方検索: カーソルは既にマッチ先頭にあるのでそのまま検索
+    /// - 前方検索: カーソルは既にマッチ終端にあるので、次のマッチは自然に見つかる
+    /// - 後方検索: カーソルはマッチ先頭にあるのでそのまま検索
     pub fn searchBuffer(_: *Self, buffer: *const Buffer, pattern: []const u8, start_pos: usize, forward: bool, _: bool) ?SearchMatch {
         if (forward) {
-            // 前方検索: カーソル位置から検索（カーソルは既にマッチ終端なのでスキップ不要）
+            // 前方検索: カーソル位置から検索
             if (buffer.searchForwardWrap(pattern, start_pos)) |match| {
                 return .{ .start = match.start, .len = match.len };
             }

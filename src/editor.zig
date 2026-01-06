@@ -721,8 +721,8 @@ pub const Editor = struct {
             self.performSearch(forward, true) catch |err| {
                 self.showError(err);
             };
-            self.prompt_prefix_len = prefix_len;
-            self.setPrompt("{s}{s}", .{ prefix, search_str });
+            // マッチカウントも含めたプロンプトを表示
+            self.updateIsearchPrompt(forward);
         } else {
             // 新規検索モードに入る
             self.clearInputBuffer();

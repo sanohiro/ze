@@ -1693,6 +1693,18 @@ pub const View = struct {
     }
 
     /// カーソル位置の展開後位置を計算（キャッシュ対応）
+    /// カーソルの行内バイトオフセットを計算（検索ハイライト用）
+    /// 検索ハイライトはバイト位置で比較するため、表示幅ではなくバイト位置を返す
+    fn calculateCursorByteOffset(self: *View, screen_row: usize) ?usize {
+        if (screen_row != self.cursor_y) return null;
+
+        const cursor_pos = self.getCursorBufferPos();
+        const line_start = self.buffer.getLineStart(self.top_line + self.cursor_y) orelse 0;
+        if (cursor_pos < line_start) return 0;
+
+        return cursor_pos - line_start;
+    }
+
     fn calculateCursorExpandedPos(self: *View, line_buffer: []const u8, screen_row: usize, tab_width: usize) ?usize {
         if (screen_row != self.cursor_y) return null;
 
@@ -1783,9 +1795,9 @@ pub const View = struct {
         const expand_result = try self.expandLineWithHighlights(line_buffer.items, analysis, selection, viewport_width, line_num_width);
 
         // 6. カーソル位置計算と検索ハイライト
-        const tab_width = self.getTabWidth();
-        const cursor_in_content = self.calculateCursorExpandedPos(line_buffer.items, screen_row, tab_width);
-        const new_line = try self.applySearchHighlight(self.expanded_line.items, cursor_in_content, content_start_byte);
+        // 検索ハイライトにはバイト位置を使用（表示幅ではなく）
+        const cursor_byte_in_content = self.calculateCursorByteOffset(screen_row);
+        const new_line = try self.applySearchHighlight(self.expanded_line.items, cursor_byte_in_content, content_start_byte);
 
         // 7. 表示幅計算と差分描画
         const visible_width = if (viewport_width > line_num_width) viewport_width - line_num_width else 1;
