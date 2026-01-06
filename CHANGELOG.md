@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-01-06
+
+### Added
+- **Window title (OSC 2)**: Display filename and modified status in terminal title
+  - Shows "ze - filename.txt *" when modified
+  - Works with iTerm2, Terminal.app, xterm, kitty, etc.
+- **Synchronized Output (DEC 2026)**: Prevents tearing on supported terminals
+- **TMUX Passthrough for OSC 52**: Clipboard integration now works inside tmux
+- **Focus detection**: Detects terminal focus in/out events
+- **Cursor shape (DECSCUSR)**: Bar cursor in insert mode, block cursor otherwise
+- **Search match count**: Shows `[3 of 10]` format during incremental search
+- **Recent files history (C-x C-r)**: Navigate with Up/Down, Enter to open
+  - MRU ordering, persisted to `~/.ze/file_history`
+  - File locking for concurrent access safety
+- **M-x kill-buffer / kb**: Kill current buffer (same as C-x k)
+- **M-x overwrite / ow**: Toggle overwrite/insert mode (Mac alternative to Insert key)
+- **External change detection**: Reload confirmation prompt on focus return
+  - Shows "File changed on disk. Reload? (y/n)"
+
+### Fixed
+- **Boundary check bugs**: Fixed multiple boundary/slice issues
+  - input.zig: CSI parameter parsing buffer overflow
+  - view.zig: Search highlight slice range validation
+  - edit.zig: Unindent region uninitialized memory
+- **Window title not updating on M-o**: Title now updates when switching windows
+- **Full-width character boundary**: Fixed UTF-8 boundary detection
+- **Query Replace Japanese input**: Now handles codepoint keys correctly
+- **OSC 52 simplification**: Cleaner clipboard sequence generation
+
+### Refactored
+- Editor: Added `toggleOverwriteMode()`, `killCurrentBuffer()`, `reloadCurrentBuffer()`
+- Consolidated C-x k handling into shared function
+
 ## [1.4.4] - 2026-01-05
 
 ### Fixed
