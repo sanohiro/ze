@@ -350,16 +350,6 @@ pub const WindowManager = struct {
         }
     }
 
-    /// バッファIDでウィンドウを検索
-    pub fn findWindowByBufferId(self: *Self, buffer_id: usize) ?*Window {
-        for (self.windows.items) |*window| {
-            if (window.buffer_id == buffer_id) {
-                return window;
-            }
-        }
-        return null;
-    }
-
     /// 全ウィンドウのイテレータ
     pub fn iterator(self: *Self) []Window {
         return self.windows.items;

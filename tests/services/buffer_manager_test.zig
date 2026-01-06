@@ -146,26 +146,6 @@ test "BufferState - modified cleared after save" {
     try testing.expect(!buffer.editing_ctx.modified);
 }
 
-test "BufferManager - hasUnsavedChanges" {
-    var bm = BufferManager.init(testing.allocator);
-    defer bm.deinit();
-
-    _ = try bm.createBuffer();
-    const buf2 = try bm.createBuffer();
-
-    // 初期状態は未変更
-    try testing.expect(!bm.hasUnsavedChanges());
-
-    // buf2を変更
-    try buf2.editing_ctx.insert("modified");
-    try testing.expect(bm.hasUnsavedChanges());
-
-    // 保存済みにする
-    buf2.editing_ctx.modified = false;
-    buf2.editing_ctx.savepoint = buf2.editing_ctx.undo_stack.items.len;
-    try testing.expect(!bm.hasUnsavedChanges());
-}
-
 // ============================================================
 // Iterator tests
 // ============================================================

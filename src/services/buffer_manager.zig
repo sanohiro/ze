@@ -244,16 +244,6 @@ pub const BufferManager = struct {
         return false;
     }
 
-    /// 未保存の変更があるバッファがあるか
-    pub fn hasUnsavedChanges(self: *const Self) bool {
-        for (self.buffers.items) |buffer| {
-            if (buffer.editing_ctx.modified) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     /// バッファ数を取得
     pub inline fn bufferCount(self: *const Self) usize {
         return self.buffers.items.len;

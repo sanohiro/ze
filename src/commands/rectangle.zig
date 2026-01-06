@@ -75,11 +75,6 @@ fn getColumnByteRangeReusing(iter: *PieceIterator, line_bounds: LineBounds, left
     return .{ .start = left_result.byte_pos, .end = right_result.byte_pos };
 }
 
-fn getColumnByteRange(buffer: *Buffer, line_bounds: LineBounds, left_col: usize, right_col: usize, tab_width: usize) ByteRange {
-    var iter = PieceIterator.init(buffer);
-    return getColumnByteRangeReusing(&iter, line_bounds, left_col, right_col, tab_width);
-}
-
 fn seekToColumn(buffer: *Buffer, line_bounds: LineBounds, target_col: usize, tab_width: usize) ColumnSeekResult {
     var iter = PieceIterator.init(buffer);
     iter.seek(line_bounds.start);
@@ -103,12 +98,6 @@ fn extractBytesReusing(allocator: std.mem.Allocator, iter: *PieceIterator, start
     }
 
     return try line_buf.toOwnedSlice(allocator);
-}
-
-/// バッファからバイト範囲のテキストを抽出
-fn extractBytes(allocator: std.mem.Allocator, buffer: *Buffer, start: usize, end: usize) ![]const u8 {
-    var iter = PieceIterator.init(buffer);
-    return extractBytesReusing(allocator, &iter, start, end);
 }
 
 /// 矩形領域の範囲情報

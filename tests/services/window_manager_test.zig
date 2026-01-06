@@ -109,18 +109,6 @@ test "WindowManager - next_window_id increments correctly" {
 }
 
 // ============================================================
-// Find functions on empty manager
-// ============================================================
-
-test "WindowManager - findWindowByBufferId empty" {
-    var wm = WindowManager.init(testing.allocator, 80, 24);
-    defer wm.deinit();
-
-    const found = wm.findWindowByBufferId(0);
-    try testing.expect(found == null);
-}
-
-// ============================================================
 // Edge cases
 // ============================================================
 

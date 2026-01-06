@@ -73,14 +73,4 @@ pub const KillRing = struct {
         }
         return null;
     }
-
-    /// クリア
-    pub fn clear(self: *KillRing) void {
-        self.len = 0;
-    }
-
-    /// 空かどうか
-    pub fn isEmpty(self: *const KillRing) bool {
-        return self.len == 0;
-    }
 };
