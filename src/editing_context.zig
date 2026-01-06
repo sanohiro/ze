@@ -338,34 +338,34 @@ pub const EditingContext = struct {
     }
 
     /// 次の行へ移動（C-n）
+    /// 表示カラム位置を保持して移動（マルチバイト文字対応）
     pub fn moveNextLine(self: *EditingContext) void {
         const current_line = self.getCursorLine();
         if (current_line >= self.lineCount()) return;
 
-        const current_line_start = self.buffer.getLineStart(current_line) orelse 0;
-        const column = self.cursor - current_line_start;
+        // 現在の表示カラム位置を取得（バイト位置ではなく表示幅）
+        const display_col = self.buffer.findColumnByPos(self.cursor);
 
         if (self.buffer.getLineStart(current_line + 1)) |next_line_start| {
-            const next_line_end = self.buffer.findNextLineFromPos(next_line_start);
-            const next_line_len = if (next_line_end > next_line_start) next_line_end - next_line_start - 1 else 0;
-            const new_column = @min(column, next_line_len);
-            self.setCursor(next_line_start + new_column);
+            // 表示カラムからバイト位置を計算
+            const new_pos = self.buffer.findPosByColumn(next_line_start, display_col);
+            self.setCursor(new_pos);
         }
     }
 
     /// 前の行へ移動（C-p）
+    /// 表示カラム位置を保持して移動（マルチバイト文字対応）
     pub fn movePrevLine(self: *EditingContext) void {
         const current_line = self.getCursorLine();
         if (current_line == 0) return;
 
-        const current_line_start = self.buffer.getLineStart(current_line) orelse 0;
-        const column = self.cursor - current_line_start;
+        // 現在の表示カラム位置を取得（バイト位置ではなく表示幅）
+        const display_col = self.buffer.findColumnByPos(self.cursor);
 
         if (self.buffer.getLineStart(current_line - 1)) |prev_line_start| {
-            const prev_line_end = self.buffer.findNextLineFromPos(prev_line_start);
-            const prev_line_len = if (prev_line_end > prev_line_start) prev_line_end - prev_line_start - 1 else 0;
-            const new_column = @min(column, prev_line_len);
-            self.setCursor(prev_line_start + new_column);
+            // 表示カラムからバイト位置を計算
+            const new_pos = self.buffer.findPosByColumn(prev_line_start, display_col);
+            self.setCursor(new_pos);
         }
     }
 
@@ -747,11 +747,17 @@ pub const EditingContext = struct {
                 if (current.group_id != group_id) break;
             }
 
-            const entry = self.undo_stack.pop().?;
+            var entry = self.undo_stack.pop().?;
             first_cursor = entry.cursor_before;
             last_position = entry.position;
             last_op = entry.op;
             last_len = entry.getLength(); // 大規模挿入対応
+
+            // エラー時はundo_stackに戻す（失敗してもデータ消失を防ぐ）
+            errdefer self.undo_stack.append(self.allocator, entry) catch {
+                // append失敗時はメモリリークを防ぐためデータを解放
+                entry.freeData(self.allocator);
+            };
 
             switch (entry.op) {
                 // 挿入のundo: getLength()で実際の長さを取得（大規模挿入対応）
@@ -809,11 +815,17 @@ pub const EditingContext = struct {
                 continue;
             }
 
-            const entry = self.redo_stack.pop().?;
+            var entry = self.redo_stack.pop().?;
             last_cursor = entry.cursor_after;
             last_position = entry.position;
             last_op = entry.op;
             last_len = entry.getLength(); // 大規模挿入対応
+
+            // エラー時はredo_stackに戻す（失敗してもデータ消失を防ぐ）
+            errdefer self.redo_stack.append(self.allocator, entry) catch {
+                // append失敗時はメモリリークを防ぐためデータを解放
+                entry.freeData(self.allocator);
+            };
 
             switch (entry.op) {
                 .insert => try self.buffer.insertSlice(entry.position, entry.data),

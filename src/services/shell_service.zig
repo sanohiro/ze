@@ -257,6 +257,7 @@ pub const ShellService = struct {
         var child = std.process.Child.init(argv, self.allocator);
         child.stdout_behavior = .Pipe;
         child.stderr_behavior = .Pipe;
+        child.stdin_behavior = .Close; // 補完コマンドはstdin不要、エディタと競合防止
 
         try child.spawn();
 

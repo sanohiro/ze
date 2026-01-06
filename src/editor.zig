@@ -4223,8 +4223,13 @@ pub const Editor = struct {
     /// start位置からlengthバイトを削除し、contentを挿入する
     fn replaceRangeWithShellOutput(self: *Editor, start: usize, length: usize, content: []const u8, cursor_after: ?usize, clear_mark: bool) !void {
         const buf = self.getCurrentBufferContent();
+        const editing_ctx = &self.getCurrentBuffer().editing_ctx;
         const cursor_pos = self.getCurrentView().getCursorBufferPos();
         var actually_changed = false;
+
+        // 削除+挿入を1つのundo操作にまとめる
+        _ = editing_ctx.*.beginUndoGroup();
+        defer editing_ctx.*.endUndoGroup();
 
         // 既存コンテンツを削除（undo記録付き）
         if (length > 0) {

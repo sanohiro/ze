@@ -1912,6 +1912,50 @@ pub const Buffer = struct {
         return col;
     }
 
+    /// 指定された行の開始位置から、指定された表示カラムに最も近いバイト位置を返す
+    /// target_col以下で最も近い位置を返す（target_colを超えない）
+    /// 行の長さが指定カラムより短い場合は行末位置を返す
+    pub fn findPosByColumn(self: *Buffer, line_start: usize, target_col: usize) usize {
+        return self.findPosByColumnWithTabWidth(line_start, target_col, config.Editor.TAB_WIDTH);
+    }
+
+    /// 指定された行の開始位置から、指定された表示カラムに最も近いバイト位置を返す（タブ幅指定版）
+    pub fn findPosByColumnWithTabWidth(self: *Buffer, line_start: usize, target_col: usize, tab_width: u8) usize {
+        if (target_col == 0) return line_start;
+
+        var iter = PieceIterator.init(self);
+        iter.seek(line_start);
+
+        var col: usize = 0;
+        const tw: usize = if (tab_width == 0) config.Editor.TAB_WIDTH else tab_width;
+
+        while (col < target_col) {
+            const gc_start = iter.global_pos;
+            const gc = iter.nextGraphemeCluster() catch break orelse break;
+
+            // 改行に達したら停止（改行の前位置を返す）
+            if (gc.base == '\n') {
+                return gc_start;
+            }
+
+            const new_col = if (gc.base == '\t')
+                (col / tw + 1) * tw
+            else if (gc.base < 0x20 or gc.base == 0x7F)
+                col + 2
+            else
+                col + gc.width;
+
+            // 目標カラムを超える場合は現在位置で停止
+            if (new_col > target_col) {
+                return gc_start;
+            }
+
+            col = new_col;
+        }
+
+        return iter.global_pos;
+    }
+
     // 指定範囲のテキストを取得（新しいメモリを確保）
     // start + length がバッファサイズを超える場合は error.OutOfRange
     // 最適化: スライス単位でmemcpyを使用（バイト単位ループより大幅に高速）
