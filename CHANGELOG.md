@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-01-06
+
+### Fixed
+- **Japanese search highlight**: Fixed highlight position mismatch when searching consecutive Japanese characters
+  - Cursor position was calculated in display columns, but match positions were in bytes
+  - Now uses byte positions consistently for highlight comparison
+- **Empty regex match UTF-8 boundary**: Fixed infinite loop potential when regex matches empty string at multibyte character
+  - Was advancing by 1 byte, could stop in middle of UTF-8 sequence
+  - Now advances by full UTF-8 character length
+- **Search highlight cursor tracking**: Fixed current match highlight (magenta) not working with tabs
+  - `cursor_in_content` was in buffer coordinates, but compared against expanded_line coordinates
+  - Added cursor position tracking during tab expansion
+- **Line movement with multibyte characters**: Cursor now preserves visual column when moving between lines
+  - Added `findPosByColumn()` for proper column-based positioning
+- **Undo/Redo data loss on error**: Added `errdefer` to restore undo entry if operation fails
+- **Shell result replace undo**: Now grouped as single undo operation (was requiring 2 undos)
+- **Tab completion stdin conflict**: Fixed potential stdin competition with editor
+
+### Refactored
+- shell_service: Consolidated NONBLOCK operations into setNonBlocking/setBlocking functions
+- shell_service: DRY improvement with initCommandState helper
+- buffer: Consolidated insert finalization into finalizeInsert function (7 locations)
+- regex: Removed unused allocator parameter from parseCharClass
+- search_service: Removed unused self from searchForward/searchBackward
+- editing_context: Removed unused notifyChange mechanism
+- view: Consolidated control character width calculation
+
 ## [1.5.0] - 2026-01-06
 
 ### Added
