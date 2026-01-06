@@ -138,7 +138,8 @@ pub fn backspace(e: *Editor) !void {
     if (iter.nextGraphemeCluster() catch null) |gc| {
         char_base = gc.base;
         char_len = gc.byte_len;
-        char_width = gc.width;
+        // 制御文字は ^X 形式で表示幅2
+        char_width = if (gc.base < 0x20 or gc.base == 0x7F) 2 else gc.width;
     }
 
     // deleteRangeCommonで削除

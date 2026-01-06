@@ -161,7 +161,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // services/search_service <- regex, history, buffer
+    // services/search_service <- regex, history, buffer, unicode
     const search_service_mod = b.addModule("search_service", .{
         .root_source_file = b.path("src/services/search_service.zig"),
         .target = target,
@@ -170,6 +170,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "regex", .module = regex_mod },
             .{ .name = "history", .module = history_mod },
             .{ .name = "buffer", .module = buffer_mod },
+            .{ .name = "unicode", .module = unicode_mod },
         },
     });
 

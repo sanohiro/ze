@@ -11,8 +11,14 @@ pub const Terminal = struct {
     /// デフォルトの高さ（rows）
     pub const DEFAULT_HEIGHT: usize = 24;
 
-    /// 出力バッファの初期容量
+    /// 出力バッファの初期容量（ターミナル描画用）
     pub const OUTPUT_BUFFER_CAPACITY: usize = 8192;
+};
+
+/// ファイルI/O設定
+pub const FileIO = struct {
+    /// ファイル書き込みバッファサイズ（64KB - write()回数を削減）
+    pub const WRITE_BUFFER_SIZE: usize = 65536;
 };
 
 /// ANSIエスケープシーケンス

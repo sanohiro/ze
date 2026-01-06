@@ -24,6 +24,21 @@ inline fn isShellWhitespace(c: u8) bool {
     return c == ' ' or c == '\t';
 }
 
+/// NONBLOCKフラグ（複数箇所で使用）
+const NONBLOCK_FLAG: usize = @as(u32, @bitCast(std.posix.O{ .NONBLOCK = true }));
+
+/// ファイルハンドルをノンブロッキングモードに設定
+fn setNonBlocking(file: std.fs.File) void {
+    const flags = std.posix.fcntl(file.handle, std.posix.F.GETFL, 0) catch 0;
+    _ = std.posix.fcntl(file.handle, std.posix.F.SETFL, flags | NONBLOCK_FLAG) catch {};
+}
+
+/// ファイルハンドルをブロッキングモードに設定
+fn setBlocking(file: std.fs.File) void {
+    const flags = std.posix.fcntl(file.handle, std.posix.F.GETFL, 0) catch 0;
+    _ = std.posix.fcntl(file.handle, std.posix.F.SETFL, flags & ~NONBLOCK_FLAG) catch {};
+}
+
 /// シェルコマンド出力先
 pub const OutputDest = enum {
     command_buffer, // Command Bufferに表示（デフォルト）
@@ -199,14 +214,26 @@ pub const ShellService = struct {
             self.sh_path = findShPath(self.allocator);
         }
 
-        // ~/.ze/aliases は未検出時のみ毎回チェック（動的に作成される可能性があるため）
-        if (self.aliases_path == null) {
-            self.checkAliasesFile();
-        }
+        // ~/.ze/aliases のチェック（毎回存在確認してキャッシュ無効化対応）
+        self.checkAliasesFile();
     }
 
     /// ~/.ze/aliases ファイルの存在チェック
+    /// キャッシュ済みでも削除されていればnullに戻す
     fn checkAliasesFile(self: *Self) void {
+        // 既にキャッシュ済みの場合、ファイルが存在するか確認
+        if (self.aliases_path) |cached_path| {
+            if (std.fs.accessAbsolute(cached_path, .{})) |_| {
+                // ファイルは存在する、キャッシュ有効
+                return;
+            } else |_| {
+                // ファイルが削除された、キャッシュ無効化
+                self.allocator.free(cached_path);
+                self.aliases_path = null;
+            }
+        }
+
+        // 未検出の場合、新規検索
         if (std.posix.getenv("HOME")) |home| {
             const path = std.fmt.allocPrint(self.allocator, "{s}/.ze/aliases", .{home}) catch null;
             if (path) |p| {
@@ -233,61 +260,90 @@ pub const ShellService = struct {
 
         try child.spawn();
 
-        // タイムアウト付きでwait
-        const start_time = std.time.milliTimestamp();
+        // パイプをノンブロッキングに設定
+        if (child.stdout) |stdout| setNonBlocking(stdout);
+        if (child.stderr) |stderr| setNonBlocking(stderr);
 
-        while (true) {
+        var stdout_list: std.ArrayListUnmanaged(u8) = .{};
+        errdefer stdout_list.deinit(self.allocator);
+        var stderr_list: std.ArrayListUnmanaged(u8) = .{};
+        errdefer stderr_list.deinit(self.allocator);
+
+        const start_time = std.time.milliTimestamp();
+        var child_exited = false;
+
+        while (!child_exited) {
             const elapsed = std.time.milliTimestamp() - start_time;
             if (elapsed >= timeout_ms) {
                 // タイムアウト: パイプを閉じてから子プロセスをキル
                 if (child.stdout) |stdout| stdout.close();
+                child.stdout = null;
                 if (child.stderr) |stderr| stderr.close();
+                child.stderr = null;
                 _ = child.kill() catch {};
                 _ = child.wait() catch {};
                 return error.Timeout;
             }
 
-            // 完了チェック（ノンブロッキング）
-            const term = child.wait() catch |err| {
-                if (err == error.WouldBlock) {
-                    // まだ完了していない、少し待つ
-                    std.Thread.sleep(10 * std.time.ns_per_ms);
-                    continue;
-                }
-                return err;
-            };
-            _ = term;
+            // パイプからドレイン（デッドロック防止）
+            try self.drainPipe(&child.stdout, &stdout_list, config.Shell.COMPLETION_MAX_OUTPUT);
+            try self.drainPipe(&child.stderr, &stderr_list, 4096);
 
-            // 完了した、出力を読み取り
-            var stdout_list: std.ArrayListUnmanaged(u8) = .{};
-            errdefer stdout_list.deinit(self.allocator);
-            var stderr_list: std.ArrayListUnmanaged(u8) = .{};
-            errdefer stderr_list.deinit(self.allocator);
-
-            if (child.stdout) |stdout_pipe| {
-                var buf: [4096]u8 = undefined;
-                while (true) {
-                    const n = stdout_pipe.read(&buf) catch break;
-                    if (n == 0) break;
-                    try stdout_list.appendSlice(self.allocator, buf[0..n]);
-                    if (stdout_list.items.len >= config.Shell.COMPLETION_MAX_OUTPUT) break;
-                }
+            // ノンブロッキング完了チェック（WNOHANG = 1）
+            const WNOHANG: u32 = 1;
+            const result = std.posix.waitpid(child.id, WNOHANG);
+            if (result.pid != 0) {
+                // 子プロセスが終了
+                child_exited = true;
+            } else {
+                // まだ実行中、少し待つ
+                std.Thread.sleep(10 * std.time.ns_per_ms);
             }
+        }
 
-            if (child.stderr) |stderr_pipe| {
-                var buf: [1024]u8 = undefined;
-                while (true) {
-                    const n = stderr_pipe.read(&buf) catch break;
-                    if (n == 0) break;
-                    try stderr_list.appendSlice(self.allocator, buf[0..n]);
-                    if (stderr_list.items.len >= 4096) break;
-                }
+        // 残りの出力を読み取り
+        try self.drainPipeBlocking(&child.stdout, &stdout_list, config.Shell.COMPLETION_MAX_OUTPUT);
+        try self.drainPipeBlocking(&child.stderr, &stderr_list, 4096);
+
+        // パイプを閉じる（FDリーク防止）
+        if (child.stdout) |stdout| stdout.close();
+        child.stdout = null;
+        if (child.stderr) |stderr| stderr.close();
+        child.stderr = null;
+
+        return .{
+            .stdout = try stdout_list.toOwnedSlice(self.allocator),
+            .stderr = try stderr_list.toOwnedSlice(self.allocator),
+        };
+    }
+
+    /// パイプからノンブロッキングで読み取り
+    fn drainPipe(self: *Self, pipe_ptr: *?std.fs.File, list: *std.ArrayListUnmanaged(u8), max_size: usize) !void {
+        if (pipe_ptr.*) |pipe| {
+            var buf: [4096]u8 = undefined;
+            while (list.items.len < max_size) {
+                const n = pipe.read(&buf) catch |err| {
+                    if (err == error.WouldBlock) break;
+                    break;
+                };
+                if (n == 0) break;
+                try list.appendSlice(self.allocator, buf[0..n]);
             }
+        }
+    }
 
-            return .{
-                .stdout = try stdout_list.toOwnedSlice(self.allocator),
-                .stderr = try stderr_list.toOwnedSlice(self.allocator),
-            };
+    /// パイプからブロッキングで全て読み取り（プロセス終了後用）
+    fn drainPipeBlocking(self: *Self, pipe_ptr: *?std.fs.File, list: *std.ArrayListUnmanaged(u8), max_size: usize) !void {
+        if (pipe_ptr.*) |pipe| {
+            // ブロッキングモードに戻す
+            setBlocking(pipe);
+
+            var buf: [4096]u8 = undefined;
+            while (list.items.len < max_size) {
+                const n = pipe.read(&buf) catch break;
+                if (n == 0) break;
+                try list.appendSlice(self.allocator, buf[0..n]);
+            }
         }
     }
 
@@ -340,8 +396,9 @@ pub const ShellService = struct {
             }
         }
         // 2. PATH環境変数から検索（スタックバッファ使用）
+        // 長いNixストアパスなどに対応するため4096バイトを確保
         if (std.posix.getenv("PATH")) |path_env| {
-            var path_buf: [512]u8 = undefined;
+            var path_buf: [4096]u8 = undefined;
             var it = std.mem.splitScalar(u8, path_env, ':');
             while (it.next()) |dir| {
                 const exec_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir, name }) catch continue;
@@ -506,6 +563,54 @@ pub const ShellService = struct {
         };
     }
 
+    /// コマンド実行用の共通初期化（start/startStreaming共通）
+    /// 戻り値: (CommandState, actual_command) - errdefer用にactual_commandも返す
+    fn initCommandState(self: *Self, parsed: ParsedCommand) !struct { state: *CommandState, command: []const u8 } {
+        // bash + alias を使うかどうか判定
+        const use_bash_aliases = self.bash_path != null and self.aliases_path != null;
+
+        // 状態を作成
+        const state = try self.allocator.create(CommandState);
+        errdefer self.allocator.destroy(state);
+
+        // 子プロセスを起動
+        const actual_command: []const u8 = if (use_bash_aliases) blk: {
+            // bash -c 'shopt -s expand_aliases; . "path"; eval "command"'
+            const quoted_path = try shellQuote(self.allocator, self.aliases_path.?);
+            defer self.allocator.free(quoted_path);
+            const quoted_cmd = try shellQuote(self.allocator, parsed.command);
+            defer self.allocator.free(quoted_cmd);
+            const wrapped = try std.fmt.allocPrint(self.allocator, "shopt -s expand_aliases; . {s}; eval {s}", .{ quoted_path, quoted_cmd });
+            const argv = [_][]const u8{ self.bash_path.?, "-c", wrapped };
+            state.child = std.process.Child.init(&argv, self.allocator);
+            break :blk wrapped;
+        } else blk: {
+            // shを使用（POSIX準拠を保証）
+            const command_copy = try self.allocator.dupe(u8, parsed.command);
+            const sh_path = self.sh_path orelse "/bin/sh";
+            const argv = [_][]const u8{ sh_path, "-c", command_copy };
+            state.child = std.process.Child.init(&argv, self.allocator);
+            break :blk command_copy;
+        };
+        errdefer self.allocator.free(actual_command);
+
+        // 共通の初期化
+        state.child.stdout_behavior = .Pipe;
+        state.child.stderr_behavior = .Pipe;
+        state.input_source = parsed.input_source;
+        state.output_dest = parsed.output_dest;
+        state.command = actual_command;
+        state.stdout_buffer = .{};
+        state.stderr_buffer = .{};
+        state.child_reaped = false;
+        state.exit_status = null;
+        state.stdout_truncated = false;
+        state.stderr_truncated = false;
+        state.nonblock_configured = false;
+
+        return .{ .state = state, .command = actual_command };
+    }
+
     /// シェルコマンドを非同期で開始
     /// parsedは呼び出し元でparseCommand()した結果を渡す（二重パース防止）
     pub fn start(self: *Self, parsed: ParsedCommand, stdin_data: ?[]const u8, stdin_allocated: bool) !void {
@@ -520,56 +625,17 @@ pub const ShellService = struct {
             self.state = null;
         }
 
-        // bash + alias を使うかどうか判定
-        const use_bash_aliases = self.bash_path != null and self.aliases_path != null;
-
-        // 状態を作成
-        const state = try self.allocator.create(CommandState);
+        // 共通初期化
+        const result = try self.initCommandState(parsed);
+        const state = result.state;
         errdefer self.allocator.destroy(state);
+        errdefer self.allocator.free(result.command);
 
-        // 子プロセスを起動
-        const actual_command: []const u8 = if (use_bash_aliases) blk: {
-            // bash -c 'shopt -s expand_aliases; . "path"; eval "command"'
-            // 注: エイリアスは非対話モードでは展開されないため shopt + eval が必要
-            // パスとコマンドの両方をクォート（injection防止）
-            const quoted_path = try shellQuote(self.allocator, self.aliases_path.?);
-            defer self.allocator.free(quoted_path);
-            const quoted_cmd = try shellQuote(self.allocator, parsed.command);
-            defer self.allocator.free(quoted_cmd);
-            const wrapped = try std.fmt.allocPrint(self.allocator, "shopt -s expand_aliases; . {s}; eval {s}", .{ quoted_path, quoted_cmd });
-            const argv = [_][]const u8{ self.bash_path.?, "-c", wrapped };
-            state.child = std.process.Child.init(&argv, self.allocator);
-            break :blk wrapped;
-        } else blk: {
-            // shを使用（POSIX準拠を保証）
-            // 注: $SHELLはfish等の場合があり-cの挙動が異なる可能性がある
-            const command_copy = try self.allocator.dupe(u8, parsed.command);
-            // キャッシュされたsh_pathを使用（見つからない場合はデフォルト）
-            const sh_path = self.sh_path orelse "/bin/sh";
-            const argv = [_][]const u8{ sh_path, "-c", command_copy };
-            state.child = std.process.Child.init(&argv, self.allocator);
-            break :blk command_copy;
-        };
-        // spawn失敗時にactual_commandを解放（成功時はcleanupStateで解放）
-        errdefer self.allocator.free(actual_command);
-
-        // 入力ソースなしの場合は /dev/null に接続（.Close だと Bad file descriptor エラー）
+        // start固有の設定
         state.child.stdin_behavior = if (stdin_data != null) .Pipe else .Ignore;
-        state.child.stdout_behavior = .Pipe;
-        state.child.stderr_behavior = .Pipe;
-        state.input_source = parsed.input_source;
-        state.output_dest = parsed.output_dest;
         state.stdin_data = stdin_data;
         state.stdin_allocated = stdin_allocated;
         state.stdin_write_pos = 0;
-        state.command = actual_command;
-        state.stdout_buffer = .{};
-        state.stderr_buffer = .{};
-        state.child_reaped = false;
-        state.exit_status = null;
-        state.stdout_truncated = false;
-        state.stderr_truncated = false;
-        state.nonblock_configured = false; // NONBLOCKは初回poll()で遅延設定
         state.streaming_mode = false;
         state.stdin_eof_sent = false;
 
@@ -601,49 +667,17 @@ pub const ShellService = struct {
             self.state = null;
         }
 
-        // bash + alias を使うかどうか判定
-        const use_bash_aliases = self.bash_path != null and self.aliases_path != null;
-
-        // 状態を作成
-        const state = try self.allocator.create(CommandState);
+        // 共通初期化
+        const result = try self.initCommandState(parsed);
+        const state = result.state;
         errdefer self.allocator.destroy(state);
+        errdefer self.allocator.free(result.command);
 
-        // 子プロセスを起動
-        const actual_command: []const u8 = if (use_bash_aliases) blk: {
-            const quoted_path = try shellQuote(self.allocator, self.aliases_path.?);
-            defer self.allocator.free(quoted_path);
-            const quoted_cmd = try shellQuote(self.allocator, parsed.command);
-            defer self.allocator.free(quoted_cmd);
-            const wrapped = try std.fmt.allocPrint(self.allocator, "shopt -s expand_aliases; . {s}; eval {s}", .{ quoted_path, quoted_cmd });
-            const argv = [_][]const u8{ self.bash_path.?, "-c", wrapped };
-            state.child = std.process.Child.init(&argv, self.allocator);
-            break :blk wrapped;
-        } else blk: {
-            const command_copy = try self.allocator.dupe(u8, parsed.command);
-            const sh_path = self.sh_path orelse "/bin/sh";
-            const argv = [_][]const u8{ sh_path, "-c", command_copy };
-            state.child = std.process.Child.init(&argv, self.allocator);
-            break :blk command_copy;
-        };
-        errdefer self.allocator.free(actual_command);
-
-        // ストリーミングモードでは常にPipe
+        // startStreaming固有の設定
         state.child.stdin_behavior = .Pipe;
-        state.child.stdout_behavior = .Pipe;
-        state.child.stderr_behavior = .Pipe;
-        state.input_source = parsed.input_source;
-        state.output_dest = parsed.output_dest;
         state.stdin_data = null;
         state.stdin_allocated = false;
         state.stdin_write_pos = 0;
-        state.command = actual_command;
-        state.stdout_buffer = .{};
-        state.stderr_buffer = .{};
-        state.child_reaped = false;
-        state.exit_status = null;
-        state.stdout_truncated = false;
-        state.stderr_truncated = false;
-        state.nonblock_configured = false;
         state.streaming_mode = true;
         state.stdin_eof_sent = false;
 
@@ -664,18 +698,10 @@ pub const ShellService = struct {
         // NONBLOCKを設定（初回のみ）
         if (!state.nonblock_configured) {
             state.nonblock_configured = true;
-            const nonblock_flag: usize = @as(u32, @bitCast(std.posix.O{ .NONBLOCK = true }));
-            const flags = std.posix.fcntl(stdin_file.handle, std.posix.F.GETFL, 0) catch 0;
-            _ = std.posix.fcntl(stdin_file.handle, std.posix.F.SETFL, flags | nonblock_flag) catch {};
+            setNonBlocking(stdin_file);
             // stdout/stderrも同時にNONBLOCK設定
-            if (state.child.stdout) |stdout_file| {
-                const sflags = std.posix.fcntl(stdout_file.handle, std.posix.F.GETFL, 0) catch 0;
-                _ = std.posix.fcntl(stdout_file.handle, std.posix.F.SETFL, sflags | nonblock_flag) catch {};
-            }
-            if (state.child.stderr) |stderr_file| {
-                const eflags = std.posix.fcntl(stderr_file.handle, std.posix.F.GETFL, 0) catch 0;
-                _ = std.posix.fcntl(stderr_file.handle, std.posix.F.SETFL, eflags | nonblock_flag) catch {};
-            }
+            if (state.child.stdout) |stdout_file| setNonBlocking(stdout_file);
+            if (state.child.stderr) |stderr_file| setNonBlocking(stderr_file);
         }
 
         return stdin_file.write(data) catch |err| switch (err) {
@@ -704,19 +730,9 @@ pub const ShellService = struct {
         // 初回のみNONBLOCKを設定（遅延初期化でspawn時のシステムコールを削減）
         if (!state.nonblock_configured) {
             state.nonblock_configured = true;
-            const nonblock_flag: usize = @as(u32, @bitCast(std.posix.O{ .NONBLOCK = true }));
-            if (state.child.stdout) |stdout_file| {
-                const flags = std.posix.fcntl(stdout_file.handle, std.posix.F.GETFL, 0) catch 0;
-                _ = std.posix.fcntl(stdout_file.handle, std.posix.F.SETFL, flags | nonblock_flag) catch {};
-            }
-            if (state.child.stderr) |stderr_file| {
-                const flags = std.posix.fcntl(stderr_file.handle, std.posix.F.GETFL, 0) catch 0;
-                _ = std.posix.fcntl(stderr_file.handle, std.posix.F.SETFL, flags | nonblock_flag) catch {};
-            }
-            if (state.child.stdin) |stdin_file| {
-                const flags = std.posix.fcntl(stdin_file.handle, std.posix.F.GETFL, 0) catch 0;
-                _ = std.posix.fcntl(stdin_file.handle, std.posix.F.SETFL, flags | nonblock_flag) catch {};
-            }
+            if (state.child.stdout) |stdout_file| setNonBlocking(stdout_file);
+            if (state.child.stderr) |stderr_file| setNonBlocking(stderr_file);
+            if (state.child.stdin) |stdin_file| setNonBlocking(stdin_file);
         }
 
         var read_buf: [config.Shell.READ_BUFFER_SIZE]u8 = undefined;
@@ -961,6 +977,7 @@ pub const ShellService = struct {
         // 共通プレフィックスを計算
         const common = unicode.findCommonPrefix(lines.items);
         const common_prefix = try self.allocator.dupe(u8, common);
+        errdefer self.allocator.free(common_prefix); // toOwnedSlice失敗時にfree
 
         return CompletionResult{
             .matches = try lines.toOwnedSlice(self.allocator),
@@ -998,7 +1015,10 @@ pub const ShellService = struct {
                 in_double = !in_double;
             } else if (!in_single and !in_double) {
                 // 引用符外の区切り文字
-                if (c == ' ' or c == '\t' or c == '|' or c == ';') {
+                // 空白、パイプ、セミコロン、シェル演算子、リダイレクト記号を区切りとして扱う
+                if (c == ' ' or c == '\t' or c == '|' or c == ';' or
+                    c == '&' or c == '(' or c == ')' or c == '<' or c == '>')
+                {
                     last_delim_end = i + 1;
                 }
             }

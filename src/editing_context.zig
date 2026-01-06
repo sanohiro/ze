@@ -25,23 +25,6 @@ const PieceIterator = buffer_mod.PieceIterator;
 const unicode = @import("unicode");
 const config = @import("config");
 
-/// 変更の種類
-pub const ChangeType = enum {
-    insert,
-    delete,
-    cursor_move,
-    selection_change,
-};
-
-/// 変更イベント
-pub const ChangeEvent = struct {
-    change_type: ChangeType,
-    position: usize,
-    length: usize, // insert/deleteの場合のバイト数
-    line: usize, // 影響を受ける開始行
-    line_end: ?usize, // 影響を受ける終了行（nullは末尾まで）
-};
-
 /// Undo/Redo用の編集操作
 const EditOp = enum { insert, delete };
 
@@ -282,14 +265,6 @@ pub const EditingContext = struct {
     }
 
     // ========================================
-    // 変更通知（将来の拡張用、現在は何もしない）
-    // ========================================
-
-    fn notifyChange(_: *EditingContext, _: ChangeEvent) void {
-        // 将来リスナー機構を実装する際に使用
-    }
-
-    // ========================================
     // 基本情報
     // ========================================
 
@@ -320,40 +295,16 @@ pub const EditingContext = struct {
     // ========================================
 
     pub fn setCursor(self: *EditingContext, pos: usize) void {
-        const old_cursor = self.cursor;
         self.cursor = @min(pos, self.buffer.len());
-        if (old_cursor != self.cursor) {
-            self.notifyChange(.{
-                .change_type = .cursor_move,
-                .position = self.cursor,
-                .length = 0,
-                .line = self.buffer.findLineByPos(self.cursor),
-                .line_end = null,
-            });
-        }
     }
 
     pub fn setMark(self: *EditingContext) void {
         self.mark = if (self.mark != null) null else self.cursor;
-        self.notifyChange(.{
-            .change_type = .selection_change,
-            .position = self.cursor,
-            .length = 0,
-            .line = self.getCursorLine(),
-            .line_end = null,
-        });
     }
 
     pub fn clearMark(self: *EditingContext) void {
         if (self.mark == null) return;
         self.mark = null;
-        self.notifyChange(.{
-            .change_type = .selection_change,
-            .position = self.cursor,
-            .length = 0,
-            .line = self.getCursorLine(),
-            .line_end = null,
-        });
     }
 
     // ========================================
@@ -579,7 +530,6 @@ pub const EditingContext = struct {
         if (text.len == 0) return;
 
         const pos = self.cursor;
-        const line = self.buffer.findLineByPos(pos);
 
         // バッファに挿入
         try self.buffer.insertSlice(pos, text);
@@ -591,16 +541,6 @@ pub const EditingContext = struct {
         // カーソル移動
         self.cursor = pos + text.len;
         self.modified = true;
-
-        // 改行を含むかで影響範囲を決定
-        const has_newline = std.mem.indexOfScalar(u8, text, '\n') != null;
-        self.notifyChange(.{
-            .change_type = .insert,
-            .position = pos,
-            .length = text.len,
-            .line = line,
-            .line_end = if (has_newline) null else line,
-        });
     }
 
     pub fn insertChar(self: *EditingContext, char: u8) !void {
@@ -618,13 +558,9 @@ pub const EditingContext = struct {
         if (pos >= self.buffer.len()) return;
 
         const actual_count = @min(count, self.buffer.len() - pos);
-        const line = self.buffer.findLineByPos(pos);
 
         // 削除するテキストを保存（所有権はrecordDeleteOwnedに移転）
         const deleted = try self.extractText(pos, actual_count);
-
-        // 改行を含むかで影響範囲を決定
-        const has_newline = std.mem.indexOfScalar(u8, deleted, '\n') != null;
 
         // バッファから削除
         self.buffer.delete(pos, actual_count) catch |err| {
@@ -642,13 +578,6 @@ pub const EditingContext = struct {
         // recordDeleteOwnedが成功したら所有権は移転済み（freeしない）
 
         self.modified = true;
-        self.notifyChange(.{
-            .change_type = .delete,
-            .position = pos,
-            .length = actual_count,
-            .line = line,
-            .line_end = if (has_newline) null else line,
-        });
     }
 
     /// バックスペース: 前のgrapheme clusterを削除
@@ -727,14 +656,6 @@ pub const EditingContext = struct {
         }
         self.kill_ring = new_text;
         self.mark = null;
-
-        self.notifyChange(.{
-            .change_type = .selection_change,
-            .position = self.cursor,
-            .length = 0,
-            .line = self.getCursorLine(),
-            .line_end = null,
-        });
     }
 
     pub fn killRegion(self: *EditingContext) !void {
@@ -788,6 +709,9 @@ pub const EditingContext = struct {
             entry.freeData(self.allocator);
         }
         self.redo_stack.clearRetainingCapacity();
+
+        // savepointもリセット（ファイル再読み込み後のmodified判定を正しくするため）
+        self.savepoint = 0;
     }
 
     /// Undoの結果を表す構造体
@@ -846,15 +770,6 @@ pub const EditingContext = struct {
         // セーブポイントに戻ったらmodifiedをfalseに
         self.updateModifiedFlag();
 
-        const line = self.buffer.findLineByPos(last_position);
-        self.notifyChange(.{
-            .change_type = if (last_op == .insert) .delete else .insert,
-            .position = last_position,
-            .length = last_len,
-            .line = line,
-            .line_end = null,
-        });
-
         return .{ .cursor_pos = first_cursor };
     }
 
@@ -889,7 +804,8 @@ pub const EditingContext = struct {
             // 大規模挿入のredo不可チェック（データが保存されていない場合）
             if (current.op == .insert and !current.hasData()) {
                 // redoできない大規模挿入 → スキップしてスタックから削除
-                _ = self.redo_stack.pop();
+                var skipped = self.redo_stack.pop().?;
+                skipped.freeData(self.allocator); // メモリ解放
                 continue;
             }
 
@@ -914,15 +830,6 @@ pub const EditingContext = struct {
 
         // セーブポイントと比較してmodifiedを更新
         self.updateModifiedFlag();
-
-        const line = self.buffer.findLineByPos(last_position);
-        self.notifyChange(.{
-            .change_type = if (last_op == .insert) .insert else .delete,
-            .position = last_position,
-            .length = last_len,
-            .line = line,
-            .line_end = null,
-        });
 
         return .{ .cursor_pos = last_cursor };
     }

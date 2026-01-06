@@ -201,7 +201,7 @@ pub const Terminal = struct {
         // tty_fdを使用してウィンドウサイズを取得
         // パイプ入力時も/dev/ttyから正しいサイズを取得できる
         const result = posix.system.ioctl(self.tty_fd, posix.system.T.IOCGWINSZ, @intFromPtr(&ws));
-        if (result == 0) {
+        if (result == 0 and ws.col > 0 and ws.row > 0) {
             self.width = ws.col;
             self.height = ws.row;
         }

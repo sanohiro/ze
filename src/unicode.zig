@@ -456,18 +456,23 @@ pub inline fn normalizeFullwidth(cp: u21) u21 {
     return cp;
 }
 
-/// ソート済み文字列配列の共通プレフィックスを見つける
-/// 最初と最後の文字列のみを比較（ソート済みのため）
+/// 文字列配列の共通プレフィックスを見つける
+/// 全要素を走査して最短の共通プレフィックスを計算
 pub fn findCommonPrefix(strings: []const []const u8) []const u8 {
     if (strings.len == 0) return "";
     if (strings.len == 1) return strings[0];
 
     const first = strings[0];
-    const last = strings[strings.len - 1];
-    const min_len = @min(first.len, last.len);
+    var common_len: usize = first.len;
 
-    var common_len: usize = 0;
-    while (common_len < min_len and first[common_len] == last[common_len]) : (common_len += 1) {}
+    // 全要素と比較して共通プレフィックス長を縮める
+    for (strings[1..]) |s| {
+        const min_len = @min(common_len, s.len);
+        var i: usize = 0;
+        while (i < min_len and first[i] == s[i]) : (i += 1) {}
+        common_len = i;
+        if (common_len == 0) break; // もう共通部分がない
+    }
 
     return first[0..common_len];
 }

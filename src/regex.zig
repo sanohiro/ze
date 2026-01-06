@@ -145,7 +145,7 @@ pub const Regex = struct {
                 '^' => try instructions.append(allocator, .anchor_start),
                 '$' => try instructions.append(allocator, .anchor_end),
                 '[' => {
-                    const class_result = try parseCharClass(allocator, pattern[i..]);
+                    const class_result = try parseCharClass(pattern[i..]);
                     i += class_result.consumed - 1;
 
                     // 量指定子チェック
@@ -290,7 +290,7 @@ pub const Regex = struct {
     };
 
     /// 文字クラスをパース（ビットマップに直接構築、アロケーション不要）
-    fn parseCharClass(_: std.mem.Allocator, pattern: []const u8) !CharClassResult {
+    fn parseCharClass(pattern: []const u8) !CharClassResult {
         var cc = CharClass.init();
 
         var i: usize = 1; // skip '['

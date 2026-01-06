@@ -1247,8 +1247,8 @@ pub const Buffer = struct {
                 }
             } else {
                 // UTF-8/UTF-8_BOM: Zig 0.15の新I/O API
-                // バッファを提供してシステムコール回数を削減
-                var write_buffer: [config.Terminal.OUTPUT_BUFFER_CAPACITY]u8 = undefined;
+                // 64KBバッファでwrite()回数を削減
+                var write_buffer: [config.FileIO.WRITE_BUFFER_SIZE]u8 = undefined;
                 var file_writer = file.writer(&write_buffer);
                 const writer = &file_writer.interface;
 
@@ -1286,9 +1286,18 @@ pub const Buffer = struct {
 
         // 成功したら rename で置き換え（アトミック操作）
         std.fs.cwd().rename(tmp_path, real_path) catch |err| {
-            // rename失敗時は一時ファイルを削除してからエラーを返す
-            std.fs.cwd().deleteFile(tmp_path) catch {};
-            return err;
+            if (err == error.RenameAcrossMountPoints) {
+                // 異なるファイルシステム間: copyFile + deleteFileにフォールバック
+                std.fs.cwd().copyFile(tmp_path, std.fs.cwd(), real_path, .{}) catch |copy_err| {
+                    std.fs.cwd().deleteFile(tmp_path) catch {};
+                    return copy_err;
+                };
+                std.fs.cwd().deleteFile(tmp_path) catch {};
+            } else {
+                // その他のエラー: 一時ファイルを削除してからエラーを返す
+                std.fs.cwd().deleteFile(tmp_path) catch {};
+                return err;
+            }
         };
 
         // ディレクトリをfsyncして、renameの耐久性を保証
@@ -1373,21 +1382,21 @@ pub const Buffer = struct {
     }
 
     /// UTF-8文字の先頭バイト位置を探す（後方移動用）
+    /// PieceIteratorを使って効率的に後方スキャン（O(1)のprev()を使用）
     pub fn findUtf8CharStart(self: *const Buffer, pos: usize) usize {
         if (pos == 0) return 0;
-        var test_pos = pos - 1;
-        // getByteAtを使用してイテレータ作成を回避
-        while (test_pos > 0) : (test_pos -= 1) {
-            const byte = self.getByteAt(test_pos) orelse break;
+
+        // PieceIteratorを使って後方スキャン（getByteAtのO(piece数)を回避）
+        var iter = PieceIterator.init(self);
+        iter.seek(pos);
+
+        // 後方に移動しながらUTF-8先頭バイトを探す（最大4バイト）
+        var back: usize = 0;
+        while (back < 4) : (back += 1) {
+            const byte = iter.prev() orelse return 0;
             // UTF-8の先頭バイトかチェック（continuation byteでなければ先頭）
             if (unicode.isUtf8Start(byte)) {
-                return test_pos;
-            }
-        }
-        // pos=0もチェック
-        if (self.getByteAt(0)) |byte| {
-            if (unicode.isUtf8Start(byte)) {
-                return 0;
+                return iter.global_pos; // prev()後のglobal_posがそのバイトの位置
             }
         }
         return 0;
@@ -1446,6 +1455,24 @@ pub const Buffer = struct {
         // insertSlice内でinvalidateされるのでここでは不要
     }
 
+    /// 挿入操作の後処理（共通パターン）
+    /// piece_idx: 更新するpiece index（nullの場合は更新しない、Piece統合時に使用）
+    fn finalizeInsert(
+        self: *Buffer,
+        pos: usize,
+        text: []const u8,
+        piece_idx: ?usize,
+        now: i128,
+    ) !void {
+        self.total_len += text.len;
+        self.last_insert_end = pos + text.len;
+        if (piece_idx) |idx| {
+            self.last_insert_piece_idx = idx;
+        }
+        self.last_insert_time = now;
+        try self.line_index.updateForInsert(pos, text);
+    }
+
     /// 指定位置にテキストを挿入
     ///
     /// 【Piece Tableでの挿入】
@@ -1497,10 +1524,7 @@ pub const Buffer = struct {
                     // 統合可能：add_bufferに追記してPieceを延長
                     try self.add_buffer.appendSlice(self.allocator, text);
                     last_piece.length += text.len;
-                    self.total_len += text.len;
-                    self.last_insert_end = pos + text.len;
-                    self.last_insert_time = now;
-                    try self.line_index.updateForInsert(pos, text);
+                    try self.finalizeInsert(pos, text, null, now);
                     return;
                 }
             }
@@ -1522,11 +1546,7 @@ pub const Buffer = struct {
         // 挿入位置が0なら先頭に追加
         if (pos == 0) {
             try self.pieces.insert(self.allocator, 0, new_piece);
-            self.total_len += text.len;
-            self.last_insert_end = pos + text.len;
-            self.last_insert_piece_idx = 0;
-            self.last_insert_time = now;
-            try self.line_index.updateForInsert(pos, text);
+            try self.finalizeInsert(pos, text, 0, now);
             return;
         }
 
@@ -1534,11 +1554,7 @@ pub const Buffer = struct {
         // pos == total_len は許可するが、それを超える場合はエラー
         if (pos == self.total_len) {
             try self.pieces.append(self.allocator, new_piece);
-            self.total_len += text.len;
-            self.last_insert_end = pos + text.len;
-            self.last_insert_piece_idx = self.pieces.items.len - 1;
-            self.last_insert_time = now;
-            try self.line_index.updateForInsert(pos, text);
+            try self.finalizeInsert(pos, text, self.pieces.items.len - 1, now);
             return;
         }
 
@@ -1550,11 +1566,7 @@ pub const Buffer = struct {
         // 挿入位置のpieceを見つける
         const location = self.findPieceAt(pos) orelse {
             try self.pieces.append(self.allocator, new_piece);
-            self.total_len += text.len;
-            self.last_insert_end = pos + text.len;
-            self.last_insert_piece_idx = self.pieces.items.len - 1;
-            self.last_insert_time = now;
-            try self.line_index.updateForInsert(pos, text);
+            try self.finalizeInsert(pos, text, self.pieces.items.len - 1, now);
             return;
         };
 
@@ -1563,21 +1575,13 @@ pub const Buffer = struct {
         // pieceの境界に挿入する場合
         if (location.offset == 0) {
             try self.pieces.insert(self.allocator, location.piece_idx, new_piece);
-            self.total_len += text.len;
-            self.last_insert_end = pos + text.len;
-            self.last_insert_piece_idx = location.piece_idx;
-            self.last_insert_time = now;
-            try self.line_index.updateForInsert(pos, text);
+            try self.finalizeInsert(pos, text, location.piece_idx, now);
             return;
         }
 
         if (location.offset == piece.length) {
             try self.pieces.insert(self.allocator, location.piece_idx + 1, new_piece);
-            self.total_len += text.len;
-            self.last_insert_end = pos + text.len;
-            self.last_insert_piece_idx = location.piece_idx + 1;
-            self.last_insert_time = now;
-            try self.line_index.updateForInsert(pos, text);
+            try self.finalizeInsert(pos, text, location.piece_idx + 1, now);
             return;
         }
 
@@ -1604,11 +1608,7 @@ pub const Buffer = struct {
         self.pieces.insertAssumeCapacity(location.piece_idx, right_piece);
         self.pieces.insertAssumeCapacity(location.piece_idx, new_piece);
         self.pieces.insertAssumeCapacity(location.piece_idx, left_piece);
-        self.total_len += text.len;
-        self.last_insert_end = pos + text.len;
-        self.last_insert_piece_idx = location.piece_idx + 1; // new_pieceの位置
-        self.last_insert_time = now;
-        try self.line_index.updateForInsert(pos, text);
+        try self.finalizeInsert(pos, text, location.piece_idx + 1, now); // new_pieceの位置
     }
 
     /// 指定位置から指定バイト数を削除
@@ -1903,6 +1903,8 @@ pub const Buffer = struct {
             // タブは次のタブストップまで進める
             if (gc.base == '\t') {
                 col = (col / tw + 1) * tw;
+            } else if (gc.base < 0x20 or gc.base == 0x7F) {
+                col += 2; // 制御文字は ^X 形式で表示幅2
             } else {
                 col += gc.width; // 表示幅を加算（CJK=2, ASCII=1）
             }

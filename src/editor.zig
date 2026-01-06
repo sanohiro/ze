@@ -562,11 +562,19 @@ pub const Editor = struct {
             }
         }
 
-        // Viewのバッファ参照を更新
-        self.getCurrentView().buffer = buffer_state.editing_ctx.buffer;
+        // 同じバッファを表示している全ウィンドウのViewを更新
+        const buffer_id = buffer_state.id;
+        for (self.window_manager.iterator()) |*window| {
+            if (window.buffer_id == buffer_id) {
+                // バッファ参照を更新
+                window.view.buffer = buffer_state.editing_ctx.buffer;
+                // カーソルを先頭にリセット
+                window.view.moveToBufferStart();
+                // 全画面再描画をマーク
+                window.view.markFullRedraw();
+            }
+        }
 
-        // カーソルを先頭に
-        self.getCurrentView().moveToBufferStart();
         self.getCurrentView().setError("Reloaded");
     }
 
@@ -2362,6 +2370,8 @@ pub const Editor = struct {
                     // タブは次のタブストップまで進める
                     const tab_width = view.getTabWidth();
                     display_col = (display_col / tab_width + 1) * tab_width;
+                } else if (gc.base < 0x20 or gc.base == 0x7F) {
+                    display_col += 2; // 制御文字は ^X 形式で表示幅2
                 } else {
                     display_col += gc.width; // 絵文字は2、通常文字は1
                 }
@@ -3394,7 +3404,17 @@ pub const Editor = struct {
                 if (window.mark_pos != null) {
                     try edit.indentRegion(self);
                 } else {
-                    try self.insertChar('\t');
+                    // indent_style設定に従ってタブまたはスペースを挿入
+                    const view = self.getCurrentView();
+                    const indent_style = view.getIndentStyle();
+                    if (indent_style == .tab) {
+                        try self.insertChar('\t');
+                    } else {
+                        const tab_width = view.getTabWidth();
+                        for (0..tab_width) |_| {
+                            try self.insertChar(' ');
+                        }
+                    }
                 }
             },
             .shift_tab => try edit.unindentRegion(self),
@@ -4121,6 +4141,15 @@ pub const Editor = struct {
                     range.iter.?.seek(range.current_pos);
                 }
                 const bytes_copied = range.iter.?.copyBytes(chunk_buffer[0..chunk_size]);
+
+                // bytes_copied == 0 の場合は読み取るデータがない（バッファが縮小された等）
+                // 無限ループを防ぐためストリーミングを終了
+                if (bytes_copied == 0) {
+                    self.shell_service.closeStdin();
+                    self.streaming_range = null;
+                    return;
+                }
+
                 const chunk = chunk_buffer[0..bytes_copied];
 
                 // パイプに書き込み

@@ -72,7 +72,7 @@ pub const Minibuffer = struct {
     pub fn setContent(self: *Self, content: []const u8) !void {
         self.buffer.clearRetainingCapacity();
         try self.buffer.appendSlice(self.allocator, content);
-        self.cursor = content.len;
+        self.cursor = self.buffer.items.len; // 常にバッファの実際の長さを使用
     }
 
     /// カーソル位置を有効範囲に正規化
