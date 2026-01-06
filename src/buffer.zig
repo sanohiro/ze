@@ -1655,7 +1655,8 @@ pub const Buffer = struct {
                 remaining -= 1;
             } else break;
         }
-        self.cached_line_count -= newlines_deleted;
+        // 安全のためsaturating subtractionを使用（理論的にはアンダーフローしないはずだが）
+        self.cached_line_count -|= newlines_deleted;
 
         const end_pos = pos + actual_count;
 

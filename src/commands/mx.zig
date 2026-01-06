@@ -227,15 +227,8 @@ fn cmdRevert(e: *Editor) !void {
     // Undo/Redoスタックをクリア（リロード前の編集履歴は無効）
     buffer_state.editing_ctx.clearUndoHistory();
 
-    // ファイルの最終更新時刻を記録
-    const file = std.fs.cwd().openFile(filename, .{}) catch null;
-    if (file) |f| {
-        defer f.close();
-        const stat = f.stat() catch null;
-        if (stat) |s| {
-            buffer_state.file.mtime = s.mtime;
-        }
-    }
+    // ファイルの最終更新時刻を記録（loadFromFileで取得済み）
+    buffer_state.file.mtime = loaded_buffer.loaded_mtime;
 
     // Viewのバッファ参照を更新
     e.getCurrentView().buffer = buffer_state.editing_ctx.buffer;
