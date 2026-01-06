@@ -2370,7 +2370,7 @@ pub const Editor = struct {
                     // タブは次のタブストップまで進める
                     const tab_width = view.getTabWidth();
                     display_col = (display_col / tab_width + 1) * tab_width;
-                } else if (gc.base < 0x20 or gc.base == 0x7F) {
+                } else if (unicode.isAsciiControl(gc.base)) {
                     display_col += 2; // 制御文字は ^X 形式で表示幅2
                 } else {
                     display_col += gc.width; // 絵文字は2、通常文字は1

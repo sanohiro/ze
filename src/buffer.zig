@@ -1904,7 +1904,7 @@ pub const Buffer = struct {
             // タブは次のタブストップまで進める
             if (gc.base == '\t') {
                 col = (col / tw + 1) * tw;
-            } else if (gc.base < 0x20 or gc.base == 0x7F) {
+            } else if (unicode.isAsciiControl(gc.base)) {
                 col += 2; // 制御文字は ^X 形式で表示幅2
             } else {
                 col += gc.width; // 表示幅を加算（CJK=2, ASCII=1）
@@ -1941,7 +1941,7 @@ pub const Buffer = struct {
 
             const new_col = if (gc.base == '\t')
                 (col / tw + 1) * tw
-            else if (gc.base < 0x20 or gc.base == 0x7F)
+            else if (unicode.isAsciiControl(gc.base))
                 col + 2
             else
                 col + gc.width;

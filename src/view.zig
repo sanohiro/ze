@@ -57,7 +57,7 @@ const ANALYSIS_CACHE_SIZE: usize = 64;
 /// 制御文字（0x00-0x1F, 0x7F）の表示幅を返す
 /// 制御文字は ^X 形式で表示されるため幅2、それ以外は0を返す
 inline fn controlCharWidth(codepoint: u21) u3 {
-    return if (codepoint < 0x20 or codepoint == 0x7F) 2 else 0;
+    return if (unicode.isAsciiControl(codepoint)) 2 else 0;
 }
 
 /// ANSIエスケープシーケンス(\x1b[...m)をスキップして次の位置を返す
@@ -1751,11 +1751,7 @@ pub const View = struct {
                 byte_offset += 1;
             } else if (unicode.isAsciiByte(byte)) {
                 // 制御文字は ^X 形式で幅2、それ以外のASCIIは幅1
-                if (byte < 0x20 or byte == 0x7F) {
-                    expanded_pos += 2;
-                } else {
-                    expanded_pos += 1;
-                }
+                expanded_pos += if (unicode.isAsciiControl(byte)) 2 else 1;
                 byte_offset += 1;
             } else {
                 const remaining = line_buffer[byte_offset..];
@@ -2284,7 +2280,7 @@ pub const View = struct {
             // タブ文字の場合は文脈依存の幅を計算
             const char_width = if (gc.base == '\t')
                 nextTabStop(display_col, self.getTabWidth()) - display_col
-            else if (gc.base < 0x20 or gc.base == 0x7F)
+            else if (unicode.isAsciiControl(gc.base))
                 2 // 制御文字は ^X 形式で表示幅2
             else
                 gc.width;
@@ -2365,7 +2361,7 @@ pub const View = struct {
             }
             const next_width = if (gc.base == '\t')
                 nextTabStop(display_col, self.getTabWidth()) - display_col
-            else if (gc.base < 0x20 or gc.base == 0x7F)
+            else if (unicode.isAsciiControl(gc.base))
                 2 // 制御文字は ^X 形式で表示幅2
             else
                 gc.width;
@@ -2506,7 +2502,7 @@ pub const View = struct {
                 if (gc.base == '\n') break;
                 const char_width = if (gc.base == '\t')
                     nextTabStop(line_width, self.getTabWidth()) - line_width
-                else if (gc.base < 0x20 or gc.base == 0x7F)
+                else if (unicode.isAsciiControl(gc.base))
                     2 // 制御文字は ^X 形式で表示幅2
                 else
                     gc.width;
@@ -2554,7 +2550,7 @@ pub const View = struct {
 
                 const char_width = if (gc.base == '\t')
                     nextTabStop(line_width, self.getTabWidth()) - line_width
-                else if (gc.base < 0x20 or gc.base == 0x7F)
+                else if (unicode.isAsciiControl(gc.base))
                     2 // 制御文字は ^X 形式で表示幅2
                 else
                     gc.width;

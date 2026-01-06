@@ -443,6 +443,12 @@ pub inline fn isUtf8Continuation(byte: u8) bool {
     return (byte & UTF8.CONTINUATION_MASK) == UTF8.CONTINUATION_PATTERN;
 }
 
+/// ASCII制御文字かどうか（C0: 0x00-0x1F, DEL: 0x7F）
+/// ^@〜^_ と DEL を判定。表示時に ^X 形式で2桁表示される文字。
+pub inline fn isAsciiControl(cp: u21) bool {
+    return cp <= ASCII.CTRL_MAX or cp == ASCII.DEL;
+}
+
 /// ANSIエスケープシーケンスの開始かどうか（ESC [）
 pub inline fn isAnsiEscapeStart(c: u8, next: u8) bool {
     return c == ASCII.ESC and next == ASCII.CSI_BRACKET;

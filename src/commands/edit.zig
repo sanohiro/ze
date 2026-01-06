@@ -139,7 +139,7 @@ pub fn backspace(e: *Editor) !void {
         char_base = gc.base;
         char_len = gc.byte_len;
         // 制御文字は ^X 形式で表示幅2
-        char_width = if (gc.base < 0x20 or gc.base == 0x7F) 2 else gc.width;
+        char_width = if (unicode.isAsciiControl(gc.base)) 2 else gc.width;
     }
 
     // deleteRangeCommonで削除
