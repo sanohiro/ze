@@ -223,6 +223,9 @@ const AnsiFlags = struct {
 const ExpandResult = struct {
     col: usize,
     flags: AnsiFlags,
+    /// カーソルのexpanded_line内バイト位置（検索ハイライト用）
+    /// nullの場合はカーソルがこの行にない
+    cursor_expanded_pos: ?usize,
 };
 
 fn detectAnsiCodes(line: []const u8, content_start: usize) AnsiFlags {
@@ -1010,7 +1013,7 @@ pub const View = struct {
     /// カーソル位置のマッチのみマゼンタ、それ以外は反転で強調
     ///
     /// 【cursor_in_content】
-    /// カーソルの行内バイト位置（バッファ内、ANSIなし）。nullなら全て反転。
+    /// カーソルのexpanded_line内バイト位置（タブ展開後）。nullなら全て反転。
     ///
     /// 【content_start】
     /// 検索対象の開始バイト位置（行番号等のプレフィックスをスキップ）
@@ -1059,8 +1062,9 @@ pub const View = struct {
 
         // マッチ前の部分をコピー
         try self.highlighted_line.appendSlice(self.allocator, line[0..match_start_raw]);
-        // カーソル位置を含むマッチかどうかで色を変える（可視位置で比較）
-        const is_current = if (cursor_in_content) |cursor| cursor > match_start_vis and cursor <= match_end_vis else false;
+        // カーソル位置を含むマッチかどうかで色を変える（expanded_line座標で比較）
+        // カーソルはマッチ終端に置かれる: (start, end] の範囲で判定（開始を除外、終端を含む）
+        const is_current = if (cursor_in_content) |cursor| cursor > match_start_raw and cursor <= match_end_raw else false;
         const hl = getHighlightColors(is_current);
         try self.highlighted_line.appendSlice(self.allocator, hl.start);
         try self.highlighted_line.appendSlice(self.allocator, line[match_start_raw..match_end_raw]);
@@ -1090,8 +1094,8 @@ pub const View = struct {
 
                 // マッチ前の部分をコピー
                 try self.highlighted_line.appendSlice(self.allocator, line[last_raw_pos..match_start_raw]);
-                // カーソル位置を含むマッチかどうかで色を変える（可視位置で比較）
-                const is_cur = if (cursor_in_content) |cursor| cursor > match_start_vis and cursor <= match_end_vis else false;
+                // カーソル位置を含むマッチかどうかで色を変える（expanded_line座標で比較）
+                const is_cur = if (cursor_in_content) |cursor| cursor > match_start_raw and cursor <= match_end_raw else false;
                 const hl_cur = getHighlightColors(is_cur);
                 try self.highlighted_line.appendSlice(self.allocator, hl_cur.start);
                 try self.highlighted_line.appendSlice(self.allocator, line[match_start_raw..match_end_raw]);
@@ -1173,7 +1177,7 @@ pub const View = struct {
     /// 4. マッチ位置を元の行位置にマッピングしてハイライト
     ///
     /// 【cursor_in_content】
-    /// カーソルの行内バイト位置（バッファ内、ANSIなし）。nullなら全て反転。
+    /// カーソルのexpanded_line内バイト位置（タブ展開後）。nullなら全て反転。
     ///
     /// 【content_start】
     /// 検索対象の開始バイト位置（行番号等のプレフィックスをスキップ）
@@ -1211,9 +1215,9 @@ pub const View = struct {
 
         // マッチ前の部分をコピー
         try self.highlighted_line.appendSlice(self.allocator, line[0..match_start_raw]);
-        // カーソル位置を含むマッチかどうかで色を変える（可視位置で比較）
+        // カーソル位置を含むマッチかどうかで色を変える（expanded_line座標で比較）
         // カーソルはマッチ終端に置かれる: (start, end] の範囲で判定（開始を除外、終端を含む）
-        const is_current = if (cursor_in_content) |cursor| cursor > match_start_vis and cursor <= match_end_vis else false;
+        const is_current = if (cursor_in_content) |cursor| cursor > match_start_raw and cursor <= match_end_raw else false;
         const hl = getHighlightColors(is_current);
         try self.highlighted_line.appendSlice(self.allocator, hl.start);
         try self.highlighted_line.appendSlice(self.allocator, line[match_start_raw..match_end_raw]);
@@ -1228,7 +1232,10 @@ pub const View = struct {
             if (re.search(self.regex_visible_text.items, visible_pos)) |match_result| {
                 match_count += 1;
                 if (match_result.end == match_result.start) {
-                    visible_pos += 1;
+                    // UTF-8境界を考慮して進める（マルチバイト文字の途中で止まらないように）
+                    const first_byte = self.regex_visible_text.items[visible_pos];
+                    const char_len = std.unicode.utf8ByteSequenceLength(first_byte) catch 1;
+                    visible_pos += @min(char_len, self.regex_visible_text.items.len - visible_pos);
                     continue;
                 }
 
@@ -1243,9 +1250,8 @@ pub const View = struct {
 
                 // マッチ前の部分をコピー
                 try self.highlighted_line.appendSlice(self.allocator, line[last_raw_pos..match_start_raw]);
-                // カーソル位置を含むマッチかどうかで色を変える（可視位置で比較）
-                // カーソルはマッチ終端に置かれる: (start, end] の範囲で判定（開始を除外、終端を含む）
-                const is_cur = if (cursor_in_content) |cursor| cursor > match_start_vis and cursor <= match_end_vis else false;
+                // カーソル位置を含むマッチかどうかで色を変える（expanded_line座標で比較）
+                const is_cur = if (cursor_in_content) |cursor| cursor > match_start_raw and cursor <= match_end_raw else false;
                 const hl_cur = getHighlightColors(is_cur);
                 try self.highlighted_line.appendSlice(self.allocator, hl_cur.start);
                 try self.highlighted_line.appendSlice(self.allocator, line[match_start_raw..match_end_raw]);
@@ -1492,6 +1498,7 @@ pub const View = struct {
 
     /// タブ展開と水平スクロール処理（ハイライト適用）
     /// 戻り値にANSIフラグを含めることで、renderLineDiffでの再走査を回避
+    /// cursor_byte_in_buffer: カーソルのバッファ内オフセット（検索ハイライトでexpanded位置が必要）
     fn expandLineWithHighlights(
         self: *View,
         line_buffer: []const u8,
@@ -1499,6 +1506,7 @@ pub const View = struct {
         selection: SelectionBounds,
         viewport_width: usize,
         line_num_width: usize,
+        cursor_byte_in_buffer: ?usize,
     ) !ExpandResult {
         var byte_idx: usize = 0;
         var col: usize = 0;
@@ -1507,6 +1515,9 @@ pub const View = struct {
         const visible_width = if (viewport_width > line_num_width) viewport_width - line_num_width else 1;
         const visible_end = self.top_col + visible_width;
         const tab_width = self.getTabWidth();
+
+        // カーソルのexpanded_line内位置を追跡（検索ハイライト用）
+        var cursor_expanded_pos: ?usize = null;
 
         // コメントスパン追跡
         const has_spans = analysis.span_count > 0;
@@ -1521,6 +1532,13 @@ pub const View = struct {
         var in_selection = false;
 
         while (byte_idx < line_buffer.len and col < visible_end) {
+            // カーソル位置を追跡（検索ハイライトでの正確な位置比較に使用）
+            if (cursor_byte_in_buffer) |cursor_pos| {
+                if (cursor_expanded_pos == null and byte_idx >= cursor_pos) {
+                    cursor_expanded_pos = self.expanded_line.items.len;
+                }
+            }
+
             // 選択範囲チェック（事前計算済みの値を使用）
             if (has_valid_selection) {
                 if (!in_selection and byte_idx >= sel_start and byte_idx < sel_end) {
@@ -1689,6 +1707,7 @@ pub const View = struct {
         return .{
             .col = col,
             .flags = .{ .has_gray = emitted_gray, .has_invert = emitted_invert },
+            .cursor_expanded_pos = cursor_expanded_pos,
         };
     }
 
@@ -1790,14 +1809,17 @@ pub const View = struct {
         // 4. 選択範囲の境界を計算
         const selection = self.calculateSelectionBounds(positions.start_pos, positions.end_pos, line_buffer.items.len);
 
-        // 5. タブ展開とハイライト適用
-        const line_num_width = self.getLineNumberWidth();
-        const expand_result = try self.expandLineWithHighlights(line_buffer.items, analysis, selection, viewport_width, line_num_width);
+        // 5. カーソル位置計算（タブ展開前に必要）
+        const cursor_byte_in_buffer = self.calculateCursorByteOffset(screen_row);
 
-        // 6. カーソル位置計算と検索ハイライト
-        // 検索ハイライトにはバイト位置を使用（表示幅ではなく）
-        const cursor_byte_in_content = self.calculateCursorByteOffset(screen_row);
-        const new_line = try self.applySearchHighlight(self.expanded_line.items, cursor_byte_in_content, content_start_byte);
+        // 6. タブ展開とハイライト適用
+        // cursor_byte_in_bufferを渡してexpanded_line内でのカーソル位置を追跡
+        const line_num_width = self.getLineNumberWidth();
+        const expand_result = try self.expandLineWithHighlights(line_buffer.items, analysis, selection, viewport_width, line_num_width, cursor_byte_in_buffer);
+
+        // 7. 検索ハイライト
+        // expand_result.cursor_expanded_posを使用（タブ展開後の正確な位置）
+        const new_line = try self.applySearchHighlight(self.expanded_line.items, expand_result.cursor_expanded_pos, content_start_byte);
 
         // 7. 表示幅計算と差分描画
         const visible_width = if (viewport_width > line_num_width) viewport_width - line_num_width else 1;
