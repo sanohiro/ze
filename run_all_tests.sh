@@ -377,7 +377,9 @@ run_test "19.4 変更なしでC-x C-s" --file=test_data/test_nums.txt "C-x" "C-s
 run_test "19.5 複数回保存" --file=test_data/test_nums.txt "a" "C-x" "C-s" "b" "C-x" "C-s" "C-x" "C-c"
 run_test "19.6 名前を付けて保存 (C-x C-w)" --file=test_data/test_nums.txt "test" "C-x" "C-w" "/tmp/ze_test_saveas.txt" "Enter" "y" "C-x" "C-c"
 run_test "19.7 C-x k (バッファを閉じる)" --file=test_data/test_buffer1.txt "C-x" "C-f" "/tmp/ze_test_data/test_buffer2.txt" "Enter" "C-x" "k" "C-x" "C-c"
-run_test "19.8 C-x h (全選択)" --file=test_data/test_cursor_input.txt "C-x" "h" "C-w" "C-x" "C-c" "n"
+run_test "19.8 M-x kill-buffer" --file=test_data/test_buffer1.txt "C-x" "C-f" "/tmp/ze_test_data/test_buffer2.txt" "Enter" "M-x" "kill-buffer" "Enter" "C-x" "C-c"
+run_test "19.9 M-x kb (エイリアス)" --file=test_data/test_buffer1.txt "C-x" "C-f" "/tmp/ze_test_data/test_buffer2.txt" "Enter" "M-x" "kb" "Enter" "C-x" "C-c"
+run_test "19.10 C-x h (全選択)" --file=test_data/test_cursor_input.txt "C-x" "h" "C-w" "C-x" "C-c" "n"
 echo
 fi
 
@@ -561,6 +563,10 @@ run_test "30.3 M-x mode python" --file=test_data/test_nums.txt "M-x" "m" "o" "d"
 run_test "30.4 M-x exit" --file=test_data/test_nums.txt "M-x" "e" "x" "i" "t" "Enter" "y"
 # M-x quit (確認プロンプトにyで応答)
 run_test "30.5 M-x quit" --file=test_data/test_nums.txt "M-x" "q" "u" "i" "t" "Enter" "y"
+# M-x overwrite - 上書きモード切り替え
+run_test "30.6 M-x overwrite" --file=test_data/test_nums.txt "M-x" "o" "v" "e" "r" "w" "r" "i" "t" "e" "Enter" "C-x" "C-c"
+# M-x ow (エイリアス)
+run_test "30.7 M-x ow (エイリアス)" --file=test_data/test_nums.txt "M-x" "o" "w" "Enter" "C-x" "C-c"
 echo
 fi
 

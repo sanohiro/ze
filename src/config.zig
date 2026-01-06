@@ -344,7 +344,7 @@ pub const Messages = struct {
     pub const KEY_PREFIX_CX = "C-x-";
 
     // === M-xコマンドメッセージ ===
-    pub const MX_COMMANDS_HELP = "Commands: line ln tab indent mode revert key ro exit ?";
+    pub const MX_COMMANDS_HELP = "Commands: line ln tab indent mode revert key ro kill-buffer overwrite exit ?";
     pub const MX_LINE_NUMBERS_ON = "Line numbers: on";
     pub const MX_LINE_NUMBERS_OFF = "Line numbers: off";
     pub const MX_INVALID_LINE_NUMBER = "Invalid line number";

@@ -89,6 +89,7 @@ const EditorMode = enum {
     macro_repeat, // マクロ再生後の連打待機（eで再実行）
     exit_confirm, // M-x exit: 終了確認中（y/nを待つ）
     overwrite_confirm, // ファイル上書き確認中（y/nを待つ）
+    reload_confirm, // ファイル外部変更: リロード確認中（y/nを待つ）
     recent_files, // 最近開いたファイル選択中（C-x C-r）
 };
 
@@ -503,12 +504,70 @@ pub const Editor = struct {
         const stat = std.fs.cwd().statFile(file_path) catch return;
         const current_mtime = stat.mtime;
 
-        // mtimeが変わっていたら通知
+        // mtimeが変わっていたらリロード確認
         if (current_mtime != saved_mtime) {
-            self.getCurrentView().setError("File changed on disk");
             // mtimeを更新（次回のチェックで再通知しないため）
             buffer_state.file.mtime = current_mtime;
+            self.getCurrentView().setError("File changed on disk. Reload? (y/n)");
+            self.mode = .reload_confirm;
         }
+    }
+
+    /// リロード確認の処理
+    fn handleReloadConfirmChar(self: *Editor, cp: u21) void {
+        self.mode = .normal;
+        switch (cp) {
+            'y', 'Y' => {
+                // ファイルをリロード
+                self.reloadCurrentBuffer() catch |err| {
+                    self.showError(err);
+                };
+            },
+            'n', 'N' => {
+                self.getCurrentView().setError("Reload cancelled");
+            },
+            else => self.getCurrentView().setError("Please answer y or n"),
+        }
+    }
+
+    /// 現在のバッファをリロード
+    fn reloadCurrentBuffer(self: *Editor) !void {
+        const buffer_state = self.getCurrentBuffer();
+        const filename = buffer_state.file.filename orelse {
+            self.getCurrentView().setError("No file to reload");
+            return;
+        };
+
+        // Buffer.loadFromFileを使用
+        const loaded_buffer = Buffer.loadFromFile(self.allocator, filename) catch |err| {
+            self.setPrompt("Cannot reload: {s}", .{@errorName(err)});
+            return;
+        };
+
+        // 古いバッファを解放して新しいバッファに置き換え
+        buffer_state.editing_ctx.buffer.deinit();
+        buffer_state.editing_ctx.buffer.* = loaded_buffer;
+        buffer_state.editing_ctx.modified = false;
+
+        // Undo/Redoスタックをクリア
+        buffer_state.editing_ctx.clearUndoHistory();
+
+        // mtimeを更新
+        const file = std.fs.cwd().openFile(filename, .{}) catch null;
+        if (file) |f| {
+            defer f.close();
+            const stat = f.stat() catch null;
+            if (stat) |s| {
+                buffer_state.file.mtime = s.mtime;
+            }
+        }
+
+        // Viewのバッファ参照を更新
+        self.getCurrentView().buffer = buffer_state.editing_ctx.buffer;
+
+        // カーソルを先頭に
+        self.getCurrentView().moveToBufferStart();
+        self.getCurrentView().setError("Reloaded");
     }
 
     /// ミニバッファ入力をキャンセルしてnormalモードに戻る
@@ -1388,6 +1447,29 @@ pub const Editor = struct {
 
         // バッファを削除（BufferManager経由）
         _ = self.buffer_manager.deleteBuffer(buffer_id);
+    }
+
+    /// 現在のバッファを閉じる（C-x k / M-x kill-buffer）
+    pub fn killCurrentBuffer(self: *Editor) void {
+        const buffer_state = self.getCurrentBuffer();
+        if (buffer_state.editing_ctx.modified) {
+            const name = buffer_state.file.filename orelse config.Messages.BUFFER_SCRATCH;
+            self.setPrompt("Buffer {s} modified; kill anyway? (y/n): ", .{name});
+            self.mode = .kill_buffer_confirm;
+        } else {
+            const buffer_id = buffer_state.id;
+            self.closeBuffer(buffer_id) catch |err| self.showError(err);
+        }
+    }
+
+    /// 上書き/挿入モード切り替え（Insert / M-x overwrite）
+    pub fn toggleOverwriteMode(self: *Editor) void {
+        self.overwrite_mode = !self.overwrite_mode;
+        if (self.overwrite_mode) {
+            self.getCurrentView().setError("Overwrite mode enabled");
+        } else {
+            self.getCurrentView().setError("Insert mode enabled");
+        }
     }
 
     /// バッファ一覧を表示（C-x C-b）
@@ -2804,17 +2886,7 @@ pub const Editor = struct {
                         self.prompt_prefix_len = stringDisplayWidth(prompt);
                         self.getCurrentView().setError(prompt);
                     },
-                    'k' => {
-                        const buffer_state = self.getCurrentBuffer();
-                        if (buffer_state.editing_ctx.modified) {
-                            const name = buffer_state.file.filename orelse config.Messages.BUFFER_SCRATCH;
-                            self.setPrompt("Buffer {s} modified; kill anyway? (y/n): ", .{name});
-                            self.mode = .kill_buffer_confirm;
-                        } else {
-                            const buffer_id = buffer_state.id;
-                            self.closeBuffer(buffer_id) catch |err| self.showError(err);
-                        }
-                    },
+                    'k' => self.killCurrentBuffer(),
                     '2' => self.splitWindowHorizontally() catch |err| self.showError(err),
                     '3' => self.splitWindowVertically() catch |err| self.showError(err),
                     'o' => {
@@ -3326,14 +3398,7 @@ pub const Editor = struct {
                 }
             },
             .shift_tab => try edit.unindentRegion(self),
-            .insert => {
-                self.overwrite_mode = !self.overwrite_mode;
-                if (self.overwrite_mode) {
-                    self.getCurrentView().setError("Overwrite mode enabled");
-                } else {
-                    self.getCurrentView().setError("Insert mode enabled");
-                }
-            },
+            .insert => self.toggleOverwriteMode(),
             .char => |c| if (c >= 32 and c < 127) try self.insertCodepoint(c),
             .codepoint => |cp| try self.insertCodepoint(cp),
             else => {
@@ -3464,6 +3529,10 @@ pub const Editor = struct {
             },
             .overwrite_confirm => {
                 self.dispatchConfirmKey(key, handleOverwriteConfirmChar);
+                return;
+            },
+            .reload_confirm => {
+                self.dispatchConfirmKey(key, handleReloadConfirmChar);
                 return;
             },
             .prefix_r => {

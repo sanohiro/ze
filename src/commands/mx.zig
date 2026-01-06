@@ -30,6 +30,8 @@ const commands = [_]Command{
     .{ .name = "key", .handler = .{ .special = cmdKeyDescribe } },
     .{ .name = "ro", .handler = .{ .special = cmdReadonly } },
     .{ .name = "exit", .alias = "quit", .handler = .{ .special = cmdExit } },
+    .{ .name = "kill-buffer", .alias = "kb", .handler = .{ .special = cmdKillBuffer } },
+    .{ .name = "overwrite", .alias = "ow", .handler = .{ .special = cmdOverwrite } },
 };
 
 /// M-xコマンドを実行
@@ -263,6 +265,16 @@ fn cmdReadonly(e: *Editor) void {
 fn cmdExit(e: *Editor) void {
     e.mode = .exit_confirm;
     e.getCurrentView().setError(config.Messages.MX_EXIT_CONFIRM);
+}
+
+/// kill-buffer コマンド: 現在のバッファを閉じる
+fn cmdKillBuffer(e: *Editor) void {
+    e.killCurrentBuffer();
+}
+
+/// overwrite コマンド: 上書き/挿入モード切り替え
+fn cmdOverwrite(e: *Editor) void {
+    e.toggleOverwriteMode();
 }
 
 /// コマンド名補完

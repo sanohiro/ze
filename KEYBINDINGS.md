@@ -51,6 +51,7 @@ Moving without Shift clears the selection.
 | `M-↑` / `M-↓` | Move line up/down |
 | `Tab` / `S-Tab` | Indent/unindent |
 | `M-;` | Toggle comment |
+| `Insert` | Toggle overwrite mode (Mac: `M-x ow`) |
 
 **Note:** Cut/copy (`C-w`/`M-w`) automatically copies to system clipboard via OSC 52 (iTerm2, kitty, alacritty, etc.).
 
@@ -169,6 +170,8 @@ Note: Rectangle uses separate storage from normal kill ring. C-y won't paste rec
 | `key` | Describe key binding |
 | `revert` | Reload file |
 | `ro` | Toggle read-only |
+| `kill-buffer` / `kb` | Kill current buffer (same as C-x k) |
+| `overwrite` / `ow` | Toggle overwrite mode (same as Insert key) |
 | `exit` / `quit` | Quit with confirmation |
 | `?` | List all commands |
 

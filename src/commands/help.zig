@@ -24,6 +24,7 @@ pub const help_text =
     \\  C-w/M-w     Cut/copy region           C-y         Paste
     \\  M-^         Join lines                M-;         Toggle comment
     \\  Tab/S-Tab   Indent/unindent           M-Up/Down   Move line up/down
+    \\  Insert      Toggle overwrite mode     (Mac: M-x ow)
     \\
     \\SEARCH & REPLACE
     \\  C-s/C-r     Search forward/backward   M-%         Query replace
@@ -55,7 +56,7 @@ pub const help_text =
     \\  M-x         Execute command           M-?         This help
     \\  C-g/Esc     Cancel
     \\
-    \\M-x COMMANDS: line N, tab, indent, mode, key, revert, ro, ?
+    \\M-x COMMANDS: line, tab, indent, mode, key, revert, ro, kill-buffer, overwrite, ?
     \\
     \\Note: Tab completes file paths and M-x commands.
 ;
@@ -130,6 +131,7 @@ pub fn describeKey(key: input.Key) []const u8 {
         .page_up => "PageUp: scroll-up",
         .page_down => "PageDown: scroll-down",
         .delete => "Delete: delete-char",
+        .insert => "Insert: toggle-overwrite-mode",
         .escape => "Escape: cancel",
         .alt_delete => "M-Delete: kill-word",
         .alt_arrow_up => "M-Up: move-line-up",

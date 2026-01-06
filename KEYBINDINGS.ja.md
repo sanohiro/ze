@@ -51,6 +51,7 @@ Shift なしで移動すると選択解除されます。
 | `M-↑` / `M-↓` | 行を上/下に移動 |
 | `Tab` / `S-Tab` | インデント/アンインデント |
 | `M-;` | コメント切り替え |
+| `Insert` | 上書き/挿入モード切替 (Mac: `M-x ow`) |
 
 **Note:** カット/コピー (`C-w`/`M-w`) はOSC 52経由でシステムクリップボードに自動コピーされます（iTerm2, kitty, alacritty等）。
 
@@ -169,6 +170,8 @@ ggggHHHH[cursor]iiii                         ggggiiii
 | `key` | キーバインド説明 |
 | `revert` | ファイル再読み込み |
 | `ro` | 読み取り専用切り替え |
+| `kill-buffer` / `kb` | 現在のバッファを閉じる (C-x k と同じ) |
+| `overwrite` / `ow` | 上書き/挿入モード切替 (Insert と同じ) |
 | `exit` / `quit` | 確認付きで終了 |
 | `?` | コマンド一覧 |
 
