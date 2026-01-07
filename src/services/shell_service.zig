@@ -631,6 +631,10 @@ pub const ShellService = struct {
         const state = result.state;
         errdefer self.allocator.destroy(state);
         errdefer self.allocator.free(result.command);
+        // stdin_dataの所有権を受け取る場合、spawn失敗時に解放
+        errdefer if (stdin_allocated) {
+            if (stdin_data) |data| self.allocator.free(data);
+        };
 
         // start固有の設定
         state.child.stdin_behavior = if (stdin_data != null) .Pipe else .Ignore;

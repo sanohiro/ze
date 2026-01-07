@@ -215,13 +215,16 @@ pub const EditingContext = struct {
     /// 新規バッファで初期化
     pub fn init(allocator: std.mem.Allocator) !*EditingContext {
         const buffer = try allocator.create(Buffer);
+        errdefer allocator.destroy(buffer);
         buffer.* = try Buffer.init(allocator);
+        errdefer buffer.deinit();
         return initWithBuffer(allocator, buffer, true);
     }
 
     /// 既存バッファで初期化
     pub fn initWithBuffer(allocator: std.mem.Allocator, buffer: *Buffer, owns_buffer: bool) !*EditingContext {
         const ctx = try allocator.create(EditingContext);
+        errdefer allocator.destroy(ctx);
         ctx.* = EditingContext{
             .allocator = allocator,
             .buffer = buffer,
@@ -584,11 +587,29 @@ pub const EditingContext = struct {
     pub fn backspace(self: *EditingContext) !void {
         const prev = self.findPrevGrapheme();
         if (prev.len > 0) {
+            // Undo用に元のカーソル位置を保存（削除する文字の後＝現在の位置）
+            const cursor_before = self.cursor;
+
+            // カーソルを削除開始位置に移動
             self.cursor = prev.start;
-            try self.delete(prev.len);
+
+            // 削除するテキストを保存
+            const deleted = try self.extractText(prev.start, prev.len);
+
+            // バッファから削除
+            self.buffer.delete(prev.start, prev.len) catch |err| {
+                self.allocator.free(deleted);
+                return err;
+            };
+            self.invalidatePrevGraphemeCache();
+
+            // Undo記録（元のカーソル位置を使用）
+            // extractTextは新規アロケートなのでcapacity = len
+            try self.recordDeleteOpOwned(prev.start, @constCast(deleted), deleted.len, cursor_before);
+
+            self.modified = true;
 
             // 連続Backspace最適化: 次のBackspace用にキャッシュを先行計算
-            // delete()でキャッシュが無効化されるため、ここで再計算しておく
             if (self.cursor > 0) {
                 _ = self.findPrevGrapheme();
             }
@@ -630,14 +651,18 @@ pub const EditingContext = struct {
         const end_pos = self.buffer.findNextLineFromPos(pos);
         const count = end_pos - pos;
         if (count > 0) {
-            // Kill ringに保存
+            // 削除するテキストを先に抽出
             const deleted = try self.extractText(pos, count);
+            errdefer self.allocator.free(deleted);
+
+            // 削除を実行（失敗時はdeletedをerrdefer解放）
+            try self.delete(count);
+
+            // 削除成功後にkill_ringを更新
             if (self.kill_ring) |old| {
                 self.allocator.free(old);
             }
             self.kill_ring = deleted;
-
-            try self.delete(count);
         }
     }
 
@@ -662,15 +687,19 @@ pub const EditingContext = struct {
         const sel = self.getSelection() orelse return;
         const norm = sel.normalize();
 
-        // 先にallocateしてからfreeする（allocate失敗時のダングリングポインタ防止）
+        // 削除するテキストを先に抽出
         const new_text = try self.extractText(norm.start, norm.len());
+        errdefer self.allocator.free(new_text);
+
+        // カーソル移動と削除を実行（失敗時はnew_textをerrdefer解放）
+        self.cursor = norm.start;
+        try self.delete(norm.len());
+
+        // 削除成功後にkill_ringを更新
         if (self.kill_ring) |old| {
             self.allocator.free(old);
         }
         self.kill_ring = new_text;
-
-        self.cursor = norm.start;
-        try self.delete(norm.len());
         self.mark = null;
     }
 
@@ -901,7 +930,7 @@ pub const EditingContext = struct {
         if (self.undo_stack.items.len > 0 and time_elapsed < config.Editor.UNDO_GROUP_TIMEOUT_NS) {
             const last = &self.undo_stack.items[self.undo_stack.items.len - 1];
             if (last.op == .insert and last.groupable and
-                last.position + last.data.len == pos and
+                last.position + last.getLength() == pos and
                 !containsNewline(text) and !containsNewline(last.data))
             {
                 // グループ分けルール（VSCode方式 + 単語移動と統一）：
@@ -960,6 +989,7 @@ pub const EditingContext = struct {
             });
         } else {
             const data_copy = try self.allocator.alloc(u8, text.len);
+            errdefer self.allocator.free(data_copy);
             @memcpy(data_copy, text);
             try self.undo_stack.append(self.allocator, .{
                 .op = .insert,

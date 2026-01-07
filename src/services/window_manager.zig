@@ -324,7 +324,7 @@ pub const WindowManager = struct {
         }
 
         // 現在のウィンドウを保持
-        const current_window = self.windows.items[self.current_window_idx];
+        var current_window = self.windows.items[self.current_window_idx];
 
         // 他のウィンドウをすべて解放
         for (self.windows.items, 0..) |*window, i| {
@@ -335,8 +335,11 @@ pub const WindowManager = struct {
 
         // ウィンドウリストをクリアして現在のウィンドウだけ残す
         self.windows.clearRetainingCapacity();
-        // appendが失敗した場合は致命的エラー（ウィンドウが空になる）
-        try self.windows.append(self.allocator, current_window);
+        // appendが失敗した場合はcurrent_windowをクリーンアップ
+        self.windows.append(self.allocator, current_window) catch |err| {
+            current_window.deinit(self.allocator);
+            return err;
+        };
         self.current_window_idx = 0;
 
         // ウィンドウサイズを再計算（フルスクリーン）

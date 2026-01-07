@@ -477,7 +477,8 @@ pub const View = struct {
         // 必要な行数分のArrayListを確保
         const line_capacity = width_hint * 4; // UTF-8 + ANSIエスケープ用に4倍
         while (self.prev_screen.items.len < lines) {
-            const new_line = try std.ArrayList(u8).initCapacity(self.allocator, line_capacity);
+            var new_line = try std.ArrayList(u8).initCapacity(self.allocator, line_capacity);
+            errdefer new_line.deinit(self.allocator);
             try self.prev_screen.append(self.allocator, new_line);
         }
         // 既存の行も容量を確保

@@ -212,10 +212,12 @@ pub const Editor = struct {
 
         // BufferManagerを初期化し、最初のバッファを作成
         var buffer_manager = BufferManager.init(allocator);
+        errdefer buffer_manager.deinit(); // 以降の初期化失敗時にバッファをクリーンアップ
         const first_buffer = try buffer_manager.createBuffer();
 
         // WindowManagerを初期化し、最初のウィンドウを作成
         var window_manager = WindowManager.init(allocator, terminal.width, terminal.height);
+        errdefer window_manager.deinit(); // 以降の初期化失敗時にウィンドウをクリーンアップ
         const first_window = try window_manager.createWindow(first_buffer.id, 0, 0, terminal.width, terminal.height);
         first_window.view = try View.init(allocator, first_buffer.editing_ctx.buffer);
         // 空バッファは言語検出スキップ（View.initでデフォルト言語が設定済み）
@@ -515,18 +517,22 @@ pub const Editor = struct {
 
     /// リロード確認の処理
     fn handleReloadConfirmChar(self: *Editor, cp: u21) void {
-        self.mode = .normal;
         switch (cp) {
             'y', 'Y' => {
+                self.mode = .normal;
                 // ファイルをリロード
                 self.reloadCurrentBuffer() catch |err| {
                     self.showError(err);
                 };
             },
             'n', 'N' => {
+                self.mode = .normal;
                 self.getCurrentView().setError("Reload cancelled");
             },
-            else => self.getCurrentView().setError("Please answer y or n"),
+            else => {
+                // 無効なキーは確認モードを維持
+                self.getCurrentView().setError("Please answer y or n");
+            },
         }
     }
 
@@ -1378,6 +1384,12 @@ pub const Editor = struct {
         current_window.view.setViewport(current_window.width, current_window.height);
         current_window.view.markFullRedraw();
 
+        // 失敗時にウィンドウサイズを復元（createWindow失敗時もView.init失敗時も）
+        errdefer {
+            current_window.height = old_height;
+            current_window.view.setViewport(current_window.width, old_height);
+        }
+
         // 新しいウィンドウを下部に作成（WindowManager経由）
         const new_window = try self.window_manager.createWindow(
             cmd_buffer.id,
@@ -1386,12 +1398,8 @@ pub const Editor = struct {
             current_window.width,
             cmd_height,
         );
-        // View.init失敗時にウィンドウを削除して元の高さを復元
-        errdefer {
-            _ = self.window_manager.windows.pop();
-            current_window.height = old_height;
-            current_window.view.setViewport(current_window.width, old_height);
-        }
+        // View.init失敗時にウィンドウを削除
+        errdefer _ = self.window_manager.windows.pop();
 
         new_window.view = try View.init(self.allocator, cmd_buffer.editing_ctx.buffer);
         // 言語検出とビューポートを設定

@@ -490,12 +490,6 @@ fn moveLineImpl(e: *Editor, direction: enum { up, down }) !void {
     const line_end = buffer.findNextLineFromPos(line_start);
     const line_len = line_end - line_start;
 
-    // 移動先の位置を計算
-    const insert_pos = if (direction == .up)
-        buffer.getLineStart(current_line - 1) orelse return
-    else
-        buffer.findNextLineFromPos(line_end) - line_len;
-
     const line_content = try e.extractText(line_start, line_len);
     defer e.allocator.free(line_content);
 
@@ -503,14 +497,35 @@ fn moveLineImpl(e: *Editor, direction: enum { up, down }) !void {
     _ = buffer_state.editing_ctx.beginUndoGroup();
     defer buffer_state.editing_ctx.endUndoGroup();
 
-    try buffer.delete(line_start, line_len);
-    errdefer buffer.insertSlice(line_start, line_content) catch {};
+    // Undo用にカーソル位置を事前保存（バッファ変更前）
+    const cursor_before = view.getCursorBufferPos();
 
-    try buffer.insertSlice(insert_pos, line_content);
-    errdefer buffer.delete(insert_pos, line_len) catch {};
+    // 上方向: 挿入位置は削除前に計算可能（削除範囲より前なので影響なし）
+    // 下方向: 削除後に計算する必要がある（削除によって位置がずれるため）
+    if (direction == .up) {
+        const insert_pos = buffer.getLineStart(current_line - 1) orelse return;
 
-    try e.recordDelete(line_start, line_content, view.getCursorBufferPos());
-    try e.recordInsert(insert_pos, line_content, view.getCursorBufferPos());
+        try buffer.delete(line_start, line_len);
+        errdefer buffer.insertSlice(line_start, line_content) catch {};
+
+        try buffer.insertSlice(insert_pos, line_content);
+        errdefer buffer.delete(insert_pos, line_len) catch {};
+
+        try e.recordDelete(line_start, line_content, cursor_before);
+        try e.recordInsert(insert_pos, line_content, cursor_before);
+    } else {
+        // 下方向: まず削除してから、削除後の状態で挿入位置を計算
+        try buffer.delete(line_start, line_len);
+        errdefer buffer.insertSlice(line_start, line_content) catch {};
+
+        // 削除後、current_lineは元の次の行を指す。その行の末尾に挿入
+        const insert_pos = buffer.findNextLineFromPos(buffer.getLineStart(current_line) orelse 0);
+        try buffer.insertSlice(insert_pos, line_content);
+        errdefer buffer.delete(insert_pos, line_len) catch {};
+
+        try e.recordDelete(line_start, line_content, cursor_before);
+        try e.recordInsert(insert_pos, line_content, cursor_before);
+    }
 
     buffer_state.editing_ctx.modified = true;
     e.markCurrentBufferFullRedraw();
@@ -620,6 +635,10 @@ pub fn indentRegion(e: *Editor) !void {
     const start_line = range.start_line;
     const end_line = range.end_line;
 
+    // 複数行のインデントは1操作としてUndoグループ化
+    _ = buffer_state.editing_ctx.beginUndoGroup();
+    defer buffer_state.editing_ctx.endUndoGroup();
+
     // 行ごとにインデント（後ろから処理してバイト位置がずれないようにする）
     var line = end_line + 1;
     while (line > start_line) {
@@ -650,6 +669,10 @@ pub fn unindentRegion(e: *Editor) !void {
     const range = getSelectedLineRange(e);
     const start_line = range.start_line;
     const end_line = range.end_line;
+
+    // 複数行のアンインデントは1操作としてUndoグループ化
+    _ = buffer_state.editing_ctx.beginUndoGroup();
+    defer buffer_state.editing_ctx.endUndoGroup();
 
     var any_modified = false;
 

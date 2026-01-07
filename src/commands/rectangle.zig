@@ -286,6 +286,10 @@ pub fn killRectangle(e: *Editor) !void {
         }
     }
 
+    // 矩形削除は1回のUndoで復元できるようにグループ化
+    _ = editing_ctx.beginUndoGroup();
+    defer editing_ctx.endUndoGroup();
+
     // 下から上に削除（位置がずれないように）
     var i = delete_infos.items.len;
     while (i > 0) {
@@ -383,6 +387,10 @@ pub fn yankRectangle(e: *Editor) !void {
             try insert_infos.append(e.allocator, .{ .pos = seek_result.byte_pos, .text = line_text, .owned = false });
         }
     }
+
+    // 矩形挿入は1回のUndoで復元できるようにグループ化
+    _ = editing_ctx.beginUndoGroup();
+    defer editing_ctx.endUndoGroup();
 
     // 下から上に挿入（位置がずれないように）
     var i = insert_infos.items.len;
