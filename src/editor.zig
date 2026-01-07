@@ -1082,6 +1082,7 @@ pub const Editor = struct {
             return buf;
         }
         const new_buffer = try self.createNewBuffer();
+        errdefer _ = self.buffer_manager.deleteBuffer(new_buffer.id);
         new_buffer.file.filename = try self.allocator.dupe(u8, name);
         new_buffer.file.readonly = true;
         return new_buffer;

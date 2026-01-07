@@ -396,9 +396,9 @@ test "Minibuffer - cursor out of bounds - moveLeft" {
     try mb.insertAtCursor("hello");
     mb.cursor = 100;
 
-    // クラッシュせずに末尾に調整
+    // クラッシュせずに末尾に調整後、1文字左に移動
     mb.moveLeft();
-    try testing.expectEqual(@as(usize, 5), mb.cursor);
+    try testing.expectEqual(@as(usize, 4), mb.cursor);
 }
 
 test "Minibuffer - cursor out of bounds - moveWordBackward" {

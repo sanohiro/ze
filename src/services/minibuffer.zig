@@ -127,10 +127,10 @@ pub const Minibuffer = struct {
     /// カーソルを1文字左に移動
     pub fn moveLeft(self: *Self) void {
         if (self.cursor == 0) return;
-        // cursor が範囲外の場合は末尾に調整して終了（移動はしない）
+        // cursor が範囲外の場合は末尾に調整（その後移動を続行）
         if (self.cursor > self.buffer.items.len) {
             self.cursor = self.buffer.items.len;
-            return;
+            if (self.cursor == 0) return;
         }
         self.cursor = unicode.findPrevGraphemeStart(self.buffer.items, self.cursor);
     }
