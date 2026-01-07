@@ -865,7 +865,7 @@ pub const Buffer = struct {
 
         // 空ファイルの場合は特別処理（mmapできない）
         if (file_size == 0) {
-            return loadFromFileEmpty(allocator);
+            return loadFromFileEmpty(allocator, stat.mtime);
         }
 
         // まずmmapを試みる（読み取り専用）
@@ -952,7 +952,7 @@ pub const Buffer = struct {
     }
 
     /// 空ファイル用の初期化
-    fn loadFromFileEmpty(allocator: std.mem.Allocator) !Buffer {
+    fn loadFromFileEmpty(allocator: std.mem.Allocator, file_mtime: i128) !Buffer {
         var add_buffer = try std.ArrayList(u8).initCapacity(allocator, config.Buffer.ADD_BUFFER_INITIAL_CAPACITY);
         errdefer add_buffer.deinit(allocator);
 
@@ -971,7 +971,7 @@ pub const Buffer = struct {
             .line_index = LineIndex.init(allocator),
             .detected_line_ending = .LF,
             .detected_encoding = .UTF8,
-            .loaded_mtime = 0, // 空ファイルはmtimeなし
+            .loaded_mtime = file_mtime,
             .last_insert_end = null,
             .last_insert_piece_idx = 0,
             .last_insert_time = 0,
@@ -986,7 +986,7 @@ pub const Buffer = struct {
     /// UTF-8として扱い、必要に応じて正規化（CRLF→LF等）
     pub fn loadFromSlice(allocator: std.mem.Allocator, content: []const u8) !Buffer {
         if (content.len == 0) {
-            return loadFromFileEmpty(allocator);
+            return loadFromFileEmpty(allocator, 0); // stdin入力はファイルがないのでmtime=0
         }
 
         // エンコーディングと改行コードを検出
