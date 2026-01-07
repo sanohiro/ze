@@ -230,16 +230,25 @@ fn cmdRevert(e: *Editor) !void {
     // ファイルの最終更新時刻を記録（loadFromFileで取得済み）
     buffer_state.file.mtime = loaded_buffer.loaded_mtime;
 
-    // Viewのバッファ参照を更新
-    e.getCurrentView().buffer = buffer_state.editing_ctx.buffer;
-
     // 言語検出を再実行（ファイル内容が変わった可能性があるため）
     var preview_buf: [512]u8 = undefined;
     const content_preview = buffer_state.editing_ctx.buffer.getContentPreview(&preview_buf);
-    e.getCurrentView().detectLanguage(buffer_state.file.filename, content_preview);
 
-    // カーソルを先頭に
-    e.getCurrentView().moveToBufferStart();
+    // 同じバッファを表示している全ウィンドウのViewを更新
+    const buffer_id = buffer_state.id;
+    for (e.window_manager.iterator()) |*window| {
+        if (window.buffer_id == buffer_id) {
+            // バッファ参照を更新
+            window.view.buffer = buffer_state.editing_ctx.buffer;
+            // 言語検出を再実行
+            window.view.detectLanguage(buffer_state.file.filename, content_preview);
+            // カーソルを先頭にリセット
+            window.view.moveToBufferStart();
+            // 全画面再描画をマーク
+            window.view.markFullRedraw();
+        }
+    }
+
     e.getCurrentView().setError(config.Messages.MX_REVERTED);
 }
 

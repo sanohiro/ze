@@ -220,6 +220,9 @@ pub fn undo(e: *Editor) !void {
     const result = try buffer_state.editing_ctx.undoWithCursor();
     if (result == null) return;
 
+    // バッファ変更後はマーク位置が無効になる可能性があるためクリア
+    e.getCurrentWindow().mark_pos = null;
+
     // markCurrentBufferFullRedraw → markFullRedraw でキャッシュ無効化
     // restoreCursorPos → setCursorToPos でキャッシュ再設定
     e.markCurrentBufferFullRedraw();
@@ -235,6 +238,9 @@ pub fn redo(e: *Editor) !void {
 
     const result = try buffer_state.editing_ctx.redoWithCursor();
     if (result == null) return;
+
+    // バッファ変更後はマーク位置が無効になる可能性があるためクリア
+    e.getCurrentWindow().mark_pos = null;
 
     // markCurrentBufferFullRedraw → markFullRedraw でキャッシュ無効化
     // restoreCursorPos → setCursorToPos でキャッシュ再設定
@@ -351,13 +357,20 @@ pub fn joinLine(e: *Editor) !void {
     const delete_len = first_non_space - prev_line_end;
 
     if (delete_len > 0) {
+        // joinLineは削除+挿入の複合操作なのでUndoグループ化
+        _ = buffer_state.editing_ctx.beginUndoGroup();
+        defer buffer_state.editing_ctx.endUndoGroup();
+
+        // カーソル位置を事前保存（バッファ変更前）
+        const cursor_before = view.getCursorBufferPos();
+
         const deleted = try e.extractText(delete_start, delete_len);
         defer e.allocator.free(deleted);
 
         try buffer.delete(delete_start, delete_len);
         // 削除後のロールバック用errdefer（recordDeleteが失敗した場合）
         errdefer buffer.insertSlice(delete_start, deleted) catch {};
-        try e.recordDelete(delete_start, deleted, view.getCursorBufferPos());
+        try e.recordDelete(delete_start, deleted, cursor_before);
 
         var needs_space = true;
         if (delete_start > 0) {
@@ -374,7 +387,15 @@ pub fn joinLine(e: *Editor) !void {
             try buffer.insertSlice(delete_start, " ");
             // 挿入後のロールバック用errdefer（recordInsertが失敗した場合）
             errdefer buffer.delete(delete_start, 1) catch {};
-            try e.recordInsert(delete_start, " ", view.getCursorBufferPos());
+            errdefer {
+                // recordInsertが失敗した場合、recordDeleteのエントリを削除
+                const editing_ctx = buffer_state.editing_ctx;
+                if (editing_ctx.undo_stack.items.len > 0) {
+                    const entry = editing_ctx.undo_stack.pop().?;
+                    entry.freeData(editing_ctx.allocator);
+                }
+            }
+            try e.recordInsert(delete_start, " ", cursor_before);
         }
 
         buffer_state.editing_ctx.modified = true;
@@ -512,6 +533,14 @@ fn moveLineImpl(e: *Editor, direction: enum { up, down }) !void {
         errdefer buffer.delete(insert_pos, line_len) catch {};
 
         try e.recordDelete(line_start, line_content, cursor_before);
+        errdefer {
+            // recordInsertが失敗した場合、recordDeleteのエントリを削除
+            const editing_ctx = buffer_state.editing_ctx;
+            if (editing_ctx.undo_stack.items.len > 0) {
+                const entry = editing_ctx.undo_stack.pop().?;
+                entry.freeData(editing_ctx.allocator);
+            }
+        }
         try e.recordInsert(insert_pos, line_content, cursor_before);
     } else {
         // 下方向: まず削除してから、削除後の状態で挿入位置を計算
@@ -524,6 +553,14 @@ fn moveLineImpl(e: *Editor, direction: enum { up, down }) !void {
         errdefer buffer.delete(insert_pos, line_len) catch {};
 
         try e.recordDelete(line_start, line_content, cursor_before);
+        errdefer {
+            // recordInsertが失敗した場合、recordDeleteのエントリを削除
+            const editing_ctx = buffer_state.editing_ctx;
+            if (editing_ctx.undo_stack.items.len > 0) {
+                const entry = editing_ctx.undo_stack.pop().?;
+                entry.freeData(editing_ctx.allocator);
+            }
+        }
         try e.recordInsert(insert_pos, line_content, cursor_before);
     }
 

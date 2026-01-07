@@ -602,6 +602,9 @@ pub const Editor = struct {
     /// Query Replaceモードのキャンセル（履歴は保持）
     fn cancelQueryReplaceInput(self: *Editor) void {
         self.cancelInput();
+        // 検索ハイライトをクリア（Query Replace中に設定されている）
+        self.getCurrentView().setSearchHighlight(null);
+        self.getCurrentView().markFullRedraw();
     }
 
     /// 置換文字列入力モードのプロンプト設定
@@ -928,6 +931,8 @@ pub const Editor = struct {
     /// 置換完了メッセージを表示してノーマルモードに戻る
     fn finishReplace(self: *Editor) void {
         self.mode = .normal;
+        self.replace_current_pos = null; // マッチ位置をクリア
+        self.replace_match_len = null; // マッチ長をクリア
         self.getCurrentView().setSearchHighlight(null); // 検索ハイライトをクリア
         var msg_buf: [128]u8 = undefined;
         const msg = std.fmt.bufPrint(&msg_buf, "Replaced {d} occurrence(s)", .{self.replace_match_count}) catch "Replace done";
@@ -966,7 +971,10 @@ pub const Editor = struct {
             'n', 'N', ' ' => {
                 // スキップして次へ
                 const current_pos = self.getCurrentView().getCursorBufferPos();
-                try self.findNextOrFinish(search, current_pos + 1);
+                // 空マッチの場合は最低1バイト進める（無限ループ防止）
+                // 非空マッチの場合、カーソルは既にマッチ終端にいるので+0で十分
+                const advance: usize = if ((self.replace_match_len orelse 0) == 0) 1 else 0;
+                try self.findNextOrFinish(search, current_pos + advance);
             },
             '!' => {
                 // 残りすべてを置換（Undoグループ化）
@@ -2777,6 +2785,13 @@ pub const Editor = struct {
             },
             .arrow_up => try self.navigateSearchHistory(true, is_forward),
             .arrow_down => try self.navigateSearchHistory(false, is_forward),
+            .escape => {
+                // ESC: 検索をキャンセル（C-gと同じ動作）
+                if (self.search_start_pos) |start_pos| {
+                    self.setCursorToPos(start_pos);
+                }
+                self.endSearch();
+            },
             .backspace => {
                 if (self.minibuffer.hasContent()) {
                     self.minibuffer.moveToEnd();
@@ -2923,6 +2938,10 @@ pub const Editor = struct {
                     else => self.getCurrentView().setError(config.Messages.UNKNOWN_COMMAND),
                 }
             },
+            .escape => {
+                // ESC: プレフィックスをキャンセル（modeは既にnormalに設定済み）
+                self.getCurrentView().clearError();
+            },
             else => self.getCurrentView().setError("Expected C-x C-[key]"),
         }
         return true;
@@ -2953,6 +2972,10 @@ pub const Editor = struct {
                 } else {
                     self.getCurrentView().setError("Unknown rectangle command");
                 }
+            },
+            .escape => {
+                // ESC: プレフィックスをキャンセル（modeは既にnormalに設定済み）
+                self.getCurrentView().clearError();
             },
             else => self.getCurrentView().setError("Unknown rectangle command"),
         }
@@ -3093,7 +3116,11 @@ pub const Editor = struct {
                 }
                 // C-g以外のCtrlキーは無視
             },
-            // その他のキー（矢印、Escなど）は無視
+            .escape => {
+                // ESC: 置換を終了（qと同じ動作）
+                self.finishReplace();
+            },
+            // その他のキー（矢印など）は無視
             else => {},
         }
         return true;
@@ -4182,8 +4209,10 @@ pub const Editor = struct {
         // ShellServiceにポーリングを委譲
         if (try self.shell_service.poll()) |result| {
             // コマンド完了 - 結果を処理
-            defer self.shell_service.finish();
-            defer self.mode = .normal; // エラー時も必ずモード復帰
+            // 注意: deferはLIFO（後入れ先出し）で実行される
+            // リソースクリーンアップを先に、状態更新を後に実行したいので、宣言順序は逆
+            defer self.mode = .normal; // 2番目に実行：エラー時も必ずモード復帰
+            defer self.shell_service.finish(); // 1番目に実行：リソースクリーンアップ
 
             try self.processShellResult(result.stdout, result.stderr, result.exit_status, result.input_source, result.output_dest, result.truncated);
 
@@ -4202,6 +4231,7 @@ pub const Editor = struct {
     /// シェルコマンドをキャンセル
     fn cancelShellCommand(self: *Editor) void {
         self.shell_service.cancel();
+        self.streaming_range = null; // ストリーミング状態をクリア
         self.mode = .normal;
         self.getCurrentView().setError(config.Messages.CANCELLED);
     }

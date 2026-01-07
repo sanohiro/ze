@@ -319,16 +319,21 @@ pub const PieceIterator = struct {
             };
         }
 
-        // 前のpieceに移動
-        if (self.piece_idx == 0) return null;
-        self.piece_idx -= 1;
-        const prev_piece = self.buffer.pieces.items[self.piece_idx];
-        self.piece_offset = prev_piece.length - 1;
-        self.global_pos -= 1;
-        return switch (prev_piece.source) {
-            .original => self.buffer.original[prev_piece.start + self.piece_offset],
-            .add => self.buffer.add_buffer.items[prev_piece.start + self.piece_offset],
-        };
+        // 前のpieceに移動（長さ0のピースをスキップ）
+        while (self.piece_idx > 0) {
+            self.piece_idx -= 1;
+            const prev_piece = self.buffer.pieces.items[self.piece_idx];
+            if (prev_piece.length > 0) {
+                self.piece_offset = prev_piece.length - 1;
+                self.global_pos -= 1;
+                return switch (prev_piece.source) {
+                    .original => self.buffer.original[prev_piece.start + self.piece_offset],
+                    .add => self.buffer.add_buffer.items[prev_piece.start + self.piece_offset],
+                };
+            }
+            // 長さ0のピースはスキップして続行
+        }
+        return null;
     }
 
     /// 1コードポイント後方に移動して、そのコードポイントを返す
@@ -359,6 +364,10 @@ pub const PieceIterator = struct {
             }
 
             // デコード
+            // byte_count == 4 の場合、先頭バイトが見つからなかった（不正なUTF-8）
+            if (byte_count >= 4) {
+                return error.InvalidUtf8;
+            }
             const start_idx = 4 - byte_count - 1;
             const len = std.unicode.utf8ByteSequenceLength(bytes[start_idx]) catch {
                 // 不正なUTF-8: 1バイト進めて戻す

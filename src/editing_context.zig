@@ -48,7 +48,7 @@ const UndoEntry = struct {
     actual_len: usize = 0,
 
     /// データメモリを解放
-    fn freeData(self: *const UndoEntry, allocator: std.mem.Allocator) void {
+    pub fn freeData(self: *const UndoEntry, allocator: std.mem.Allocator) void {
         if (self.data_capacity > 0) {
             allocator.free(self.data.ptr[0..self.data_capacity]);
         }
@@ -760,11 +760,15 @@ pub const EditingContext = struct {
 
         // 最後のエントリのgroup_idを確認
         const group_id = self.undo_stack.items[self.undo_stack.items.len - 1].group_id;
+        const redo_stack_initial_len = self.redo_stack.items.len;
         var first_cursor: usize = 0;
         var last_position: usize = 0;
         var last_op: EditOp = .insert;
         var last_len: usize = 0;
         var processed: bool = false;
+
+        // エラー時のロールバック: redo_stackに移動済みのエントリをundo_stackに戻す
+        errdefer self.rollbackUndo(redo_stack_initial_len);
 
         // 同じgroup_idを持つ全エントリを処理
         while (self.undo_stack.items.len > 0) {
@@ -782,20 +786,31 @@ pub const EditingContext = struct {
             last_op = entry.op;
             last_len = entry.getLength(); // 大規模挿入対応
 
-            // エラー時はundo_stackに戻す（失敗してもデータ消失を防ぐ）
-            errdefer self.undo_stack.append(self.allocator, entry) catch {
-                // append失敗時はメモリリークを防ぐためデータを解放
-                entry.freeData(self.allocator);
-            };
-
+            // バッファ操作を実行（失敗時はエントリをundo_stackに戻してエラー）
             switch (entry.op) {
-                // 挿入のundo: getLength()で実際の長さを取得（大規模挿入対応）
-                .insert => try self.buffer.delete(entry.position, entry.getLength()),
-                .delete => try self.buffer.insertSlice(entry.position, entry.data),
+                .insert => self.buffer.delete(entry.position, entry.getLength()) catch |err| {
+                    self.undo_stack.append(self.allocator, entry) catch {
+                        entry.freeData(self.allocator);
+                    };
+                    return err;
+                },
+                .delete => self.buffer.insertSlice(entry.position, entry.data) catch |err| {
+                    self.undo_stack.append(self.allocator, entry) catch {
+                        entry.freeData(self.allocator);
+                    };
+                    return err;
+                },
             }
-            self.invalidatePrevGraphemeCache(); // バッファ変更でキャッシュ無効化
+            self.invalidatePrevGraphemeCache();
 
-            try self.redo_stack.append(self.allocator, entry);
+            // redo_stackへの追加（失敗時はバッファ操作を戻してエントリをundo_stackに戻す）
+            self.redo_stack.append(self.allocator, entry) catch |err| {
+                self.redoBufferOp(entry);
+                self.undo_stack.append(self.allocator, entry) catch {
+                    entry.freeData(self.allocator);
+                };
+                return err;
+            };
             processed = true;
         }
 
@@ -806,6 +821,35 @@ pub const EditingContext = struct {
         self.updateModifiedFlag();
 
         return .{ .cursor_pos = first_cursor };
+    }
+
+    /// undoのロールバック: redo_stackからundo_stackにエントリを戻す
+    fn rollbackUndo(self: *EditingContext, redo_stack_initial_len: usize) void {
+        while (self.redo_stack.items.len > redo_stack_initial_len) {
+            var entry = self.redo_stack.pop().?;
+            self.redoBufferOp(entry);
+            self.undo_stack.append(self.allocator, entry) catch {
+                entry.freeData(self.allocator);
+            };
+        }
+    }
+
+    /// バッファ操作を再実行（undoの逆）
+    fn redoBufferOp(self: *EditingContext, entry: UndoEntry) void {
+        switch (entry.op) {
+            .insert => self.buffer.insertSlice(entry.position, entry.data) catch {},
+            .delete => self.buffer.delete(entry.position, entry.getLength()) catch {},
+        }
+        self.invalidatePrevGraphemeCache();
+    }
+
+    /// バッファ操作を取り消し（redoの逆）
+    fn undoBufferOp(self: *EditingContext, entry: UndoEntry) void {
+        switch (entry.op) {
+            .insert => self.buffer.delete(entry.position, entry.getLength()) catch {},
+            .delete => self.buffer.insertSlice(entry.position, entry.data) catch {},
+        }
+        self.invalidatePrevGraphemeCache();
     }
 
     pub fn redo(self: *EditingContext) !bool {
@@ -820,11 +864,15 @@ pub const EditingContext = struct {
 
         // 最後のエントリのgroup_idを確認
         const group_id = self.redo_stack.items[self.redo_stack.items.len - 1].group_id;
+        const undo_stack_initial_len = self.undo_stack.items.len;
         var last_cursor: usize = 0;
         var last_position: usize = 0;
         var last_op: EditOp = .insert;
         var last_len: usize = 0;
         var processed: bool = false;
+
+        // エラー時のロールバック: undo_stackに移動済みのエントリをredo_stackに戻す
+        errdefer self.rollbackRedo(undo_stack_initial_len);
 
         // 同じgroup_idを持つ全エントリを処理
         while (self.redo_stack.items.len > 0) {
@@ -850,19 +898,31 @@ pub const EditingContext = struct {
             last_op = entry.op;
             last_len = entry.getLength(); // 大規模挿入対応
 
-            // エラー時はredo_stackに戻す（失敗してもデータ消失を防ぐ）
-            errdefer self.redo_stack.append(self.allocator, entry) catch {
-                // append失敗時はメモリリークを防ぐためデータを解放
-                entry.freeData(self.allocator);
-            };
-
+            // バッファ操作を実行（失敗時はエントリをredo_stackに戻してエラー）
             switch (entry.op) {
-                .insert => try self.buffer.insertSlice(entry.position, entry.data),
-                .delete => try self.buffer.delete(entry.position, entry.getLength()),
+                .insert => self.buffer.insertSlice(entry.position, entry.data) catch |err| {
+                    self.redo_stack.append(self.allocator, entry) catch {
+                        entry.freeData(self.allocator);
+                    };
+                    return err;
+                },
+                .delete => self.buffer.delete(entry.position, entry.getLength()) catch |err| {
+                    self.redo_stack.append(self.allocator, entry) catch {
+                        entry.freeData(self.allocator);
+                    };
+                    return err;
+                },
             }
-            self.invalidatePrevGraphemeCache(); // バッファ変更でキャッシュ無効化
+            self.invalidatePrevGraphemeCache();
 
-            try self.undo_stack.append(self.allocator, entry);
+            // undo_stackへの追加（失敗時はバッファ操作を戻してエントリをredo_stackに戻す）
+            self.undo_stack.append(self.allocator, entry) catch |err| {
+                self.undoBufferOp(entry);
+                self.redo_stack.append(self.allocator, entry) catch {
+                    entry.freeData(self.allocator);
+                };
+                return err;
+            };
             processed = true;
         }
 
@@ -873,6 +933,17 @@ pub const EditingContext = struct {
         self.updateModifiedFlag();
 
         return .{ .cursor_pos = last_cursor };
+    }
+
+    /// redoのロールバック: undo_stackからredo_stackにエントリを戻す
+    fn rollbackRedo(self: *EditingContext, undo_stack_initial_len: usize) void {
+        while (self.undo_stack.items.len > undo_stack_initial_len) {
+            var entry = self.undo_stack.pop().?;
+            self.undoBufferOp(entry);
+            self.redo_stack.append(self.allocator, entry) catch {
+                entry.freeData(self.allocator);
+            };
+        }
     }
 
     // ========================================
@@ -1104,33 +1175,48 @@ pub const EditingContext = struct {
         // 1. Delete entry（old_text）を先に追加 → undo時は後に実行（old_textを挿入）
         // 2. Insert entry（new_text）を後に追加 → undo時は先に実行（new_textを削除）
 
+        // 両方のコピーを先に作成（所有権管理のためoptionalを使用）
+        var old_copy: ?[]u8 = try self.allocator.alloc(u8, old_text.len);
+        errdefer if (old_copy) |ptr| self.allocator.free(ptr);
+
+        var new_copy: ?[]u8 = try self.allocator.alloc(u8, new_text.len);
+        errdefer if (new_copy) |ptr| self.allocator.free(ptr);
+
+        @memcpy(old_copy.?, old_text);
+        @memcpy(new_copy.?, new_text);
+
         // 削除分（undo時に挿入される）- 先に追加
-        const old_copy = try self.allocator.alloc(u8, old_text.len);
-        errdefer self.allocator.free(old_copy);
-        @memcpy(old_copy, old_text);
         try self.undo_stack.append(self.allocator, .{
             .op = .delete,
             .position = pos,
-            .data = old_copy,
+            .data = old_copy.?,
             .data_capacity = old_text.len,
             .cursor_before = cursor_pos_before,
             .cursor_after = pos,
             .group_id = replace_group_id,
         });
+        old_copy = null; // 所有権がundo_stackに移動
 
         // 挿入分（undo時に削除される）- 後に追加
-        const new_copy = try self.allocator.alloc(u8, new_text.len);
-        errdefer self.allocator.free(new_copy);
-        @memcpy(new_copy, new_text);
-        try self.undo_stack.append(self.allocator, .{
+        self.undo_stack.append(self.allocator, .{
             .op = .insert,
             .position = pos,
-            .data = new_copy,
+            .data = new_copy.?,
             .data_capacity = new_text.len,
             .cursor_before = cursor_pos_before,
             .cursor_after = pos + new_text.len,
             .group_id = replace_group_id,
-        });
+        }) catch |err| {
+            // 2番目の追加が失敗 - 1番目のエントリをロールバック
+            if (self.undo_stack.items.len > 0) {
+                const last_idx = self.undo_stack.items.len - 1;
+                const popped = self.undo_stack.items[last_idx];
+                self.undo_stack.items.len = last_idx;
+                popped.freeData(self.allocator);
+            }
+            return err; // new_copyはerrdefer で解放される
+        };
+        new_copy = null; // 所有権がundo_stackに移動
 
         self.modified = true;
     }

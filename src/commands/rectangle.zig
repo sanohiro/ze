@@ -356,6 +356,11 @@ pub fn yankRectangle(e: *Editor) !void {
         insert_infos.deinit(e.allocator);
     }
 
+    // 矩形挿入は1回のUndoで復元できるようにグループ化
+    // 新規行作成も含めて全てをグループ化する必要がある
+    _ = editing_ctx.beginUndoGroup();
+    defer editing_ctx.endUndoGroup();
+
     // 各行の挿入位置を計算
     for (rect.items, 0..) |line_text, i| {
         const target_line = cursor_line + i;
@@ -387,10 +392,6 @@ pub fn yankRectangle(e: *Editor) !void {
             try insert_infos.append(e.allocator, .{ .pos = seek_result.byte_pos, .text = line_text, .owned = false });
         }
     }
-
-    // 矩形挿入は1回のUndoで復元できるようにグループ化
-    _ = editing_ctx.beginUndoGroup();
-    defer editing_ctx.endUndoGroup();
 
     // 下から上に挿入（位置がずれないように）
     var i = insert_infos.items.len;

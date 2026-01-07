@@ -958,8 +958,8 @@ fn decodeUtf8Codepoint(content: []const u8, pos: usize) !DecodeResult {
         return .{ .codepoint = @as(u21, byte), .bytes = 1 };
     }
 
-    // 2バイト
-    if (byte >= 0xC0 and byte <= 0xDF) {
+    // 2バイト（0xC2-0xDF、0xC0-0xC1はオーバーロングエンコーディングで無効）
+    if (byte >= 0xC2 and byte <= 0xDF) {
         if (pos + 1 >= content.len) return error.InvalidUtf8;
         const second = content[pos + 1];
         if (!unicode.isUtf8Continuation(second)) return error.InvalidUtf8;
