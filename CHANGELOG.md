@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.2] - 2026-01-08
+
+### Fixed
+- **Escape key handling**: ESC now works as cancel in multiple modes
+  - Incremental search (C-s/C-r): ESC cancels and restores cursor position
+  - Query Replace confirmation: ESC exits replace mode
+  - C-x/C-x r prefix modes: ESC cancels without error message
+- **Query Replace improvements**:
+  - Skip position calculation fixed (only advance +1 byte for empty matches)
+  - State properly cleared on finish (replace_current_pos, replace_match_len)
+  - Search highlight cleared on cancel
+- **Multi-window synchronization**: `M-x revert` now updates all windows showing the same buffer
+- **PieceIterator.prev()**: Now correctly skips zero-length pieces
+- **Undo/Redo robustness**:
+  - moveLineImpl: Added errdefer for undo rollback on error
+  - joinLine: Now grouped as single undo operation
+  - undo/redo: Clears mark_pos after operation (prevents stale selection)
+  - yankRectangle: Undo group moved before loop for correct grouping
+- **0-byte file mtime**: Empty files now preserve correct modification time
+  - Fixes spurious "file changed on disk" warnings
+- **Overflow protection**:
+  - cached_line_count: Uses saturating subtraction to prevent underflow
+  - Scroll amount: Uses i64+clamp to prevent i32 overflow
+  - history.zig: Checks for negative stat.size
+- **Memory safety**:
+  - Multiple errdefer additions for allocation failure handling
+  - editing_context init: Proper cleanup chain on failure
+  - buffer_manager/window_manager: errdefer for init failures
+  - shell_service stdin_data: errdefer on failure
+- **UTF-8 validation**: Fixed overlong encoding check (0xC0-0xC1 now rejected)
+- **Minibuffer moveLeft**: Consistent behavior when cursor out of range
+
+### Refactored
+- Added `unicode.isAsciiControl()` for consistent control character detection
+- Removed unused functions: kill_ring.clear/isEmpty, buffer_manager.hasUnsavedChanges, etc.
+- editing_context.freeData made public (required for error cleanup)
+
 ## [1.5.1] - 2026-01-06
 
 ### Fixed
