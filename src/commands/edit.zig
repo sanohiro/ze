@@ -112,6 +112,8 @@ pub fn deleteChar(e: *Editor) !void {
 }
 
 /// Backspace: カーソル前の文字を削除
+/// ZWJ絵文字など複合グラフェムクラスタを正しく削除するため、
+/// 行頭からスキャンしてグラフェム境界を見つける
 pub fn backspace(e: *Editor) !void {
     if (e.isReadOnly()) {
         e.getCurrentView().setError(config.Messages.BUFFER_READONLY);
@@ -127,19 +129,47 @@ pub fn backspace(e: *Editor) !void {
     }
 
     // 削除するgrapheme clusterのバイト数と幅を取得
-    const char_start = buffer.findUtf8CharStart(pos);
-    var iter = PieceIterator.init(buffer);
-    iter.seek(char_start);
+    // 行頭からスキャンしてカーソル直前のグラフェム境界を見つける
+    // （findUtf8CharStartはコードポイント単位なのでZWJ絵文字等で不正確）
+    const current_line = buffer.findLineByPos(pos);
+    const line_start = buffer.getLineStart(current_line) orelse 0;
 
-    var char_base: u21 = 0;
-    var char_len: usize = pos - char_start; // デフォルト
-    var char_width: usize = 1; // grapheme clusterの表示幅
+    var char_start: usize = line_start;
+    var char_base: u21 = '\n';
+    var char_len: usize = 1;
+    var char_width: usize = 1;
 
-    if (iter.nextGraphemeCluster() catch null) |gc| {
-        char_base = gc.base;
-        char_len = gc.byte_len;
-        // 制御文字は ^X 形式で表示幅2
-        char_width = if (unicode.isAsciiControl(gc.base)) 2 else gc.width;
+    // 行頭の場合は前の行の改行を削除
+    if (pos == line_start) {
+        char_start = pos - 1;
+        char_len = 1;
+        char_base = '\n';
+        char_width = 1;
+    } else {
+        // 行頭からカーソル位置までスキャンし、カーソル直前のグラフェムを見つける
+        var iter = PieceIterator.init(buffer);
+        iter.seek(line_start);
+
+        while (iter.global_pos < pos) {
+            const cluster_start = iter.global_pos;
+            const cluster = iter.nextGraphemeCluster() catch {
+                _ = iter.next();
+                char_start = cluster_start;
+                char_len = 1;
+                char_base = 0;
+                char_width = 1;
+                continue;
+            };
+            if (cluster) |gc| {
+                char_start = cluster_start;
+                char_len = gc.byte_len;
+                char_base = gc.base;
+                // 制御文字は ^X 形式で表示幅2
+                char_width = if (unicode.isAsciiControl(gc.base)) 2 else gc.width;
+            } else {
+                break;
+            }
+        }
     }
 
     // deleteRangeCommonで削除

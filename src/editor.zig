@@ -34,6 +34,7 @@ const Terminal = @import("terminal").Terminal;
 const input = @import("input");
 const config = @import("config");
 const unicode = @import("unicode");
+const encoding = @import("encoding");
 
 // サービス
 const poller = @import("poller");
@@ -3679,8 +3680,14 @@ pub const Editor = struct {
             // 現在位置の文字を確認（改行でなければ削除）
             const current_byte = buffer.getByteAt(pos);
             if (current_byte != null and current_byte.? != '\n') {
-                // 現在位置のUTF-8文字の長さを取得して削除
-                const char_len = std.unicode.utf8ByteSequenceLength(current_byte.?) catch 1;
+                // 現在位置のグラフェムクラスタの長さを取得して削除
+                // （utf8ByteSequenceLengthは単一コードポイントのみでZWJ絵文字等で不正確）
+                var iter = PieceIterator.init(buffer);
+                iter.seek(pos);
+                const char_len = if (iter.nextGraphemeCluster() catch null) |gc|
+                    gc.byte_len
+                else
+                    std.unicode.utf8ByteSequenceLength(current_byte.?) catch 1;
                 // Undo用に削除される文字を記録
                 const deleted_text = try buffer.getRange(self.allocator, pos, char_len);
                 defer self.allocator.free(deleted_text);
@@ -4260,11 +4267,25 @@ pub const Editor = struct {
 
     /// シェル出力で範囲を置換する共通処理
     /// start位置からlengthバイトを削除し、contentを挿入する
+    /// UTF-8検証と改行正規化を行う
     fn replaceRangeWithShellOutput(self: *Editor, start: usize, length: usize, content: []const u8, cursor_after: ?usize, clear_mark: bool) !void {
         const buf = self.getCurrentBufferContent();
         const editing_ctx = &self.getCurrentBuffer().editing_ctx;
         const cursor_pos = self.getCurrentView().getCursorBufferPos();
         var actually_changed = false;
+
+        // UTF-8検証（バイナリ拒否）
+        if (content.len > 0 and !encoding.isValidUtf8(content)) {
+            self.getCurrentView().setError("Error: output contains invalid UTF-8 or binary data");
+            return;
+        }
+
+        // 改行正規化（CRLF → LF）
+        const normalized = if (content.len > 0)
+            try encoding.normalizeLineEndings(self.allocator, content, .LF)
+        else
+            content;
+        defer if (normalized.ptr != content.ptr) self.allocator.free(normalized);
 
         // 削除+挿入を1つのundo操作にまとめる
         _ = editing_ctx.*.beginUndoGroup();
@@ -4280,9 +4301,9 @@ pub const Editor = struct {
         }
 
         // 新しいコンテンツを挿入（undo記録付き）
-        if (content.len > 0) {
-            try buf.insertSlice(start, content);
-            try self.recordInsert(start, content, cursor_pos);
+        if (normalized.len > 0) {
+            try buf.insertSlice(start, normalized);
+            try self.recordInsert(start, normalized, cursor_pos);
             actually_changed = true;
         }
 
@@ -4420,7 +4441,8 @@ pub const Editor = struct {
                         const end_pos = @max(mark, cursor_pos);
                         // .insertの場合、または選択範囲が空の場合は挿入のみ
                         const length = if (output_dest == .insert or end_pos <= start) 0 else end_pos - start;
-                        break :blk .{ .start = start, .length = length, .cursor_after = start, .clear_mark = length > 0 };
+                        // マークは選択操作後は常にクリア（insertでもマークを解除しないと選択表示が残る）
+                        break :blk .{ .start = start, .length = length, .cursor_after = start, .clear_mark = true };
                     } else blk: {
                         // 選択なしの場合はカーソル位置に挿入
                         const pos = self.getCurrentView().getCursorBufferPos();
@@ -4470,8 +4492,17 @@ pub const Editor = struct {
                 if (self.checkShellError(exit_status, stderr, "", truncated_suffix)) return;
                 // 新規バッファに出力
                 if (stdout.len > 0) {
+                    // UTF-8検証（バイナリ拒否）
+                    if (!encoding.isValidUtf8(stdout)) {
+                        self.getCurrentView().setError("Error: output contains invalid UTF-8 or binary data");
+                        return;
+                    }
+                    // 改行正規化（CRLF → LF）
+                    const normalized = try encoding.normalizeLineEndings(self.allocator, stdout, .LF);
+                    defer if (normalized.ptr != stdout.ptr) self.allocator.free(normalized);
+
                     const new_buffer = try self.createNewBuffer();
-                    try new_buffer.editing_ctx.buffer.insertSlice(0, stdout);
+                    try new_buffer.editing_ctx.buffer.insertSlice(0, normalized);
                     try self.switchToBuffer(new_buffer.id);
 
                     // stderrがある場合はCommand bufferに追記して警告表示

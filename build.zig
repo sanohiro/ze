@@ -229,6 +229,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "regex", .module = regex_mod },
         .{ .name = "history", .module = history_mod },
         .{ .name = "unicode", .module = unicode_mod },
+        .{ .name = "encoding", .module = encoding_mod },
         .{ .name = "poller", .module = poller_mod },
         .{ .name = "minibuffer", .module = minibuffer_mod },
         .{ .name = "kill_ring", .module = kill_ring_mod },
