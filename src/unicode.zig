@@ -644,3 +644,12 @@ pub fn findNextGraphemeEnd(text: []const u8, pos: usize) usize {
     const cluster = nextGraphemeCluster(text[pos..]) orelse return text.len;
     return @min(pos + cluster.byte_len, text.len);
 }
+
+/// 先頭グラフェムクラスタのバイト長を取得（最低1バイト保証）
+/// 用途: 正規表現の空マッチ進行、1文字削除
+pub fn graphemeByteLen(text: []const u8) usize {
+    if (text.len == 0) return 0;
+    if (nextGraphemeCluster(text)) |gc| return gc.byte_len;
+    // フォールバック: UTF-8シーケンス長（不正バイトなら1）
+    return std.unicode.utf8ByteSequenceLength(text[0]) catch 1;
+}

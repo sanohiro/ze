@@ -3681,13 +3681,9 @@ pub const Editor = struct {
             const current_byte = buffer.getByteAt(pos);
             if (current_byte != null and current_byte.? != '\n') {
                 // 現在位置のグラフェムクラスタの長さを取得して削除
-                // （utf8ByteSequenceLengthは単一コードポイントのみでZWJ絵文字等で不正確）
                 var iter = PieceIterator.init(buffer);
                 iter.seek(pos);
-                const char_len = if (iter.nextGraphemeCluster() catch null) |gc|
-                    gc.byte_len
-                else
-                    std.unicode.utf8ByteSequenceLength(current_byte.?) catch 1;
+                const char_len = iter.consumeGraphemeByteLen();
                 // Undo用に削除される文字を記録
                 const deleted_text = try buffer.getRange(self.allocator, pos, char_len);
                 defer self.allocator.free(deleted_text);
@@ -3981,20 +3977,12 @@ pub const Editor = struct {
         self.replace_match_count += 1;
 
         // カーソルを置換後の位置に移動
-        // 空マッチの場合は無限ループを防ぐため少なくとも1文字進める
-        // グラフェムクラスタの途中で分断しないよう、クラスタ単位で進める
-        // （utf8ByteSequenceLengthは単一コードポイントのみでZWJ絵文字等で不正確）
+        // 空マッチの場合、グラフェムクラスタ単位で進める（無限ループ防止）
         var new_pos = match_pos + replacement.len;
         if (match_len == 0 and new_pos < buffer.total_len) {
             var iter = buffer_mod.PieceIterator.init(buffer);
             iter.seek(new_pos);
-            const byte_len = if (iter.nextGraphemeCluster() catch null) |gc|
-                gc.byte_len
-            else if (iter.next()) |lead_byte|
-                std.unicode.utf8ByteSequenceLength(lead_byte) catch 1
-            else
-                1;
-            new_pos = @min(new_pos + byte_len, buffer.total_len);
+            new_pos = @min(new_pos + iter.consumeGraphemeByteLen(), buffer.total_len);
         }
 
         // キャッシュを無効化（バッファが変更されたため）

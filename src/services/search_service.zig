@@ -250,18 +250,10 @@ pub const SearchService = struct {
     pub fn searchRegex(self: *Self, content: []const u8, pattern: []const u8, start_pos: usize, forward: bool, skip_current: bool) ?SearchMatch {
         if (forward) {
             // 前方検索: skip_current時はグラフェムクラスタ分進めて空マッチの無限ループを防止
-            // （utf8ByteSequenceLengthは単一コードポイントのみでZWJ絵文字等で不正確）
-            const search_from = if (skip_current and start_pos < content.len) blk: {
-                const remaining = content[start_pos..];
-                const cluster_len = if (unicode.nextGraphemeCluster(remaining)) |gc|
-                    gc.byte_len
-                else blk2: {
-                    const byte = remaining[0];
-                    if (unicode.isAsciiByte(byte)) break :blk2 1;
-                    break :blk2 std.unicode.utf8ByteSequenceLength(byte) catch 1;
-                };
-                break :blk @min(start_pos + cluster_len, content.len);
-            } else start_pos;
+            const search_from = if (skip_current and start_pos < content.len)
+                @min(start_pos + unicode.graphemeByteLen(content[start_pos..]), content.len)
+            else
+                start_pos;
             return self.searchRegexForward(content, pattern, search_from);
         } else {
             // 後方検索: skip_current時はグラフェムクラスタ境界まで戻して同位置マッチを回避

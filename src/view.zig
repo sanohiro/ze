@@ -1246,15 +1246,9 @@ pub const View = struct {
             if (re.search(self.regex_visible_text.items, visible_pos)) |match_result| {
                 match_count += 1;
                 if (match_result.end == match_result.start) {
-                    // グラフェムクラスタ境界を考慮して進める（ZWJ絵文字等の途中で止まらないように）
+                    // 空マッチ: グラフェムクラスタ境界を考慮して進める
                     const remaining = self.regex_visible_text.items[visible_pos..];
-                    const cluster_len = if (unicode.nextGraphemeCluster(remaining)) |gc|
-                        gc.byte_len
-                    else blk: {
-                        const first_byte = remaining[0];
-                        break :blk std.unicode.utf8ByteSequenceLength(first_byte) catch 1;
-                    };
-                    visible_pos += @min(cluster_len, remaining.len);
+                    visible_pos += @min(unicode.graphemeByteLen(remaining), remaining.len);
                     continue;
                 }
 

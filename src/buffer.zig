@@ -494,6 +494,15 @@ pub const PieceIterator = struct {
             .byte_len = self.global_pos - start_pos,
         };
     }
+
+    /// 現在位置のグラフェムクラスタのバイト長を取得（最低1バイト保証）
+    /// イテレータ位置を進める
+    pub fn consumeGraphemeByteLen(self: *PieceIterator) usize {
+        if (self.nextGraphemeCluster() catch null) |gc| return gc.byte_len;
+        // フォールバック: 次のバイトのUTF-8シーケンス長
+        const byte = self.next() orelse return 1;
+        return std.unicode.utf8ByteSequenceLength(byte) catch 1;
+    }
 };
 
 
