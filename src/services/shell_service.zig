@@ -319,31 +319,43 @@ pub const ShellService = struct {
     }
 
     /// パイプからノンブロッキングで読み取り
+    /// max_size到達後も読み捨てを継続（子プロセスのブロック防止）
     fn drainPipe(self: *Self, pipe_ptr: *?std.fs.File, list: *std.ArrayListUnmanaged(u8), max_size: usize) !void {
         if (pipe_ptr.*) |pipe| {
             var buf: [4096]u8 = undefined;
-            while (list.items.len < max_size) {
+            while (true) {
                 const n = pipe.read(&buf) catch |err| {
                     if (err == error.WouldBlock) break;
                     break;
                 };
                 if (n == 0) break;
-                try list.appendSlice(self.allocator, buf[0..n]);
+                // max_size未満ならバッファに追加、それ以降は読み捨て
+                if (list.items.len < max_size) {
+                    const remaining = max_size - list.items.len;
+                    const to_add = @min(n, remaining);
+                    try list.appendSlice(self.allocator, buf[0..to_add]);
+                }
             }
         }
     }
 
     /// パイプからブロッキングで全て読み取り（プロセス終了後用）
+    /// max_size到達後も読み捨てを継続（子プロセスのブロック防止）
     fn drainPipeBlocking(self: *Self, pipe_ptr: *?std.fs.File, list: *std.ArrayListUnmanaged(u8), max_size: usize) !void {
         if (pipe_ptr.*) |pipe| {
             // ブロッキングモードに戻す
             setBlocking(pipe);
 
             var buf: [4096]u8 = undefined;
-            while (list.items.len < max_size) {
+            while (true) {
                 const n = pipe.read(&buf) catch break;
                 if (n == 0) break;
-                try list.appendSlice(self.allocator, buf[0..n]);
+                // max_size未満ならバッファに追加、それ以降は読み捨て
+                if (list.items.len < max_size) {
+                    const remaining = max_size - list.items.len;
+                    const to_add = @min(n, remaining);
+                    try list.appendSlice(self.allocator, buf[0..to_add]);
+                }
             }
         }
     }

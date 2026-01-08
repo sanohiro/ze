@@ -391,7 +391,8 @@ pub const Terminal = struct {
             pos += 1;
         }
 
-        // 即座に出力（バッファリングせずに直接送信）
+        // バッファをフラッシュしてから直接送信（出力順序を保証）
+        try self.flush();
         const stdout: std.fs.File = .{ .handle = posix.STDOUT_FILENO };
         try stdout.writeAll(buf);
     }
