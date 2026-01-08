@@ -60,14 +60,27 @@ inline fn controlCharWidth(codepoint: u21) u3 {
     return if (unicode.isAsciiControl(codepoint)) 2 else 0;
 }
 
-/// ANSIエスケープシーケンス(\x1b[...m)をスキップして次の位置を返す
+/// ANSIエスケープシーケンス（CSI: \x1b[...X）をスキップして次の位置を返す
 /// シーケンスでなければnullを返す
+/// CSI終端文字: 0x40-0x7E (@A-Z[\]^_`a-z{|}~) - SGR(m)だけでなく全CSIコマンドに対応
 inline fn skipAnsiSequence(line: []const u8, pos: usize) ?usize {
     if (pos + 1 >= line.len) return null;
     if (!unicode.isAnsiEscapeStart(line[pos], line[pos + 1])) return null;
     var i = pos + 2;
-    while (i < line.len and line[i] != 'm') : (i += 1) {}
-    return if (i < line.len) i + 1 else i;
+    // CSIパラメータバイト (0x30-0x3F) と中間バイト (0x20-0x2F) をスキップ
+    while (i < line.len) : (i += 1) {
+        const c = line[i];
+        // 終端文字: 0x40-0x7E (@ through ~)
+        if (c >= 0x40 and c <= 0x7E) {
+            return i + 1;
+        }
+        // パラメータ/中間バイト以外が来たら不正なシーケンス
+        if (c < 0x20 or c > 0x3F) {
+            break;
+        }
+    }
+    // 終端文字が見つからない場合は現在位置を返す（不正なシーケンス）
+    return i;
 }
 
 /// 検索ハイライトの色ペア
