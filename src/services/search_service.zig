@@ -246,28 +246,29 @@ pub const SearchService = struct {
 
     /// 正規表現検索（常に正規表現として処理）
     /// skip_current=true の場合、同じ位置での空マッチを回避するため位置を調整
-    /// UTF-8境界を尊重して移動する
+    /// グラフェムクラスタ境界を尊重して移動する
     pub fn searchRegex(self: *Self, content: []const u8, pattern: []const u8, start_pos: usize, forward: bool, skip_current: bool) ?SearchMatch {
         if (forward) {
-            // 前方検索: skip_current時はUTF-8コードポイント分進めて空マッチの無限ループを防止
+            // 前方検索: skip_current時はグラフェムクラスタ分進めて空マッチの無限ループを防止
+            // （utf8ByteSequenceLengthは単一コードポイントのみでZWJ絵文字等で不正確）
             const search_from = if (skip_current and start_pos < content.len) blk: {
-                const byte = content[start_pos];
-                if (unicode.isAsciiByte(byte)) break :blk start_pos + 1;
-                // UTF-8シーケンス長を取得して全バイトをスキップ
-                const seq_len = std.unicode.utf8ByteSequenceLength(byte) catch 1;
-                break :blk @min(start_pos + seq_len, content.len);
+                const remaining = content[start_pos..];
+                const cluster_len = if (unicode.nextGraphemeCluster(remaining)) |gc|
+                    gc.byte_len
+                else blk2: {
+                    const byte = remaining[0];
+                    if (unicode.isAsciiByte(byte)) break :blk2 1;
+                    break :blk2 std.unicode.utf8ByteSequenceLength(byte) catch 1;
+                };
+                break :blk @min(start_pos + cluster_len, content.len);
             } else start_pos;
             return self.searchRegexForward(content, pattern, search_from);
         } else {
-            // 後方検索: skip_current時はUTF-8境界まで戻して同位置マッチを回避
-            const search_from = if (skip_current and start_pos > 0) blk: {
-                // UTF-8の先頭バイトを探す（継続バイトをスキップ）
-                var pos = start_pos - 1;
-                while (pos > 0 and unicode.isUtf8Continuation(content[pos])) {
-                    pos -= 1;
-                }
-                break :blk pos;
-            } else start_pos;
+            // 後方検索: skip_current時はグラフェムクラスタ境界まで戻して同位置マッチを回避
+            const search_from = if (skip_current and start_pos > 0)
+                unicode.findPrevGraphemeStart(content, start_pos)
+            else
+                start_pos;
             return self.searchRegexBackward(content, pattern, search_from);
         }
     }

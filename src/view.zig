@@ -1246,10 +1246,15 @@ pub const View = struct {
             if (re.search(self.regex_visible_text.items, visible_pos)) |match_result| {
                 match_count += 1;
                 if (match_result.end == match_result.start) {
-                    // UTF-8境界を考慮して進める（マルチバイト文字の途中で止まらないように）
-                    const first_byte = self.regex_visible_text.items[visible_pos];
-                    const char_len = std.unicode.utf8ByteSequenceLength(first_byte) catch 1;
-                    visible_pos += @min(char_len, self.regex_visible_text.items.len - visible_pos);
+                    // グラフェムクラスタ境界を考慮して進める（ZWJ絵文字等の途中で止まらないように）
+                    const remaining = self.regex_visible_text.items[visible_pos..];
+                    const cluster_len = if (unicode.nextGraphemeCluster(remaining)) |gc|
+                        gc.byte_len
+                    else blk: {
+                        const first_byte = remaining[0];
+                        break :blk std.unicode.utf8ByteSequenceLength(first_byte) catch 1;
+                    };
+                    visible_pos += @min(cluster_len, remaining.len);
                     continue;
                 }
 

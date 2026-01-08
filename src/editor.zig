@@ -3982,20 +3982,19 @@ pub const Editor = struct {
 
         // カーソルを置換後の位置に移動
         // 空マッチの場合は無限ループを防ぐため少なくとも1文字進める
-        // UTF-8文字の途中で分断しないようUTF-8シーケンス長を考慮
+        // グラフェムクラスタの途中で分断しないよう、クラスタ単位で進める
+        // （utf8ByteSequenceLengthは単一コードポイントのみでZWJ絵文字等で不正確）
         var new_pos = match_pos + replacement.len;
         if (match_len == 0 and new_pos < buffer.total_len) {
-            // 現在位置のバイトを読み取ってUTF-8シーケンス長を取得
             var iter = buffer_mod.PieceIterator.init(buffer);
             iter.seek(new_pos);
-            if (iter.next()) |lead_byte| {
-                // UTF-8リードバイトからシーケンス長を計算
-                const byte_len = std.unicode.utf8ByteSequenceLength(lead_byte) catch 1;
-                new_pos = @min(new_pos + byte_len, buffer.total_len);
-            } else {
-                // イテレータが終端に達している場合でも最低1バイト進める（無限ループ防止）
-                new_pos = @min(new_pos + 1, buffer.total_len);
-            }
+            const byte_len = if (iter.nextGraphemeCluster() catch null) |gc|
+                gc.byte_len
+            else if (iter.next()) |lead_byte|
+                std.unicode.utf8ByteSequenceLength(lead_byte) catch 1
+            else
+                1;
+            new_pos = @min(new_pos + byte_len, buffer.total_len);
         }
 
         // キャッシュを無効化（バッファが変更されたため）
