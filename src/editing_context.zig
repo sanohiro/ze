@@ -409,37 +409,34 @@ pub const EditingContext = struct {
     }
 
     /// 次の単語へ移動（M-f）
-    /// 最適化: PieceIteratorを1つ作成してシーケンシャルに読み進める（O(n)）
+    /// グラフェムクラスタ単位でイテレートし、文字種の変化で単語境界を判定
     pub fn moveForwardWord(self: *EditingContext) void {
         var pos = self.cursor;
         const buf_len = self.buffer.len();
         if (pos >= buf_len) return;
 
-        // イテレータを1つ作成してシーケンシャルに読み進める
         var iter = PieceIterator.init(self.buffer);
         iter.seek(pos);
 
-        // 現在の単語をスキップ
-        while (pos < buf_len) {
-            const byte = iter.next() orelse break;
-            if (!unicode.isWordCharByte(byte)) {
-                // 非単語文字を見つけた: 第2フェーズへ
-                pos += 1; // この非単語文字の位置を含める
-                break;
-            }
-            pos += 1;
-        }
+        var prev_type: ?unicode.CharType = null;
 
-        // 非単語文字をスキップして次の単語の先頭へ
-        while (pos < buf_len) {
-            // 次のバイトをpeek（読み込まずに確認）
-            const check_pos = iter.global_pos;
-            const byte = iter.next() orelse break;
-            if (unicode.isWordCharByte(byte)) {
-                // 単語文字を見つけた: その位置で停止
-                pos = check_pos;
-                break;
+        while (iter.global_pos < buf_len) {
+            const start_pos = iter.global_pos;
+            const gc = iter.nextGraphemeCluster() catch break orelse break;
+            const current_type = unicode.getCharType(gc.base);
+
+            if (prev_type) |pt| {
+                // 単語境界: スペース後に非スペース、または文字種の変化
+                if (pt == .space and current_type != .space) {
+                    pos = start_pos;
+                    break;
+                }
+                if (current_type != .space and pt != .space and current_type != pt) {
+                    pos = start_pos;
+                    break;
+                }
             }
+            prev_type = current_type;
             pos = iter.global_pos;
         }
 
@@ -447,7 +444,7 @@ pub const EditingContext = struct {
     }
 
     /// 前の単語へ移動（M-b）
-    /// 最適化: チャンク読み込みで後方スキャン（O(n)に改善）
+    /// グラフェムクラスタ対応: ZWJ絵文字や結合文字を1文字として扱う
     pub fn moveBackwardWord(self: *EditingContext) void {
         if (self.cursor == 0) return;
         var pos = self.cursor;
@@ -473,28 +470,35 @@ pub const EditingContext = struct {
             chunk_len += 1;
         }
 
-        // チャンクを後方から処理（非単語文字をスキップ）
+        // グラフェムクラスタ境界を考慮して後方処理
+        // まず空白をスキップ
         var i = chunk_len;
         while (i > 0) {
-            i -= 1;
-            const byte = chunk[i];
-            if (unicode.isWordCharByte(byte)) {
-                i += 1;
+            const char_start = unicode.findPrevGraphemeStart(chunk[0..i], i);
+            const char_type = unicode.getCharTypeAt(chunk[0..chunk_len], char_start);
+            if (char_type != .space) {
                 break;
             }
+            i = char_start;
         }
         pos = scan_start + i;
 
-        // 単語の先頭まで戻る
-        while (i > 0) {
-            i -= 1;
-            const byte = chunk[i];
-            if (!unicode.isWordCharByte(byte)) {
-                i += 1;
-                break;
+        // 単語の先頭まで戻る（同じCharTypeが続く間）
+        if (i > 0) {
+            const first_char_start = unicode.findPrevGraphemeStart(chunk[0..i], i);
+            const word_type = unicode.getCharTypeAt(chunk[0..chunk_len], first_char_start);
+            i = first_char_start;
+
+            while (i > 0) {
+                const char_start = unicode.findPrevGraphemeStart(chunk[0..i], i);
+                const char_type = unicode.getCharTypeAt(chunk[0..chunk_len], char_start);
+                if (char_type != word_type) {
+                    break;
+                }
+                i = char_start;
             }
+            pos = scan_start + i;
         }
-        pos = scan_start + i;
 
         // チャンク先頭に到達した場合、さらに後方を処理
         while (i == 0 and pos > 0) {
@@ -510,13 +514,20 @@ pub const EditingContext = struct {
                 chunk_len += 1;
             }
 
+            // 直前のCharTypeを取得して継続判定
             i = chunk_len;
-            while (i > 0) {
-                i -= 1;
-                const byte = chunk[i];
-                if (!unicode.isWordCharByte(byte)) {
-                    i += 1;
-                    break;
+            if (i > 0) {
+                const first_char_start = unicode.findPrevGraphemeStart(chunk[0..i], i);
+                const word_type = unicode.getCharTypeAt(chunk[0..chunk_len], first_char_start);
+                i = first_char_start;
+
+                while (i > 0) {
+                    const char_start = unicode.findPrevGraphemeStart(chunk[0..i], i);
+                    const char_type = unicode.getCharTypeAt(chunk[0..chunk_len], char_start);
+                    if (char_type != word_type) {
+                        break;
+                    }
+                    i = char_start;
                 }
             }
             pos = next_scan_start + i;

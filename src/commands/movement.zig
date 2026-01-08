@@ -74,12 +74,12 @@ pub fn forwardWord(e: *Editor) !void {
         const current_pos = iter.global_pos;
         const byte = iter.next() orelse break;
 
-        // 非ASCIIバイトならコードポイント処理にフォールバック
+        // 非ASCIIバイトならグラフェムクラスタ単位で処理
+        // （nextCodepoint()だとZWJ絵文字等の途中で止まる可能性がある）
         if (!unicode.isAsciiByte(byte)) {
-            // 現在位置に戻してコードポイント単位で処理
             iter.seek(current_pos);
-            while (iter.nextCodepoint() catch null) |cp| {
-                const current_type = unicode.getCharType(cp);
+            while (iter.nextGraphemeCluster() catch null) |gc| {
+                const current_type = unicode.getCharType(gc.base);
                 if (prev_type) |pt| {
                     if (current_type != .space and pt != .space and current_type != pt) {
                         e.setCursorToPos(prev_pos);
@@ -159,17 +159,11 @@ pub fn backwardWord(e: *Editor) !void {
     while (i > 0) {
         const byte = chunk[i - 1];
 
-        // 非ASCII: UTF-8の先頭バイトを探す
+        // 非ASCII: グラフェムクラスタの先頭を探す
+        // （コードポイント単位だとZWJ絵文字等の途中で止まる可能性がある）
         if (!unicode.isAsciiByte(byte)) {
-            // continuation byte (10xxxxxx) をスキップして先頭を探す
-            var char_start_idx = i - 1;
-            while (char_start_idx > 0 and unicode.isUtf8Continuation(chunk[char_start_idx])) {
-                char_start_idx -= 1;
-            }
-
-            // コードポイントをデコード
-            const cp = decodeUtf8FromChunk(chunk[char_start_idx..i]) orelse break;
-            const current_type = unicode.getCharType(cp);
+            const char_start_idx = unicode.findPrevGraphemeStart(chunk[0..i], i);
+            const current_type = unicode.getCharTypeAt(chunk[0..i], char_start_idx);
 
             if (!found_non_space and current_type == .space) {
                 i = char_start_idx;
@@ -229,15 +223,10 @@ pub fn backwardWord(e: *Editor) !void {
         while (i > 0) {
             const byte = chunk[i - 1];
 
-            // 非ASCII: UTF-8の先頭バイトを探す
+            // 非ASCII: グラフェムクラスタの先頭を探す
             if (!unicode.isAsciiByte(byte)) {
-                var char_start_idx = i - 1;
-                while (char_start_idx > 0 and unicode.isUtf8Continuation(chunk[char_start_idx])) {
-                    char_start_idx -= 1;
-                }
-
-                const cp = decodeUtf8FromChunk(chunk[char_start_idx..i]) orelse break;
-                const current_type = unicode.getCharType(cp);
+                const char_start_idx = unicode.findPrevGraphemeStart(chunk[0..i], i);
+                const current_type = unicode.getCharTypeAt(chunk[0..i], char_start_idx);
 
                 if (prev_type) |pt| {
                     if (current_type != pt) {
