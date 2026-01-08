@@ -4164,12 +4164,13 @@ pub const Editor = struct {
                 var chunk_buffer: [16 * 1024]u8 = undefined;
                 const chunk_size = @min(remaining, chunk_buffer.len);
 
-                // PieceIteratorを使い回してO(n²)を回避
-                // 初回はinit+seek、2回目以降は前回の位置から継続
+                // PieceIteratorを使用してバッファからチャンクを読み取り
+                // 短い書き込み(written < bytes_copied)が発生する可能性があるため、
+                // 毎回current_posからseekして正しい位置から読み取る
                 if (range.iter == null) {
                     range.iter = buffer_mod.PieceIterator.init(buffer);
-                    range.iter.?.seek(range.current_pos);
                 }
+                range.iter.?.seek(range.current_pos);
                 const bytes_copied = range.iter.?.copyBytes(chunk_buffer[0..chunk_size]);
 
                 // bytes_copied == 0 の場合は読み取るデータがない（バッファが縮小された等）

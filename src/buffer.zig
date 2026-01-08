@@ -676,9 +676,9 @@ pub const LineIndex = struct {
     pub fn updateForInsert(self: *LineIndex, pos: usize, text: []const u8) !void {
         if (!self.valid) return; // 無効なら何もしない
 
-        // posより後の全エントリにテキスト長を加算
+        // pos以降の全エントリにテキスト長を加算（行頭への挿入を含む）
         for (self.line_starts.items) |*line_start| {
-            if (line_start.* > pos) {
+            if (line_start.* >= pos) {
                 line_start.* += text.len;
             }
         }
@@ -722,22 +722,22 @@ pub const LineIndex = struct {
         if (deleted_newlines > 0) {
             var write_idx: usize = 0;
             for (self.line_starts.items) |line_start| {
-                if (line_start <= pos or line_start > end_pos) {
-                    // 範囲外: 保持（pos以降は調整が必要）
-                    if (line_start > end_pos) {
+                if (line_start < pos or line_start >= end_pos) {
+                    // 範囲外: 保持（end_pos以降は位置調整が必要）
+                    if (line_start >= end_pos) {
                         self.line_starts.items[write_idx] = line_start - count;
                     } else {
                         self.line_starts.items[write_idx] = line_start;
                     }
                     write_idx += 1;
                 }
-                // 範囲内の行は削除（スキップ）
+                // 範囲内(pos <= line_start < end_pos)の行は削除（スキップ）
             }
             self.line_starts.shrinkRetainingCapacity(write_idx);
         } else {
             // 改行削除なし: 位置の調整のみ
             for (self.line_starts.items) |*line_start| {
-                if (line_start.* > end_pos) {
+                if (line_start.* >= end_pos) {
                     line_start.* -= count;
                 }
             }
@@ -1294,8 +1294,10 @@ pub const Buffer = struct {
             }
 
             // 元のファイルのパーミッションを一時ファイルに適用
+            // 注意: オーナーでない場合はEPERMになるが、保存は続行する
+            // （グループ/ACL経由で書き込み権限を持つ共有リポジトリ等のケース）
             if (original_mode) |mode| {
-                try file.chmod(mode);
+                file.chmod(mode) catch {};
             }
 
             // データをディスクに同期（クラッシュ時のデータ破損を防止）
