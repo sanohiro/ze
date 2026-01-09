@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.3] - 2026-01-10
+
+### Fixed
+- **Word movement (M-f/M-b)**: Now correctly handles grapheme clusters
+  - Japanese text, emoji, and combining characters are treated as single units
+  - Fixes cursor skipping issues with multi-byte characters
+- **Shell service deadlock**: Fixed pipe reading that could hang when output exceeds buffer size
+- **Clipboard output order**: Fixed terminal flush before OSC52 sequence for reliable clipboard operation
+- **LineIndex boundary conditions**: Fixed off-by-one errors in insert/delete position tracking
+- **File chmod error handling**: Non-fatal handling when chmod fails (e.g., on some filesystems)
+- **Streaming file read**: Fixed short write handling by seeking on each iteration
+- **findPrevGrapheme infinite loop**: Added break when iterator reaches end of buffer
+- **prevCodepoint truncated UTF-8**: Now returns error instead of panic for malformed sequences
+- **recent_files prompt clearing**: Prompt now persists during navigation
+- **joinLine (M-^)**: Now always inserts space separator (Emacs-compatible behavior)
+
+### Refactored
+- Extracted `unicode.graphemeByteLen()` helper for consistent grapheme byte length calculation
+- Added `PieceIterator.consumeGraphemeByteLen()` method
+- Combined `updateIsearchPrompt` + `updateIsearchHighlight` into `updateIsearchUI`
+- Optimized double ANSI RESET output in view rendering
+
 ## [1.5.2] - 2026-01-08
 
 ### Fixed
