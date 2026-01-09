@@ -1,0 +1,14 @@
+Package: ze
+Version: 1.5.3
+Architecture: arm64
+Maintainer: sanohiro <sanohiro@users.noreply.github.com>
+Filename: pool/main/z/ze/ze_arm64.deb
+Size: 241794
+MD5sum: 16fc23d9e46e13c64574a0cf07737d13
+SHA1: 411979d06b69ad9d1890a62c445606b7499cd14d
+SHA256: 145520d862846eddd701ca56cf962d41142a379639e1e049f2ccfd07ba9c77b8
+Section: editors
+Priority: optional
+Description: Zero-latency Editor
+ A tiny, zero-config, Emacs-like terminal editor for fast editing.
+
