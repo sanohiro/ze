@@ -184,7 +184,8 @@ pub const EditingContext = struct {
         while (iter.global_pos < self.cursor) {
             char_start = iter.global_pos;
             const cluster = iter.nextGraphemeCluster() catch {
-                _ = iter.next();
+                // エラー時は1バイト進める。バッファ終端ならループ終了
+                if (iter.next() == null) break;
                 char_len = 1;
                 continue;
             };

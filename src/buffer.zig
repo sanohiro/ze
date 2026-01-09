@@ -374,6 +374,11 @@ pub const PieceIterator = struct {
                 _ = self.next();
                 return error.InvalidUtf8;
             };
+            // 切り詰められたシーケンスの検出（バイト数が足りない場合）
+            const available_bytes = byte_count + 1; // 継続バイト + 先頭バイト
+            if (available_bytes < len) {
+                return error.InvalidUtf8;
+            }
             return std.unicode.utf8Decode(bytes[start_idx..][0..len]) catch error.InvalidUtf8;
         }
 

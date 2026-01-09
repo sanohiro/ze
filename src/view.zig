@@ -1709,11 +1709,8 @@ pub const View = struct {
             }
         }
 
-        // ハイライトのクリーンアップ
-        if (in_selection) {
-            try self.expanded_line.appendSlice(self.allocator, ANSI.RESET);
-        }
-        if (has_spans and in_comment) {
+        // ハイライトのクリーンアップ（重複を避けて1回だけRESET）
+        if (in_selection or (has_spans and in_comment)) {
             try self.expanded_line.appendSlice(self.allocator, ANSI.RESET);
         }
 

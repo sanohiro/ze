@@ -413,7 +413,9 @@ pub fn joinLine(e: *Editor) !void {
             }
         }
 
-        if (needs_space and first_non_space > line_start) {
+        // Emacs互換: 前の文字がスペース/タブでなければスペースを挿入
+        // (インデントの有無に関係なく、行結合時は常にスペースで区切る)
+        if (needs_space) {
             try buffer.insertSlice(delete_start, " ");
             // 挿入後のロールバック用errdefer（recordInsertが失敗した場合）
             errdefer buffer.delete(delete_start, 1) catch {};
