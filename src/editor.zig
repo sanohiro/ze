@@ -795,6 +795,13 @@ pub const Editor = struct {
         }
     }
 
+    /// I-search UI全体を更新（プロンプト + ハイライト）
+    /// 検索パターン変更時に使用。プロンプトとハイライトを一度に更新。
+    fn updateIsearchUI(self: *Editor, forward: bool) void {
+        self.updateIsearchPrompt(forward);
+        self.updateIsearchHighlight();
+    }
+
     /// 最近開いたファイルプロンプトを更新
     fn updateRecentFilesPrompt(self: *Editor) void {
         // 現在選択中のファイル名を表示
@@ -2740,8 +2747,7 @@ pub const Editor = struct {
                     else => {
                         // C-f/C-b/C-a/C-e/C-d/C-k/C-y等はミニバッファ共通処理へ
                         if (try self.handleMinibufferKey(key)) {
-                            self.updateIsearchPrompt(is_forward);
-                            self.updateIsearchHighlight();
+                            self.updateIsearchUI(is_forward);
                         }
                     },
                 }
@@ -2751,14 +2757,12 @@ pub const Editor = struct {
                     'r' => {
                         // M-r: 正規表現/リテラルモードをトグル
                         self.is_regex_search = !self.is_regex_search;
-                        self.updateIsearchPrompt(is_forward);
-                        self.updateIsearchHighlight();
+                        self.updateIsearchUI(is_forward);
                     },
                     else => {
                         // その他のAltキーはミニバッファ共通処理へ（M-d/M-delete等の削除含む）
                         if (try self.handleMinibufferKey(key)) {
-                            self.updateIsearchPrompt(is_forward);
-                            self.updateIsearchHighlight();
+                            self.updateIsearchUI(is_forward);
                         }
                     },
                 }
@@ -2819,8 +2823,7 @@ pub const Editor = struct {
                 // その他のキーはミニバッファ共通処理にフォールバック
                 // (C-f/C-b/C-a/C-e/M-f/M-b/左右矢印、C-d/delete削除など)
                 if (try self.handleMinibufferKey(key)) {
-                    self.updateIsearchPrompt(is_forward);
-                    self.updateIsearchHighlight();
+                    self.updateIsearchUI(is_forward);
                 }
             },
         }
@@ -4035,8 +4038,7 @@ pub const Editor = struct {
             try self.minibuffer.setContent(text);
 
             // プロンプトとハイライトを更新
-            self.updateIsearchPrompt(is_forward);
-            self.updateIsearchHighlight();
+            self.updateIsearchUI(is_forward);
 
             // 検索を実行
             if (text.len > 0) {
