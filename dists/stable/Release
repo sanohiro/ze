@@ -1,0 +1,18 @@
+Origin: ze
+Label: ze
+Suite: stable
+Codename: stable
+Date: Sun, 08 Mar 2026 12:04:57 +0000
+Architectures: amd64 arm64
+Components: main
+Description: ze apt repository
+MD5Sum:
+ 3faa707fc7d64f631d85fc98e1bed7b4 453 main/binary-amd64/Packages
+ cf0c32eede85073e19f4607660b3fc16 359 main/binary-amd64/Packages.gz
+ f67f4b5fdc0c2db93c475657e4cc6ec2 453 main/binary-arm64/Packages
+ 71c8be423443dbd0f9e960096a62b6dd 359 main/binary-arm64/Packages.gz
+SHA256:
+ 0bf9a59b9246480391fe6ddd12c608d6356de15138316eb4e6e35aa8008fea22 453 main/binary-amd64/Packages
+ fe7fc53eb42b9ab44d95c370067223872c771892f5176510b2e36b75201e277d 359 main/binary-amd64/Packages.gz
+ 82a52279fb0d0dca3fa183f5718db1084532929aeff92db07519f9f860117fff 453 main/binary-arm64/Packages
+ 6dba9ed1d49c2020967dfe3377b5e2b0a5ae0e1b2a65feb988bd0650bb76ecca 359 main/binary-arm64/Packages.gz

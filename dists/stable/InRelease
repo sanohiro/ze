@@ -1,0 +1,37 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA512
+
+Origin: ze
+Label: ze
+Suite: stable
+Codename: stable
+Date: Sun, 08 Mar 2026 12:04:57 +0000
+Architectures: amd64 arm64
+Components: main
+Description: ze apt repository
+MD5Sum:
+ 3faa707fc7d64f631d85fc98e1bed7b4 453 main/binary-amd64/Packages
+ cf0c32eede85073e19f4607660b3fc16 359 main/binary-amd64/Packages.gz
+ f67f4b5fdc0c2db93c475657e4cc6ec2 453 main/binary-arm64/Packages
+ 71c8be423443dbd0f9e960096a62b6dd 359 main/binary-arm64/Packages.gz
+SHA256:
+ 0bf9a59b9246480391fe6ddd12c608d6356de15138316eb4e6e35aa8008fea22 453 main/binary-amd64/Packages
+ fe7fc53eb42b9ab44d95c370067223872c771892f5176510b2e36b75201e277d 359 main/binary-amd64/Packages.gz
+ 82a52279fb0d0dca3fa183f5718db1084532929aeff92db07519f9f860117fff 453 main/binary-arm64/Packages
+ 6dba9ed1d49c2020967dfe3377b5e2b0a5ae0e1b2a65feb988bd0650bb76ecca 359 main/binary-arm64/Packages.gz
+-----BEGIN PGP SIGNATURE-----
+
+iQIzBAEBCgAdFiEEF38P8zCqxTq54YJmwUQK89zeK0kFAmmtZekACgkQwUQK89ze
+K0kOUBAAnzearr0IpMgocwgc63hYA+TquujIiDjBq8KRiRkgPdaTwJvi80JhD1ub
+mzO39cMO99pSSdmMMKYaKU0mwh0m1d3dvvj6/YE3GIAPNad9/RsRuxnk89F+MfMM
+rKrpTZ7cw2qeYkfLdyDlMsvVFmYJ1XFx/s9re6Z6Zvy7jhOGDr5itp7eIuRJqjST
+AydLKc64QF8GV2tbsKvxjBuomxYNqOth2cnRXPbXqSUpqCfUrA4dAaIO7d7Z3tWF
+Y8naIlPwUEGyGvbp20OJ4rbA0RvOSXfqvUOqQv8ONk6yKyOrpA4D1J57PtitZDxj
+bS9ad1zmN78vWKgZKq7ovKeWp7dbOotRecc/deV5gMiLk+bSNS6Nn6AsS6/zqtHY
+GKmoZ9lnoV9Mq60Q9kEYm8CYdX9exI1SNpe6lNfgwa+rFP+Tr7GYOkl59u/atxGJ
+ZnB6xvqwK0NmrZDsOvMleqw915PGKG3bL8+or+v+ATqCUdJclw9+jhLdnmBxoXWd
+W1lmJrjJlPq61GTMHnPiu7IB+xtJa+JspAeSHkCCuBMuyTbKmznKwyi4nHpLcbVb
+skomh+h9m67n2BL3R4sk60kw8ID96pxiOenBq06oIo/Ds6YvIqXMO+qUwg1lZvQv
+TmFn1/B9RSttVb0pKGSmdKYPQqYkcDy3u2cZ5+aIlYL9cPUWPEo=
+=n4mx
+-----END PGP SIGNATURE-----
