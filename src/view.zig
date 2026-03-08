@@ -1059,16 +1059,9 @@ pub const View = struct {
         // 最初のマッチを処理
         var match_start_vis = first_match_vis;
         var match_end_vis = first_match_vis + search_str.len;
-        // 境界チェック: match_start_visおよびmatch_end_visがitems範囲内か確認
+        // 境界チェック: マッピング配列の範囲外ならスキップ（clamping せず早期リターン）
         if (self.regex_visible_to_raw.items.len == 0) return line;
-        if (match_start_vis >= self.regex_visible_to_raw.items.len) {
-            match_start_vis = self.regex_visible_to_raw.items.len - 1;
-        }
-        if (match_end_vis >= self.regex_visible_to_raw.items.len) {
-            match_end_vis = self.regex_visible_to_raw.items.len - 1;
-        }
-        // match_start_vis > match_end_vis の場合はハイライトをスキップ
-        if (match_start_vis > match_end_vis) return line;
+        if (match_end_vis >= self.regex_visible_to_raw.items.len) return line;
         var match_start_raw = self.regex_visible_to_raw.items[match_start_vis];
         var match_end_raw = self.regex_visible_to_raw.items[match_end_vis];
         // match_start_raw > match_end_raw の場合もスキップ
@@ -2505,13 +2498,14 @@ pub const View = struct {
         var iter = PieceIterator.init(self.buffer);
         iter.seek(line_start);
 
+        const tab_width = self.getTabWidth(); // ループ外で一度だけ取得
         var line_width: usize = 0;
         while (true) {
             const cluster = iter.nextGraphemeCluster() catch break;
             if (cluster) |gc| {
                 if (gc.base == '\n') break;
                 const char_width = if (gc.base == '\t')
-                    nextTabStop(line_width, self.getTabWidth()) - line_width
+                    nextTabStop(line_width, tab_width) - line_width
                 else if (unicode.isAsciiControl(gc.base))
                     2 // 制御文字は ^X 形式で表示幅2
                 else
@@ -2546,6 +2540,7 @@ pub const View = struct {
         var iter = PieceIterator.init(self.buffer);
         iter.seek(line_start);
 
+        const tab_width = self.getTabWidth(); // ループ外で一度だけ取得
         var line_width: usize = 0;
 
         while (true) {
@@ -2559,7 +2554,7 @@ pub const View = struct {
                 }
 
                 const char_width = if (gc.base == '\t')
-                    nextTabStop(line_width, self.getTabWidth()) - line_width
+                    nextTabStop(line_width, tab_width) - line_width
                 else if (unicode.isAsciiControl(gc.base))
                     2 // 制御文字は ^X 形式で表示幅2
                 else

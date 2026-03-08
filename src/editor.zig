@@ -3968,9 +3968,16 @@ pub const Editor = struct {
         defer self.allocator.free(old_text);
 
         // 置換を実行（削除してから挿入）- 実際のマッチ長を使用
+        // insert失敗時はdelete前の状態に戻す
         try buffer.delete(match_pos, match_len);
+        errdefer buffer.insertSlice(match_pos, old_text) catch {};
         if (replacement.len > 0) {
             try buffer.insertSlice(match_pos, replacement);
+        }
+        // recordReplace失敗時は置換自体を取り消す
+        errdefer {
+            buffer.delete(match_pos, replacement.len) catch {};
+            buffer.insertSlice(match_pos, old_text) catch {};
         }
 
         // 原子的な置換操作として記録（1回のundoで元に戻る）

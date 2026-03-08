@@ -122,6 +122,45 @@ test "Enter key: Line counting" {
     try testing.expect(line_count >= 2);
 }
 
+test "LineIndex incremental insert updates starts" {
+    var buffer = try Buffer.init(testing.allocator);
+    defer buffer.deinit();
+
+    try buffer.insertSlice(0, "line1\nline2\nline3\n");
+    try buffer.line_index.rebuild(&buffer);
+    try testing.expect(buffer.line_index.valid);
+    try testing.expectEqualSlices(usize, &[_]usize{ 0, 6, 12, 18 }, buffer.line_index.line_starts.items);
+
+    try buffer.insertSlice(6, "foo\nbar\n");
+    try testing.expectEqualSlices(usize, &[_]usize{ 0, 6, 10, 14, 20, 26 }, buffer.line_index.line_starts.items);
+}
+
+test "LineIndex incremental delete removes newline entries" {
+    var buffer = try Buffer.init(testing.allocator);
+    defer buffer.deinit();
+
+    try buffer.insertSlice(0, "line1\nline2\nline3\n");
+    try buffer.line_index.rebuild(&buffer);
+    try testing.expectEqualSlices(usize, &[_]usize{ 0, 6, 12, 18 }, buffer.line_index.line_starts.items);
+
+    // 削除対象: "line2\n" （位置6から6バイト）
+    try buffer.delete(6, 6);
+    try testing.expectEqualSlices(usize, &[_]usize{ 0, 6, 12 }, buffer.line_index.line_starts.items);
+}
+
+test "LineIndex delete without newline shifts positions" {
+    var buffer = try Buffer.init(testing.allocator);
+    defer buffer.deinit();
+
+    try buffer.insertSlice(0, "abcde\nxyz\n");
+    try buffer.line_index.rebuild(&buffer);
+    try testing.expectEqualSlices(usize, &[_]usize{ 0, 6, 10 }, buffer.line_index.line_starts.items);
+
+    // 改行を含まない削除: "bc" （位置1から2バイト）
+    try buffer.delete(1, 2);
+    try testing.expectEqualSlices(usize, &[_]usize{ 0, 4, 8 }, buffer.line_index.line_starts.items);
+}
+
 // buffer.zigから移動したテスト
 test "empty buffer initialization" {
     var buffer = try Buffer.init(testing.allocator);

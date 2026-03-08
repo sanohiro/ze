@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.4] - 2026-03-08
+
+### Fixed
+- **致命的バグ: 文字入力が表示されない**: LineIndex.updateForInsertの境界条件が誤っていた（`>= pos` → `> pos`に修正）
+  - v1.5.3で導入されたリグレッション（a28fae6）
+  - 行頭への挿入時にline_startsが不正にシフトされ、レンダリングが空になっていた
+- **LineIndex.updateForDelete**: 削除範囲の境界条件も同様に修正（`< end_pos` → `<= end_pos`）
+
+### Changed
+- LineIndexの線形探索をバイナリサーチ（upperBound）に最適化
+- 検索ハイライトの境界チェックをclamping方式から早期リターンに変更
+- ループ外でのtab_width取得によるマイクロ最適化
+- Query Replace時のerrdefer追加でエラー時のロールバックを改善
+
 ## [1.5.3] - 2026-01-10
 
 ### Fixed

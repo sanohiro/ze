@@ -589,6 +589,21 @@ pub const LineIndex = struct {
         }
     }
 
+    /// line_starts内でtargetより大きい最初のインデックスを返す（upper bound）
+    fn upperBound(self: *const LineIndex, target: usize) usize {
+        var left: usize = 0;
+        var right: usize = self.line_starts.items.len;
+        while (left < right) {
+            const mid = left + (right - left) / 2;
+            if (self.line_starts.items[mid] <= target) {
+                left = mid + 1;
+            } else {
+                right = mid;
+            }
+        }
+        return left;
+    }
+
     pub fn rebuild(self: *LineIndex, buffer: *const Buffer) !void {
         errdefer self.valid = false;
 
@@ -679,13 +694,13 @@ pub const LineIndex = struct {
     /// 挿入時のインクリメンタル更新（O(改行数 + 影響行数)）
     /// 再スキャンなしで行インデックスを更新する
     pub fn updateForInsert(self: *LineIndex, pos: usize, text: []const u8) !void {
-        if (!self.valid) return; // 無効なら何もしない
+        if (!self.valid or text.len == 0) return; // 無効または空挿入なら何もしない
 
-        // pos以降の全エントリにテキスト長を加算（行頭への挿入を含む）
-        for (self.line_starts.items) |*line_start| {
-            if (line_start.* >= pos) {
-                line_start.* += text.len;
-            }
+        // posより後のエントリのみシフト（行頭のline_start == posは動かさない）
+        const shift_start = self.upperBound(pos);
+        var idx = shift_start;
+        while (idx < self.line_starts.items.len) : (idx += 1) {
+            self.line_starts.items[idx] += text.len;
         }
 
         // 挿入テキスト内の改行位置を検出して追加
@@ -700,17 +715,8 @@ pub const LineIndex = struct {
         }
 
         if (new_lines.items.len > 0) {
-            // 挿入位置に対応するインデックスを見つける
-            var insert_idx: usize = self.line_starts.items.len;
-            for (self.line_starts.items, 0..) |line_start, idx| {
-                if (line_start > pos) {
-                    insert_idx = idx;
-                    break;
-                }
-            }
-
             // 新しい行をその位置に挿入
-            try self.line_starts.insertSlice(self.allocator, insert_idx, new_lines.items);
+            try self.line_starts.insertSlice(self.allocator, shift_start, new_lines.items);
         }
 
         self.valid_until_pos += text.len;
@@ -719,32 +725,30 @@ pub const LineIndex = struct {
     /// 削除時のインクリメンタル更新（O(削除行数 + 影響行数)）
     /// 再スキャンなしで行インデックスを更新する
     pub fn updateForDelete(self: *LineIndex, pos: usize, count: usize, deleted_newlines: usize) void {
-        if (!self.valid) return; // 無効なら何もしない
+        if (!self.valid or count == 0) return; // 無効なら何もしない
 
         const end_pos = pos + count;
 
         // 削除範囲内の行エントリを削除
         if (deleted_newlines > 0) {
-            var write_idx: usize = 0;
-            for (self.line_starts.items) |line_start| {
-                if (line_start < pos or line_start >= end_pos) {
-                    // 範囲外: 保持（end_pos以降は位置調整が必要）
-                    if (line_start >= end_pos) {
-                        self.line_starts.items[write_idx] = line_start - count;
-                    } else {
-                        self.line_starts.items[write_idx] = line_start;
-                    }
-                    write_idx += 1;
+            const remove_start = self.upperBound(pos);
+            var write_idx = remove_start;
+            var read_idx = remove_start;
+            while (read_idx < self.line_starts.items.len) : (read_idx += 1) {
+                const line_start = self.line_starts.items[read_idx];
+                if (line_start <= end_pos) {
+                    continue; // 削除範囲内 (pos < line_start <= end_pos): エントリを落とす
                 }
-                // 範囲内(pos <= line_start < end_pos)の行は削除（スキップ）
+                self.line_starts.items[write_idx] = line_start - count;
+                write_idx += 1;
             }
             self.line_starts.shrinkRetainingCapacity(write_idx);
         } else {
             // 改行削除なし: 位置の調整のみ
-            for (self.line_starts.items) |*line_start| {
-                if (line_start.* >= end_pos) {
-                    line_start.* -= count;
-                }
+            const shift_start = self.upperBound(end_pos);
+            var idx = shift_start;
+            while (idx < self.line_starts.items.len) : (idx += 1) {
+                self.line_starts.items[idx] -= count;
             }
         }
 
@@ -2355,6 +2359,7 @@ pub const Buffer = struct {
 
         var search_pos: usize = 0;
         const limit = if (max_count == 0) std.math.maxInt(usize) else max_count;
+        var found_current = false; // フラグで条件分岐を最小化
 
         while (result.total < limit) {
             const match = self.searchForward(pattern, search_pos) orelse break;
@@ -2362,11 +2367,10 @@ pub const Buffer = struct {
             result.total += 1;
 
             // カーソル位置がマッチ範囲内または直後にある場合、このマッチが「現在」
-            // Emacs風: 前方検索はマッチ終端にカーソルがあるので、match.start + match.len == cursor_pos
-            if (result.current_index == null) {
-                if (cursor_pos >= match.start and cursor_pos <= match.start + match.len) {
-                    result.current_index = result.total; // 1-based
-                }
+            // found_currentフラグで、見つかった後の不要なチェックをスキップ
+            if (!found_current and cursor_pos >= match.start and cursor_pos <= match.start + match.len) {
+                result.current_index = result.total; // 1-based
+                found_current = true;
             }
 
             // 次の検索位置（空マッチ防止のため最低1バイト進める）
